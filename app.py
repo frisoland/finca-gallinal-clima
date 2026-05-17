@@ -11865,6 +11865,542 @@ def produccion_tab(history):
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# DECISIONES · Panel de evolución de enfermedades y plagas (estilo RIMpro)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _dec_mills_value(temp_c, horas_mojadura):
+    """Valor numérico 0-150 para moteado (Mills). 100 = umbral de infección moderada."""
+    if pd.isna(temp_c) or horas_mojadura == 0:
+        return 0.0
+    t = float(temp_c)
+    h = int(horas_mojadura)
+    if t < 6 or t > 28:
+        return 0.0
+    mills = [
+        (6,28,18),(7,21,14),(8,18,12),(9,15,11),(10,12,9),
+        (11,11,8),(12,10,7),(13,9,6),(14,8,6),(15,8,5),
+        (16,7,5),(17,7,5),(18,6,5),(19,6,4),(20,6,4),
+        (21,6,4),(22,7,4),(23,8,5),(24,9,6),(25,10,7),
+        (26,12,8),(27,15,10),
+    ]
+    row = next((r for r in mills if int(r[0]) == int(round(t))), None)
+    if row is None:
+        return 0.0
+    _, h_ligera, h_grave = row
+    if h >= h_grave:
+        return min(h / h_grave * 100.0, 150.0)
+    if h >= max(h_grave - 2, 1):
+        return h / h_ligera * 50.0
+    return 0.0
+
+
+def _dec_monilia_value(temp_c, hr, lluvia_mm, horas_mojadura):
+    """Valor numérico 0-100 para monilia."""
+    if pd.isna(temp_c):
+        return 0.0
+    t = float(temp_c)
+    h = float(hr) if pd.notna(hr) else 0.0
+    ll = float(lluvia_mm) if pd.notna(lluvia_mm) else 0.0
+    hm = int(horas_mojadura)
+    if t < 15 or t > 30:
+        return 0.0
+    t_factor = 1.0 if 18 <= t <= 28 else ((t-15)/3 if t < 18 else max(0.0,(30-t)/2))
+    if hm >= 6 and h > 90:
+        hm_factor = 1.0
+    elif hm >= 3 or h > 85:
+        hm_factor = 0.6
+    elif ll > 1 or h > 80:
+        hm_factor = 0.3
+    else:
+        return 0.0
+    return min(t_factor * hm_factor * 100.0, 100.0)
+
+
+def _dec_oidio_value(temp_c, hr, lluvia_mm):
+    """Valor numérico 0-100 para oídio (condiciones favorables secas y cálidas)."""
+    if pd.isna(temp_c):
+        return 0.0
+    t = float(temp_c)
+    h = float(hr) if pd.notna(hr) else 0.0
+    ll = float(lluvia_mm) if pd.notna(lluvia_mm) else 0.0
+    if t < 10 or t > 35 or ll > 8:
+        return 0.0
+    t_factor = (1.0 if 17 <= t <= 25
+                else ((t-10)/7 if t < 17 else max(0.0,(35-t)/10)))
+    h_factor = (1.0 if 50 <= h <= 80
+                else (max(0.0,(h-30)/20) if h < 50 else max(0.0,1.0-(h-80)/20)))
+    rain_penalty = max(0.0, 1.0 - ll/8)
+    return min(t_factor * h_factor * rain_penalty * 100.0, 100.0)
+
+
+def _dec_bar_color(value):
+    """Color del bar según valor de riesgo."""
+    if value >= 100: return "#d62728"
+    if value >= 60:  return "#ff7f0e"
+    if value >= 25:  return "#f5c518"
+    return "#2ca02c"
+
+
+def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, upper_temp=31.1):
+    """
+    DataFrame diario con valores de riesgo para Moteado, Monilia, Oídio y DD Carpocapsa.
+    Cubre los últimos `days_back` días reales + todos los días de predicción.
+    """
+    today = pd.Timestamp.now().normalize()
+    start = today - pd.Timedelta(days=int(days_back))
+    rows = []
+
+    def _process_group(fecha, g, es_pred):
+        temp_med = pd.to_numeric(g["temp_media"], errors="coerce").mean()
+        temp_min = pd.to_numeric(g.get("temp_min", pd.Series(dtype=float)), errors="coerce").min()
+        temp_max = pd.to_numeric(g.get("temp_max", pd.Series(dtype=float)), errors="coerce").max()
+        hr_med   = pd.to_numeric(g["hr_media"],   errors="coerce").mean()
+        lluvia   = pd.to_numeric(g["lluvia_mm"],  errors="coerce").sum()
+        horas_hum = int(pd.to_numeric(g["humectacion_hoja"], errors="coerce").fillna(0).gt(0).sum())
+        # Estimación si no hay sensor de hoja
+        if horas_hum == 0 and (lluvia > 0.5 or (pd.notna(hr_med) and hr_med > 92)):
+            horas_hum = min(int(lluvia * 1.5), 8) + (2 if pd.notna(hr_med) and hr_med > 92 else 0)
+        dd_dia = max(0.0, min(float(temp_med) if pd.notna(temp_med) else 0.0, float(upper_temp)) - base_temp) if pd.notna(temp_med) else 0.0
+        return {
+            "Fecha":          pd.Timestamp(fecha),
+            "T_min":          round(float(temp_min), 1) if pd.notna(temp_min) else None,
+            "T_max":          round(float(temp_max), 1) if pd.notna(temp_max) else None,
+            "T_med":          round(float(temp_med), 1) if pd.notna(temp_med) else None,
+            "HR_med":         round(float(hr_med), 1)   if pd.notna(hr_med)   else None,
+            "Lluvia":         round(float(lluvia), 1)   if pd.notna(lluvia)   else 0.0,
+            "Horas_mojadura": horas_hum,
+            "Es_prediccion":  es_pred,
+            "Mills_valor":    _dec_mills_value(temp_med, horas_hum),
+            "Monilia_valor":  _dec_monilia_value(temp_med, hr_med, lluvia, horas_hum),
+            "Oidio_valor":    _dec_oidio_value(temp_med, hr_med, lluvia),
+            "DD_dia":         round(dd_dia, 1),
+        }
+
+    # Histórico
+    if history_df is not None and not history_df.empty:
+        h = history_df.copy()
+        h["fecha_hora"] = pd.to_datetime(h["fecha_hora"])
+        h = h[h["fecha_hora"] >= start].copy()
+        h["_fecha"] = h["fecha_hora"].dt.date
+        for fecha, g in h.groupby("_fecha"):
+            if pd.Timestamp(fecha) >= today:
+                continue
+            rows.append(_process_group(fecha, g, False))
+
+    # Predicción
+    if forecast_df is not None and not forecast_df.empty:
+        f = forecast_df.copy()
+        f["fecha_hora"] = pd.to_datetime(f["fecha_hora"])
+        f["_fecha"] = f["fecha_hora"].dt.date
+        for fecha, g in f.groupby("_fecha"):
+            rows.append(_process_group(fecha, g, True))
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["Fecha"] = pd.to_datetime(df["Fecha"])
+    df = df.drop_duplicates("Fecha", keep="last").sort_values("Fecha").reset_index(drop=True)
+    df["DD_acumulado"] = df["DD_dia"].cumsum().round(1)
+    return df
+
+
+def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, height=300):
+    """
+    Crea gráfico Plotly estilo RIMpro para una enfermedad.
+    Barras coloreadas por nivel de riesgo + lluvia como fondo + zona predicción.
+    """
+    import plotly.graph_objects as go
+
+    dates  = risk_df["Fecha"].tolist()
+    values = risk_df[value_col].fillna(0).tolist()
+    lluvia = risk_df["Lluvia"].fillna(0).tolist()
+    es_pred = risk_df["Es_prediccion"].tolist()
+
+    bar_colors = [_dec_bar_color(v) for v in values]
+    bar_opacity = [0.95 if not p else 0.60 for p in es_pred]
+
+    fig = go.Figure()
+
+    # Precipitación (fondo, eje secundario)
+    fig.add_trace(go.Bar(
+        x=dates, y=lluvia,
+        name="Lluvia (mm)",
+        marker_color="rgba(100,160,255,0.35)",
+        yaxis="y2",
+        hovertemplate="%{x|%d/%m}<br>Lluvia: %{y:.1f} mm<extra></extra>",
+    ))
+
+    # Barras de infección
+    fig.add_trace(go.Bar(
+        x=dates, y=values,
+        name=disease_name,
+        marker_color=bar_colors,
+        marker_opacity=bar_opacity,
+        customdata=list(zip(
+            risk_df["T_med"].fillna("?").tolist(),
+            risk_df["HR_med"].fillna("?").tolist(),
+            risk_df["Horas_mojadura"].tolist(),
+        )),
+        hovertemplate=(
+            "<b>%{x|%d/%m/%Y}</b><br>"
+            f"Valor infección: %{{y:.0f}}<br>"
+            "T media: %{customdata[0]}°C<br>"
+            "HR media: %{customdata[1]}%<br>"
+            "Horas mojadura: %{customdata[2]}<extra></extra>"
+        ),
+    ))
+
+    # Líneas de umbral
+    fig.add_hline(y=100, line_dash="dash", line_color="red",     line_width=1, opacity=0.6,
+                  annotation_text="Grave", annotation_position="right")
+    fig.add_hline(y=50,  line_dash="dash", line_color="orange",  line_width=1, opacity=0.6,
+                  annotation_text="Moderado", annotation_position="right")
+    fig.add_hline(y=25,  line_dash="dot",  line_color="#ccbb00", line_width=1, opacity=0.5,
+                  annotation_text="Ligero", annotation_position="right")
+
+    # Zona predicción
+    pred_dates = risk_df[risk_df["Es_prediccion"]]["Fecha"]
+    if not pred_dates.empty:
+        fig.add_vrect(
+            x0=pred_dates.min() - pd.Timedelta(hours=12),
+            x1=risk_df["Fecha"].max() + pd.Timedelta(hours=12),
+            fillcolor="rgba(180,210,255,0.12)", line_width=0,
+            annotation_text="◀ real │ predicción ▶",
+            annotation_position="top left",
+            annotation_font_size=10,
+            annotation_font_color="rgba(80,80,180,0.7)",
+        )
+
+    # Línea de hoy
+    fig.add_vline(
+        x=today,
+        line_color="rgba(255,140,0,0.9)", line_width=2, line_dash="solid",
+    )
+
+    # Tratamientos
+    if treats_df is not None and not treats_df.empty and "Fecha_dt" in treats_df.columns:
+        t_dates = pd.to_datetime(treats_df["Fecha_dt"], errors="coerce").dropna()
+        t_dates = t_dates[(t_dates >= risk_df["Fecha"].min()) & (t_dates <= risk_df["Fecha"].max())]
+        for td in t_dates:
+            fig.add_vline(
+                x=td,
+                line_color="rgba(150,0,200,0.7)", line_width=1.5, line_dash="dash",
+            )
+        # Leyenda de tratamiento
+        if not t_dates.empty:
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode="lines",
+                name="Tratamiento",
+                line=dict(color="rgba(150,0,200,0.7)", width=1.5, dash="dash"),
+            ))
+
+    fig.update_layout(
+        height=height,
+        margin=dict(l=0, r=60, t=10, b=30),
+        barmode="overlay",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=11),
+        yaxis=dict(title="Valor de infección", range=[0, max(160, max(values)*1.1) if values else 160],
+                   gridcolor="rgba(200,200,200,0.3)"),
+        yaxis2=dict(title="Lluvia (mm)", overlaying="y", side="right",
+                    range=[0, max(max(lluvia)*4, 10) if lluvia else 10],
+                    showgrid=False, tickfont_color="rgba(100,160,255,0.8)"),
+        xaxis=dict(tickformat="%d/%m", gridcolor="rgba(200,200,200,0.2)"),
+        plot_bgcolor="rgba(250,250,255,1)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        bargap=0.1,
+    )
+    return fig
+
+
+def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, base_temp, upper_temp, height=320):
+    """Gráfico de DD acumulados desde biofix + capturas + tratamientos."""
+    import plotly.graph_objects as go
+
+    # Determinar biofix del año en curso
+    biofix_date = None
+    current_year = today.year
+    if biofix_df is not None and not biofix_df.empty:
+        bf = biofix_df.copy()
+        if "Año" in bf.columns:
+            bf = bf[bf["Año"].astype(str) == str(current_year)]
+        if "Fecha biofix" in bf.columns and not bf.empty:
+            bf_dates = pd.to_datetime(bf["Fecha biofix"], errors="coerce").dropna()
+            if not bf_dates.empty:
+                biofix_date = bf_dates.min()
+
+    # Si hay biofix, recalcular DD desde él (dentro del risk_df)
+    plot_df = risk_df.copy()
+    if biofix_date is not None:
+        plot_df = plot_df[plot_df["Fecha"] >= biofix_date].copy()
+        if not plot_df.empty:
+            plot_df["DD_acumulado"] = plot_df["DD_dia"].cumsum().round(1)
+
+    if plot_df.empty:
+        plot_df = risk_df.copy()
+
+    dates     = plot_df["Fecha"].tolist()
+    dd_acum   = plot_df["DD_acumulado"].tolist()
+    dd_dia    = plot_df["DD_dia"].tolist()
+    es_pred   = plot_df["Es_prediccion"].tolist()
+    lluvia    = plot_df["Lluvia"].fillna(0).tolist()
+
+    fig = go.Figure()
+
+    # DD diarios (fondo)
+    dd_colors = ["rgba(255,100,50,0.55)" if p else "rgba(255,100,50,0.80)" for p in es_pred]
+    fig.add_trace(go.Bar(
+        x=dates, y=dd_dia,
+        name="DD diarios",
+        marker_color=dd_colors,
+        yaxis="y2",
+        hovertemplate="%{x|%d/%m}<br>DD día: %{y:.1f}<extra></extra>",
+    ))
+
+    # DD acumulados — histórico
+    hist_idx = [i for i, p in enumerate(es_pred) if not p]
+    pred_idx = [i for i, p in enumerate(es_pred) if p]
+
+    if hist_idx:
+        fig.add_trace(go.Scatter(
+            x=[dates[i] for i in hist_idx],
+            y=[dd_acum[i] for i in hist_idx],
+            mode="lines",
+            name="DD acumulados (real)",
+            line=dict(color="#d62728", width=2.5),
+            fill="tozeroy",
+            fillcolor="rgba(214,39,40,0.12)",
+            hovertemplate="%{x|%d/%m}<br>DD acum: %{y:.0f}<extra></extra>",
+        ))
+
+    if pred_idx:
+        # Conectar con el último punto del histórico
+        connect_i = hist_idx[-1] if hist_idx else pred_idx[0]
+        x_pred = [dates[connect_i]] + [dates[i] for i in pred_idx]
+        y_pred = [dd_acum[connect_i]] + [dd_acum[i] for i in pred_idx]
+        fig.add_trace(go.Scatter(
+            x=x_pred, y=y_pred,
+            mode="lines",
+            name="DD acumulados (predicción)",
+            line=dict(color="#d62728", width=2, dash="dot"),
+            fill="tozeroy",
+            fillcolor="rgba(214,39,40,0.05)",
+            hovertemplate="%{x|%d/%m}<br>DD acum (prev): %{y:.0f}<extra></extra>",
+        ))
+
+    # Umbrales de tratamiento
+    max_dd = max(dd_acum) if dd_acum else 400
+    ymax   = max(max_dd * 1.15, 400)
+    for umbral, color, label in [(80, "#2ca02c", "1ª gen. inicio (80 DD)"),
+                                  (150, "#ff7f0e", "1ª gen. pico (150 DD)"),
+                                  (300, "#d62728", "2ª gen. inicio (300 DD)"),
+                                  (500, "#9467bd", "2ª gen. pico (500 DD)")]:
+        if umbral <= ymax * 1.2:
+            fig.add_hline(y=umbral, line_dash="dash", line_color=color, line_width=1, opacity=0.7,
+                          annotation_text=label, annotation_position="right",
+                          annotation_font_size=10)
+
+    # Capturas de trampas
+    if traps_df is not None and not traps_df.empty:
+        tf = traps_df.copy()
+        if "Fecha_dt" in tf.columns and "Capturas" in tf.columns:
+            tf["Fecha_dt"] = pd.to_datetime(tf["Fecha_dt"], errors="coerce")
+            tf = tf.dropna(subset=["Fecha_dt"])
+            if not plot_df.empty:
+                tf = tf[(tf["Fecha_dt"] >= plot_df["Fecha"].min()) &
+                        (tf["Fecha_dt"] <= plot_df["Fecha"].max())]
+            if not tf.empty:
+                # Interpolar DD en fecha de captura
+                dd_interp = np.interp(
+                    tf["Fecha_dt"].astype(np.int64),
+                    pd.to_datetime(dates).astype(np.int64),
+                    dd_acum,
+                )
+                fig.add_trace(go.Scatter(
+                    x=tf["Fecha_dt"].tolist(),
+                    y=dd_interp.tolist(),
+                    mode="markers+text",
+                    name="Capturas trampa",
+                    marker=dict(
+                        size=[max(8, min(c*3, 28)) for c in tf["Capturas"].fillna(0)],
+                        color="rgba(0,120,200,0.8)",
+                        symbol="circle",
+                        line=dict(color="white", width=1),
+                    ),
+                    text=tf["Capturas"].astype(int).astype(str),
+                    textposition="top center",
+                    textfont=dict(size=9, color="rgba(0,80,160,1)"),
+                    customdata=tf["Capturas"].tolist(),
+                    hovertemplate="%{x|%d/%m}<br>Capturas: %{customdata}<br>DD: %{y:.0f}<extra></extra>",
+                ))
+
+    # Zona predicción
+    pred_dates_df = plot_df[plot_df["Es_prediccion"]]["Fecha"]
+    if not pred_dates_df.empty:
+        fig.add_vrect(
+            x0=pred_dates_df.min() - pd.Timedelta(hours=12),
+            x1=plot_df["Fecha"].max() + pd.Timedelta(hours=12),
+            fillcolor="rgba(180,210,255,0.12)", line_width=0,
+        )
+
+    # Línea de hoy
+    fig.add_vline(x=today, line_color="rgba(255,140,0,0.9)", line_width=2)
+
+    # Biofix marker
+    if biofix_date is not None:
+        fig.add_vline(x=biofix_date, line_color="rgba(0,160,0,0.8)", line_width=2, line_dash="dash",
+                      annotation_text=f"Biofix {biofix_date.strftime('%d/%m')}",
+                      annotation_position="top right", annotation_font_color="green")
+
+    # Tratamientos carpocapsa
+    if treats_carpo_df is not None and not treats_carpo_df.empty and "Fecha_dt" in treats_carpo_df.columns:
+        t_dates = pd.to_datetime(treats_carpo_df["Fecha_dt"], errors="coerce").dropna()
+        if not plot_df.empty:
+            t_dates = t_dates[(t_dates >= plot_df["Fecha"].min()) &
+                              (t_dates <= plot_df["Fecha"].max())]
+        for td in t_dates:
+            fig.add_vline(x=td, line_color="rgba(150,0,200,0.7)", line_width=1.5, line_dash="dash")
+        if not t_dates.empty:
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
+                                     name="Tratamiento carpo.",
+                                     line=dict(color="rgba(150,0,200,0.7)", width=1.5, dash="dash")))
+
+    fig.update_layout(
+        height=height,
+        margin=dict(l=0, r=110, t=10, b=30),
+        barmode="overlay",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=11),
+        yaxis=dict(title="DD acumulados", range=[0, ymax], gridcolor="rgba(200,200,200,0.3)"),
+        yaxis2=dict(title="DD/día", overlaying="y", side="right",
+                    range=[0, max(max(dd_dia)*5, 15) if dd_dia else 15],
+                    showgrid=False, tickfont_color="rgba(255,100,50,0.8)"),
+        xaxis=dict(tickformat="%d/%m", gridcolor="rgba(200,200,200,0.2)"),
+        plot_bgcolor="rgba(250,250,255,1)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        bargap=0.1,
+    )
+    return fig
+
+
+def render_decisiones_panel():
+    """Panel de decisiones agronómicas con 4 gráficas estilo RIMpro."""
+    history_df  = st.session_state.get("history_df",  pd.DataFrame())
+    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
+    activities_df = st.session_state.get("activities_df", pd.DataFrame())
+    biofix_df   = st.session_state.get("carpocapsa_biofix_df", pd.DataFrame())
+    traps_df    = st.session_state.get("carpocapsa_traps_df",  pd.DataFrame())
+
+    if history_df.empty and forecast_df.empty:
+        st.warning("⚠️ Sin datos climáticos. Carga el histórico desde Supabase o Sencrop y la predicción desde la pestaña 🌦️ Sencrop.")
+        return
+
+    st.markdown(
+        "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
+        "**predicción Sencrop** — para tomar decisiones de tratamiento con días de antelación."
+    )
+
+    # ── Parámetros ────────────────────────────────────────────────────────────
+    p1, p2, p3 = st.columns([1, 1, 2])
+    with p1:
+        days_back = st.number_input(
+            "Días de histórico", min_value=15, max_value=90, value=45, step=5, key="dec_days_back",
+            help="Cuántos días pasados incluir en las gráficas",
+        )
+    with p2:
+        base_temp_d  = st.number_input("Base DD carpocapsa (°C)", 0.0, 15.0, 10.0, 0.5, key="dec_base_temp")
+        upper_temp_d = st.number_input("Umbral sup. DD (°C)", 20.0, 40.0, 31.1, 0.5, key="dec_upper_temp")
+    with p3:
+        if forecast_df.empty:
+            st.info("💡 No hay predicción cargada. Las gráficas sólo mostrarán datos reales.")
+        else:
+            fc_dates = pd.to_datetime(forecast_df["fecha_hora"])
+            st.success(
+                f"✅ Predicción activa hasta **{fc_dates.max().strftime('%d/%m %Hh')}** · "
+                f"{int((fc_dates.max() - pd.Timestamp.now()).total_seconds()/3600/24)+1} días por delante"
+            )
+
+    today = pd.Timestamp.now().normalize()
+
+    # ── Construir timeline ────────────────────────────────────────────────────
+    risk_df = build_risk_timeline(
+        history_df, forecast_df,
+        days_back=int(days_back),
+        base_temp=float(base_temp_d),
+        upper_temp=float(upper_temp_d),
+    )
+
+    if risk_df.empty:
+        st.warning("No hay suficientes datos para construir el análisis de riesgo.")
+        return
+
+    # ── Tratamientos del período ──────────────────────────────────────────────
+    treats_all   = pd.DataFrame()
+    treats_carpo = pd.DataFrame()
+    if not activities_df.empty and "Fecha_dt" in activities_df.columns:
+        t_mask = pd.to_datetime(activities_df["Fecha_dt"], errors="coerce") >= risk_df["Fecha"].min()
+        if t_mask.any():
+            treats_all = activities_df[t_mask].copy()
+            if "Descripcion" in treats_all.columns:
+                carpo_mask = treats_all["Descripcion"].fillna("").str.lower().apply(
+                    lambda x: any(kw.lower() in x for kw in CARPOCAPSA_TREATMENT_KEYWORDS)
+                )
+                treats_carpo = treats_all[carpo_mask]
+
+    chart_h = 290
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
+    st.caption("Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. Zona azul = predicción Sencrop.")
+    fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_all, chart_h)
+    st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False})
+
+    st.divider()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown("#### 🍑 Monilia · *Monilinia* spp.")
+    st.caption("Umbral 50 = riesgo moderado · **100 = riesgo alto**. Requiere T>15°C + hoja mojada ≥3h o HR>85%.")
+    fig_mo = _dec_disease_chart(risk_df, "Monilia_valor", "Monilia", today, treats_all, chart_h)
+    st.plotly_chart(fig_mo, use_container_width=True, config={"displayModeBar": False})
+
+    st.divider()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown("#### 🐛 Carpocapsa · *Cydia pomonella* — Grados-día desde biofix")
+    st.caption("Línea roja = DD acumulados. Círculos azules = capturas en trampa (tamaño proporcional). Umbrales de generación marcados.")
+    fig_c = _dec_carpocapsa_chart(
+        risk_df, today, biofix_df, traps_df, treats_carpo,
+        float(base_temp_d), float(upper_temp_d), chart_h + 30,
+    )
+    st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False})
+
+    st.divider()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
+    st.caption("Favorece condiciones cálidas y secas (T 17-25°C, HR 50-80%). La lluvia intensa frena el riesgo.")
+    fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_all, chart_h)
+    st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False})
+
+    # ── Leyenda explicativa ───────────────────────────────────────────────────
+    with st.expander("📖 Sobre los modelos de riesgo", expanded=False):
+        st.markdown("""
+**Moteado (Mills):** Tabla de Mills & Laplante (1951) — relaciona temperatura media durante el período húmedo con las horas mínimas de hoja mojada para producir infección primaria. Valor 100 = umbral de infección moderada cumplido.
+
+**Monilia:** Modelo empírico temperatura-humedad. Requiere T>15°C + HR>85% o hoja mojada ≥3h para riesgo moderado. Valor 100 = condiciones óptimas de infección mantenidas todo el día.
+
+**Carpocapsa (DD):** Acumulación de grados-día desde biofix (base 10°C, umbral superior 31,1°C). Los umbrales 80, 150, 300 y 500 DD corresponden aproximadamente al inicio y pico de la 1ª y 2ª generación.
+
+**Oídio:** Modelo de condiciones favorables — temperatura cálida (óptimo 17-25°C) + humedad relativa moderada (50-80%). La lluvia intensa penaliza el riesgo (lava esporas). No requiere hoja mojada.
+
+🔵 **Zona azul claro** = período de predicción Sencrop (datos no reales).
+🟠 **Línea naranja vertical** = hoy.
+🟣 **Líneas moradas verticales** = fechas de tratamiento registradas en Agroptima.
+        """)
+
+
 tabs = st.tabs([
     "📘 Instrucciones",
     "📊 Dashboard",
@@ -11874,6 +12410,7 @@ tabs = st.tabs([
     "❄️ Frío",
     "📈 Comparador",
     "🍄 Sanidad",
+    "🎯 Decisiones",
     "🐛 Carpocapsa",
     "💧 Riego",
     "🌳 Campos",
@@ -11908,22 +12445,25 @@ with tabs[7]:
     health_tab(history, soil_type, hoja_threshold)
 
 with tabs[8]:
-    carpocapsa_tab(history)
+    render_decisiones_panel()
 
 with tabs[9]:
-    irrigation_tab(history, soil_type, hoja_threshold)
+    carpocapsa_tab(history)
 
 with tabs[10]:
-    fields_tab()
+    irrigation_tab(history, soil_type, hoja_threshold)
 
 with tabs[11]:
-    activities_tab()
+    fields_tab()
 
 with tabs[12]:
-    produccion_tab(history)
+    activities_tab()
 
 with tabs[13]:
-    weekly_report_tab(history, soil_type, hoja_threshold)
+    produccion_tab(history)
 
 with tabs[14]:
+    weekly_report_tab(history, soil_type, hoja_threshold)
+
+with tabs[15]:
     settings_tab()
