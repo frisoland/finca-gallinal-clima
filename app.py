@@ -12357,21 +12357,38 @@ def render_decisiones_panel():
     # ── Tratamientos del período ──────────────────────────────────────────────
     treats_all   = pd.DataFrame()
     treats_carpo = pd.DataFrame()
-    if not activities_df.empty and "Fecha_dt" in activities_df.columns:
-        t_mask = pd.to_datetime(activities_df["Fecha_dt"], errors="coerce") >= risk_df["Fecha"].min()
+    if not activities_df.empty and "Fecha" in activities_df.columns:
+        acts = activities_df.copy()
+        acts["Fecha_dt"] = pd.to_datetime(acts["Fecha"], errors="coerce")
+        acts = acts.dropna(subset=["Fecha_dt"])
+        t_mask = acts["Fecha_dt"] >= risk_df["Fecha"].min()
         if t_mask.any():
-            treats_all = activities_df[t_mask].copy()
-            if "Descripcion" in treats_all.columns:
-                carpo_mask = treats_all["Descripcion"].fillna("").str.lower().apply(
-                    lambda x: any(kw.lower() in x for kw in CARPOCAPSA_TREATMENT_KEYWORDS)
-                )
-                treats_carpo = treats_all[carpo_mask]
+            treats_all = acts[t_mask].copy()
+            # Carpocapsa: buscar en columna Producto (nombre del producto aplicado)
+            for _col in ["Producto", "Descripcion", "Comentarios", "Trabajo"]:
+                if _col in treats_all.columns:
+                    carpo_mask = treats_all[_col].fillna("").str.lower().apply(
+                        lambda x: any(kw.lower() in x for kw in CARPOCAPSA_TREATMENT_KEYWORDS)
+                    )
+                    if carpo_mask.any():
+                        treats_carpo = treats_all[carpo_mask]
+                        break
 
     chart_h = 290
 
+    # ── Info de tratamientos detectados ──────────────────────────────────────
+    n_treats = len(treats_all) if not treats_all.empty else 0
+    if n_treats > 0:
+        _t_dates_str = ", ".join(
+            pd.to_datetime(treats_all["Fecha_dt"]).dt.strftime("%d/%m").unique()[:8].tolist()
+        )
+        _treats_info = f"🟣 **{n_treats} tratamientos** en el período: {_t_dates_str}"
+    else:
+        _treats_info = "ℹ️ Sin tratamientos registrados en Agroptima para este período (comprueba que están cargados)."
+
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
-    st.caption("Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. Zona azul = predicción Sencrop.")
+    st.caption(f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. Zona azul = predicción Sencrop. {_treats_info}")
     fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_all, chart_h)
     st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False})
 
