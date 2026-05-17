@@ -12063,13 +12063,18 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
     # Zona predicción
     pred_dates = risk_df[risk_df["Es_prediccion"]]["Fecha"]
     if not pred_dates.empty:
+        x0_pred = pred_dates.min() - pd.Timedelta(hours=12)
         fig.add_vrect(
-            x0=pred_dates.min() - pd.Timedelta(hours=12),
+            x0=x0_pred,
             x1=risk_df["Fecha"].max() + pd.Timedelta(hours=12),
             fillcolor="rgba(180,210,255,0.12)", line_width=0,
-            annotation_text="◀ real │ predicción ▶",
-            annotation_position="top left",
-            annotation_font=dict(size=10, color="rgba(80,80,180,0.7)"),
+        )
+        fig.add_annotation(
+            x=x0_pred, y=1, yref="paper",
+            text="◀ real │ predicción ▶",
+            showarrow=False, xanchor="left",
+            font=dict(size=10, color="rgba(80,80,180,0.8)"),
+            bgcolor="rgba(255,255,255,0.6)",
         )
 
     # Línea de hoy
@@ -12247,12 +12252,16 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     # Línea de hoy
     fig.add_vline(x=today, line_color="rgba(255,140,0,0.9)", line_width=2)
 
-    # Biofix marker
+    # Biofix marker (línea + anotación separadas para evitar conflicto con yaxis2)
     if biofix_date is not None:
-        fig.add_vline(x=biofix_date, line_color="rgba(0,160,0,0.8)", line_width=2, line_dash="dash",
-                      annotation_text=f"Biofix {biofix_date.strftime('%d/%m')}",
-                      annotation_position="top right",
-                      annotation_font=dict(color="green", size=11))
+        fig.add_vline(x=biofix_date, line_color="rgba(0,160,0,0.8)", line_width=2, line_dash="dash")
+        fig.add_annotation(
+            x=biofix_date, y=1, yref="paper",
+            text=f"Biofix {biofix_date.strftime('%d/%m')}",
+            showarrow=False, xanchor="left",
+            font=dict(color="green", size=11),
+            bgcolor="rgba(255,255,255,0.7)",
+        )
 
     # Tratamientos carpocapsa
     if treats_carpo_df is not None and not treats_carpo_df.empty and "Fecha_dt" in treats_carpo_df.columns:
