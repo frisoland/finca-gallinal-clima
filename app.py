@@ -4312,78 +4312,111 @@ SENCROP_SENSORS = [
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Predicción meteorológica — Open-Meteo (ECMWF/GFS, gratuito, sin API key)
+# Predicción meteorológica — Sencrop (endpoint /app/forecast/sencrop-mode-data)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-OPEN_METEO_URL      = "https://api.open-meteo.com/v1/forecast"
-FINCA_LAT_DEFAULT   = 43.47      # Latitud por defecto (Finca Gallinal)
-FINCA_LON_DEFAULT   = -5.38      # Longitud por defecto
+SENCROP_FORECAST_URL = f"https://sencrop-api-production.infra.sencrop.com/app/forecast/sencrop-mode-data"
+SENCROP_MODELS_URL   = f"https://sencrop-api-production.infra.sencrop.com/app/forecast/models-mode-data"
+
+# Organización e ID del sensor principal (temperatura/lluvia/HR de Finca Gallinal)
+_FC_ORG_ID    = "17094"
+_FC_STATION   = "11653"   # SENCROP_SENSORS[0]["id"]
 
 
-def openmeteo_download_forecast(lat, lon, days_ahead=7):
+def sencrop_download_forecast(token, model="sencrop"):
     """
-    Descarga la predicción meteorológica horaria de Open-Meteo (gratuito, sin clave).
-    Devuelve (df, error) donde df tiene el mismo formato que history_df (CANONICAL_COLUMNS).
-    - leaf_wetness_index ≥ 0.5  →  humectacion_hoja = 1 (hora mojada)
-    - Hasta 16 días de predicción disponibles.
+    Descarga la predicción meteorológica horaria de Sencrop.
+
+    model="sencrop"   → endpoint sencrop-mode-data  (Previsión Sencrop, fusión de modelos)
+    model="meteoblue" → endpoint models-mode-data    (Meteoblue BASIC_MLM)
+
+    Estructura de respuesta (confirmada via DevTools):
+      data.scaledForecasts.hourly.days[i].timeSeries[j]:
+        date                      → "2026-05-17T11:00:00+02:00"
+        metrics.temperatureInCelsius
+        metrics.relativeHumidityInPercent
+        metrics.rainfallSumInMm
+        metrics.windSpeedInKmh
+        metrics.windGustInKmh       (puede estar ausente)
+        metrics.leafWetnessInPercent (puede estar ausente — sensor 16899)
+
+    Devuelve (df, error) con columnas CANONICAL_COLUMNS.
     """
-    params = {
-        "latitude":           round(float(lat), 6),
-        "longitude":          round(float(lon), 6),
-        "hourly": ",".join([
-            "temperature_2m",
-            "relative_humidity_2m",
-            "precipitation",
-            "windspeed_10m",
-            "windgusts_10m",
-            "leaf_wetness_index",
-        ]),
-        "forecast_days":      min(int(days_ahead), 16),
-        "timezone":           "Europe/Madrid",
-        "wind_speed_unit":    "kmh",
-        "precipitation_unit": "mm",
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Origin":        "https://app.sencrop.com",
+        "Referer":       "https://app.sencrop.com/",
+        "User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept":        "application/json",
     }
-    try:
-        r = requests.get(OPEN_METEO_URL, params=params, timeout=20)
-    except Exception as e:
-        return pd.DataFrame(), f"Error de conexión con Open-Meteo: {e}"
 
+    if model == "meteoblue":
+        url    = SENCROP_MODELS_URL
+        params = {
+            "organisationId": _FC_ORG_ID,
+            "modelId":        "BASIC_MLM",
+            "type":           "station",
+            "stationId":      _FC_STATION,
+        }
+    else:
+        url    = SENCROP_FORECAST_URL
+        params = {
+            "organisationId": _FC_ORG_ID,
+            "stationId":      _FC_STATION,
+        }
+
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=25)
+    except Exception as e:
+        return pd.DataFrame(), f"Error de conexión con Sencrop: {e}"
+
+    if r.status_code in (401, 403) or "JWT_EXPIRED" in r.text:
+        return pd.DataFrame(), "TOKEN_EXPIRED"
     if r.status_code != 200:
-        return pd.DataFrame(), f"Open-Meteo respondió HTTP {r.status_code}: {r.text[:200]}"
+        return pd.DataFrame(), f"Sencrop respondió HTTP {r.status_code}: {r.text[:300]}"
 
     try:
         data = r.json()
     except Exception as e:
-        return pd.DataFrame(), f"Error parseando respuesta de Open-Meteo: {e}"
+        return pd.DataFrame(), f"Error parseando JSON de Sencrop: {e}"
 
-    hourly = data.get("hourly", {})
-    times  = hourly.get("time", [])
-    if not times:
-        return pd.DataFrame(), "Open-Meteo devolvió datos horarios vacíos."
+    inner      = data.get("data", {})
+    hourly_days = inner.get("scaledForecasts", {}).get("hourly", {}).get("days", [])
 
-    df = pd.DataFrame({
-        "fecha_hora":       pd.to_datetime(times),        # ya en Europe/Madrid
-        "temp_media":       hourly.get("temperature_2m"),
-        "hr_media":         hourly.get("relative_humidity_2m"),
-        "lluvia_mm":        hourly.get("precipitation"),
-        "viento_velocidad": hourly.get("windspeed_10m"),
-        "viento_rafaga":    hourly.get("windgusts_10m"),
-        "_lwi":             hourly.get("leaf_wetness_index"),
-    })
+    if not hourly_days:
+        return pd.DataFrame(), "La respuesta de Sencrop no contiene datos horarios (scaledForecasts.hourly.days vacío)."
 
-    # leaf_wetness_index ≥ 0.5 → hora de hoja mojada
-    df["humectacion_hoja"] = pd.to_numeric(df["_lwi"], errors="coerce").ge(0.5).astype(float)
-    df.drop(columns=["_lwi"], inplace=True)
+    rows = []
+    for day in hourly_days:
+        for item in day.get("timeSeries", []):
+            date_str = item.get("date")
+            if not date_str:
+                continue
+            try:
+                dt = pd.to_datetime(date_str, utc=True).tz_convert("Europe/Madrid").tz_localize(None)
+            except Exception:
+                continue
 
-    # Rellenar columnas canónicas que Open-Meteo no proporciona directamente
-    # (temp_min / temp_max se calculan en forecast_build_risk_table por día)
-    for col in ["temp_min", "temp_max", "hr_min", "hr_max",
-                "punto_rocio", "radiacion_solar", "presion_hpa",
-                "viento_direccion", "evapotranspiracion"]:
-        if col not in df.columns:
-            df[col] = np.nan
+            m = item.get("metrics", {})
+            # Hoja mojada: sensor si existe, si no → None (se estima después por lluvia+HR)
+            lw_pct = m.get("leafWetnessInPercent")
+            hoja   = (1.0 if lw_pct is not None and float(lw_pct) > 50 else
+                      0.0 if lw_pct is not None else None)
 
-    # Asegurar todas las columnas canónicas en el orden correcto
+            rows.append({
+                "fecha_hora":       dt,
+                "temp_media":       m.get("temperatureInCelsius"),
+                "hr_media":         m.get("relativeHumidityInPercent"),
+                "lluvia_mm":        m.get("rainfallSumInMm"),
+                "viento_velocidad": m.get("windSpeedInKmh"),
+                "viento_rafaga":    m.get("windGustInKmh"),
+                "humectacion_hoja": hoja,
+            })
+
+    if not rows:
+        return pd.DataFrame(), "timeSeries vacío en todos los días de la predicción."
+
+    df = pd.DataFrame(rows)
     for col in CANONICAL_COLUMNS:
         if col not in df.columns:
             df[col] = np.nan
@@ -4862,55 +4895,54 @@ def render_sencrop_panel():
 
 
 def render_sencrop_forecast_panel():
-    """Panel de predicción meteorológica Open-Meteo + modelos de riesgo sanitario."""
+    """Panel de predicción meteorológica Sencrop + modelos de riesgo sanitario."""
     st.markdown("### 🔭 Predicción meteorológica — Próximos días")
 
+    if not st.session_state.get("sencrop_token"):
+        st.info("ℹ️ Conecta Sencrop arriba para acceder a la predicción.")
+        return
+
     st.caption(
-        "Predicción horaria gratuita vía **Open-Meteo** (ECMWF/GFS, hasta 16 días, sin API key). "
-        "Se aplican los modelos de riesgo (Mills moteado, Monilia, DD carpocapsa). "
-        "La hoja mojada se calcula desde el índice de humectación de hoja previsto; "
-        "si no está disponible se estima desde lluvia y HR."
+        "Predicción horaria de **Sencrop** (fusión de múltiples modelos meteorológicos, "
+        "calibrada con los datos de tu estación). "
+        "Se aplican modelos de riesgo agronómico: Mills moteado, Monilia y DD carpocapsa. "
+        "La hoja mojada se toma del sensor si está disponible; si no, se estima desde lluvia y HR previstas."
     )
 
-    fc1, fc2, fc3 = st.columns([1, 1, 2])
+    fc1, fc2 = st.columns([2, 2])
     with fc1:
-        days_ahead = st.number_input(
-            "Días de predicción",
-            min_value=1, max_value=16, value=7, step=1,
-            key="forecast_days_ahead",
+        modelo_fc = st.radio(
+            "Modelo de predicción",
+            ["⭐ Previsión Sencrop (fusión de modelos)", "📊 Meteoblue BASIC_MLM"],
+            horizontal=True,
+            key="forecast_model_selector",
+            label_visibility="collapsed",
         )
+        model_key = "sencrop" if modelo_fc.startswith("⭐") else "meteoblue"
     with fc2:
-        fc_lat = st.number_input(
-            "Latitud", min_value=35.0, max_value=44.0,
-            value=float(st.session_state.get("forecast_lat", FINCA_LAT_DEFAULT)),
-            step=0.01, format="%.4f", key="forecast_lat",
-        )
-        fc_lon = st.number_input(
-            "Longitud", min_value=-10.0, max_value=5.0,
-            value=float(st.session_state.get("forecast_lon", FINCA_LON_DEFAULT)),
-            step=0.01, format="%.4f", key="forecast_lon",
-        )
-    with fc3:
         base_temp_fc  = st.number_input("Base DD carpocapsa (°C)", min_value=0.0, max_value=15.0, value=10.0, step=0.5, key="fc_base_temp")
         upper_temp_fc = st.number_input("Umbral sup. DD (°C)",      min_value=20.0, max_value=40.0, value=31.1, step=0.5, key="fc_upper_temp")
 
-    if st.button("⬇️ Descargar predicción Open-Meteo", type="primary", use_container_width=True, key="btn_download_forecast"):
-        with st.spinner("Consultando Open-Meteo (ECMWF/GFS)..."):
-            forecast_df, err = openmeteo_download_forecast(
-                lat=float(fc_lat),
-                lon=float(fc_lon),
-                days_ahead=int(days_ahead),
+    label_btn = "⭐ Previsión Sencrop" if model_key == "sencrop" else "📊 Meteoblue BASIC_MLM"
+    if st.button(f"⬇️ Descargar {label_btn}", type="primary", use_container_width=True, key="btn_download_forecast"):
+        with st.spinner(f"Consultando predicción Sencrop ({label_btn})..."):
+            forecast_df, err = sencrop_download_forecast(
+                token=st.session_state.sencrop_token,
+                model=model_key,
             )
+        if err == "TOKEN_EXPIRED":
+            st.error("🔑 Token caducado. Actualiza SENCROP_TOKEN en Secrets y recarga la app.")
+            return
         if err:
             st.error(f"No se pudo obtener la predicción: {err}")
             return
 
-        st.session_state["forecast_df"] = forecast_df
+        st.session_state["forecast_df"]    = forecast_df
+        st.session_state["forecast_model"] = label_btn
         st.success(
-            f"✅ Predicción descargada: {len(forecast_df)} registros horarios · "
+            f"✅ Predicción descargada ({label_btn}): {len(forecast_df)} registros horarios · "
             f"Período: {pd.to_datetime(forecast_df['fecha_hora']).min().strftime('%d/%m %Hh')} → "
-            f"{pd.to_datetime(forecast_df['fecha_hora']).max().strftime('%d/%m %Hh')} "
-            f"(lat {fc_lat:.4f}, lon {fc_lon:.4f})"
+            f"{pd.to_datetime(forecast_df['fecha_hora']).max().strftime('%d/%m %Hh')}"
         )
         st.rerun()
 
@@ -4994,7 +5026,7 @@ def render_sencrop_forecast_panel():
         st.download_button(
             "⬇️ Descargar predicción CSV",
             data=forecast_df[cols_show].to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"prediccion_openmeteo_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+            file_name=f"prediccion_sencrop_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
             mime="text/csv",
             use_container_width=True,
         )
