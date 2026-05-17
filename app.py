@@ -12119,7 +12119,7 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
     return fig
 
 
-def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, base_temp, upper_temp, height=320):
+def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, base_temp, upper_temp, height=320, days_back=45, history_df=None):
     """Gráfico de DD acumulados desde biofix + capturas + tratamientos."""
     import plotly.graph_objects as go
 
@@ -12135,21 +12135,55 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
             if not bf_dates.empty:
                 biofix_date = bf_dates.min()
 
-    # Si hay biofix, recalcular DD desde él (dentro del risk_df)
-    plot_df = risk_df.copy()
-    if biofix_date is not None:
-        plot_df = plot_df[plot_df["Fecha"] >= biofix_date].copy()
-        if not plot_df.empty:
-            plot_df["DD_acumulado"] = plot_df["DD_dia"].cumsum().round(1)
+    # Construir DD desde biofix usando todo el histórico si está disponible
+    # (así DD acumulado es correcto aunque sólo mostremos la ventana reciente)
+    if biofix_date is not None and history_df is not None and not history_df.empty:
+        _h = history_df.copy()
+        _h["fecha_hora"] = pd.to_datetime(_h["fecha_hora"])
+        _h["_fecha"] = _h["fecha_hora"].dt.date
+        _h["temp_media"] = pd.to_numeric(_h["temp_media"], errors="coerce")
+        _h_daily = (
+            _h[_h["fecha_hora"] >= pd.Timestamp(biofix_date)]
+            .groupby("_fecha")["temp_media"].mean()
+            .reset_index()
+        )
+        _h_daily["DD_dia_full"] = (_h_daily["temp_media"].clip(upper=float(upper_temp)) - base_temp).clip(lower=0)
+        _h_daily["Fecha"] = pd.to_datetime(_h_daily["_fecha"])
+        _h_daily["DD_acum_full"] = _h_daily["DD_dia_full"].cumsum().round(1)
+        # Merge the full cumulative DD back into risk_df by date
+        _merge = risk_df.merge(
+            _h_daily[["Fecha", "DD_acum_full"]],
+            on="Fecha", how="left"
+        )
+        # For forecast dates (not in history), extend cumulation
+        last_dd = _merge["DD_acum_full"].dropna().iloc[-1] if not _merge["DD_acum_full"].dropna().empty else 0.0
+        for i in _merge.index:
+            if pd.isna(_merge.at[i, "DD_acum_full"]):
+                last_dd = last_dd + _merge.at[i, "DD_dia"]
+                _merge.at[i, "DD_acum_full"] = round(last_dd, 1)
+        plot_df = _merge.copy()
+        plot_df["DD_acumulado"] = plot_df["DD_acum_full"]
+    else:
+        plot_df = risk_df.copy()
+        if biofix_date is not None:
+            plot_df = plot_df[plot_df["Fecha"] >= biofix_date].copy()
+            if not plot_df.empty:
+                plot_df["DD_acumulado"] = plot_df["DD_dia"].cumsum().round(1)
 
     if plot_df.empty:
         plot_df = risk_df.copy()
 
-    dates     = plot_df["Fecha"].tolist()
-    dd_acum   = plot_df["DD_acumulado"].tolist()
-    dd_dia    = plot_df["DD_dia"].tolist()
-    es_pred   = plot_df["Es_prediccion"].tolist()
-    lluvia    = plot_df["Lluvia"].fillna(0).tolist()
+    # Ventana de visualización: sólo mostrar los últimos days_back días + predicción
+    display_start = today - pd.Timedelta(days=int(days_back))
+    plot_df_display = plot_df[plot_df["Fecha"] >= display_start].copy()
+    if plot_df_display.empty:
+        plot_df_display = plot_df.copy()
+
+    dates     = plot_df_display["Fecha"].tolist()
+    dd_acum   = plot_df_display["DD_acumulado"].tolist()
+    dd_dia    = plot_df_display["DD_dia"].tolist()
+    es_pred   = plot_df_display["Es_prediccion"].tolist()
+    lluvia    = plot_df_display["Lluvia"].fillna(0).tolist()
 
     fig = go.Figure()
 
@@ -12212,9 +12246,9 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
         if "Fecha_dt" in tf.columns and "Capturas" in tf.columns:
             tf["Fecha_dt"] = pd.to_datetime(tf["Fecha_dt"], errors="coerce")
             tf = tf.dropna(subset=["Fecha_dt"])
-            if not plot_df.empty:
-                tf = tf[(tf["Fecha_dt"] >= plot_df["Fecha"].min()) &
-                        (tf["Fecha_dt"] <= plot_df["Fecha"].max())]
+            if not plot_df_display.empty:
+                tf = tf[(tf["Fecha_dt"] >= plot_df_display["Fecha"].min()) &
+                        (tf["Fecha_dt"] <= plot_df_display["Fecha"].max())]
             if not tf.empty:
                 # Interpolar DD en fecha de captura
                 dd_interp = np.interp(
@@ -12241,11 +12275,11 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                 ))
 
     # Zona predicción
-    pred_dates_df = plot_df[plot_df["Es_prediccion"]]["Fecha"]
+    pred_dates_df = plot_df_display[plot_df_display["Es_prediccion"]]["Fecha"]
     if not pred_dates_df.empty:
         fig.add_vrect(
             x0=pred_dates_df.min() - pd.Timedelta(hours=12),
-            x1=plot_df["Fecha"].max() + pd.Timedelta(hours=12),
+            x1=plot_df_display["Fecha"].max() + pd.Timedelta(hours=12),
             fillcolor="rgba(180,210,255,0.12)", line_width=0,
         )
 
@@ -12266,9 +12300,9 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     # Tratamientos carpocapsa
     if treats_carpo_df is not None and not treats_carpo_df.empty and "Fecha_dt" in treats_carpo_df.columns:
         t_dates = pd.to_datetime(treats_carpo_df["Fecha_dt"], errors="coerce").dropna()
-        if not plot_df.empty:
-            t_dates = t_dates[(t_dates >= plot_df["Fecha"].min()) &
-                              (t_dates <= plot_df["Fecha"].max())]
+        if not plot_df_display.empty:
+            t_dates = t_dates[(t_dates >= plot_df_display["Fecha"].min()) &
+                              (t_dates <= plot_df_display["Fecha"].max())]
         for td in t_dates:
             fig.add_vline(x=td, line_color="rgba(150,0,200,0.7)", line_width=1.5, line_dash="dash")
         if not t_dates.empty:
@@ -12408,6 +12442,8 @@ def render_decisiones_panel():
     fig_c = _dec_carpocapsa_chart(
         risk_df, today, biofix_df, traps_df, treats_carpo,
         float(base_temp_d), float(upper_temp_d), chart_h + 30,
+        days_back=int(days_back),
+        history_df=history_df,
     )
     st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False})
 
@@ -12420,19 +12456,42 @@ def render_decisiones_panel():
     st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False})
 
     # ── Leyenda explicativa ───────────────────────────────────────────────────
-    with st.expander("📖 Sobre los modelos de riesgo", expanded=False):
+    with st.expander("📖 Cómo interpretar estas gráficas", expanded=False):
         st.markdown("""
-**Moteado (Mills):** Tabla de Mills & Laplante (1951) — relaciona temperatura media durante el período húmedo con las horas mínimas de hoja mojada para producir infección primaria. Valor 100 = umbral de infección moderada cumplido.
+### Cómo leer los gráficos
 
-**Monilia:** Modelo empírico temperatura-humedad. Requiere T>15°C + HR>85% o hoja mojada ≥3h para riesgo moderado. Valor 100 = condiciones óptimas de infección mantenidas todo el día.
+#### 🎨 Colores de las barras (Moteado, Monilia, Oídio)
+| Color | Valor | Qué significa | Qué hacer |
+|---|---|---|---|
+| 🟢 Verde | 0–25 | Sin riesgo. Condiciones no favorables para la infección | Nada, estás cubierto |
+| 🟡 Amarillo | 25–50 | Riesgo ligero. Condiciones en el límite | Vigilar, evaluar si hay tratamiento vigente |
+| 🟠 Naranja | 50–100 | Riesgo moderado. Umbral de infección próximo | Considerar tratamiento preventivo |
+| 🔴 Rojo | >100 | **Período de infección.** El umbral se ha superado | **Tratar antes de que llegue (preventivo) o cuanto antes (curativo)** |
 
-**Carpocapsa (DD):** Acumulación de grados-día desde biofix (base 10°C, umbral superior 31,1°C). Los umbrales 80, 150, 300 y 500 DD corresponden aproximadamente al inicio y pico de la 1ª y 2ª generación.
+#### 📅 Zonas del gráfico
+- **Parte izquierda (hasta la línea naranja)** = datos reales del pasado. Muestra qué ocurrió.
+- **Línea naranja vertical** = hoy.
+- **Zona azul claro (a la derecha)** = predicción Sencrop. Muestra qué puede ocurrir.
+- **Líneas moradas verticales** = tratamientos registrados en Agroptima.
 
-**Oídio:** Modelo de condiciones favorables — temperatura cálida (óptimo 17-25°C) + humedad relativa moderada (50-80%). La lluvia intensa penaliza el riesgo (lava esporas). No requiere hoja mojada.
+#### 💡 Cómo tomar la decisión de tratar
+1. Mira la **zona azul** (predicción): ¿hay barras naranjas o rojas próximas?
+2. ¿Tienes un tratamiento reciente (línea morada) que aún proteja? Los fungicidas curativos suelen cubrir 5–10 días, los preventivos 7–14 días.
+3. Si se acerca un período rojo y no tienes protección vigente → **trata antes de la lluvia**, no durante ni después.
+4. Si el período rojo ya pasó y no hubo tratamiento → evalúa un curativo en las próximas 48–72h.
 
-🔵 **Zona azul claro** = período de predicción Sencrop (datos no reales).
-🟠 **Línea naranja vertical** = hoy.
-🟣 **Líneas moradas verticales** = fechas de tratamiento registradas en Agroptima.
+#### 🐛 Gráfica de Carpocapsa (DD acumulados)
+- **Línea roja** = grados-día acumulados desde el biofix (inicio de vuelo).
+- **Barras naranjas** = DD de cada día (cuánto calor útil acumuló ese día).
+- **Círculos azules** = capturas en trampa (el tamaño es proporcional al número de capturas).
+- **Líneas de umbral horizontales**:
+  - 80 DD = inicio 1ª generación → **primer tratamiento**
+  - 150 DD = pico 1ª generación → reforzar si capturas altas
+  - 300 DD = inicio 2ª generación → **segundo ciclo de tratamientos**
+  - 500 DD = pico 2ª generación
+
+#### 📊 Lluvia (barras azul claro, eje derecho)
+Aparece en todos los gráficos como referencia. La lluvia genera hoja mojada (riesgo moteado/monilia) pero en cambio puede frenar el oídio.
         """)
 
 
