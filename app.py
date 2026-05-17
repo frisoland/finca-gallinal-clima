@@ -12287,6 +12287,15 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
 
 def render_decisiones_panel():
     """Panel de decisiones agronómicas con 4 gráficas estilo RIMpro."""
+    try:
+        import plotly.graph_objects as _go_test  # noqa: F401
+    except ImportError:
+        st.error(
+            "📦 **Plotly no está instalado.** Haz clic en **Manage app → Reboot app** "
+            "para que Streamlit Cloud instale las nuevas dependencias."
+        )
+        return
+
     history_df  = st.session_state.get("history_df",  pd.DataFrame())
     forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
     activities_df = st.session_state.get("activities_df", pd.DataFrame())
