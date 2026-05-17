@@ -4311,6 +4311,392 @@ SENCROP_SENSORS = [
     },
 ]
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SENCROP · Predicción meteorológica
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Variables de predicción que intentamos descargar (mismas que usamos en histórico)
+SENCROP_FORECAST_MEASURES = [
+    "temperature", "relativeHumidity", "rainfall", "leafWetness",
+    "windSpeed", "windGust",
+]
+
+def sencrop_download_forecast(token, user_id, days_ahead=7):
+    """
+    Descarga la predicción meteorológica horaria de los sensores de Finca Gallinal.
+    Prueba varios endpoints hasta encontrar el que funciona.
+    Devuelve (df, endpoint_usado, error) donde df tiene el mismo formato que history_df.
+    """
+    import datetime as _dt
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Origin": "https://app.sencrop.com",
+        "Referer": "https://app.sencrop.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+
+    now      = pd.Timestamp.now(tz="Europe/Madrid")
+    end_fore = now + pd.Timedelta(days=days_ahead)
+    tz_off   = "+02:00"
+
+    # Sensor principal para temperatura/humedad/lluvia
+    main_sensor = SENCROP_SENSORS[0]["id"]   # 11653
+    leaf_sensor = SENCROP_SENSORS[2]["id"]   # 16899 - hoja mojada
+
+    # ── Candidatos de endpoint (de más a menos probable) ──────────────────────
+    candidates = [
+        # 1. Endpoint de pronóstico horario en la infra interna (más probable)
+        {
+            "url": f"{SENCROP_API_INFRA}/app/station/measurement-page/forecasts/hourly",
+            "params": [
+                ("organisationId", "17094"),
+                ("stationId",      main_sensor),
+                ("startDatetime",  now.strftime(f"%Y-%m-%dT%H:00:00.000{tz_off}")),
+                ("endDatetime",    end_fore.strftime(f"%Y-%m-%dT23:59:59.999{tz_off}")),
+                ("measures",       "temperature"),
+                ("measures",       "relativeHumidity"),
+                ("measures",       "rainfall"),
+                ("enableFilling",  "true"),
+            ],
+            "label": "infra/forecasts/hourly",
+        },
+        # 2. Variante sin /hourly
+        {
+            "url": f"{SENCROP_API_INFRA}/app/station/measurement-page/forecasts",
+            "params": [
+                ("organisationId", "17094"),
+                ("stationId",      main_sensor),
+                ("startDatetime",  now.strftime(f"%Y-%m-%dT%H:00:00.000{tz_off}")),
+                ("endDatetime",    end_fore.strftime(f"%Y-%m-%dT23:59:59.999{tz_off}")),
+                ("measures",       "temperature"),
+                ("measures",       "relativeHumidity"),
+                ("measures",       "rainfall"),
+            ],
+            "label": "infra/forecasts",
+        },
+        # 3. API pública v1
+        {
+            "url": f"{SENCROP_API_BASE}/users/{user_id}/devices/{main_sensor}/forecast",
+            "params": [
+                ("beforeDate", end_fore.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
+                ("precision",  "1h"),
+            ],
+            "label": "api_v1/device/forecast",
+        },
+        # 4. API pública v1 - variante
+        {
+            "url": f"{SENCROP_API_BASE}/users/{user_id}/forecast",
+            "params": [
+                ("deviceId", main_sensor),
+                ("days",     str(days_ahead)),
+            ],
+            "label": "api_v1/user/forecast",
+        },
+        # 5. App endpoint alternativo
+        {
+            "url": f"{SENCROP_API_INFRA}/app/station/forecast",
+            "params": [
+                ("stationId", main_sensor),
+                ("days",      str(days_ahead)),
+            ],
+            "label": "infra/station/forecast",
+        },
+    ]
+
+    last_error = None
+    for cand in candidates:
+        try:
+            r = requests.get(cand["url"], headers=headers, params=cand["params"], timeout=20)
+            if r.status_code == 401 or "JWT_EXPIRED" in r.text:
+                return pd.DataFrame(), cand["label"], "TOKEN_EXPIRED"
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                    df = _parse_sencrop_forecast_response(data, now)
+                    if df is not None and not df.empty:
+                        return df, cand["label"], None
+                    # Respuesta 200 pero vacía — anotar y continuar
+                    last_error = f"{cand['label']}: respuesta 200 pero sin datos parseables"
+                except Exception as parse_err:
+                    last_error = f"{cand['label']}: error parseando JSON — {parse_err}"
+            else:
+                last_error = f"{cand['label']}: HTTP {r.status_code}"
+        except Exception as e:
+            last_error = f"{cand['label']}: {e}"
+
+    return pd.DataFrame(), "", last_error or "Ningún endpoint devolvió datos de predicción."
+
+
+def _parse_sencrop_forecast_response(data, reference_now):
+    """
+    Intenta parsear la respuesta JSON de cualquier endpoint de predicción Sencrop.
+    Devuelve un DataFrame con columnas de CANONICAL_COLUMNS o None si no reconoce la estructura.
+    """
+    date_map = {}
+
+    # ── Formato infra (igual que measurements) ────────────────────────────────
+    station_data = (data.get("response") or data).get("stationMeasurements") or {}
+    if station_data:
+        measure_col_map = {
+            "temperature": ("temp_media", "temp_min", "temp_max"),
+            "relativeHumidity": ("hr_media", "hr_min", "hr_max"),
+            "rainfall":     ("lluvia_mm",),
+            "leafWetness":  ("humectacion_hoja",),
+            "windSpeed":    ("viento_velocidad",),
+            "windGust":     ("viento_rafaga",),
+        }
+        for measure, metric_list in station_data.items():
+            for metric_block in (metric_list if isinstance(metric_list, list) else []):
+                metric_name = metric_block.get("metric", "")
+                if metric_name.endswith(":min"):
+                    col = {"temperature": "temp_min", "relativeHumidity": "hr_min"}.get(measure)
+                elif metric_name.endswith(":max"):
+                    col = {"temperature": "temp_max", "relativeHumidity": "hr_max"}.get(measure)
+                else:
+                    cols = measure_col_map.get(measure, ())
+                    col = cols[0] if cols else None
+                if not col:
+                    continue
+                for item in metric_block.get("timeseries", []):
+                    ts_ms = item.get("timestamp")
+                    val   = item.get("value")
+                    if ts_ms is None:
+                        continue
+                    key = str(ts_ms)
+                    if key not in date_map:
+                        date_map[key] = {"fecha_hora": pd.to_datetime(int(ts_ms), unit="ms", utc=True)}
+                    if val is not None:
+                        date_map[key][col] = pd.to_numeric(val, errors="coerce")
+        if date_map:
+            return _forecast_date_map_to_df(date_map, reference_now)
+
+    # ── Formato API pública v1 (lista de hourly items) ────────────────────────
+    items = data.get("hourlyForecasts") or data.get("forecasts") or data.get("data") or []
+    if isinstance(items, list) and items:
+        for item in items:
+            ts = item.get("datetime") or item.get("date") or item.get("timestamp")
+            if not ts:
+                continue
+            try:
+                ts_parsed = pd.to_datetime(ts, utc=True)
+            except Exception:
+                continue
+            key = str(ts_parsed)
+            if key not in date_map:
+                date_map[key] = {"fecha_hora": ts_parsed}
+            col_map = {
+                "temperature": "temp_media", "temperatureMin": "temp_min", "temperatureMax": "temp_max",
+                "humidity": "hr_media", "relativeHumidity": "hr_media",
+                "rainfall": "lluvia_mm", "precipitation": "lluvia_mm",
+                "leafWetness": "humectacion_hoja",
+                "windSpeed": "viento_velocidad", "windGust": "viento_rafaga",
+            }
+            for src, dst in col_map.items():
+                if src in item and item[src] is not None:
+                    date_map[key][dst] = pd.to_numeric(item[src], errors="coerce")
+        if date_map:
+            return _forecast_date_map_to_df(date_map, reference_now)
+
+    return None
+
+
+def _forecast_date_map_to_df(date_map, reference_now):
+    """Convierte el date_map interno al formato CANONICAL_COLUMNS."""
+    df = pd.DataFrame(list(date_map.values()))
+    df["fecha_hora"] = (
+        pd.to_datetime(df["fecha_hora"], utc=True)
+        .dt.tz_convert("Europe/Madrid")
+        .dt.tz_localize(None)
+    )
+    # Solo filas futuras (o de las últimas 2h para solapar bien con el histórico)
+    cutoff = reference_now.tz_localize(None) if reference_now.tzinfo else reference_now
+    cutoff = cutoff - pd.Timedelta(hours=2)
+    df = df[df["fecha_hora"] >= cutoff]
+    for col in CANONICAL_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+    df = df[CANONICAL_COLUMNS].copy()
+    return df.sort_values("fecha_hora").drop_duplicates("fecha_hora").reset_index(drop=True)
+
+
+# ── Modelos de riesgo aplicados sobre datos de predicción ─────────────────────
+
+def forecast_build_risk_table(forecast_df, history_df, base_temp=10.0, upper_temp=31.1):
+    """
+    Aplica los modelos de riesgo (Mills moteado, Monilia, DD carpocapsa)
+    sobre el DataFrame de predicción fusionado con el histórico reciente.
+    Devuelve un DataFrame diario con columnas de riesgo para los próximos días.
+    """
+    if forecast_df is None or forecast_df.empty:
+        return pd.DataFrame()
+
+    # Fusionar: últimas 72h de histórico real + predicción
+    if history_df is not None and not history_df.empty:
+        cutoff = pd.Timestamp.now() - pd.Timedelta(hours=72)
+        hist_recent = history_df[pd.to_datetime(history_df["fecha_hora"]) >= cutoff].copy()
+        combined = pd.concat([hist_recent, forecast_df], ignore_index=True)
+        combined = combined.drop_duplicates("fecha_hora", keep="last")
+        combined = combined.sort_values("fecha_hora").reset_index(drop=True)
+    else:
+        combined = forecast_df.copy()
+
+    combined["fecha_hora"] = pd.to_datetime(combined["fecha_hora"])
+    combined["_fecha"] = combined["fecha_hora"].dt.date
+
+    rows = []
+    for fecha, grupo in combined.groupby("_fecha"):
+        if pd.Timestamp(fecha) < pd.Timestamp.now().normalize():
+            continue  # Solo días futuros/hoy
+
+        temp_med  = pd.to_numeric(grupo["temp_media"],  errors="coerce").mean()
+        temp_min  = pd.to_numeric(grupo["temp_min"],    errors="coerce").min()
+        temp_max  = pd.to_numeric(grupo["temp_max"],    errors="coerce").max()
+        hr_med    = pd.to_numeric(grupo["hr_media"],    errors="coerce").mean()
+        lluvia    = pd.to_numeric(grupo["lluvia_mm"],   errors="coerce").sum()
+        horas_hum = int(pd.to_numeric(grupo["humectacion_hoja"], errors="coerce").fillna(0).gt(0).sum())
+        # Estimar horas mojadura desde lluvia + HR si no hay sensor de hoja
+        if horas_hum == 0 and (lluvia > 0 or (pd.notna(hr_med) and hr_med > 90)):
+            horas_hum_est = int(lluvia > 0) * min(int(lluvia * 1.5), 8) + (2 if pd.notna(hr_med) and hr_med > 90 else 0)
+        else:
+            horas_hum_est = horas_hum
+
+        # ── Riesgo moteado (tabla de Mills simplificada) ──────────────────────
+        # Temp media durante período húmedo + horas mojadura
+        riesgo_moteado = _mills_risk(temp_med, horas_hum_est)
+
+        # ── Riesgo monilia ────────────────────────────────────────────────────
+        # Condición: T > 15°C + HR > 85% + lluvia o humedad hoja
+        riesgo_monilia = _monilia_risk(temp_med, hr_med, lluvia, horas_hum_est)
+
+        # ── DD carpocapsa del día ─────────────────────────────────────────────
+        dd_dia = 0.0
+        if pd.notna(temp_med):
+            dd_dia = max(0.0, min(float(temp_med), float(upper_temp)) - base_temp)
+
+        rows.append({
+            "Fecha":                   fecha,
+            "T. min/máx (°C)":         f"{temp_min:.1f}/{temp_max:.1f}" if pd.notna(temp_min) and pd.notna(temp_max) else "—",
+            "T. media (°C)":           round(float(temp_med), 1) if pd.notna(temp_med) else None,
+            "HR media (%)":            round(float(hr_med),   1) if pd.notna(hr_med)   else None,
+            "Lluvia prev. (mm)":       round(float(lluvia),   1) if pd.notna(lluvia)   else 0.0,
+            "Horas mojadura":          horas_hum if horas_hum > 0 else horas_hum_est,
+            "Fuente mojadura":         "sensor" if horas_hum > 0 else "estimada",
+            "Riesgo moteado":          riesgo_moteado,
+            "Riesgo monilia":          riesgo_monilia,
+            "DD carpocapsa previstos": round(dd_dia, 1),
+        })
+
+    return pd.DataFrame(rows)
+
+
+def _mills_risk(temp_c, horas_mojadura):
+    """Tabla de Mills simplificada: devuelve nivel de riesgo de infección primaria."""
+    if pd.isna(temp_c) or horas_mojadura == 0:
+        return "🟢 Sin riesgo"
+    t = float(temp_c)
+    h = int(horas_mojadura)
+    # Tabla Mills: (T °C) → horas mínimas de mojadura para infección ligera / moderada / grave
+    # Fuente: Mills & Laplante 1951, adaptación práctica
+    if t < 6 or t > 28:
+        return "🟢 Sin riesgo"
+    mills = [
+        (6,  28, 18),   # T ≥ 6°C: 28h ligera / 18h moderada   (ojo: poco probable con lluvia)
+        (7,  21, 14),
+        (8,  18, 12),
+        (9,  15, 11),
+        (10, 12, 9),
+        (11, 11, 8),
+        (12, 10, 7),
+        (13, 9,  6),
+        (14, 8,  6),
+        (15, 8,  5),
+        (16, 7,  5),
+        (17, 7,  5),
+        (18, 6,  5),
+        (19, 6,  4),
+        (20, 6,  4),
+        (21, 6,  4),
+        (22, 7,  4),
+        (23, 8,  5),
+        (24, 9,  6),
+        (25, 10, 7),
+        (26, 12, 8),
+        (27, 15, 10),
+    ]
+    row = next((r for r in mills if int(r[0]) == int(round(t))), None)
+    if row is None:
+        return "🟢 Sin riesgo"
+    _, h_ligera, h_grave = row
+    if h >= h_ligera:
+        return "🔴 Infección grave"
+    if h >= h_grave:
+        return "🟠 Infección moderada"
+    if h >= max(h_grave - 2, 1):
+        return "🟡 Riesgo ligero"
+    return "🟢 Sin riesgo"
+
+
+def _monilia_risk(temp_c, hr, lluvia_mm, horas_mojadura):
+    """Riesgo de monilia basado en temperatura, humedad y mojadura."""
+    if pd.isna(temp_c):
+        return "🟢 Sin riesgo"
+    t   = float(temp_c)
+    h   = float(hr)   if pd.notna(hr)       else 0.0
+    ll  = float(lluvia_mm) if pd.notna(lluvia_mm) else 0.0
+    hm  = int(horas_mojadura)
+
+    if t < 15 or t > 30:
+        return "🟢 Sin riesgo"
+    if h > 90 and hm >= 6 and 18 <= t <= 28:
+        return "🔴 Riesgo alto"
+    if (h > 85 and hm >= 3) or (ll > 3 and 18 <= t <= 28):
+        return "🟠 Riesgo moderado"
+    if h > 80 or ll > 0:
+        return "🟡 Riesgo ligero"
+    return "🟢 Sin riesgo"
+
+
+def forecast_cumulative_dd(forecast_df, history_df, biofix_date, base_temp=10.0, upper_temp=31.1):
+    """
+    Calcula DD acumulados desde biofix incluyendo la predicción.
+    Devuelve un DataFrame con Fecha y DD_acumulados para mostrar la evolución prevista.
+    """
+    if forecast_df is None or forecast_df.empty:
+        return pd.DataFrame()
+
+    # Histórico desde biofix
+    if history_df is not None and not history_df.empty and biofix_date is not None:
+        hist_desde_biofix = history_df[
+            pd.to_datetime(history_df["fecha_hora"]) >= pd.Timestamp(biofix_date)
+        ].copy()
+        combined = pd.concat([hist_desde_biofix, forecast_df], ignore_index=True)
+        combined = combined.drop_duplicates("fecha_hora", keep="last")
+    else:
+        combined = forecast_df.copy()
+
+    combined["fecha_hora"] = pd.to_datetime(combined["fecha_hora"])
+    combined["temp_media"] = pd.to_numeric(combined["temp_media"], errors="coerce")
+    combined["_fecha"] = combined["fecha_hora"].dt.date
+
+    daily = (
+        combined.groupby("_fecha")["temp_media"]
+        .mean()
+        .reset_index()
+        .rename(columns={"_fecha": "Fecha", "temp_media": "_T_media"})
+    )
+    daily["_T_media"] = daily["_T_media"].clip(upper=float(upper_temp))
+    daily["DD_dia"] = (daily["_T_media"] - base_temp).clip(lower=0)
+    daily["DD_acumulados"] = daily["DD_dia"].cumsum().round(1)
+
+    # Marcar qué días son predicción
+    today = pd.Timestamp.now().normalize().date()
+    daily["Tipo"] = daily["Fecha"].apply(lambda d: "Predicción" if d >= today else "Real")
+
+    return daily[["Fecha", "DD_dia", "DD_acumulados", "Tipo"]].copy()
+
+
 def sencrop_is_configured():
     try:
         app_id     = st.secrets.get("SENCROP_APP_ID", "")
@@ -4593,6 +4979,168 @@ def render_sencrop_panel():
             f"Histórico total: **{len(final)}** registros ({rng_min} → {rng_max})."
         )
         st.caption("💡 Recuerda guardar el snapshot en Supabase para conservar los datos.")
+
+    # ── Panel de predicción meteorológica ─────────────────────────────────────
+    st.divider()
+    render_sencrop_forecast_panel()
+
+
+def render_sencrop_forecast_panel():
+    """Panel de predicción meteorológica Sencrop + modelos de riesgo sanitario."""
+    st.markdown("### 🔭 Predicción meteorológica — Próximos días")
+
+    if not st.session_state.get("sencrop_token"):
+        st.info("Conecta Sencrop arriba para acceder a la predicción.")
+        return
+
+    st.caption(
+        "Descarga la predicción horaria de Sencrop y aplica los modelos de riesgo "
+        "(Mills moteado, Monilia, DD carpocapsa) para los próximos días. "
+        "La hoja mojada se toma del sensor si está disponible; si no, se estima desde lluvia y HR previstas."
+    )
+
+    fc1, fc2 = st.columns([1, 3])
+    with fc1:
+        days_ahead = st.number_input(
+            "Días de predicción",
+            min_value=1, max_value=10, value=7, step=1,
+            key="forecast_days_ahead",
+        )
+    with fc2:
+        base_temp_fc  = st.number_input("Base DD carpocapsa (°C)", min_value=0.0, max_value=15.0, value=10.0, step=0.5, key="fc_base_temp")
+        upper_temp_fc = st.number_input("Umbral sup. DD (°C)",      min_value=20.0, max_value=40.0, value=31.1, step=0.5, key="fc_upper_temp")
+
+    if st.button("⬇️ Descargar predicción Sencrop", type="primary", use_container_width=True, key="btn_download_forecast"):
+        with st.spinner("Consultando API de predicción de Sencrop..."):
+            forecast_df, endpoint_usado, err = sencrop_download_forecast(
+                st.session_state.sencrop_token,
+                st.session_state.get("sencrop_user_id", ""),
+                days_ahead=int(days_ahead),
+            )
+        if err == "TOKEN_EXPIRED":
+            st.error("🔑 Token caducado. Actualiza SENCROP_TOKEN en Secrets.")
+            return
+        if err and forecast_df.empty:
+            st.error(f"No se pudo obtener la predicción: {err}")
+            # Mostrar diagnóstico de endpoints para depuración
+            with st.expander("🔬 Diagnóstico de endpoints probados", expanded=True):
+                st.markdown(
+                    "La app probó estos endpoints en orden:\n"
+                    "1. `infra/forecasts/hourly`\n"
+                    "2. `infra/forecasts`\n"
+                    "3. `api_v1/device/forecast`\n"
+                    "4. `api_v1/user/forecast`\n"
+                    "5. `infra/station/forecast`\n\n"
+                    f"Último error: `{err}`\n\n"
+                    "Si ves HTTP 404 en todos, es posible que Sencrop no exponga previsiones "
+                    "en la API con el tipo de acceso actual. Consulta con Sencrop Support si "
+                    "tu plan incluye acceso a la API de pronóstico."
+                )
+            return
+
+        st.session_state["forecast_df"]       = forecast_df
+        st.session_state["forecast_endpoint"] = endpoint_usado
+        st.success(
+            f"✅ Predicción descargada: {len(forecast_df)} registros horarios "
+            f"(endpoint: `{endpoint_usado}`). "
+            f"Periodo: {pd.to_datetime(forecast_df['fecha_hora']).min().strftime('%d/%m %Hh')} → "
+            f"{pd.to_datetime(forecast_df['fecha_hora']).max().strftime('%d/%m %Hh')}"
+        )
+        st.rerun()
+
+    # ── Mostrar resultados si ya hay predicción en sesión ─────────────────────
+    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
+    if forecast_df.empty:
+        st.info("Pulsa el botón para descargar la predicción y calcular el riesgo.")
+        return
+
+    history_df = st.session_state.get("history_df", pd.DataFrame())
+
+    # ── Tabla de riesgo diario ────────────────────────────────────────────────
+    risk_df = forecast_build_risk_table(
+        forecast_df, history_df,
+        base_temp=float(base_temp_fc),
+        upper_temp=float(upper_temp_fc),
+    )
+
+    if risk_df.empty:
+        st.warning("No se pudo calcular el riesgo. Revisa que el histórico climático esté cargado.")
+        return
+
+    st.markdown("#### 🗓️ Riesgo sanitario previsto")
+
+    # Semáforo resumen
+    max_moteado = _max_risk_level(risk_df["Riesgo moteado"].tolist())
+    max_monilia = _max_risk_level(risk_df["Riesgo monilia"].tolist())
+    sm1, sm2, sm3 = st.columns(3)
+    sm1.metric("Peor riesgo moteado (7d)",  max_moteado)
+    sm2.metric("Peor riesgo monilia (7d)",  max_monilia)
+    sm3.metric("DD carpocapsa previstos",
+               f"{risk_df['DD carpocapsa previstos'].sum():.1f} DD")
+
+    # Alerta proactiva
+    high_risk_days = risk_df[risk_df["Riesgo moteado"].str.contains("🔴|🟠")]
+    if not high_risk_days.empty:
+        dias_alerta = ", ".join(str(d) for d in high_risk_days["Fecha"].head(3))
+        st.error(
+            f"⚠️ **Período de infección probable:** {dias_alerta}. "
+            "Considera tratar antes del primer día de riesgo alto."
+        )
+
+    # Tabla visual
+    def _style_risk(val):
+        if "🔴" in str(val): return "background-color:#ffe0e0; color:#c00"
+        if "🟠" in str(val): return "background-color:#fff0d0; color:#a05000"
+        if "🟡" in str(val): return "background-color:#ffffd0; color:#808000"
+        return ""
+
+    styled = risk_df.style.applymap(_style_risk, subset=["Riesgo moteado", "Riesgo monilia"])
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    # ── DD carpocapsa acumulados con predicción ───────────────────────────────
+    biofix_df = st.session_state.get("carpocapsa_biofix_df", pd.DataFrame())
+    if not biofix_df.empty and "Fecha biofix" in biofix_df.columns:
+        with st.expander("📈 DD carpocapsa acumulados — histórico + predicción", expanded=False):
+            # Usar el biofix más reciente
+            bf_dates = pd.to_datetime(biofix_df["Fecha biofix"], errors="coerce").dropna()
+            if not bf_dates.empty:
+                last_biofix = bf_dates.max()
+                dd_evol = forecast_cumulative_dd(
+                    forecast_df, history_df, last_biofix,
+                    base_temp=float(base_temp_fc),
+                    upper_temp=float(upper_temp_fc),
+                )
+                if not dd_evol.empty:
+                    pred_rows = dd_evol[dd_evol["Tipo"] == "Predicción"]
+                    if not pred_rows.empty:
+                        dd_end = pred_rows["DD_acumulados"].iloc[-1]
+                        st.caption(
+                            f"Biofix: **{last_biofix.strftime('%d/%m/%Y')}** · "
+                            f"DD acumulados a fin de la predicción: **{dd_end:.0f} DD**"
+                        )
+                    st.dataframe(dd_evol, use_container_width=True, hide_index=True)
+
+    # ── Datos horarios crudos ─────────────────────────────────────────────────
+    with st.expander("📋 Datos horarios de predicción (raw)", expanded=False):
+        cols_show = [c for c in CANONICAL_COLUMNS if c in forecast_df.columns and
+                     not forecast_df[c].isna().all()]
+        st.dataframe(forecast_df[cols_show], use_container_width=True, hide_index=True)
+        st.download_button(
+            "⬇️ Descargar predicción CSV",
+            data=forecast_df[cols_show].to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"prediccion_sencrop_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+
+def _max_risk_level(risk_list):
+    """Devuelve el nivel de riesgo más alto de una lista."""
+    for level in ["🔴 Infección grave", "🔴 Riesgo alto", "🟠 Infección moderada",
+                  "🟠 Riesgo moderado", "🟡 Riesgo ligero", "🟡 Riesgo ligero"]:
+        if any(level in r for r in risk_list):
+            return level
+    return "🟢 Sin riesgo"
 
 
 def sencrop_get_devices(token, user_id):
