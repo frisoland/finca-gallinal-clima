@@ -4992,7 +4992,9 @@ def render_sencrop_forecast_panel():
         if "🟡" in str(val): return "background-color:#ffffd0; color:#808000"
         return ""
 
-    styled = risk_df.style.applymap(_style_risk, subset=["Riesgo moteado", "Riesgo monilia"])
+    # pandas >= 2.1: applymap → map (Styler)
+    _styler_fn = getattr(risk_df.style, "map", None) or risk_df.style.applymap
+    styled = _styler_fn(_style_risk, subset=["Riesgo moteado", "Riesgo monilia"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # ── DD carpocapsa acumulados con predicción ───────────────────────────────
