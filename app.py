@@ -11393,6 +11393,23 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         if _d is not None and not _d.empty:
             st.session_state.carpocapsa_damage_df = _d
 
+# ── Auto-carga predicción Sencrop al arrancar (una sola vez por sesión) ────────
+# Descarga la Previsión Sencrop automáticamente si el token está disponible
+# y todavía no hay datos de predicción en sesión.
+if "autoload_forecast_done" not in st.session_state:
+    st.session_state.autoload_forecast_done = False
+
+if not st.session_state.autoload_forecast_done and sencrop_is_configured():
+    st.session_state.autoload_forecast_done = True
+    _fc_token = sencrop_get_token_from_secrets()
+    if _fc_token and not st.session_state.get("forecast_df", pd.DataFrame()).shape[0]:
+        _fc_df, _fc_err = sencrop_download_forecast(token=_fc_token, model="sencrop")
+        if _fc_df is not None and not _fc_df.empty:
+            st.session_state["forecast_df"]    = _fc_df
+            st.session_state["forecast_model"] = "⭐ Previsión Sencrop"
+            # Guardar token para que render_sencrop_panel lo encuentre ya cacheado
+            st.session_state["sencrop_token"]  = _fc_token
+
 # Main layout
 render_top_banner()
 
