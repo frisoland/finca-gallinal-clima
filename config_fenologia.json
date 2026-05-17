@@ -1,0 +1,5 @@
+{
+  "version": "v8.9.9",
+  "base": "v8.9.8",
+  "mejora": "carpocapsa_detecta_tratamientos_bactur_desde_actuaciones_agroptima"
+}
