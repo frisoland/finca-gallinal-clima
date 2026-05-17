@@ -12069,8 +12069,7 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
             fillcolor="rgba(180,210,255,0.12)", line_width=0,
             annotation_text="◀ real │ predicción ▶",
             annotation_position="top left",
-            annotation_font_size=10,
-            annotation_font_color="rgba(80,80,180,0.7)",
+            annotation_font=dict(size=10, color="rgba(80,80,180,0.7)"),
         )
 
     # Línea de hoy
@@ -12252,7 +12251,8 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     if biofix_date is not None:
         fig.add_vline(x=biofix_date, line_color="rgba(0,160,0,0.8)", line_width=2, line_dash="dash",
                       annotation_text=f"Biofix {biofix_date.strftime('%d/%m')}",
-                      annotation_position="top right", annotation_font_color="green")
+                      annotation_position="top right",
+                      annotation_font=dict(color="green", size=11))
 
     # Tratamientos carpocapsa
     if treats_carpo_df is not None and not treats_carpo_df.empty and "Fecha_dt" in treats_carpo_df.columns:
