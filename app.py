@@ -4398,19 +4398,19 @@ def sencrop_download_forecast(token, model="sencrop"):
                 continue
 
             m = item.get("metrics", {})
-            # Hoja mojada: sensor si existe, si no → None (se estima después por lluvia+HR)
-            lw_pct = m.get("leafWetnessInPercent")
-            hoja   = (1.0 if lw_pct is not None and float(lw_pct) > 50 else
-                      0.0 if lw_pct is not None else None)
-
+            # Campos confirmados via DevTools (17/05/2026):
+            #   maxWindGustInKmh, rainfallSumInMm, relativeHumidityInPercent,
+            #   temperatureInCelsius, windDirectionInDegree, windSpeedInKmh
+            # leafWetnessInPercent NO está en este endpoint → se estimará después
             rows.append({
-                "fecha_hora":       dt,
-                "temp_media":       m.get("temperatureInCelsius"),
-                "hr_media":         m.get("relativeHumidityInPercent"),
-                "lluvia_mm":        m.get("rainfallSumInMm"),
-                "viento_velocidad": m.get("windSpeedInKmh"),
-                "viento_rafaga":    m.get("windGustInKmh"),
-                "humectacion_hoja": hoja,
+                "fecha_hora":        dt,
+                "temp_media":        m.get("temperatureInCelsius"),
+                "hr_media":          m.get("relativeHumidityInPercent"),
+                "lluvia_mm":         m.get("rainfallSumInMm"),
+                "viento_velocidad":  m.get("windSpeedInKmh"),
+                "viento_rafaga":     m.get("maxWindGustInKmh"),
+                "viento_direccion":  m.get("windDirectionInDegree"),
+                "humectacion_hoja":  None,   # se estimará en forecast_build_risk_table
             })
 
     if not rows:
