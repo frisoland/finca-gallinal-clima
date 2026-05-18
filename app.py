@@ -110,37 +110,44 @@ _st_components.html(
 
           var _fgHoverOpened = false;
 
-          function fgExpandSidebar() {
-            /* Solo selectores específicos del botón de abrir sidebar */
-            var selectors = [
-              '[data-testid="stSidebarCollapsedControl"] button',
-              '[data-testid="collapsedControl"] button',
-              'button[aria-label="Open sidebar"]',
-              'button[aria-label="Abrir barra lateral"]',
-              'button[title="Open sidebar"]',
-              '[class*="collapsedControl"] button'
-            ];
-            for (var si = 0; si < selectors.length; si++) {
-              var btn = doc.querySelector(selectors[si]);
-              if (btn) { btn.click(); _fgHoverOpened = true; return; }
+          /* Encuentra el botón del sidebar por posición en pantalla.
+             open=true  → busca el botón de ABRIR (esquina sup-izq, fuera del sidebar)
+             open=false → busca el botón de CERRAR (dentro del sidebar, esquina sup-izq) */
+          function fgToggleSidebar(open) {
+            var halfW = win.innerWidth / 2;
+
+            /* Intento 1: selectores semánticos */
+            var semantic = open
+              ? ['[data-testid="stSidebarCollapsedControl"] button',
+                 '[data-testid="collapsedControl"] button',
+                 'button[aria-label="Open sidebar"]',
+                 'button[aria-label="Abrir barra lateral"]',
+                 '[class*="collapsedControl"] button']
+              : ['button[aria-label="Close sidebar"]',
+                 'button[aria-label="Cerrar barra lateral"]',
+                 '[data-testid="stSidebarCloseButton"] button',
+                 '[data-testid="stSidebar"] [data-testid="stBaseButton-header"]'];
+            for (var si = 0; si < semantic.length; si++) {
+              var b = doc.querySelector(semantic[si]);
+              if (b) { b.click(); return true; }
             }
+
+            /* Intento 2: buscar por posición — el toggle siempre está en la
+               esquina superior izquierda de la pantalla (x < 100, y < 120)
+               y NO en la mitad derecha (evita el botón Share) */
+            var allBtns = doc.querySelectorAll('button');
+            for (var bi = 0; bi < allBtns.length; bi++) {
+              var r = allBtns[bi].getBoundingClientRect();
+              if (r.left < 100 && r.top < 120 && r.right < halfW) {
+                allBtns[bi].click();
+                return true;
+              }
+            }
+            return false;
           }
 
-          function fgCollapseSidebar() {
-            /* Botón de cerrar sidebar (visible cuando está abierto) */
-            var selectors = [
-              'button[aria-label="Close sidebar"]',
-              'button[aria-label="Cerrar barra lateral"]',
-              '[data-testid="stSidebarCloseButton"] button',
-              'section[data-testid="stSidebar"] button[data-testid*="close"]',
-              'section[data-testid="stSidebar"] button[data-testid*="collapse"]',
-              '[data-testid="stSidebar"] [data-testid="stBaseButton-header"]'
-            ];
-            for (var si = 0; si < selectors.length; si++) {
-              var btn = doc.querySelector(selectors[si]);
-              if (btn) { btn.click(); _fgHoverOpened = false; return; }
-            }
-          }
+          function fgExpandSidebar()  { if (fgToggleSidebar(true))  _fgHoverOpened = true;  }
+          function fgCollapseSidebar() { if (fgToggleSidebar(false)) _fgHoverOpened = false; }
 
           var hoverTimer = null;
           var closeTimer = null;
