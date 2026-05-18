@@ -19,28 +19,19 @@ st.set_page_config(
 )
 
 # ── CSS global: ocultar barras de scroll de página ──────────────────────────
-# Streamlit genera dos scrollbars (html/body + section.main).
-# Los ocultamos visualmente; el scroll sigue funcionando con rueda,
-# teclado y táctil. El botón ↑ permite volver arriba.
+# Enfoque nuclear: ocultar scrollbars en TODOS los elementos.
+# El scroll sigue funcionando (rueda, teclado, táctil).
+# El botón ↑ (components.html) también inyecta este CSS por JS como refuerzo.
 st.markdown(
     """
     <style>
-    /* Ocultar scrollbars de nivel de página (no los de tablas internas) */
-    html::-webkit-scrollbar,
-    body::-webkit-scrollbar,
-    section[data-testid="stMain"]::-webkit-scrollbar,
-    .stMain::-webkit-scrollbar,
-    section.main::-webkit-scrollbar,
-    div[data-testid="stAppViewContainer"]::-webkit-scrollbar {
+    /* Nuclear: todos los elementos sin scrollbar visible */
+    *::-webkit-scrollbar {
         display: none !important;
         width: 0 !important;
+        height: 0 !important;
     }
-    html,
-    body,
-    section[data-testid="stMain"],
-    .stMain,
-    section.main,
-    div[data-testid="stAppViewContainer"] {
+    * {
         scrollbar-width: none !important;
         -ms-overflow-style: none !important;
     }
@@ -62,32 +53,16 @@ _st_components.html(
         var win = window.parent;
         var doc = win.document;
 
-        /* ── Inyectar CSS oculta-scrollbars en el <head> del padre ── */
+        /* ── Inyectar CSS nuclear oculta-scrollbars en el <head> del padre ── */
         var styleId = 'fg-no-scrollbar-style';
-        if (!doc.getElementById(styleId)) {
-          var style = doc.createElement('style');
-          style.id = styleId;
-          style.textContent = [
-            'html::-webkit-scrollbar,',
-            'body::-webkit-scrollbar,',
-            'section[data-testid="stMain"]::-webkit-scrollbar,',
-            '.stMain::-webkit-scrollbar,',
-            'section.main::-webkit-scrollbar,',
-            'div[data-testid="stAppViewContainer"]::-webkit-scrollbar,',
-            'div[data-testid="stBottom"]::-webkit-scrollbar {',
-            '  display:none !important; width:0 !important; height:0 !important;',
-            '}',
-            'html, body,',
-            'section[data-testid="stMain"],',
-            '.stMain, section.main,',
-            'div[data-testid="stAppViewContainer"],',
-            'div[data-testid="stBottom"] {',
-            '  scrollbar-width: none !important;',
-            '  -ms-overflow-style: none !important;',
-            '}'
-          ].join('\n');
-          doc.head.appendChild(style);
-        }
+        var existing = doc.getElementById(styleId);
+        if (existing) existing.remove();
+        var style = doc.createElement('style');
+        style.id = styleId;
+        style.textContent =
+          '*::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }\n' +
+          '* { scrollbar-width:none !important; -ms-overflow-style:none !important; }';
+        doc.head.appendChild(style);
 
         /* Eliminar instancia previa (re-renders de Streamlit) */
         var old = doc.getElementById('fg-scroll-fab');
