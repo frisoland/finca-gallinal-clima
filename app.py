@@ -18,53 +18,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── Contenedor de cada pestaña: altura adaptativa al viewport ─────────────
-# Se usa un valor de píxeles como fallback para Streamlit,
-# pero el CSS de abajo lo sobreescribe con calc(100svh - 130px):
-#   · svh = "small viewport height" → altura mínima disponible en móvil
-#     (con la barra de dirección del navegador completamente visible).
-#   · Resta 130 px para la barra de Streamlit + fila de pestañas.
-# Resultado: el contenedor NUNCA supera la pantalla disponible → sin scroll exterior.
-_TAB_HEIGHT = 800   # fallback en px (svh lo sobreescribe via CSS)
-
-st.markdown(
-    """
-    <style>
-    /* ── Contenedores de pestañas: altura adaptativa al viewport ────────────
-       Escritorio : dvh - 160 px
-       Móvil      : svh/dvh - 300 px  (margen extra para barra nav Android/iOS)
-       El offset grande en móvil garantiza que el contenedor nunca supere
-       la pantalla visible aunque svh caiga back a vh.
-    ─────────────────────────────────────────────────────────────────────── */
-
-    /* — Escritorio y tablets — */
-    [data-baseweb="tab-panel"] [data-testid="stVerticalBlockBorderWrapper"] {
-        height: calc(100vh  - 160px) !important;
-        height: calc(100dvh - 160px) !important;
-    }
-
-    /* — Móvil (≤ 768 px) — */
-    @media (max-width: 768px) {
-        [data-baseweb="tab-panel"] [data-testid="stVerticalBlockBorderWrapper"] {
-            height: calc(100vh  - 310px) !important;
-            height: calc(100svh - 300px) !important;
-            height: calc(100dvh - 300px) !important;
-        }
-
-        /* Ocultar barra de scroll en móvil (el scroll táctil sigue funcionando) */
-        [data-baseweb="tab-panel"] [data-testid="stVerticalBlockBorderWrapper"] {
-            scrollbar-width: none !important;        /* Firefox */
-            -ms-overflow-style: none !important;     /* IE / Edge */
-        }
-        [data-baseweb="tab-panel"] [data-testid="stVerticalBlockBorderWrapper"]::-webkit-scrollbar {
-            display: none !important;                /* Chrome / Safari / Android */
-        }
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ── Botón flotante "volver arriba" ──────────────────────────────────────────
 # Estrategia: el script dentro del iframe inyecta el botón DIRECTAMENTE
@@ -12663,65 +12616,49 @@ tabs = st.tabs([
 ])
 
 with tabs[0]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        instructions_tab()
+    instructions_tab()
 
 with tabs[1]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        dashboard_tab(history, soil_type, hoja_threshold)
+    dashboard_tab(history, soil_type, hoja_threshold)
 
 with tabs[2]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        import_panel()
+    import_panel()
 
 with tabs[3]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        analysis_tab(history, soil_type, hoja_threshold)
+    analysis_tab(history, soil_type, hoja_threshold)
 
 with tabs[4]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        phenology_tab(history, soil_type, hoja_threshold)
+    phenology_tab(history, soil_type, hoja_threshold)
 
 with tabs[5]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        cold_tab(history)
+    cold_tab(history)
 
 with tabs[6]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        comparator_tab(history, soil_type, hoja_threshold)
+    comparator_tab(history, soil_type, hoja_threshold)
 
 with tabs[7]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        health_tab(history, soil_type, hoja_threshold)
+    health_tab(history, soil_type, hoja_threshold)
 
 with tabs[8]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        render_decisiones_panel()
+    render_decisiones_panel()
 
 with tabs[9]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        carpocapsa_tab(history)
+    carpocapsa_tab(history)
 
 with tabs[10]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        irrigation_tab(history, soil_type, hoja_threshold)
+    irrigation_tab(history, soil_type, hoja_threshold)
 
 with tabs[11]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        fields_tab()
+    fields_tab()
 
 with tabs[12]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        activities_tab()
+    activities_tab()
 
 with tabs[13]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        produccion_tab(history)
+    produccion_tab(history)
 
 with tabs[14]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        weekly_report_tab(history, soil_type, hoja_threshold)
+    weekly_report_tab(history, soil_type, hoja_threshold)
 
 with tabs[15]:
-    with st.container(height=_TAB_HEIGHT, border=False):
-        settings_tab()
+    settings_tab()
