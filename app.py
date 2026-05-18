@@ -18,19 +18,34 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── CSS global: ocultar barras de scroll de página ──────────────────────────
-# Enfoque nuclear: ocultar scrollbars en TODOS los elementos.
-# El scroll sigue funcionando (rueda, teclado, táctil).
-# El botón ↑ (components.html) también inyecta este CSS por JS como refuerzo.
+# ── CSS global: un solo scroll (stMain), sin barras visibles ─────────────────
+# Problema: Streamlit crea DOS contenedores con scroll activo:
+#   1. html/body  → scrollbar exterior (la que sobra)
+#   2. stMain     → scrollbar interior (la que usamos)
+# Solución: overflow:hidden en html/body elimina el scrollbar exterior.
+# Luego ocultamos visualmente el de stMain. El scroll rueda/teclado/táctil
+# sigue funcionando porque stMain sigue siendo el contenedor scrollable.
 st.markdown(
     """
     <style>
-    /* Nuclear: todos los elementos sin scrollbar visible */
+    /* 1. Eliminar scroll exterior: html y body no deben desplazarse */
+    html, body {
+        overflow: hidden !important;
+        height: 100% !important;
+    }
+    /* 2. stMain es el único contenedor de scroll */
+    section[data-testid="stMain"] {
+        overflow-y: auto !important;
+        height: 100vh !important;
+    }
+    /* 3. Ocultar visualmente la barra de stMain (webkit + estándar) */
+    section[data-testid="stMain"]::-webkit-scrollbar,
     *::-webkit-scrollbar {
         display: none !important;
         width: 0 !important;
         height: 0 !important;
     }
+    section[data-testid="stMain"],
     * {
         scrollbar-width: none !important;
         -ms-overflow-style: none !important;
@@ -53,15 +68,25 @@ _st_components.html(
         var win = window.parent;
         var doc = win.document;
 
-        /* ── Inyectar CSS nuclear oculta-scrollbars en el <head> del padre ── */
+        /* ── Inyectar CSS en <head> del padre: un solo scroll, sin barras ── */
+        /* Se re-inyecta en cada render para no quedar desincronizado con el CSS de Streamlit */
         var styleId = 'fg-no-scrollbar-style';
         var existing = doc.getElementById(styleId);
         if (existing) existing.remove();
         var style = doc.createElement('style');
         style.id = styleId;
-        style.textContent =
-          '*::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }\n' +
-          '* { scrollbar-width:none !important; -ms-overflow-style:none !important; }';
+        style.textContent = [
+          /* Eliminar scroll exterior */
+          'html, body { overflow:hidden !important; height:100% !important; }',
+          /* stMain: único contenedor scrollable */
+          'section[data-testid="stMain"] { overflow-y:auto !important; height:100vh !important; }',
+          /* Ocultar barra webkit */
+          'section[data-testid="stMain"]::-webkit-scrollbar, *::-webkit-scrollbar {',
+          '  display:none !important; width:0 !important; height:0 !important; }',
+          /* Ocultar barra estándar (Firefox / Edge) */
+          'section[data-testid="stMain"], * {',
+          '  scrollbar-width:none !important; -ms-overflow-style:none !important; }'
+        ].join('\n');
         doc.head.appendChild(style);
 
         /* Eliminar instancia previa (re-renders de Streamlit) */
