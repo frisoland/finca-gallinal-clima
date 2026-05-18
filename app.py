@@ -18,42 +18,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── CSS global: un solo scroll (stMain), sin barras visibles ─────────────────
-# Problema: Streamlit crea DOS contenedores con scroll activo:
-#   1. html/body  → scrollbar exterior (la que sobra)
-#   2. stMain     → scrollbar interior (la que usamos)
-# Solución: overflow:hidden en html/body elimina el scrollbar exterior.
-# Luego ocultamos visualmente el de stMain. El scroll rueda/teclado/táctil
-# sigue funcionando porque stMain sigue siendo el contenedor scrollable.
-st.markdown(
-    """
-    <style>
-    /* 1. Eliminar scroll exterior: html y body no deben desplazarse */
-    html, body {
-        overflow: hidden !important;
-        height: 100% !important;
-    }
-    /* 2. stMain es el único contenedor de scroll */
-    section[data-testid="stMain"] {
-        overflow-y: auto !important;
-        height: 100vh !important;
-    }
-    /* 3. Ocultar visualmente la barra de stMain (webkit + estándar) */
-    section[data-testid="stMain"]::-webkit-scrollbar,
-    *::-webkit-scrollbar {
-        display: none !important;
-        width: 0 !important;
-        height: 0 !important;
-    }
-    section[data-testid="stMain"],
-    * {
-        scrollbar-width: none !important;
-        -ms-overflow-style: none !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ── Botón flotante "volver arriba" ──────────────────────────────────────────
 # Estrategia: el script dentro del iframe inyecta el botón DIRECTAMENTE
@@ -67,32 +31,6 @@ _st_components.html(
       try {
         var win = window.parent;
         var doc = win.document;
-
-        /* ── Inyectar CSS en <body> del padre (no en <head>: React lo limpia) ── */
-        var styleId = 'fg-no-scrollbar-style';
-        var existing = doc.getElementById(styleId);
-        if (existing) existing.remove();
-        var style = doc.createElement('style');
-        style.id = styleId;
-        style.textContent = [
-          /* Eliminar scroll exterior */
-          'html, body { overflow:hidden !important; height:100% !important; }',
-          /* stMain: único contenedor scrollable */
-          'section[data-testid="stMain"] { overflow-y:auto !important; height:100vh !important; }',
-          /* Ocultar barra webkit */
-          'section[data-testid="stMain"]::-webkit-scrollbar, *::-webkit-scrollbar {',
-          '  display:none !important; width:0 !important; height:0 !important; }',
-          /* Ocultar barra estándar (Firefox / Edge) */
-          'section[data-testid="stMain"], * {',
-          '  scrollbar-width:none !important; -ms-overflow-style:none !important; }'
-        ].join('\n');
-        /* Insertar ANTES de <div id="root"> para que React no lo toque */
-        var root = doc.getElementById('root');
-        if (root) {
-          doc.body.insertBefore(style, root);
-        } else {
-          doc.body.appendChild(style);
-        }
 
         /* Eliminar instancia previa (re-renders de Streamlit) */
         var old = doc.getElementById('fg-scroll-fab');
