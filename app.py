@@ -104,42 +104,69 @@ _st_components.html(
 
         doc.body.appendChild(fab);
 
-        /* ── Auto-expand sidebar al acercar el ratón al borde izquierdo ── */
+        /* ── Auto-expand/collapse sidebar al acercar/alejar el ratón ── */
         if (!doc._fgSidebarHoverReady) {
           doc._fgSidebarHoverReady = true;
 
+          var _fgHoverOpened = false;
+
           function fgExpandSidebar() {
-            /* Busca el botón de abrir sidebar con múltiples selectores */
+            /* Solo selectores específicos del botón de abrir sidebar */
             var selectors = [
               '[data-testid="stSidebarCollapsedControl"] button',
               '[data-testid="collapsedControl"] button',
               'button[aria-label="Open sidebar"]',
               'button[aria-label="Abrir barra lateral"]',
               'button[title="Open sidebar"]',
-              '[class*="collapsedControl"] button',
-              /* Fallback: cualquier botón visible en el borde izquierdo */
-              'section[data-testid="stSidebar"] ~ div button',
-              'div[data-testid="stSidebarCollapsedControl"] button'
+              '[class*="collapsedControl"] button'
             ];
             for (var si = 0; si < selectors.length; si++) {
               var btn = doc.querySelector(selectors[si]);
-              if (btn) {
-                btn.click();
-                btn.dispatchEvent(new MouseEvent('click', {bubbles:true}));
-                return;
-              }
+              if (btn) { btn.click(); _fgHoverOpened = true; return; }
             }
           }
 
-          /* Desktop: zona amplia (60 px) para capturar el hover fácilmente */
+          function fgCollapseSidebar() {
+            /* Botón de cerrar sidebar (visible cuando está abierto) */
+            var selectors = [
+              'button[aria-label="Close sidebar"]',
+              'button[aria-label="Cerrar barra lateral"]',
+              '[data-testid="stSidebarCloseButton"] button',
+              'section[data-testid="stSidebar"] button[data-testid*="close"]',
+              'section[data-testid="stSidebar"] button[data-testid*="collapse"]',
+              '[data-testid="stSidebar"] [data-testid="stBaseButton-header"]'
+            ];
+            for (var si = 0; si < selectors.length; si++) {
+              var btn = doc.querySelector(selectors[si]);
+              if (btn) { btn.click(); _fgHoverOpened = false; return; }
+            }
+          }
+
           var hoverTimer = null;
+          var closeTimer = null;
+
           win.addEventListener('mousemove', function (e) {
-            if (e.clientX < 60) {
+            var x = e.clientX;
+
+            if (x < 60) {
+              /* Zona de apertura: borde izquierdo */
+              if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
               if (!hoverTimer) hoverTimer = setTimeout(function () {
                 fgExpandSidebar(); hoverTimer = null;
               }, 250);
-            } else if (e.clientX > 150) {
+            } else {
+              /* Fuera de la zona de apertura */
               if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+
+              /* Auto-cerrar solo si fue abierto por hover y el ratón salió del sidebar */
+              if (_fgHoverOpened && x > 280) {
+                if (!closeTimer) closeTimer = setTimeout(function () {
+                  fgCollapseSidebar(); closeTimer = null;
+                }, 1000);
+              } else if (x <= 280 && closeTimer) {
+                /* Ratón volvió al sidebar: cancelar cierre */
+                clearTimeout(closeTimer); closeTimer = null;
+              }
             }
           });
 
