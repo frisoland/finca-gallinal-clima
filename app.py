@@ -109,41 +109,51 @@ _st_components.html(
           doc._fgSidebarHoverReady = true;
 
           function fgExpandSidebar() {
-            /* Intenta varios selectores según versión de Streamlit */
+            /* Busca el botón de abrir sidebar con múltiples selectores */
             var selectors = [
               '[data-testid="stSidebarCollapsedControl"] button',
               '[data-testid="collapsedControl"] button',
-              'button[aria-label="Open sidebar"]'
+              'button[aria-label="Open sidebar"]',
+              'button[aria-label="Abrir barra lateral"]',
+              'button[title="Open sidebar"]',
+              '[class*="collapsedControl"] button',
+              /* Fallback: cualquier botón visible en el borde izquierdo */
+              'section[data-testid="stSidebar"] ~ div button',
+              'div[data-testid="stSidebarCollapsedControl"] button'
             ];
             for (var si = 0; si < selectors.length; si++) {
               var btn = doc.querySelector(selectors[si]);
-              if (btn) { btn.click(); return; }
+              if (btn) {
+                btn.click();
+                btn.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+                return;
+              }
             }
           }
 
-          /* Desktop: ratón a menos de 30 px del borde izquierdo → expandir tras 350 ms */
+          /* Desktop: zona amplia (60 px) para capturar el hover fácilmente */
           var hoverTimer = null;
-          doc.addEventListener('mousemove', function (e) {
-            if (e.clientX < 30) {
+          win.addEventListener('mousemove', function (e) {
+            if (e.clientX < 60) {
               if (!hoverTimer) hoverTimer = setTimeout(function () {
                 fgExpandSidebar(); hoverTimer = null;
-              }, 350);
-            } else if (e.clientX > 120) {
+              }, 250);
+            } else if (e.clientX > 150) {
               if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
             }
           });
 
-          /* Móvil: swipe desde el borde izquierdo (< 20 px) hacia la derecha */
+          /* Móvil: swipe desde el borde izquierdo hacia la derecha */
           var touchX0 = null;
-          doc.addEventListener('touchstart', function (e) {
-            touchX0 = e.touches[0].clientX < 20 ? e.touches[0].clientX : null;
+          win.addEventListener('touchstart', function (e) {
+            touchX0 = e.touches[0].clientX < 30 ? e.touches[0].clientX : null;
           }, { passive: true });
-          doc.addEventListener('touchmove', function (e) {
-            if (touchX0 !== null && e.touches[0].clientX - touchX0 > 40) {
+          win.addEventListener('touchmove', function (e) {
+            if (touchX0 !== null && e.touches[0].clientX - touchX0 > 30) {
               fgExpandSidebar(); touchX0 = null;
             }
           }, { passive: true });
-          doc.addEventListener('touchend', function () { touchX0 = null; }, { passive: true });
+          win.addEventListener('touchend', function () { touchX0 = null; }, { passive: true });
         }
 
       } catch (e) {
