@@ -110,9 +110,10 @@ _st_components.html(
 
           var _fgHoverOpened = false;
 
-          /* Encuentra el botón del sidebar por posición en pantalla.
-             open=true  → busca el botón de ABRIR (esquina sup-izq, fuera del sidebar)
-             open=false → busca el botón de CERRAR (dentro del sidebar, esquina sup-izq) */
+          /* Toggle sidebar por posición en pantalla.
+             Abrir: botón fuera del sidebar (x < 100, y < 120).
+             Cerrar: botón dentro del sidebar (x 50-300, y < 100).
+             _fgHoverOpened se guarda en doc para persistir entre rerenders. */
           function fgToggleSidebar(open) {
             var halfW = win.innerWidth / 2;
 
@@ -125,29 +126,27 @@ _st_components.html(
                  '[class*="collapsedControl"] button']
               : ['button[aria-label="Close sidebar"]',
                  'button[aria-label="Cerrar barra lateral"]',
-                 '[data-testid="stSidebarCloseButton"] button',
-                 '[data-testid="stSidebar"] [data-testid="stBaseButton-header"]'];
+                 '[data-testid="stSidebar"] [data-testid="stBaseButton-header"]',
+                 '[data-testid="stSidebarCloseButton"] button'];
             for (var si = 0; si < semantic.length; si++) {
               var b = doc.querySelector(semantic[si]);
               if (b) { b.click(); return true; }
             }
 
-            /* Intento 2: buscar por posición — el toggle siempre está en la
-               esquina superior izquierda de la pantalla (x < 100, y < 120)
-               y NO en la mitad derecha (evita el botón Share) */
+            /* Intento 2: posición — parámetros distintos para abrir vs cerrar */
             var allBtns = doc.querySelectorAll('button');
             for (var bi = 0; bi < allBtns.length; bi++) {
               var r = allBtns[bi].getBoundingClientRect();
-              if (r.left < 100 && r.top < 120 && r.right < halfW) {
-                allBtns[bi].click();
-                return true;
-              }
+              var match = open
+                ? (r.left < 100 && r.top < 120 && r.right < halfW)          /* Abrir: muy izq */
+                : (r.left >= 50 && r.right < 310 && r.top < 100 && r.right < halfW); /* Cerrar: dentro sidebar */
+              if (match) { allBtns[bi].click(); return true; }
             }
             return false;
           }
 
-          function fgExpandSidebar()  { if (fgToggleSidebar(true))  _fgHoverOpened = true;  }
-          function fgCollapseSidebar() { if (fgToggleSidebar(false)) _fgHoverOpened = false; }
+          function fgExpandSidebar()  { if (fgToggleSidebar(true))  doc._fgHoverOpened = true;  }
+          function fgCollapseSidebar() { if (fgToggleSidebar(false)) doc._fgHoverOpened = false; }
 
           var hoverTimer = null;
           var closeTimer = null;
@@ -162,20 +161,39 @@ _st_components.html(
                 fgExpandSidebar(); hoverTimer = null;
               }, 250);
             } else {
-              /* Fuera de la zona de apertura */
               if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
 
-              /* Auto-cerrar solo si fue abierto por hover y el ratón salió del sidebar */
-              if (_fgHoverOpened && x > 280) {
+              /* Auto-cerrar si fue abierto por hover y ratón salió del área del sidebar */
+              if (doc._fgHoverOpened && x > 290) {
                 if (!closeTimer) closeTimer = setTimeout(function () {
                   fgCollapseSidebar(); closeTimer = null;
-                }, 1000);
-              } else if (x <= 280 && closeTimer) {
-                /* Ratón volvió al sidebar: cancelar cierre */
+                }, 900);
+              } else if (x <= 290 && closeTimer) {
                 clearTimeout(closeTimer); closeTimer = null;
               }
             }
           });
+
+          /* Cerrar sidebar al hacer clic en un botón de navegación */
+          if (!doc._fgNavClickReady) {
+            doc._fgNavClickReady = true;
+            doc.addEventListener('click', function (e) {
+              var sidebar = doc.querySelector('section[data-testid="stSidebar"]');
+              if (!sidebar) return;
+              var t = e.target;
+              while (t && t !== doc.body) {
+                if (t.tagName === 'BUTTON' && sidebar.contains(t)) {
+                  var rect = t.getBoundingClientRect();
+                  /* Solo botones de navegación (y > 100 px), no el botón de colapsar */
+                  if (rect.top > 100) {
+                    setTimeout(function () { fgCollapseSidebar(); }, 700);
+                  }
+                  break;
+                }
+                t = t.parentElement;
+              }
+            });
+          }
 
           /* Móvil: swipe desde el borde izquierdo hacia la derecha */
           var touchX0 = null;
