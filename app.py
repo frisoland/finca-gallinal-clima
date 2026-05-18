@@ -7,6 +7,7 @@ from datetime import timedelta, date
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as _st_components
 import requests
 import copy
 
@@ -15,6 +16,124 @@ st.set_page_config(
     page_title="Finca Gallinal · Plataforma agroclimática",
     page_icon="🌿",
     layout="wide",
+)
+
+# ── Contenedor de cada pestaña: altura adaptativa al viewport ─────────────
+# Se usa un valor de píxeles como fallback para Streamlit,
+# pero el CSS de abajo lo sobreescribe con calc(100svh - 130px):
+#   · svh = "small viewport height" → altura mínima disponible en móvil
+#     (con la barra de dirección del navegador completamente visible).
+#   · Resta 130 px para la barra de Streamlit + fila de pestañas.
+# Resultado: el contenedor NUNCA supera la pantalla disponible → sin scroll exterior.
+_TAB_HEIGHT = 800   # fallback en px (svh lo sobreescribe via CSS)
+
+st.markdown(
+    """
+    <style>
+    /* ── Contenedores de pestañas: altura adaptativa al viewport ────────────
+       Escritorio : dvh - 160 px
+       Móvil      : svh/dvh - 300 px  (margen extra para barra nav Android/iOS)
+       El offset grande en móvil garantiza que el contenedor nunca supere
+       la pantalla visible aunque svh caiga back a vh.
+    ─────────────────────────────────────────────────────────────────────── */
+
+    /* — Escritorio y tablets — */
+    [data-baseweb="tab-panel"] [data-testid="stVerticalBlockBorderWrapper"] {
+        height: calc(100vh  - 160px) !important;
+        height: calc(100dvh - 160px) !important;
+    }
+
+    /* — Móvil (≤ 768 px) — */
+    @media (max-width: 768px) {
+        [data-baseweb="tab-panel"] [data-testid="stVerticalBlockBorderWrapper"] {
+            height: calc(100vh  - 310px) !important;
+            height: calc(100svh - 300px) !important;
+            height: calc(100dvh - 300px) !important;
+        }
+
+        /* Ocultar barra de scroll en móvil (el scroll táctil sigue funcionando) */
+        [data-baseweb="tab-panel"] [data-testid="stVerticalBlockBorderWrapper"] {
+            scrollbar-width: none !important;        /* Firefox */
+            -ms-overflow-style: none !important;     /* IE / Edge */
+        }
+        [data-baseweb="tab-panel"] [data-testid="stVerticalBlockBorderWrapper"]::-webkit-scrollbar {
+            display: none !important;                /* Chrome / Safari / Android */
+        }
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ── Botón flotante "volver arriba" ──────────────────────────────────────────
+# Estrategia: el script dentro del iframe inyecta el botón DIRECTAMENTE
+# en document.body del padre (window.parent.document.body.appendChild).
+# Así position:fixed es relativo al viewport real, no al iframe,
+# y el onclick corre en el contexto de la ventana padre.
+_st_components.html(
+    """
+    <script>
+    (function () {
+      try {
+        var win = window.parent;
+        var doc = win.document;
+
+        /* Eliminar instancia previa (re-renders de Streamlit) */
+        var old = doc.getElementById('fg-scroll-fab');
+        if (old) old.remove();
+
+        /* Crear el botón en el DOM padre */
+        var fab = doc.createElement('div');
+        fab.id = 'fg-scroll-fab';
+        fab.textContent = '↑';
+        fab.title = 'Volver arriba · ver pestañas';
+
+        var isSmall = win.innerWidth <= 768;
+        fab.style.cssText =
+          'position:fixed;' +
+          'bottom:' + (isSmall ? '72' : '28') + 'px;' +
+          'right:18px;' +
+          'width:46px;height:46px;border-radius:50%;' +
+          'background:#1b6b35;color:#fff;' +
+          'font-size:22px;font-weight:bold;' +
+          'box-shadow:0 4px 14px rgba(0,0,0,.42);' +
+          'border:2px solid rgba(255,255,255,.28);' +
+          'cursor:pointer;' +
+          'display:flex;align-items:center;justify-content:center;' +
+          'z-index:9999;user-select:none;';
+
+        /* Click: scroll al inicio en todos los contenedores posibles */
+        fab.addEventListener('click', function () {
+          win.scrollTo({ top: 0, behavior: 'smooth' });
+          doc.documentElement.scrollTop = 0;
+          doc.body.scrollTop = 0;
+          ['section.main','[data-testid="stMain"]','.stMain'].forEach(function (s) {
+            var el = doc.querySelector(s);
+            if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
+          });
+        });
+
+        /* Reajustar posición al redimensionar */
+        win.addEventListener('resize', function () {
+          fab.style.bottom = win.innerWidth <= 768 ? '72px' : '28px';
+        });
+
+        /* Active feedback */
+        fab.addEventListener('mousedown',  function () { fab.style.transform = 'scale(.92)'; });
+        fab.addEventListener('touchstart', function () { fab.style.transform = 'scale(.92)'; });
+        fab.addEventListener('mouseup',    function () { fab.style.transform = ''; });
+        fab.addEventListener('touchend',   function () { fab.style.transform = ''; });
+
+        doc.body.appendChild(fab);
+
+      } catch (e) {
+        console.warn('fg-fab error:', e);
+      }
+    })();
+    </script>
+    """,
+    height=0,
 )
 
 COLUMN_MAP = {
@@ -12126,14 +12245,19 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     # Determinar biofix del año en curso
     biofix_date = None
     current_year = today.year
-    if biofix_df is not None and not biofix_df.empty:
-        bf = biofix_df.copy()
-        if "Año" in bf.columns:
-            bf = bf[bf["Año"].astype(str) == str(current_year)]
-        if "Fecha biofix" in bf.columns and not bf.empty:
-            bf_dates = pd.to_datetime(bf["Fecha biofix"], errors="coerce").dropna()
-            if not bf_dates.empty:
-                biofix_date = bf_dates.min()
+    if biofix_df is not None and not biofix_df.empty and "Fecha biofix" in biofix_df.columns:
+        bf_all_dates = pd.to_datetime(biofix_df["Fecha biofix"], errors="coerce").dropna()
+        if not bf_all_dates.empty:
+            # 1. Preferir fechas cuyo año coincide con el año actual
+            bf_current = bf_all_dates[bf_all_dates.dt.year == current_year]
+            if not bf_current.empty:
+                biofix_date = bf_current.min()
+            else:
+                # 2. Sin biofix del año actual → proyectar la fecha más reciente al año en curso
+                last_bf = bf_all_dates.max()
+                candidate = last_bf.replace(year=current_year)
+                # Usar sólo si ya ha pasado; si es futura (raro), usar año anterior
+                biofix_date = candidate if candidate <= pd.Timestamp(today) else last_bf.replace(year=current_year - 1)
 
     # Construir DD desde biofix usando todo el histórico si está disponible
     # (así DD acumulado es correcto aunque sólo mostremos la ventana reciente)
@@ -12286,16 +12410,28 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     # Línea de hoy
     fig.add_vline(x=today, line_color="rgba(255,140,0,0.9)", line_width=2)
 
-    # Biofix marker (línea + anotación separadas para evitar conflicto con yaxis2)
+    # Biofix marker — sólo si cae dentro de la ventana visible
+    # (si está fuera, add_vline forzaría el eje X a extenderse hasta esa fecha)
     if biofix_date is not None:
-        fig.add_vline(x=biofix_date, line_color="rgba(0,160,0,0.8)", line_width=2, line_dash="dash")
-        fig.add_annotation(
-            x=biofix_date, y=1, yref="paper",
-            text=f"Biofix {biofix_date.strftime('%d/%m')}",
-            showarrow=False, xanchor="left",
-            font=dict(color="green", size=11),
-            bgcolor="rgba(255,255,255,0.7)",
-        )
+        if biofix_date >= display_start:
+            fig.add_vline(x=biofix_date, line_color="rgba(0,160,0,0.8)", line_width=2, line_dash="dash")
+            fig.add_annotation(
+                x=biofix_date, y=1, yref="paper",
+                text=f"Biofix {biofix_date.strftime('%d/%m')}",
+                showarrow=False, xanchor="left",
+                font=dict(color="green", size=11),
+                bgcolor="rgba(255,255,255,0.7)",
+            )
+        else:
+            # Biofix fuera de la ventana: mostrar DD totales en subtítulo
+            total_dd = dd_acum[-1] if dd_acum else 0
+            fig.add_annotation(
+                x=0, y=1.06, xref="paper", yref="paper",
+                text=f"Biofix: {biofix_date.strftime('%d/%m/%Y')} · DD acumulados desde biofix: {total_dd:.0f}",
+                showarrow=False, xanchor="left",
+                font=dict(color="green", size=11),
+                bgcolor="rgba(255,255,255,0.75)",
+            )
 
     # Tratamientos carpocapsa
     if treats_carpo_df is not None and not treats_carpo_df.empty and "Fecha_dt" in treats_carpo_df.columns:
@@ -12310,9 +12446,17 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                                      name="Tratamiento carpo.",
                                      line=dict(color="rgba(150,0,200,0.7)", width=1.5, dash="dash")))
 
+    # Calcular límites explícitos del eje X para que Plotly no los amplíe
+    # aunque algún add_vline/add_annotation caiga fuera de los datos
+    if not plot_df_display.empty:
+        _x_end = plot_df_display["Fecha"].max() + pd.Timedelta(hours=12)
+    else:
+        _x_end = today + pd.Timedelta(days=7)
+    _x_start = display_start - pd.Timedelta(hours=12)
+
     fig.update_layout(
         height=height,
-        margin=dict(l=0, r=110, t=10, b=30),
+        margin=dict(l=0, r=110, t=30, b=30),
         barmode="overlay",
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=11),
@@ -12320,7 +12464,11 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
         yaxis2=dict(title="DD/día", overlaying="y", side="right",
                     range=[0, max(max(dd_dia)*5, 15) if dd_dia else 15],
                     showgrid=False, tickfont_color="rgba(255,100,50,0.8)"),
-        xaxis=dict(tickformat="%d/%m", gridcolor="rgba(200,200,200,0.2)"),
+        xaxis=dict(
+            tickformat="%d/%m",
+            gridcolor="rgba(200,200,200,0.2)",
+            range=[_x_start, _x_end],   # ← fija el rango; evita expansión por biofix lejano
+        ),
         plot_bgcolor="rgba(250,250,255,1)",
         paper_bgcolor="rgba(0,0,0,0)",
         bargap=0.1,
@@ -12515,49 +12663,65 @@ tabs = st.tabs([
 ])
 
 with tabs[0]:
-    instructions_tab()
+    with st.container(height=_TAB_HEIGHT, border=False):
+        instructions_tab()
 
 with tabs[1]:
-    dashboard_tab(history, soil_type, hoja_threshold)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        dashboard_tab(history, soil_type, hoja_threshold)
 
 with tabs[2]:
-    import_panel()
+    with st.container(height=_TAB_HEIGHT, border=False):
+        import_panel()
 
 with tabs[3]:
-    analysis_tab(history, soil_type, hoja_threshold)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        analysis_tab(history, soil_type, hoja_threshold)
 
 with tabs[4]:
-    phenology_tab(history, soil_type, hoja_threshold)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        phenology_tab(history, soil_type, hoja_threshold)
 
 with tabs[5]:
-    cold_tab(history)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        cold_tab(history)
 
 with tabs[6]:
-    comparator_tab(history, soil_type, hoja_threshold)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        comparator_tab(history, soil_type, hoja_threshold)
 
 with tabs[7]:
-    health_tab(history, soil_type, hoja_threshold)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        health_tab(history, soil_type, hoja_threshold)
 
 with tabs[8]:
-    render_decisiones_panel()
+    with st.container(height=_TAB_HEIGHT, border=False):
+        render_decisiones_panel()
 
 with tabs[9]:
-    carpocapsa_tab(history)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        carpocapsa_tab(history)
 
 with tabs[10]:
-    irrigation_tab(history, soil_type, hoja_threshold)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        irrigation_tab(history, soil_type, hoja_threshold)
 
 with tabs[11]:
-    fields_tab()
+    with st.container(height=_TAB_HEIGHT, border=False):
+        fields_tab()
 
 with tabs[12]:
-    activities_tab()
+    with st.container(height=_TAB_HEIGHT, border=False):
+        activities_tab()
 
 with tabs[13]:
-    produccion_tab(history)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        produccion_tab(history)
 
 with tabs[14]:
-    weekly_report_tab(history, soil_type, hoja_threshold)
+    with st.container(height=_TAB_HEIGHT, border=False):
+        weekly_report_tab(history, soil_type, hoja_threshold)
 
 with tabs[15]:
-    settings_tab()
+    with st.container(height=_TAB_HEIGHT, border=False):
+        settings_tab()
