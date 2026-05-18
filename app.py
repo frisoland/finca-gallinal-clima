@@ -62,6 +62,33 @@ _st_components.html(
         var win = window.parent;
         var doc = win.document;
 
+        /* ── Inyectar CSS oculta-scrollbars en el <head> del padre ── */
+        var styleId = 'fg-no-scrollbar-style';
+        if (!doc.getElementById(styleId)) {
+          var style = doc.createElement('style');
+          style.id = styleId;
+          style.textContent = [
+            'html::-webkit-scrollbar,',
+            'body::-webkit-scrollbar,',
+            'section[data-testid="stMain"]::-webkit-scrollbar,',
+            '.stMain::-webkit-scrollbar,',
+            'section.main::-webkit-scrollbar,',
+            'div[data-testid="stAppViewContainer"]::-webkit-scrollbar,',
+            'div[data-testid="stBottom"]::-webkit-scrollbar {',
+            '  display:none !important; width:0 !important; height:0 !important;',
+            '}',
+            'html, body,',
+            'section[data-testid="stMain"],',
+            '.stMain, section.main,',
+            'div[data-testid="stAppViewContainer"],',
+            'div[data-testid="stBottom"] {',
+            '  scrollbar-width: none !important;',
+            '  -ms-overflow-style: none !important;',
+            '}'
+          ].join('\n');
+          doc.head.appendChild(style);
+        }
+
         /* Eliminar instancia previa (re-renders de Streamlit) */
         var old = doc.getElementById('fg-scroll-fab');
         if (old) old.remove();
