@@ -68,8 +68,7 @@ _st_components.html(
         var win = window.parent;
         var doc = win.document;
 
-        /* ── Inyectar CSS en <head> del padre: un solo scroll, sin barras ── */
-        /* Se re-inyecta en cada render para no quedar desincronizado con el CSS de Streamlit */
+        /* ── Inyectar CSS en <body> del padre (no en <head>: React lo limpia) ── */
         var styleId = 'fg-no-scrollbar-style';
         var existing = doc.getElementById(styleId);
         if (existing) existing.remove();
@@ -87,7 +86,13 @@ _st_components.html(
           'section[data-testid="stMain"], * {',
           '  scrollbar-width:none !important; -ms-overflow-style:none !important; }'
         ].join('\n');
-        doc.head.appendChild(style);
+        /* Insertar ANTES de <div id="root"> para que React no lo toque */
+        var root = doc.getElementById('root');
+        if (root) {
+          doc.body.insertBefore(style, root);
+        } else {
+          doc.body.appendChild(style);
+        }
 
         /* Eliminar instancia previa (re-renders de Streamlit) */
         var old = doc.getElementById('fg-scroll-fab');
