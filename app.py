@@ -104,6 +104,48 @@ _st_components.html(
 
         doc.body.appendChild(fab);
 
+        /* ── Auto-expand sidebar al acercar el ratón al borde izquierdo ── */
+        if (!doc._fgSidebarHoverReady) {
+          doc._fgSidebarHoverReady = true;
+
+          function fgExpandSidebar() {
+            /* Intenta varios selectores según versión de Streamlit */
+            var selectors = [
+              '[data-testid="stSidebarCollapsedControl"] button',
+              '[data-testid="collapsedControl"] button',
+              'button[aria-label="Open sidebar"]'
+            ];
+            for (var si = 0; si < selectors.length; si++) {
+              var btn = doc.querySelector(selectors[si]);
+              if (btn) { btn.click(); return; }
+            }
+          }
+
+          /* Desktop: ratón a menos de 30 px del borde izquierdo → expandir tras 350 ms */
+          var hoverTimer = null;
+          doc.addEventListener('mousemove', function (e) {
+            if (e.clientX < 30) {
+              if (!hoverTimer) hoverTimer = setTimeout(function () {
+                fgExpandSidebar(); hoverTimer = null;
+              }, 350);
+            } else if (e.clientX > 120) {
+              if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+            }
+          });
+
+          /* Móvil: swipe desde el borde izquierdo (< 20 px) hacia la derecha */
+          var touchX0 = null;
+          doc.addEventListener('touchstart', function (e) {
+            touchX0 = e.touches[0].clientX < 20 ? e.touches[0].clientX : null;
+          }, { passive: true });
+          doc.addEventListener('touchmove', function (e) {
+            if (touchX0 !== null && e.touches[0].clientX - touchX0 > 40) {
+              fgExpandSidebar(); touchX0 = null;
+            }
+          }, { passive: true });
+          doc.addEventListener('touchend', function () { touchX0 = null; }, { passive: true });
+        }
+
       } catch (e) {
         console.warn('fg-fab error:', e);
       }
@@ -12652,15 +12694,66 @@ section[data-testid="stSidebar"] .nav-group {
     color: #888;
     margin: 12px 0 2px 10px;
 }
+/* Página activa: fondo verde suave + borde izquierdo */
+.nav-active-item {
+    background: rgba(27,107,53,0.13) !important;
+    color: #1b6b35 !important;
+    font-weight: 600;
+    padding: 6px 10px 6px 8px;
+    border-radius: 6px;
+    border-left: 3px solid #1b6b35;
+    font-size: 0.9rem;
+    display: block;
+    margin: 1px 0;
+    cursor: default;
+    line-height: 1.5;
+}
+/* Breadcrumb encima del contenido */
+.page-breadcrumb {
+    color: #aaa;
+    font-size: 0.78rem;
+    margin: 0 0 6px 0;
+    letter-spacing: 0.02em;
+}
 </style>
 """, unsafe_allow_html=True)
 
+# Metadatos de cada página: (icono, grupo, nombre)
+_PAGE_META: dict = {
+    "dashboard":     ("📊", "Clima",   "Dashboard"),
+    "sencrop":       ("🌦️", "Clima",   "Sencrop"),
+    "analisis":      ("🔎", "Clima",   "Análisis"),
+    "comparador":    ("📈", "Clima",   "Comparador"),
+    "frio":          ("❄️", "Clima",   "Frío"),
+    "fenologia":     ("🌱", "Cultivo", "Fenología"),
+    "sanidad":       ("🍄", "Cultivo", "Sanidad"),
+    "decisiones":    ("🎯", "Cultivo", "Decisiones"),
+    "carpocapsa":    ("🐛", "Cultivo", "Carpocapsa"),
+    "riego":         ("💧", "Cultivo", "Riego"),
+    "campos":        ("🌳", "Gestión", "Campos"),
+    "agroptima":     ("🧾", "Gestión", "Agroptima"),
+    "produccion":    ("🍎", "Gestión", "Producción"),
+    "informe":       ("📝", "Gestión", "Informe semanal"),
+    "instrucciones": ("📘", "",        "Instrucciones"),
+    "configuracion": ("⚙️", "",        "Configuración"),
+}
+
 def _nav_btn(label: str, page_key: str) -> None:
-    """Botón de navegación. Añade ▶ al label si es la página activa."""
+    """Botón de navegación. Página activa → div resaltado; inactiva → botón normal."""
     current = st.session_state.get("nav_page", "dashboard")
-    prefix = "▶ " if current == page_key else "     "
-    if st.button(prefix + label, key=f"nav_{page_key}", use_container_width=True):
-        st.session_state.nav_page = page_key
+    if current == page_key:
+        st.markdown(f'<div class="nav-active-item">{label}</div>', unsafe_allow_html=True)
+    else:
+        if st.button(label, key=f"nav_{page_key}", use_container_width=True):
+            st.session_state.nav_page = page_key
+
+def _render_page_header(page_key: str) -> None:
+    """Muestra un breadcrumb sutil encima del contenido (p.ej. 'Clima  ›  📊 Dashboard')."""
+    meta = _PAGE_META.get(page_key)
+    if meta:
+        icon, group, name = meta
+        crumb = f"{group}  ›  {icon} {name}" if group else f"{icon} {name}"
+        st.markdown(f'<p class="page-breadcrumb">{crumb}</p>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("## 🌿 Finca Gallinal")
@@ -12693,6 +12786,7 @@ with st.sidebar:
 
 # ── Contenido principal según página seleccionada ─────────────────────────────
 _page = st.session_state.get("nav_page", "dashboard")
+_render_page_header(_page)
 
 if _page == "dashboard":
     dashboard_tab(history, soil_type, hoja_threshold)
