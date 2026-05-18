@@ -19,6 +19,30 @@ st.set_page_config(
 )
 
 
+# ── CSS: colapsar el wrapper del iframe a cero real ──────────────────────────
+# _st_components.html(height=0) crea un iframe con height=0, pero el div
+# wrapper de Streamlit añade márgen/padding que genera un segundo scrollbar.
+# Este st.markdown elimina ese espacio extra visual.
+st.markdown(
+    """
+    <style>
+    div[data-testid="stCustomComponentV1"] {
+        height: 0px !important;
+        min-height: 0px !important;
+        max-height: 0px !important;
+        overflow: hidden !important;
+        margin-top: 0px !important;
+        margin-bottom: 0px !important;
+        padding-top: 0px !important;
+        padding-bottom: 0px !important;
+        border: none !important;
+        line-height: 0 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ── Botón flotante "volver arriba" ──────────────────────────────────────────
 # Estrategia: el script dentro del iframe inyecta el botón DIRECTAMENTE
 # en document.body del padre (window.parent.document.body.appendChild).
