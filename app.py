@@ -12620,69 +12620,109 @@ Aparece en todos los gráficos como referencia. La lluvia genera hoja mojada (ri
         """)
 
 
-tabs = st.tabs([
-    "📘 Instrucciones",
-    "📊 Dashboard",
-    "🌦️ Sencrop",
-    "🔎 Análisis",
-    "🌱 Fenología",
-    "❄️ Frío",
-    "📈 Comparador",
-    "🍄 Sanidad",
-    "🎯 Decisiones",
-    "🐛 Carpocapsa",
-    "💧 Riego",
-    "🌳 Campos",
-    "🧾 Agroptima",
-    "🍎 Producción",
-    "📝 Informe semanal",
-    "⚙️ Configuración",
-])
+# ── Navegación lateral ────────────────────────────────────────────────────────
+if "nav_page" not in st.session_state:
+    st.session_state.nav_page = "dashboard"
 
-with tabs[0]:
-    instructions_tab()
+# CSS: estilo del sidebar
+st.markdown("""
+<style>
+/* Botones de navegación: alineados a la izquierda, sin borde */
+section[data-testid="stSidebar"] button {
+    text-align: left !important;
+    justify-content: flex-start !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 6px !important;
+    padding: 4px 10px !important;
+    font-size: 0.9rem !important;
+    color: inherit !important;
+    width: 100% !important;
+}
+section[data-testid="stSidebar"] button:hover {
+    background: rgba(27,107,53,0.10) !important;
+}
+/* Título del grupo */
+section[data-testid="stSidebar"] .nav-group {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #888;
+    margin: 12px 0 2px 10px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-with tabs[1]:
+def _nav_btn(label: str, page_key: str) -> None:
+    """Botón de navegación. Añade ▶ al label si es la página activa."""
+    current = st.session_state.get("nav_page", "dashboard")
+    prefix = "▶ " if current == page_key else "     "
+    if st.button(prefix + label, key=f"nav_{page_key}", use_container_width=True):
+        st.session_state.nav_page = page_key
+
+with st.sidebar:
+    st.markdown("## 🌿 Finca Gallinal")
+    st.caption("Plataforma agroclimática")
+    st.divider()
+
+    st.markdown('<p class="nav-group">🌤️ Clima</p>', unsafe_allow_html=True)
+    _nav_btn("📊 Dashboard",   "dashboard")
+    _nav_btn("🌦️ Sencrop",    "sencrop")
+    _nav_btn("🔎 Análisis",    "analisis")
+    _nav_btn("📈 Comparador",  "comparador")
+    _nav_btn("❄️ Frío",        "frio")
+
+    st.markdown('<p class="nav-group">🌿 Cultivo</p>', unsafe_allow_html=True)
+    _nav_btn("🌱 Fenología",   "fenologia")
+    _nav_btn("🍄 Sanidad",     "sanidad")
+    _nav_btn("🎯 Decisiones",  "decisiones")
+    _nav_btn("🐛 Carpocapsa",  "carpocapsa")
+    _nav_btn("💧 Riego",       "riego")
+
+    st.markdown('<p class="nav-group">📋 Gestión</p>', unsafe_allow_html=True)
+    _nav_btn("🌳 Campos",          "campos")
+    _nav_btn("🧾 Agroptima",        "agroptima")
+    _nav_btn("🍎 Producción",       "produccion")
+    _nav_btn("📝 Informe semanal",  "informe")
+
+    st.divider()
+    _nav_btn("📘 Instrucciones",  "instrucciones")
+    _nav_btn("⚙️ Configuración",  "configuracion")
+
+# ── Contenido principal según página seleccionada ─────────────────────────────
+_page = st.session_state.get("nav_page", "dashboard")
+
+if _page == "dashboard":
     dashboard_tab(history, soil_type, hoja_threshold)
-
-with tabs[2]:
+elif _page == "sencrop":
     import_panel()
-
-with tabs[3]:
+elif _page == "analisis":
     analysis_tab(history, soil_type, hoja_threshold)
-
-with tabs[4]:
-    phenology_tab(history, soil_type, hoja_threshold)
-
-with tabs[5]:
-    cold_tab(history)
-
-with tabs[6]:
+elif _page == "comparador":
     comparator_tab(history, soil_type, hoja_threshold)
-
-with tabs[7]:
+elif _page == "frio":
+    cold_tab(history)
+elif _page == "fenologia":
+    phenology_tab(history, soil_type, hoja_threshold)
+elif _page == "sanidad":
     health_tab(history, soil_type, hoja_threshold)
-
-with tabs[8]:
+elif _page == "decisiones":
     render_decisiones_panel()
-
-with tabs[9]:
+elif _page == "carpocapsa":
     carpocapsa_tab(history)
-
-with tabs[10]:
+elif _page == "riego":
     irrigation_tab(history, soil_type, hoja_threshold)
-
-with tabs[11]:
+elif _page == "campos":
     fields_tab()
-
-with tabs[12]:
+elif _page == "agroptima":
     activities_tab()
-
-with tabs[13]:
+elif _page == "produccion":
     produccion_tab(history)
-
-with tabs[14]:
+elif _page == "informe":
     weekly_report_tab(history, soil_type, hoja_threshold)
-
-with tabs[15]:
+elif _page == "instrucciones":
+    instructions_tab()
+elif _page == "configuracion":
     settings_tab()
