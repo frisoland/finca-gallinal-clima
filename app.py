@@ -18,19 +18,31 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── CSS global: un único scroll de navegador ────────────────────────────────
-# Streamlit crea su propio scroll en section.main (overflow:auto) lo que
-# genera una segunda barra junto a la del navegador. Hacemos section.main
-# overflow:visible para que el contenido fluya al nivel de html/body y
-# solo aparezca UN scrollbar (el nativo del navegador).
+# ── CSS global: ocultar barras de scroll de página ──────────────────────────
+# Streamlit genera dos scrollbars (html/body + section.main).
+# Los ocultamos visualmente; el scroll sigue funcionando con rueda,
+# teclado y táctil. El botón ↑ permite volver arriba.
 st.markdown(
     """
     <style>
+    /* Ocultar scrollbars de nivel de página (no los de tablas internas) */
+    html::-webkit-scrollbar,
+    body::-webkit-scrollbar,
+    section[data-testid="stMain"]::-webkit-scrollbar,
+    .stMain::-webkit-scrollbar,
+    section.main::-webkit-scrollbar,
+    div[data-testid="stAppViewContainer"]::-webkit-scrollbar {
+        display: none !important;
+        width: 0 !important;
+    }
+    html,
+    body,
     section[data-testid="stMain"],
     .stMain,
-    section.main {
-        overflow: visible !important;
-        height: auto !important;
+    section.main,
+    div[data-testid="stAppViewContainer"] {
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
     }
     </style>
     """,
