@@ -18,6 +18,24 @@ st.set_page_config(
     layout="wide",
 )
 
+# ── CSS global: un único scroll de navegador ────────────────────────────────
+# Streamlit crea su propio scroll en section.main (overflow:auto) lo que
+# genera una segunda barra junto a la del navegador. Hacemos section.main
+# overflow:visible para que el contenido fluya al nivel de html/body y
+# solo aparezca UN scrollbar (el nativo del navegador).
+st.markdown(
+    """
+    <style>
+    section[data-testid="stMain"],
+    .stMain,
+    section.main {
+        overflow: visible !important;
+        height: auto !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ── Botón flotante "volver arriba" ──────────────────────────────────────────
 # Estrategia: el script dentro del iframe inyecta el botón DIRECTAMENTE
