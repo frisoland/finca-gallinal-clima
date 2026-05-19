@@ -12771,6 +12771,34 @@ section[data-testid="stSidebar"] .nav-group {
     margin: 0 0 6px 0;
     letter-spacing: 0.02em;
 }
+/* ── Grupos colapsables en sidebar ── */
+section[data-testid="stSidebar"] [data-testid="stExpander"] {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] details {
+    border: none !important;
+    background: transparent !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    font-size: 0.73rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.06em !important;
+    text-transform: uppercase !important;
+    color: #888 !important;
+    padding: 5px 4px 3px 8px !important;
+    margin-top: 6px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+    color: #555 !important;
+    background: rgba(0,0,0,0.03) !important;
+    border-radius: 4px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] details > div {
+    padding-top: 0 !important;
+    padding-bottom: 2px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -12816,25 +12844,25 @@ with st.sidebar:
     st.caption("Plataforma agroclimática")
     st.divider()
 
-    st.markdown('<p class="nav-group">🌤️ Clima</p>', unsafe_allow_html=True)
-    _nav_btn("📊 Dashboard",   "dashboard")
-    _nav_btn("🌦️ Sencrop",    "sencrop")
-    _nav_btn("🔎 Análisis",    "analisis")
-    _nav_btn("📈 Comparador",  "comparador")
-    _nav_btn("❄️ Frío",        "frio")
+    with st.expander("🌤️  Clima", expanded=True, key="grp_clima"):
+        _nav_btn("📊 Dashboard",   "dashboard")
+        _nav_btn("🌦️ Sencrop",    "sencrop")
+        _nav_btn("🔎 Análisis",    "analisis")
+        _nav_btn("📈 Comparador",  "comparador")
+        _nav_btn("❄️ Frío",        "frio")
 
-    st.markdown('<p class="nav-group">🌿 Cultivo</p>', unsafe_allow_html=True)
-    _nav_btn("🌱 Fenología",   "fenologia")
-    _nav_btn("🍄 Sanidad",     "sanidad")
-    _nav_btn("🎯 Decisiones",  "decisiones")
-    _nav_btn("🐛 Carpocapsa",  "carpocapsa")
-    _nav_btn("💧 Riego",       "riego")
+    with st.expander("🌿  Cultivo", expanded=True, key="grp_cultivo"):
+        _nav_btn("🌱 Fenología",   "fenologia")
+        _nav_btn("🍄 Sanidad",     "sanidad")
+        _nav_btn("🎯 Decisiones",  "decisiones")
+        _nav_btn("🐛 Carpocapsa",  "carpocapsa")
+        _nav_btn("💧 Riego",       "riego")
 
-    st.markdown('<p class="nav-group">📋 Gestión</p>', unsafe_allow_html=True)
-    _nav_btn("🌳 Campos",          "campos")
-    _nav_btn("🧾 Agroptima",        "agroptima")
-    _nav_btn("🍎 Producción",       "produccion")
-    _nav_btn("📝 Informe semanal",  "informe")
+    with st.expander("📋  Gestión", expanded=True, key="grp_gestion"):
+        _nav_btn("🌳 Campos",          "campos")
+        _nav_btn("🧾 Agroptima",        "agroptima")
+        _nav_btn("🍎 Producción",       "produccion")
+        _nav_btn("📝 Informe semanal",  "informe")
 
     st.divider()
     _nav_btn("📘 Instrucciones",  "instrucciones")
