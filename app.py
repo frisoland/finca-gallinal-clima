@@ -104,39 +104,6 @@ _st_components.html(
 
         doc.body.appendChild(fab);
 
-        /* ── Sidebar: anchura fija vía JS ──────────────────────────────────
-           Solo aplica cuando el sidebar está EXPANDIDO.
-           doc._fgSbWidthPaused pausa el loop durante el cierre para no
-           re-abrir el sidebar mientras Streamlit lo está colapsando.     */
-        if (!doc._fgSidebarWidthReady) {
-          doc._fgSidebarWidthReady = true;
-          (function sbWidthLoop() {
-            if (!doc._fgSbWidthPaused) {
-              var sb  = doc.querySelector('section[data-testid="stSidebar"]');
-              /* stSidebarCollapsedControl es visible SOLO cuando el sidebar está colapsado */
-              var col = doc.querySelector('[data-testid="stSidebarCollapsedControl"]');
-              var isCollapsed = col && col.offsetParent !== null;
-              if (sb) {
-                if (!isCollapsed) {
-                  /* Expandido → fijar anchura */
-                  sb.style.setProperty('width',     '265px', 'important');
-                  sb.style.setProperty('max-width', '265px', 'important');
-                  var inn = sb.firstElementChild;
-                  if (inn) inn.style.setProperty('max-width', '265px', 'important');
-                } else {
-                  /* Colapsado → quitar nuestros overrides para que Streamlit lo oculte */
-                  sb.style.removeProperty('width');
-                  sb.style.removeProperty('max-width');
-                  sb.style.removeProperty('min-width');
-                  var inn2 = sb.firstElementChild;
-                  if (inn2) { inn2.style.removeProperty('width'); inn2.style.removeProperty('max-width'); }
-                }
-              }
-            }
-            setTimeout(sbWidthLoop, 500);
-          })();
-        }
-
         /* ── Auto-expand/collapse sidebar al acercar/alejar el ratón ── */
         if (!doc._fgSidebarHoverReady) {
           doc._fgSidebarHoverReady = true;
@@ -178,15 +145,8 @@ _st_components.html(
             return false;
           }
 
-          function fgExpandSidebar()  { if (fgToggleSidebar(true))  doc._fgHoverOpened = true; }
-          function fgCollapseSidebar() {
-            /* Pausar sbWidthLoop 1,5 s para que no re-expanda durante la animación */
-            doc._fgSbWidthPaused = true;
-            var sb = doc.querySelector('section[data-testid="stSidebar"]');
-            if (sb) { sb.style.removeProperty('width'); sb.style.removeProperty('max-width'); }
-            if (fgToggleSidebar(false)) doc._fgHoverOpened = false;
-            setTimeout(function () { doc._fgSbWidthPaused = false; }, 1500);
-          }
+          function fgExpandSidebar()  { if (fgToggleSidebar(true))  doc._fgHoverOpened = true;  }
+          function fgCollapseSidebar() { if (fgToggleSidebar(false)) doc._fgHoverOpened = false; }
 
           var hoverTimer = null;
           var closeTimer = null;
@@ -235,9 +195,17 @@ _st_components.html(
             });
           }
 
-          /* Móvil: Streamlit ya gestiona el swipe nativo para abrir el sidebar.
-             No añadimos touchmove propio para evitar que un deslizamiento
-             sobre la página lo re-expanda. */
+          /* Móvil: swipe desde el borde izquierdo hacia la derecha */
+          var touchX0 = null;
+          win.addEventListener('touchstart', function (e) {
+            touchX0 = e.touches[0].clientX < 30 ? e.touches[0].clientX : null;
+          }, { passive: true });
+          win.addEventListener('touchmove', function (e) {
+            if (touchX0 !== null && e.touches[0].clientX - touchX0 > 30) {
+              fgExpandSidebar(); touchX0 = null;
+            }
+          }, { passive: true });
+          win.addEventListener('touchend', function () { touchX0 = null; }, { passive: true });
         }
 
       } catch (e) {
@@ -12809,48 +12777,6 @@ section[data-testid="stSidebar"] .nav-group {
     margin: 0 0 6px 0;
     letter-spacing: 0.02em;
 }
-/* ── Sidebar: anchura fija, nunca pantalla completa ── */
-section[data-testid="stSidebar"] {
-    min-width: 240px !important;
-    max-width: 280px !important;
-    width: 260px !important;
-}
-/* ── Expanders de grupo en sidebar ── */
-/* Eliminar borde y fondo del contenedor */
-section[data-testid="stSidebar"] [data-testid="stExpander"] {
-    border: none !important;
-    box-shadow: none !important;
-    background: transparent !important;
-}
-section[data-testid="stSidebar"] [data-testid="stExpander"] > details {
-    border: none !important;
-    background: transparent !important;
-}
-/* Cabecera del expander: estilo de título de grupo */
-section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
-    font-size: 0.72rem !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.07em !important;
-    text-transform: uppercase !important;
-    color: #888 !important;
-    padding: 6px 4px 4px 6px !important;
-    border-radius: 4px !important;
-    background: transparent !important;
-    border: none !important;
-}
-section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
-    color: #555 !important;
-    background: rgba(0,0,0,0.04) !important;
-}
-/* Sin padding extra en el cuerpo del expander */
-section[data-testid="stSidebar"] [data-testid="stExpander"] details > div:last-child {
-    padding: 0 !important;
-}
-/* Logo: centrado pero sin romper el layout */
-section[data-testid="stSidebar"] [data-testid="stImage"] img {
-    display: block;
-    margin: 4px auto 2px auto;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -12892,36 +12818,29 @@ def _render_page_header(page_key: str) -> None:
         st.markdown(f'<p class="page-breadcrumb">{crumb}</p>', unsafe_allow_html=True)
 
 with st.sidebar:
-    # ── Logo ──────────────────────────────────────────────────────────────────
-    try:
-        st.image("finca_gallinal_logo.jpeg", width=90)
-    except Exception:
-        st.markdown("### 🌿 Finca Gallinal")
+    st.markdown("## 🌿 Finca Gallinal")
     st.caption("Plataforma agroclimática")
     st.divider()
 
-    # ── Grupo Clima ───────────────────────────────────────────────────────────
-    with st.expander("🌤️  Clima", expanded=True):
-        _nav_btn("📊 Dashboard",   "dashboard")
-        _nav_btn("🌦️ Sencrop",    "sencrop")
-        _nav_btn("🔎 Análisis",    "analisis")
-        _nav_btn("📈 Comparador",  "comparador")
-        _nav_btn("❄️ Frío",        "frio")
+    st.markdown('<p class="nav-group">🌤️ Clima</p>', unsafe_allow_html=True)
+    _nav_btn("📊 Dashboard",   "dashboard")
+    _nav_btn("🌦️ Sencrop",    "sencrop")
+    _nav_btn("🔎 Análisis",    "analisis")
+    _nav_btn("📈 Comparador",  "comparador")
+    _nav_btn("❄️ Frío",        "frio")
 
-    # ── Grupo Cultivo ─────────────────────────────────────────────────────────
-    with st.expander("🌿  Cultivo", expanded=True):
-        _nav_btn("🌱 Fenología",   "fenologia")
-        _nav_btn("🍄 Sanidad",     "sanidad")
-        _nav_btn("🎯 Decisiones",  "decisiones")
-        _nav_btn("🐛 Carpocapsa",  "carpocapsa")
-        _nav_btn("💧 Riego",       "riego")
+    st.markdown('<p class="nav-group">🌿 Cultivo</p>', unsafe_allow_html=True)
+    _nav_btn("🌱 Fenología",   "fenologia")
+    _nav_btn("🍄 Sanidad",     "sanidad")
+    _nav_btn("🎯 Decisiones",  "decisiones")
+    _nav_btn("🐛 Carpocapsa",  "carpocapsa")
+    _nav_btn("💧 Riego",       "riego")
 
-    # ── Grupo Gestión ─────────────────────────────────────────────────────────
-    with st.expander("📋  Gestión", expanded=True):
-        _nav_btn("🌳 Campos",          "campos")
-        _nav_btn("🧾 Agroptima",        "agroptima")
-        _nav_btn("🍎 Producción",       "produccion")
-        _nav_btn("📝 Informe semanal",  "informe")
+    st.markdown('<p class="nav-group">📋 Gestión</p>', unsafe_allow_html=True)
+    _nav_btn("🌳 Campos",          "campos")
+    _nav_btn("🧾 Agroptima",        "agroptima")
+    _nav_btn("🍎 Producción",       "produccion")
+    _nav_btn("📝 Informe semanal",  "informe")
 
     st.divider()
     _nav_btn("📘 Instrucciones",  "instrucciones")
