@@ -104,6 +104,26 @@ _st_components.html(
 
         doc.body.appendChild(fab);
 
+        /* ── Sidebar: anchura fija vía JS (los estilos inline de Streamlit
+               tienen prioridad sobre CSS; setProperty(...,'important') los gana) ── */
+        if (!doc._fgSidebarWidthReady) {
+          doc._fgSidebarWidthReady = true;
+          (function sbWidthLoop() {
+            var sb = doc.querySelector('section[data-testid="stSidebar"]');
+            if (sb) {
+              sb.style.setProperty('width',     '265px', 'important');
+              sb.style.setProperty('max-width', '265px', 'important');
+              sb.style.setProperty('min-width', '220px', 'important');
+              var inner = sb.firstElementChild;
+              if (inner) {
+                inner.style.setProperty('width',     '265px', 'important');
+                inner.style.setProperty('max-width', '265px', 'important');
+              }
+            }
+            setTimeout(sbWidthLoop, 600);
+          })();
+        }
+
         /* ── Auto-expand/collapse sidebar al acercar/alejar el ratón ── */
         if (!doc._fgSidebarHoverReady) {
           doc._fgSidebarHoverReady = true;
@@ -195,17 +215,9 @@ _st_components.html(
             });
           }
 
-          /* Móvil: swipe desde el borde izquierdo hacia la derecha */
-          var touchX0 = null;
-          win.addEventListener('touchstart', function (e) {
-            touchX0 = e.touches[0].clientX < 30 ? e.touches[0].clientX : null;
-          }, { passive: true });
-          win.addEventListener('touchmove', function (e) {
-            if (touchX0 !== null && e.touches[0].clientX - touchX0 > 30) {
-              fgExpandSidebar(); touchX0 = null;
-            }
-          }, { passive: true });
-          win.addEventListener('touchend', function () { touchX0 = null; }, { passive: true });
+          /* Móvil: Streamlit ya gestiona el swipe nativo para abrir el sidebar.
+             No añadimos touchmove propio para evitar que un deslizamiento
+             sobre la página lo re-expanda. */
         }
 
       } catch (e) {
