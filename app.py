@@ -12777,6 +12777,12 @@ section[data-testid="stSidebar"] .nav-group {
     margin: 0 0 6px 0;
     letter-spacing: 0.02em;
 }
+/* ── Sidebar: anchura fija, nunca pantalla completa ── */
+section[data-testid="stSidebar"] {
+    min-width: 240px !important;
+    max-width: 280px !important;
+    width: 260px !important;
+}
 /* ── Expanders de grupo en sidebar ── */
 /* Eliminar borde y fondo del contenedor */
 section[data-testid="stSidebar"] [data-testid="stExpander"] {
@@ -12808,11 +12814,10 @@ section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
 section[data-testid="stSidebar"] [data-testid="stExpander"] details > div:last-child {
     padding: 0 !important;
 }
-/* Logo centrado en sidebar */
-section[data-testid="stSidebar"] [data-testid="stImage"] {
-    display: flex;
-    justify-content: center;
-    margin-bottom: 2px;
+/* Logo: centrado pero sin romper el layout */
+section[data-testid="stSidebar"] [data-testid="stImage"] img {
+    display: block;
+    margin: 4px auto 2px auto;
 }
 </style>
 """, unsafe_allow_html=True)
