@@ -105,108 +105,102 @@ _st_components.html(
         doc.body.appendChild(fab);
 
         /* ── Auto-expand/collapse sidebar al acercar/alejar el ratón ── */
-        if (!doc._fgSidebarHoverReady) {
-          doc._fgSidebarHoverReady = true;
 
-          var _fgHoverOpened = false;
+        /* Estado persistente en doc (sobrevive a re-renders de Streamlit).
+           Los timers se guardan en doc para no perderlos entre renders. */
+        if (typeof doc._fgHoverOpened === 'undefined') doc._fgHoverOpened = false;
+        if (typeof doc._fgHoverTimer  === 'undefined') doc._fgHoverTimer  = null;
+        if (typeof doc._fgCloseTimer  === 'undefined') doc._fgCloseTimer  = null;
 
-          /* Toggle sidebar por posición en pantalla.
-             Abrir: botón fuera del sidebar (x < 100, y < 120).
-             Cerrar: botón dentro del sidebar (x 50-300, y < 100).
-             _fgHoverOpened se guarda en doc para persistir entre rerenders. */
-          function fgToggleSidebar(open) {
-            var halfW = win.innerWidth / 2;
-
-            /* Intento 1: selectores semánticos */
-            var semantic = open
-              ? ['[data-testid="stSidebarCollapsedControl"] button',
-                 '[data-testid="collapsedControl"] button',
-                 'button[aria-label="Open sidebar"]',
-                 'button[aria-label="Abrir barra lateral"]',
-                 '[class*="collapsedControl"] button']
-              : ['button[aria-label="Close sidebar"]',
-                 'button[aria-label="Cerrar barra lateral"]',
-                 '[data-testid="stSidebar"] [data-testid="stBaseButton-header"]',
-                 '[data-testid="stSidebarCloseButton"] button'];
-            for (var si = 0; si < semantic.length; si++) {
-              var b = doc.querySelector(semantic[si]);
-              if (b) { b.click(); return true; }
-            }
-
-            /* Intento 2: posición — parámetros distintos para abrir vs cerrar */
-            var allBtns = doc.querySelectorAll('button');
-            for (var bi = 0; bi < allBtns.length; bi++) {
-              var r = allBtns[bi].getBoundingClientRect();
-              var match = open
-                ? (r.left < 100 && r.top < 120 && r.right < halfW)          /* Abrir: muy izq */
-                : (r.left >= 50 && r.right < 310 && r.top < 100 && r.right < halfW); /* Cerrar: dentro sidebar */
-              if (match) { allBtns[bi].click(); return true; }
-            }
-            return false;
+        /* Toggle sidebar por posición en pantalla */
+        function fgToggleSidebar(open) {
+          var halfW = win.innerWidth / 2;
+          var semantic = open
+            ? ['[data-testid="stSidebarCollapsedControl"] button',
+               '[data-testid="collapsedControl"] button',
+               'button[aria-label="Open sidebar"]',
+               'button[aria-label="Abrir barra lateral"]',
+               '[class*="collapsedControl"] button']
+            : ['button[aria-label="Close sidebar"]',
+               'button[aria-label="Cerrar barra lateral"]',
+               '[data-testid="stSidebar"] [data-testid="stBaseButton-header"]',
+               '[data-testid="stSidebarCloseButton"] button'];
+          for (var si = 0; si < semantic.length; si++) {
+            var b = doc.querySelector(semantic[si]);
+            if (b) { b.click(); return true; }
           }
-
-          function fgExpandSidebar()  { if (fgToggleSidebar(true))  doc._fgHoverOpened = true;  }
-          function fgCollapseSidebar() { if (fgToggleSidebar(false)) doc._fgHoverOpened = false; }
-
-          var hoverTimer = null;
-          var closeTimer = null;
-
-          win.addEventListener('mousemove', function (e) {
-            var x = e.clientX;
-
-            if (x < 60) {
-              /* Zona de apertura: borde izquierdo */
-              if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
-              if (!hoverTimer) hoverTimer = setTimeout(function () {
-                fgExpandSidebar(); hoverTimer = null;
-              }, 250);
-            } else {
-              if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
-
-              /* Auto-cerrar si fue abierto por hover y ratón salió del área del sidebar */
-              if (doc._fgHoverOpened && x > 290) {
-                if (!closeTimer) closeTimer = setTimeout(function () {
-                  fgCollapseSidebar(); closeTimer = null;
-                }, 900);
-              } else if (x <= 290 && closeTimer) {
-                clearTimeout(closeTimer); closeTimer = null;
-              }
-            }
-          });
-
-          /* Cerrar sidebar al hacer clic en un botón de navegación */
-          if (!doc._fgNavClickReady) {
-            doc._fgNavClickReady = true;
-            doc.addEventListener('click', function (e) {
-              var sidebar = doc.querySelector('section[data-testid="stSidebar"]');
-              if (!sidebar) return;
-              var t = e.target;
-              while (t && t !== doc.body) {
-                if (t.tagName === 'BUTTON' && sidebar.contains(t)) {
-                  var rect = t.getBoundingClientRect();
-                  /* Solo botones de navegación (y > 100 px), no el botón de colapsar */
-                  if (rect.top > 100) {
-                    setTimeout(function () { fgCollapseSidebar(); }, 700);
-                  }
-                  break;
-                }
-                t = t.parentElement;
-              }
-            });
+          var allBtns = doc.querySelectorAll('button');
+          for (var bi = 0; bi < allBtns.length; bi++) {
+            var r = allBtns[bi].getBoundingClientRect();
+            var match = open
+              ? (r.left < 100 && r.top < 120 && r.right < halfW)
+              : (r.left >= 50 && r.right < 310 && r.top < 100 && r.right < halfW);
+            if (match) { allBtns[bi].click(); return true; }
           }
-
-          /* Móvil: swipe desde el borde izquierdo hacia la derecha */
-          var touchX0 = null;
-          win.addEventListener('touchstart', function (e) {
-            touchX0 = e.touches[0].clientX < 30 ? e.touches[0].clientX : null;
-          }, { passive: true });
-          win.addEventListener('touchmove', function (e) {
-            if (touchX0 !== null && e.touches[0].clientX - touchX0 > 30) {
-              fgExpandSidebar(); touchX0 = null;
-            }
-          }, { passive: true });
-          win.addEventListener('touchend', function () { touchX0 = null; }, { passive: true });
+          return false;
         }
+
+        function fgExpandSidebar()   { if (fgToggleSidebar(true))  doc._fgHoverOpened = true;  }
+        function fgCollapseSidebar() { if (fgToggleSidebar(false)) doc._fgHoverOpened = false; }
+
+        /* ── mousemove: abrir al acercarse, cerrar al alejarse ──
+           Se reemplaza el handler en cada render para usar siempre el
+           código más reciente (evita handlers obsoletos en memoria). */
+        if (doc._fgMouseMoveHandler) win.removeEventListener('mousemove', doc._fgMouseMoveHandler);
+        doc._fgMouseMoveHandler = function (e) {
+          var x = e.clientX;
+          if (x < 60) {
+            if (doc._fgCloseTimer) { clearTimeout(doc._fgCloseTimer); doc._fgCloseTimer = null; }
+            if (!doc._fgHoverTimer) doc._fgHoverTimer = setTimeout(function () {
+              fgExpandSidebar(); doc._fgHoverTimer = null;
+            }, 250);
+          } else {
+            if (doc._fgHoverTimer) { clearTimeout(doc._fgHoverTimer); doc._fgHoverTimer = null; }
+            if (doc._fgHoverOpened && x > 290) {
+              if (!doc._fgCloseTimer) doc._fgCloseTimer = setTimeout(function () {
+                fgCollapseSidebar(); doc._fgCloseTimer = null;
+              }, 900);
+            } else if (x <= 290 && doc._fgCloseTimer) {
+              clearTimeout(doc._fgCloseTimer); doc._fgCloseTimer = null;
+            }
+          }
+        };
+        win.addEventListener('mousemove', doc._fgMouseMoveHandler);
+
+        /* ── click: cerrar al navegar ── */
+        if (doc._fgClickHandler) doc.removeEventListener('click', doc._fgClickHandler);
+        doc._fgClickHandler = function (e) {
+          var sidebar = doc.querySelector('section[data-testid="stSidebar"]');
+          if (!sidebar) return;
+          var t = e.target;
+          while (t && t !== doc.body) {
+            if (t.tagName === 'BUTTON' && sidebar.contains(t)) {
+              var rect = t.getBoundingClientRect();
+              if (rect.top > 100) setTimeout(function () { fgCollapseSidebar(); }, 700);
+              break;
+            }
+            t = t.parentElement;
+          }
+        };
+        doc.addEventListener('click', doc._fgClickHandler);
+
+        /* ── Móvil: swipe desde el borde izquierdo ── */
+        if (doc._fgTouchStartHandler) win.removeEventListener('touchstart', doc._fgTouchStartHandler);
+        if (doc._fgTouchMoveHandler)  win.removeEventListener('touchmove',  doc._fgTouchMoveHandler);
+        if (doc._fgTouchEndHandler)   win.removeEventListener('touchend',   doc._fgTouchEndHandler);
+        doc._fgTouchX0 = null;
+        doc._fgTouchStartHandler = function (e) {
+          doc._fgTouchX0 = e.touches[0].clientX < 30 ? e.touches[0].clientX : null;
+        };
+        doc._fgTouchMoveHandler = function (e) {
+          if (doc._fgTouchX0 !== null && e.touches[0].clientX - doc._fgTouchX0 > 30) {
+            fgExpandSidebar(); doc._fgTouchX0 = null;
+          }
+        };
+        doc._fgTouchEndHandler = function () { doc._fgTouchX0 = null; };
+        win.addEventListener('touchstart', doc._fgTouchStartHandler, { passive: true });
+        win.addEventListener('touchmove',  doc._fgTouchMoveHandler,  { passive: true });
+        win.addEventListener('touchend',   doc._fgTouchEndHandler,   { passive: true });
 
       } catch (e) {
         console.warn('fg-fab error:', e);
