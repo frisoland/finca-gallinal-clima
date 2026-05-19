@@ -122,30 +122,23 @@ _st_components.html(
 
         var mobileNav = doc.createElement('div');
         mobileNav.id = 'fg-mobile-nav';
+        /* right:72px → deja espacio libre para el botón "Manage app" de Streamlit Cloud */
         mobileNav.style.cssText =
-          'position:fixed;bottom:0;left:0;right:0;height:60px;' +
+          'position:fixed;bottom:0;left:0;right:72px;height:60px;' +
           'background:#fff;border-top:1px solid #e8e8e8;' +
           'box-shadow:0 -2px 10px rgba(0,0,0,0.07);' +
           'display:flex;align-items:stretch;z-index:9998;';
 
-        /* Items: [icono, etiqueta, texto exacto del botón en sidebar] */
+        /* 4 items (sin "Menú"): el botón Manage App de Streamlit ocupa el espacio derecho */
         var mnItems = [
           {ic:'📊', lb:'Inicio',  tx:'📊 Dashboard'},
           {ic:'🌤️', lb:'Clima',   tx:'🌦️ Sencrop'},
           {ic:'🌿', lb:'Cultivo', tx:'🌱 Fenología'},
-          {ic:'📋', lb:'Gestión', tx:'🌳 Campos'},
-          {ic:'☰',  lb:'Menú',   tx:null}
+          {ic:'📋', lb:'Gestión', tx:'🌳 Campos'}
         ];
 
         /* Grupos para saber cuál item de la barra está "activo" */
-        var mnGroups = {
-          'dashboard':'clima','sencrop':'clima','analisis':'clima',
-          'comparador':'clima','frio':'clima',
-          'fenologia':'cultivo','sanidad':'cultivo','decisiones':'cultivo',
-          'carpocapsa':'cultivo','riego':'cultivo',
-          'campos':'gestion','agroptima':'gestion','produccion':'gestion','informe':'gestion'
-        };
-        var mnItemGroup = ['clima','clima','cultivo','gestion',null];
+        var mnItemGroup = ['clima','clima','cultivo','gestion'];
 
         var mnBtns = [];
         mnItems.forEach(function(item, idx) {
@@ -160,18 +153,13 @@ _st_components.html(
             '<span>' + item.lb + '</span>';
 
           btn.addEventListener('click', function() {
-            if (item.tx === null) {
-              /* Botón Menú: abrir sidebar */
-              if (doc._fgExpandSidebar) doc._fgExpandSidebar();
-            } else {
-              /* Navegar clicando el botón del sidebar (aunque esté oculto) */
-              var sb = doc.querySelector('section[data-testid="stSidebar"]');
-              if (!sb) return;
-              var sbtns = sb.querySelectorAll('button');
-              for (var i = 0; i < sbtns.length; i++) {
-                if (sbtns[i].textContent.trim() === item.tx) {
-                  sbtns[i].click(); return;
-                }
+            /* Navegar clicando el botón del sidebar (aunque esté oculto) */
+            var sb = doc.querySelector('section[data-testid="stSidebar"]');
+            if (!sb) return;
+            var sbtns = sb.querySelectorAll('button');
+            for (var i = 0; i < sbtns.length; i++) {
+              if (sbtns[i].textContent.trim() === item.tx) {
+                sbtns[i].click(); return;
               }
             }
           });
