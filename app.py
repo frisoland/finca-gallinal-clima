@@ -104,23 +104,36 @@ _st_components.html(
 
         doc.body.appendChild(fab);
 
-        /* ── Sidebar: anchura fija vía JS (los estilos inline de Streamlit
-               tienen prioridad sobre CSS; setProperty(...,'important') los gana) ── */
+        /* ── Sidebar: anchura fija vía JS ──────────────────────────────────
+           Solo aplica cuando el sidebar está EXPANDIDO.
+           doc._fgSbWidthPaused pausa el loop durante el cierre para no
+           re-abrir el sidebar mientras Streamlit lo está colapsando.     */
         if (!doc._fgSidebarWidthReady) {
           doc._fgSidebarWidthReady = true;
           (function sbWidthLoop() {
-            var sb = doc.querySelector('section[data-testid="stSidebar"]');
-            if (sb) {
-              sb.style.setProperty('width',     '265px', 'important');
-              sb.style.setProperty('max-width', '265px', 'important');
-              sb.style.setProperty('min-width', '220px', 'important');
-              var inner = sb.firstElementChild;
-              if (inner) {
-                inner.style.setProperty('width',     '265px', 'important');
-                inner.style.setProperty('max-width', '265px', 'important');
+            if (!doc._fgSbWidthPaused) {
+              var sb  = doc.querySelector('section[data-testid="stSidebar"]');
+              /* stSidebarCollapsedControl es visible SOLO cuando el sidebar está colapsado */
+              var col = doc.querySelector('[data-testid="stSidebarCollapsedControl"]');
+              var isCollapsed = col && col.offsetParent !== null;
+              if (sb) {
+                if (!isCollapsed) {
+                  /* Expandido → fijar anchura */
+                  sb.style.setProperty('width',     '265px', 'important');
+                  sb.style.setProperty('max-width', '265px', 'important');
+                  var inn = sb.firstElementChild;
+                  if (inn) inn.style.setProperty('max-width', '265px', 'important');
+                } else {
+                  /* Colapsado → quitar nuestros overrides para que Streamlit lo oculte */
+                  sb.style.removeProperty('width');
+                  sb.style.removeProperty('max-width');
+                  sb.style.removeProperty('min-width');
+                  var inn2 = sb.firstElementChild;
+                  if (inn2) { inn2.style.removeProperty('width'); inn2.style.removeProperty('max-width'); }
+                }
               }
             }
-            setTimeout(sbWidthLoop, 600);
+            setTimeout(sbWidthLoop, 500);
           })();
         }
 
@@ -165,8 +178,15 @@ _st_components.html(
             return false;
           }
 
-          function fgExpandSidebar()  { if (fgToggleSidebar(true))  doc._fgHoverOpened = true;  }
-          function fgCollapseSidebar() { if (fgToggleSidebar(false)) doc._fgHoverOpened = false; }
+          function fgExpandSidebar()  { if (fgToggleSidebar(true))  doc._fgHoverOpened = true; }
+          function fgCollapseSidebar() {
+            /* Pausar sbWidthLoop 1,5 s para que no re-expanda durante la animación */
+            doc._fgSbWidthPaused = true;
+            var sb = doc.querySelector('section[data-testid="stSidebar"]');
+            if (sb) { sb.style.removeProperty('width'); sb.style.removeProperty('max-width'); }
+            if (fgToggleSidebar(false)) doc._fgHoverOpened = false;
+            setTimeout(function () { doc._fgSbWidthPaused = false; }, 1500);
+          }
 
           var hoverTimer = null;
           var closeTimer = null;
