@@ -12777,6 +12777,43 @@ section[data-testid="stSidebar"] .nav-group {
     margin: 0 0 6px 0;
     letter-spacing: 0.02em;
 }
+/* ── Expanders de grupo en sidebar ── */
+/* Eliminar borde y fondo del contenedor */
+section[data-testid="stSidebar"] [data-testid="stExpander"] {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] > details {
+    border: none !important;
+    background: transparent !important;
+}
+/* Cabecera del expander: estilo de título de grupo */
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    font-size: 0.72rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.07em !important;
+    text-transform: uppercase !important;
+    color: #888 !important;
+    padding: 6px 4px 4px 6px !important;
+    border-radius: 4px !important;
+    background: transparent !important;
+    border: none !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+    color: #555 !important;
+    background: rgba(0,0,0,0.04) !important;
+}
+/* Sin padding extra en el cuerpo del expander */
+section[data-testid="stSidebar"] [data-testid="stExpander"] details > div:last-child {
+    padding: 0 !important;
+}
+/* Logo centrado en sidebar */
+section[data-testid="stSidebar"] [data-testid="stImage"] {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 2px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -12818,29 +12855,36 @@ def _render_page_header(page_key: str) -> None:
         st.markdown(f'<p class="page-breadcrumb">{crumb}</p>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("## 🌿 Finca Gallinal")
+    # ── Logo ──────────────────────────────────────────────────────────────────
+    try:
+        st.image("finca_gallinal_logo.jpeg", width=90)
+    except Exception:
+        st.markdown("### 🌿 Finca Gallinal")
     st.caption("Plataforma agroclimática")
     st.divider()
 
-    st.markdown('<p class="nav-group">🌤️ Clima</p>', unsafe_allow_html=True)
-    _nav_btn("📊 Dashboard",   "dashboard")
-    _nav_btn("🌦️ Sencrop",    "sencrop")
-    _nav_btn("🔎 Análisis",    "analisis")
-    _nav_btn("📈 Comparador",  "comparador")
-    _nav_btn("❄️ Frío",        "frio")
+    # ── Grupo Clima ───────────────────────────────────────────────────────────
+    with st.expander("🌤️  Clima", expanded=True):
+        _nav_btn("📊 Dashboard",   "dashboard")
+        _nav_btn("🌦️ Sencrop",    "sencrop")
+        _nav_btn("🔎 Análisis",    "analisis")
+        _nav_btn("📈 Comparador",  "comparador")
+        _nav_btn("❄️ Frío",        "frio")
 
-    st.markdown('<p class="nav-group">🌿 Cultivo</p>', unsafe_allow_html=True)
-    _nav_btn("🌱 Fenología",   "fenologia")
-    _nav_btn("🍄 Sanidad",     "sanidad")
-    _nav_btn("🎯 Decisiones",  "decisiones")
-    _nav_btn("🐛 Carpocapsa",  "carpocapsa")
-    _nav_btn("💧 Riego",       "riego")
+    # ── Grupo Cultivo ─────────────────────────────────────────────────────────
+    with st.expander("🌿  Cultivo", expanded=True):
+        _nav_btn("🌱 Fenología",   "fenologia")
+        _nav_btn("🍄 Sanidad",     "sanidad")
+        _nav_btn("🎯 Decisiones",  "decisiones")
+        _nav_btn("🐛 Carpocapsa",  "carpocapsa")
+        _nav_btn("💧 Riego",       "riego")
 
-    st.markdown('<p class="nav-group">📋 Gestión</p>', unsafe_allow_html=True)
-    _nav_btn("🌳 Campos",          "campos")
-    _nav_btn("🧾 Agroptima",        "agroptima")
-    _nav_btn("🍎 Producción",       "produccion")
-    _nav_btn("📝 Informe semanal",  "informe")
+    # ── Grupo Gestión ─────────────────────────────────────────────────────────
+    with st.expander("📋  Gestión", expanded=True):
+        _nav_btn("🌳 Campos",          "campos")
+        _nav_btn("🧾 Agroptima",        "agroptima")
+        _nav_btn("🍎 Producción",       "produccion")
+        _nav_btn("📝 Informe semanal",  "informe")
 
     st.divider()
     _nav_btn("📘 Instrucciones",  "instrucciones")
