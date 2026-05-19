@@ -12840,7 +12840,24 @@ def _render_page_header(page_key: str) -> None:
         st.markdown(f'<p class="page-breadcrumb">{crumb}</p>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("## 🌿 Finca Gallinal")
+    # Título con logo inline (base64) en lugar del emoji 🌿
+    try:
+        import base64 as _b64, os as _os
+        if _os.path.exists("finca_gallinal_logo.jpeg"):
+            with open("finca_gallinal_logo.jpeg", "rb") as _lf:
+                _logo_b64 = _b64.b64encode(_lf.read()).decode()
+            st.markdown(
+                f'<p style="font-size:1.22rem;font-weight:700;margin:4px 0 2px 0;line-height:1.5;">'
+                f'<img src="data:image/jpeg;base64,{_logo_b64}" '
+                f'style="width:28px;height:28px;object-fit:contain;'
+                f'vertical-align:middle;margin-right:6px;border-radius:3px;">'
+                f'Finca Gallinal</p>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown("## 🌿 Finca Gallinal")
+    except Exception:
+        st.markdown("## 🌿 Finca Gallinal")
     st.caption("Plataforma agroclimática")
     st.divider()
 
