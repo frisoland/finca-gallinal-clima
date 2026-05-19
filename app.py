@@ -104,6 +104,105 @@ _st_components.html(
 
         doc.body.appendChild(fab);
 
+        /* ── Barra de navegación inferior en móvil ── */
+        var oldNav = doc.getElementById('fg-mobile-nav');
+        if (oldNav) oldNav.remove();
+        var oldNavStyle = doc.getElementById('fg-mobile-nav-style');
+        if (oldNavStyle) oldNavStyle.remove();
+
+        var mobileNavStyle = doc.createElement('style');
+        mobileNavStyle.id = 'fg-mobile-nav-style';
+        mobileNavStyle.textContent =
+          '@media (min-width:768px){#fg-mobile-nav{display:none!important}}' +
+          '@media (max-width:767px){' +
+          '  section[data-testid="stMain"]{padding-bottom:68px!important}' +
+          '  #fg-scroll-fab{bottom:78px!important}' +
+          '}';
+        doc.head.appendChild(mobileNavStyle);
+
+        var mobileNav = doc.createElement('div');
+        mobileNav.id = 'fg-mobile-nav';
+        mobileNav.style.cssText =
+          'position:fixed;bottom:0;left:0;right:0;height:60px;' +
+          'background:#fff;border-top:1px solid #e8e8e8;' +
+          'box-shadow:0 -2px 10px rgba(0,0,0,0.07);' +
+          'display:flex;align-items:stretch;z-index:9998;';
+
+        /* Items: [icono, etiqueta, texto exacto del botón en sidebar] */
+        var mnItems = [
+          {ic:'📊', lb:'Inicio',  tx:'📊 Dashboard'},
+          {ic:'🌤️', lb:'Clima',   tx:'🌦️ Sencrop'},
+          {ic:'🌿', lb:'Cultivo', tx:'🌱 Fenología'},
+          {ic:'📋', lb:'Gestión', tx:'🌳 Campos'},
+          {ic:'☰',  lb:'Menú',   tx:null}
+        ];
+
+        /* Grupos para saber cuál item de la barra está "activo" */
+        var mnGroups = {
+          'dashboard':'clima','sencrop':'clima','analisis':'clima',
+          'comparador':'clima','frio':'clima',
+          'fenologia':'cultivo','sanidad':'cultivo','decisiones':'cultivo',
+          'carpocapsa':'cultivo','riego':'cultivo',
+          'campos':'gestion','agroptima':'gestion','produccion':'gestion','informe':'gestion'
+        };
+        var mnItemGroup = ['clima','clima','cultivo','gestion',null];
+
+        var mnBtns = [];
+        mnItems.forEach(function(item, idx) {
+          var btn = doc.createElement('button');
+          btn.style.cssText =
+            'flex:1;display:flex;flex-direction:column;align-items:center;' +
+            'justify-content:center;gap:2px;border:none;background:transparent;' +
+            'cursor:pointer;font-size:0.58rem;color:#aaa;padding:0;' +
+            '-webkit-tap-highlight-color:transparent;transition:color 0.15s;';
+          btn.innerHTML =
+            '<span style="font-size:1.35rem;line-height:1">' + item.ic + '</span>' +
+            '<span>' + item.lb + '</span>';
+
+          btn.addEventListener('click', function() {
+            if (item.tx === null) {
+              /* Botón Menú: abrir sidebar */
+              if (doc._fgExpandSidebar) doc._fgExpandSidebar();
+            } else {
+              /* Navegar clicando el botón del sidebar (aunque esté oculto) */
+              var sb = doc.querySelector('section[data-testid="stSidebar"]');
+              if (!sb) return;
+              var sbtns = sb.querySelectorAll('button');
+              for (var i = 0; i < sbtns.length; i++) {
+                if (sbtns[i].textContent.trim() === item.tx) {
+                  sbtns[i].click(); return;
+                }
+              }
+            }
+          });
+          mobileNav.appendChild(btn);
+          mnBtns.push(btn);
+        });
+        doc.body.appendChild(mobileNav);
+
+        /* Actualizar estado activo de la barra móvil */
+        if (!doc._fgMobileNavTimer) {
+          doc._fgMobileNavTimer = setInterval(function() {
+            var activeDiv = doc.querySelector('.nav-active-item');
+            var activeText = activeDiv ? activeDiv.textContent.trim() : '';
+            /* Determinar grupo activo a partir del texto de la página */
+            var textToKey = {
+              '📊 Dashboard':'clima','🌦️ Sencrop':'clima',
+              '🔎 Análisis':'clima','📈 Comparador':'clima','❄️ Frío':'clima',
+              '🌱 Fenología':'cultivo','🍄 Sanidad':'cultivo',
+              '🎯 Decisiones':'cultivo','🐛 Carpocapsa':'cultivo','💧 Riego':'cultivo',
+              '🌳 Campos':'gestion','🧾 Agroptima':'gestion',
+              '🍎 Producción':'gestion','📝 Informe semanal':'gestion'
+            };
+            var activeGroup = textToKey[activeText] || '';
+            mnBtns.forEach(function(btn, idx) {
+              var isActive = mnItemGroup[idx] && mnItemGroup[idx] === activeGroup;
+              btn.style.color      = isActive ? '#1b6b35' : '#aaa';
+              btn.style.fontWeight = isActive ? '700' : '400';
+            });
+          }, 400);
+        }
+
         /* ── Auto-expand/collapse sidebar al acercar/alejar el ratón ── */
 
         /* Estado persistente en doc (sobrevive a re-renders de Streamlit).
@@ -141,6 +240,7 @@ _st_components.html(
         }
 
         function fgExpandSidebar()   { if (fgToggleSidebar(true))  doc._fgHoverOpened = true;  }
+        doc._fgExpandSidebar = fgExpandSidebar; /* expuesto para la barra móvil */
         function fgCollapseSidebar() { if (fgToggleSidebar(false)) doc._fgHoverOpened = false; }
 
         /* ── mousemove: abrir al acercarse, cerrar al alejarse ──
@@ -12725,6 +12825,16 @@ if "nav_page" not in st.session_state:
 # CSS: estilo del sidebar
 st.markdown("""
 <style>
+/* ── Scrollbar fino y verde en el sidebar ── */
+section[data-testid="stSidebar"] ::-webkit-scrollbar { width: 4px; }
+section[data-testid="stSidebar"] ::-webkit-scrollbar-track { background: transparent; }
+section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb {
+    background: rgba(27,107,53,0.35);
+    border-radius: 4px;
+}
+section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(27,107,53,0.65);
+}
 /* Botones de navegación: alineados a la izquierda, sin borde */
 section[data-testid="stSidebar"] button {
     text-align: left !important;
@@ -12764,12 +12874,64 @@ section[data-testid="stSidebar"] .nav-group {
     cursor: default;
     line-height: 1.5;
 }
-/* Breadcrumb encima del contenido */
+/* ── Cabecera de página ── */
+.page-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 18px 0;
+    padding-bottom: 10px;
+    border-bottom: 2px solid rgba(27,107,53,0.15);
+}
+.page-header-icon {
+    font-size: 2rem;
+    line-height: 1;
+}
+.page-header-text { display: flex; flex-direction: column; gap: 1px; }
+.page-header-title {
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: #1a1a1a;
+    line-height: 1.2;
+    margin: 0;
+}
+.page-header-crumb {
+    font-size: 0.74rem;
+    color: #aaa;
+    letter-spacing: 0.03em;
+    margin: 0;
+}
+/* Breadcrumb encima del contenido (legacy, por si se usa en algún sitio) */
 .page-breadcrumb {
     color: #aaa;
     font-size: 0.78rem;
     margin: 0 0 6px 0;
     letter-spacing: 0.02em;
+}
+/* ── Animación fade-in al cambiar de página ── */
+@keyframes fg-fadein {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0);   }
+}
+section[data-testid="stMain"] > div:first-child {
+    animation: fg-fadein 0.25s ease-out;
+}
+/* ── Ítem activo: borde animado que se desliza ── */
+@keyframes fg-activeslide {
+    from { border-left-width: 0px; padding-left: 11px; }
+    to   { border-left-width: 3px; padding-left: 8px;  }
+}
+.nav-active-item {
+    animation: fg-activeslide 0.18s ease-out;
+}
+/* ── Footer del sidebar ── */
+.sidebar-footer {
+    font-size: 0.68rem;
+    color: #bbb;
+    text-align: center;
+    padding: 6px 0 2px 0;
+    letter-spacing: 0.02em;
+    line-height: 1.5;
 }
 /* ── Grupos colapsables en sidebar ── */
 section[data-testid="stSidebar"] [data-testid="stExpander"] {
@@ -12832,12 +12994,31 @@ def _nav_btn(label: str, page_key: str) -> None:
             st.session_state.nav_page = page_key
 
 def _render_page_header(page_key: str) -> None:
-    """Muestra un breadcrumb sutil encima del contenido (p.ej. 'Clima  ›  📊 Dashboard')."""
+    """Cabecera visual con icono grande, título y breadcrumb de grupo."""
     meta = _PAGE_META.get(page_key)
     if meta:
         icon, group, name = meta
-        crumb = f"{group}  ›  {icon} {name}" if group else f"{icon} {name}"
-        st.markdown(f'<p class="page-breadcrumb">{crumb}</p>', unsafe_allow_html=True)
+        crumb = f"{group}  ›  {name}" if group else ""
+        st.markdown(
+            f'<div class="page-header">'
+            f'  <span class="page-header-icon">{icon}</span>'
+            f'  <div class="page-header-text">'
+            f'    <p class="page-header-title">{name}</p>'
+            f'    {"<p class=\"page-header-crumb\">" + crumb + "</p>" if crumb else ""}'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+# Páginas por grupo (para auto-expandir el grupo activo)
+_CLIMA_PAGES   = {"dashboard","sencrop","analisis","comparador","frio"}
+_CULTIVO_PAGES = {"fenologia","sanidad","decisiones","carpocapsa","riego"}
+_GESTION_PAGES = {"campos","agroptima","produccion","informe"}
+
+_active_page = st.session_state.get("nav_page","dashboard")
+if _active_page in _CLIMA_PAGES:   st.session_state["grp_clima"]   = True
+if _active_page in _CULTIVO_PAGES: st.session_state["grp_cultivo"] = True
+if _active_page in _GESTION_PAGES: st.session_state["grp_gestion"] = True
 
 with st.sidebar:
     # Título con logo inline (base64) en lugar del emoji 🌿
@@ -12890,6 +13071,11 @@ with st.sidebar:
     st.divider()
     _nav_btn("📘 Instrucciones",  "instrucciones")
     _nav_btn("⚙️ Configuración",  "configuracion")
+    st.divider()
+    st.markdown(
+        '<p class="sidebar-footer">🌿 Finca Gallinal<br>Plataforma agroclimática v2</p>',
+        unsafe_allow_html=True,
+    )
 
 # ── Contenido principal según página seleccionada ─────────────────────────────
 _page = st.session_state.get("nav_page", "dashboard")
