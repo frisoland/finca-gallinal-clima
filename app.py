@@ -120,16 +120,37 @@ _st_components.html(
           '}';
         doc.head.appendChild(mobileNavStyle);
 
+        /* ── Ocultar botón "Manage app" de Streamlit Cloud en móvil ──
+           Busca cualquier elemento position:fixed pequeño (<130×80px)
+           en la esquina inferior-derecha que no sea nuestro. */
+        (function fgHideManageBtn() {
+          if (win.innerWidth >= 768) { setTimeout(fgHideManageBtn, 2000); return; }
+          var nodes = doc.querySelectorAll('*');
+          for (var k = 0; k < nodes.length; k++) {
+            var n = nodes[k];
+            if (n.id === 'fg-mobile-nav' || n.id === 'fg-scroll-fab' ||
+                n.id === 'fg-mobile-nav-style') continue;
+            var cs = win.getComputedStyle(n);
+            if (cs.position !== 'fixed') continue;
+            var nr = n.getBoundingClientRect();
+            if (nr.width > 0 && nr.width < 130 && nr.height < 80 &&
+                nr.bottom > win.innerHeight - 90 &&
+                nr.right  > win.innerWidth  - 130) {
+              n.style.setProperty('display','none','important');
+            }
+          }
+          setTimeout(fgHideManageBtn, 2000);
+        })();
+
         var mobileNav = doc.createElement('div');
         mobileNav.id = 'fg-mobile-nav';
-        /* right:72px → deja espacio libre para el botón "Manage app" de Streamlit Cloud */
+        /* Ancho completo — el botón Manage App queda oculto */
         mobileNav.style.cssText =
-          'position:fixed;bottom:0;left:0;right:72px;height:60px;' +
+          'position:fixed;bottom:0;left:0;right:0;height:60px;' +
           'background:#fff;border-top:1px solid #e8e8e8;' +
           'box-shadow:0 -2px 10px rgba(0,0,0,0.07);' +
           'display:flex;align-items:stretch;z-index:9998;';
 
-        /* 4 items (sin "Menú"): el botón Manage App de Streamlit ocupa el espacio derecho */
         var mnItems = [
           {ic:'📊', lb:'Inicio',  tx:'📊 Dashboard'},
           {ic:'🌤️', lb:'Clima',   tx:'🌦️ Sencrop'},
@@ -137,7 +158,6 @@ _st_components.html(
           {ic:'📋', lb:'Gestión', tx:'🌳 Campos'}
         ];
 
-        /* Grupos para saber cuál item de la barra está "activo" */
         var mnItemGroup = ['clima','clima','cultivo','gestion'];
 
         var mnBtns = [];
