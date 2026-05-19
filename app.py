@@ -12846,15 +12846,16 @@ with st.sidebar:
         if _os.path.exists("finca_gallinal_logo.jpeg"):
             with open("finca_gallinal_logo.jpeg", "rb") as _lf:
                 _logo_b64 = _b64.b64encode(_lf.read()).decode()
-            # Imagen 379x379px: manzana en el 60% superior, texto en el 40% inferior.
-            # Mostramos 58px de ancho × 35px de alto → recorta el 40% inferior (texto).
+            # Imagen 379x379px: manzana en top ~60%, texto FINCA/GALLINAL en bottom ~40%.
+            # Contenedor 70×42px recorta el texto inferior (overflow:hidden).
+            # mix-blend-mode:multiply elimina el fondo blanco fundiéndolo con el sidebar.
             st.markdown(
                 f'<p style="display:flex;align-items:center;gap:8px;'
                 f'font-size:1.22rem;font-weight:700;margin:4px 0 2px 0;line-height:1;">'
-                f'<span style="display:inline-block;width:58px;height:35px;'
-                f'overflow:hidden;border-radius:4px;flex-shrink:0;">'
+                f'<span style="display:inline-block;width:70px;height:42px;'
+                f'overflow:hidden;flex-shrink:0;">'
                 f'<img src="data:image/jpeg;base64,{_logo_b64}" '
-                f'style="width:58px;height:58px;display:block;">'
+                f'style="width:70px;height:70px;display:block;mix-blend-mode:multiply;">'
                 f'</span>'
                 f'Finca Gallinal</p>',
                 unsafe_allow_html=True,
