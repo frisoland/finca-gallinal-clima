@@ -59,11 +59,11 @@ st.markdown(
     /* ── Sidebar: esquinas derechas redondeadas ── */
     section[data-testid="stSidebar"] {
         border-radius: 0 20px 20px 0 !important;
-        overflow: hidden !important;
     }
     section[data-testid="stSidebar"] > div:first-child {
         border-radius: 0 20px 20px 0 !important;
-        overflow: hidden !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
     }
     </style>
     """,
