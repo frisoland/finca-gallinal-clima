@@ -1,0 +1,4 @@
+[client]
+# "minimal" oculta la barra de herramientas de Streamlit Cloud (botón Manage app)
+# Opciones: "auto" | "developer" | "viewer" | "minimal"
+toolbarMode = "minimal"

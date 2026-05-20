@@ -38,6 +38,23 @@ st.markdown(
         border: none !important;
         line-height: 0 !important;
     }
+
+    /* ── Ocultar botón "Manage app" / viewer-badge de Streamlit Cloud ──
+       Se aplica solo en móvil (<768px). Se prueban todos los selectores
+       conocidos: data-testid oficial, clases parciales y el viewer badge. */
+    @media (max-width: 767px) {
+        [data-testid="stStatusWidget"],
+        [data-testid="stAppToolbar"],
+        [data-testid="stToolbar"],
+        [data-testid="stDeployButton"],
+        [data-testid="stDecoration"],
+        [class*="viewerBadge"],
+        [class*="StatusWidget"],
+        [class*="deployButton"],
+        [class*="stToolbar"] {
+            display: none !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -55,6 +72,20 @@ _st_components.html(
       try {
         var win = window.parent;
         var doc = win.document;
+
+        /* ── En móvil, redirigir con ?embed=true para ocultar la barra
+           de herramientas de Streamlit Cloud (botón Manage app, Fork, etc.)
+           ?embed=true es un parámetro oficial y documentado de Streamlit Cloud.
+           Se ejecuta una sola vez: si el parámetro ya está, no redirige. ── */
+        if (win.innerWidth < 768) {
+          try {
+            var _url = new URL(win.location.href);
+            if (!_url.searchParams.has('embed')) {
+              _url.searchParams.set('embed', 'true');
+              win.location.replace(_url.toString());
+            }
+          } catch(e) {}
+        }
 
         /* Eliminar instancia previa (re-renders de Streamlit) */
         var old = doc.getElementById('fg-scroll-fab');
@@ -121,44 +152,112 @@ _st_components.html(
         doc.head.appendChild(mobileNavStyle);
 
         /* ── Ocultar botón "Manage app" de Streamlit Cloud en móvil ──
-           Busca cualquier elemento position:fixed pequeño (<130×80px)
-           en la esquina inferior-derecha que no sea nuestro. */
+           Triple estrategia:
+           1. CSS injection con selectores conocidos de Streamlit Cloud.
+           2. TreeWalker: busca texto "manage" y sube al ancestro fixed.
+           3. Posición: cualquier elemento fixed en esquina inferior-derecha. */
+
+        /* Estrategia 1 — CSS (funciona aunque el JS tarde en ejecutarse) */
+        var fgHideStyle = doc.getElementById('fg-hide-manage-style');
+        if (!fgHideStyle) {
+          fgHideStyle = doc.createElement('style');
+          fgHideStyle.id = 'fg-hide-manage-style';
+          doc.head.appendChild(fgHideStyle);
+        }
+        fgHideStyle.textContent =
+          '@media (max-width:767px){' +
+          '[data-testid="stStatusWidget"],' +
+          '[data-testid="stAppToolbar"],' +
+          '[data-testid="stToolbar"],' +
+          '[data-testid="stDeployButton"],' +
+          '[class*="StatusWidget"],' +
+          '[class*="stToolbar"]' +
+          '{display:none!important}' +
+          '}';
+
+        /* Estrategias 2 y 3 — loop periódico */
         (function fgHideManageBtn() {
           if (win.innerWidth >= 768) { setTimeout(fgHideManageBtn, 2000); return; }
-          var nodes = doc.querySelectorAll('*');
-          for (var k = 0; k < nodes.length; k++) {
-            var n = nodes[k];
-            if (n.id === 'fg-mobile-nav' || n.id === 'fg-scroll-fab' ||
-                n.id === 'fg-mobile-nav-style') continue;
-            var cs = win.getComputedStyle(n);
-            if (cs.position !== 'fixed') continue;
-            var nr = n.getBoundingClientRect();
-            if (nr.width > 0 && nr.width < 130 && nr.height < 80 &&
-                nr.bottom > win.innerHeight - 90 &&
-                nr.right  > win.innerWidth  - 130) {
-              n.style.setProperty('display','none','important');
+
+          /* 2. Buscar texto "manage" en todos los documentos accesibles */
+          var docsToSearch = [doc];
+          try { if (win.top && win.top.document !== doc) docsToSearch.push(win.top.document); } catch(e){}
+          docsToSearch.forEach(function(d) {
+            try {
+              /* 2a. TreeWalker: texto que contenga "manage" */
+              var walker = d.createTreeWalker(d.body, NodeFilter.SHOW_TEXT, null, false);
+              var tn;
+              while ((tn = walker.nextNode())) {
+                if (!tn.nodeValue) continue;
+                if (tn.nodeValue.trim().toLowerCase().indexOf('manage') === -1) continue;
+                var el = tn.parentElement;
+                while (el && el !== d.body) {
+                  try {
+                    var pos = win.getComputedStyle(el).position;
+                    if (pos === 'fixed' || pos === 'sticky') {
+                      if (el.id !== 'fg-mobile-nav' && el.id !== 'fg-scroll-fab') {
+                        el.style.setProperty('display','none','important');
+                      }
+                      break;
+                    }
+                  } catch(e2){}
+                  el = el.parentElement;
+                }
+              }
+              /* 2b. Selectores de Streamlit conocidos */
+              ['[data-testid="stStatusWidget"]','[data-testid="stAppToolbar"]',
+               '[data-testid="stToolbar"]','[data-testid="stDeployButton"]'].forEach(function(sel) {
+                try {
+                  d.querySelectorAll(sel).forEach(function(el) {
+                    el.style.setProperty('display','none','important');
+                  });
+                } catch(e3){}
+              });
+            } catch(ex){}
+          });
+
+          /* 3. Posición: elemento fixed/sticky en esquina inferior-derecha */
+          try {
+            var nodes = doc.querySelectorAll('*');
+            for (var k = 0; k < nodes.length; k++) {
+              var n = nodes[k];
+              if (n.id === 'fg-mobile-nav' || n.id === 'fg-scroll-fab' ||
+                  n.id === 'fg-mobile-nav-style' || n.id === 'fg-hide-manage-style') continue;
+              var pos2 = win.getComputedStyle(n).position;
+              if (pos2 !== 'fixed' && pos2 !== 'sticky') continue;
+              var nr = n.getBoundingClientRect();
+              if (nr.width > 0 && nr.width < 220 && nr.height < 130 &&
+                  nr.bottom >= win.innerHeight - 130 &&
+                  nr.right  >= win.innerWidth  - 220) {
+                n.style.setProperty('display','none','important');
+              }
             }
-          }
-          setTimeout(fgHideManageBtn, 2000);
+          } catch(ex){}
+
+          setTimeout(fgHideManageBtn, 1500);
         })();
 
         var mobileNav = doc.createElement('div');
         mobileNav.id = 'fg-mobile-nav';
-        /* Ancho completo — el botón Manage App queda oculto */
+        /* padding-right deja libre la esquina inferior-derecha donde
+           Streamlit Cloud coloca su botón "Manage app" (cross-origin,
+           inaccesible desde la app). La barra sigue siendo ancho completo
+           visualmente (fondo blanco de lado a lado) pero los ítems no
+           llegan a esa zona. */
         mobileNav.style.cssText =
           'position:fixed;bottom:0;left:0;right:0;height:60px;' +
           'background:#fff;border-top:1px solid #e8e8e8;' +
           'box-shadow:0 -2px 10px rgba(0,0,0,0.07);' +
-          'display:flex;align-items:stretch;z-index:9998;';
+          'display:flex;align-items:stretch;z-index:2147483646;' +
+          'padding-right:72px;';
 
         var mnItems = [
-          {ic:'📊', lb:'Inicio',  tx:'📊 Dashboard'},
+          {ic:'📋', lb:'Gestión', tx:'🌳 Campos'},
           {ic:'🌤️', lb:'Clima',   tx:'🌦️ Sencrop'},
-          {ic:'🌿', lb:'Cultivo', tx:'🌱 Fenología'},
-          {ic:'📋', lb:'Gestión', tx:'🌳 Campos'}
+          {ic:'🌿', lb:'Cultivo', tx:'🌱 Fenología'}
         ];
 
-        var mnItemGroup = ['clima','clima','cultivo','gestion'];
+        var mnItemGroup = ['gestion','clima','cultivo'];
 
         var mnBtns = [];
         mnItems.forEach(function(item, idx) {
