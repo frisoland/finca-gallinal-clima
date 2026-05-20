@@ -55,6 +55,16 @@ st.markdown(
             display: none !important;
         }
     }
+
+    /* ── Sidebar: esquinas derechas redondeadas ── */
+    section[data-testid="stSidebar"] {
+        border-radius: 0 20px 20px 0 !important;
+        overflow: hidden !important;
+    }
+    section[data-testid="stSidebar"] > div:first-child {
+        border-radius: 0 20px 20px 0 !important;
+        overflow: hidden !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -245,9 +255,9 @@ _st_components.html(
            border-radius en esquinas superiores para aspecto redondeado. */
         mobileNav.style.cssText =
           'position:fixed;bottom:0;left:0;right:0;height:60px;' +
-          'background:#1b6b35;' +
+          'background:#43a047;' +
           'border-radius:20px 20px 0 0;' +
-          'box-shadow:0 -4px 18px rgba(27,107,53,0.35);' +
+          'box-shadow:0 -4px 18px rgba(67,160,71,0.4);' +
           'display:flex;align-items:stretch;z-index:2147483646;' +
           'padding-right:150px;';
 
