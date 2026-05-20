@@ -262,13 +262,13 @@ _st_components.html(
           'padding-right:150px;';
 
         var mnItems = [
-          {ic:'📊', lb:'Inicio',   tx:'📊 Dashboard'},
-          {ic:'🌤️', lb:'Clima',    tx:'🌦️ Sencrop'},
-          {ic:'🌿', lb:'Cultivo',  tx:'🌱 Fenología'},
-          {ic:'📋', lb:'Gestión',  tx:'🌳 Campos'}
+          {ic:'🔎', lb:'Análisis',  tx:'🔎 Análisis'},
+          {ic:'🌤️', lb:'Clima',     tx:'🌦️ Sencrop'},
+          {ic:'🧾', lb:'Agroptima', tx:'🧾 Agroptima'},
+          {ic:'🍎', lb:'Producción',tx:'🍎 Producción'}
         ];
 
-        var mnItemGroup = ['inicio','clima','cultivo','gestion'];
+        var mnItemGroup = ['analisis','clima','agroptima','produccion'];
 
         var mnBtns = [];
         mnItems.forEach(function(item, idx) {
@@ -306,12 +306,11 @@ _st_components.html(
             var activeText = activeDiv ? activeDiv.textContent.trim() : '';
             /* Determinar grupo activo a partir del texto de la página */
             var textToKey = {
-              '📊 Dashboard':'inicio','🌦️ Sencrop':'clima',
-              '🔎 Análisis':'clima','📈 Comparador':'clima','❄️ Frío':'clima',
-              '🌱 Fenología':'cultivo','🍄 Sanidad':'cultivo',
-              '🎯 Decisiones':'cultivo','🐛 Carpocapsa':'cultivo','💧 Riego':'cultivo',
-              '🌳 Campos':'gestion','🧾 Agroptima':'gestion',
-              '🍎 Producción':'gestion','📝 Informe semanal':'gestion'
+              '🔎 Análisis':'analisis',
+              '📊 Dashboard':'clima','🌦️ Sencrop':'clima',
+              '📈 Comparador':'clima','❄️ Frío':'clima',
+              '🧾 Agroptima':'agroptima',
+              '🍎 Producción':'produccion'
             };
             var activeGroup = textToKey[activeText] || '';
             mnBtns.forEach(function(btn, idx) {
