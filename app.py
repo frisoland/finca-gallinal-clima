@@ -252,7 +252,7 @@ _st_components.html(
           'padding-right:72px;';
 
         var mnItems = [
-          {ic:'📋', lb:'Gestión', tx:'🌳 Campos'},
+          {ic:'📋', lb:'Inicio',  tx:'🌳 Campos'},
           {ic:'🌤️', lb:'Clima',   tx:'🌦️ Sencrop'},
           {ic:'🌿', lb:'Cultivo', tx:'🌱 Fenología'}
         ];
