@@ -241,13 +241,13 @@ _st_components.html(
         mobileNav.id = 'fg-mobile-nav';
         /* padding-right deja libre la esquina inferior-derecha donde
            Streamlit Cloud coloca su botón "Manage app" (cross-origin,
-           inaccesible desde la app). La barra sigue siendo ancho completo
-           visualmente (fondo blanco de lado a lado) pero los ítems no
-           llegan a esa zona. */
+           inaccesible desde la app).
+           border-radius en esquinas superiores para aspecto redondeado. */
         mobileNav.style.cssText =
           'position:fixed;bottom:0;left:0;right:0;height:60px;' +
-          'background:#fff;border-top:1px solid #e8e8e8;' +
-          'box-shadow:0 -2px 10px rgba(0,0,0,0.07);' +
+          'background:#1b6b35;' +
+          'border-radius:20px 20px 0 0;' +
+          'box-shadow:0 -4px 18px rgba(27,107,53,0.35);' +
           'display:flex;align-items:stretch;z-index:2147483646;' +
           'padding-right:150px;';
 
@@ -266,8 +266,9 @@ _st_components.html(
           btn.style.cssText =
             'flex:1;display:flex;flex-direction:column;align-items:center;' +
             'justify-content:center;gap:2px;border:none;background:transparent;' +
-            'cursor:pointer;font-size:0.58rem;color:#aaa;padding:0;' +
-            '-webkit-tap-highlight-color:transparent;transition:color 0.15s;';
+            'cursor:pointer;font-size:0.58rem;color:rgba(255,255,255,0.55);padding:4px 0;' +
+            'border-radius:12px;' +
+            '-webkit-tap-highlight-color:transparent;transition:all 0.15s;';
           btn.innerHTML =
             '<span style="font-size:1.35rem;line-height:1">' + item.ic + '</span>' +
             '<span>' + item.lb + '</span>';
@@ -305,8 +306,9 @@ _st_components.html(
             var activeGroup = textToKey[activeText] || '';
             mnBtns.forEach(function(btn, idx) {
               var isActive = mnItemGroup[idx] && mnItemGroup[idx] === activeGroup;
-              btn.style.color      = isActive ? '#1b6b35' : '#aaa';
+              btn.style.color      = isActive ? '#fff' : 'rgba(255,255,255,0.55)';
               btn.style.fontWeight = isActive ? '700' : '400';
+              btn.style.background = isActive ? 'rgba(255,255,255,0.18)' : 'transparent';
             });
           }, 400);
         }
