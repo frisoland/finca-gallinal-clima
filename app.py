@@ -249,7 +249,7 @@ _st_components.html(
           'background:#fff;border-top:1px solid #e8e8e8;' +
           'box-shadow:0 -2px 10px rgba(0,0,0,0.07);' +
           'display:flex;align-items:stretch;z-index:2147483646;' +
-          'padding-right:72px;';
+          'padding-right:160px;';
 
         var mnItems = [
           {ic:'📋', lb:'Inicio',  tx:'🌳 Campos'},
