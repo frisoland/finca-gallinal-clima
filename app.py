@@ -268,7 +268,7 @@ _st_components.html(
           {ic:'📋', lb:'Gestión',  tx:'🌳 Campos'}
         ];
 
-        var mnItemGroup = ['clima','clima','cultivo','gestion'];
+        var mnItemGroup = ['inicio','clima','cultivo','gestion'];
 
         var mnBtns = [];
         mnItems.forEach(function(item, idx) {
@@ -306,7 +306,7 @@ _st_components.html(
             var activeText = activeDiv ? activeDiv.textContent.trim() : '';
             /* Determinar grupo activo a partir del texto de la página */
             var textToKey = {
-              '📊 Dashboard':'clima','🌦️ Sencrop':'clima',
+              '📊 Dashboard':'inicio','🌦️ Sencrop':'clima',
               '🔎 Análisis':'clima','📈 Comparador':'clima','❄️ Frío':'clima',
               '🌱 Fenología':'cultivo','🍄 Sanidad':'cultivo',
               '🎯 Decisiones':'cultivo','🐛 Carpocapsa':'cultivo','💧 Riego':'cultivo',
