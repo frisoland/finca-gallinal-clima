@@ -255,9 +255,9 @@ _st_components.html(
            border-radius en esquinas superiores para aspecto redondeado. */
         mobileNav.style.cssText =
           'position:fixed;bottom:0;left:0;right:0;height:60px;' +
-          'background:#43a047;' +
+          'background:#1a2e1e;' +
           'border-radius:20px 20px 0 0;' +
-          'box-shadow:0 -4px 18px rgba(67,160,71,0.4);' +
+          'box-shadow:0 -4px 20px rgba(0,0,0,0.45);' +
           'display:flex;align-items:stretch;z-index:2147483646;' +
           'padding-right:150px;';
 
