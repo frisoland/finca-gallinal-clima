@@ -249,15 +249,16 @@ _st_components.html(
           'background:#fff;border-top:1px solid #e8e8e8;' +
           'box-shadow:0 -2px 10px rgba(0,0,0,0.07);' +
           'display:flex;align-items:stretch;z-index:2147483646;' +
-          'padding-right:160px;';
+          'padding-right:150px;';
 
         var mnItems = [
-          {ic:'📋', lb:'Inicio',  tx:'🌳 Campos'},
-          {ic:'🌤️', lb:'Clima',   tx:'🌦️ Sencrop'},
-          {ic:'🌿', lb:'Cultivo', tx:'🌱 Fenología'}
+          {ic:'📊', lb:'Inicio',   tx:'📊 Dashboard'},
+          {ic:'🌤️', lb:'Clima',    tx:'🌦️ Sencrop'},
+          {ic:'🌿', lb:'Cultivo',  tx:'🌱 Fenología'},
+          {ic:'📋', lb:'Gestión',  tx:'🌳 Campos'}
         ];
 
-        var mnItemGroup = ['gestion','clima','cultivo'];
+        var mnItemGroup = ['clima','clima','cultivo','gestion'];
 
         var mnBtns = [];
         mnItems.forEach(function(item, idx) {
