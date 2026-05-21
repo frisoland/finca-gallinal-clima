@@ -6295,17 +6295,20 @@ def analysis_tab(history, soil_type, hoja_threshold):
     render_interpreted_report(global_summary, avail, soil_type)
 
     with st.expander("Resumen semanal dentro del periodo", expanded=False):
-        if not summary.empty:
-            _sw_cols = list(summary.columns)
-            _sw_th = ("background:#1a2e1e;color:white;padding:8px 12px;"
-                      "white-space:nowrap;font-weight:600;font-size:13px;")
-            _sw_th_sticky = "position:sticky;left:0;z-index:2;" + _sw_th
+        _sw_df = summary.reset_index(drop=True) if (summary is not None and not summary.empty) else pd.DataFrame()
+        if _sw_df.empty:
+            st.info("No hay datos semanales para el periodo seleccionado.")
+        else:
+            _sw_cols = list(_sw_df.columns)
+            _sw_th_base   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                             "white-space:nowrap;font-weight:600;font-size:13px;")
+            _sw_th_sticky = "position:sticky;left:0;z-index:2;" + _sw_th_base
             _sw_header = "".join(
-                f'<th style="{_sw_th_sticky if i == 0 else _sw_th}">{c}</th>'
+                f'<th style="{_sw_th_sticky if i == 0 else _sw_th_base}">{c}</th>'
                 for i, c in enumerate(_sw_cols)
             )
             _sw_body = ""
-            for _, _r in summary.iterrows():
+            for _, _r in _sw_df.iterrows():
                 _cells = ""
                 for _i, _c in enumerate(_sw_cols):
                     _v = _r[_c]
@@ -6326,8 +6329,6 @@ def analysis_tab(history, soil_type, hoja_threshold):
                 f'</table></div>',
                 unsafe_allow_html=True,
             )
-        else:
-            st.dataframe(summary, use_container_width=True)
         st.download_button(
             "Descargar resumen semanal del periodo",
             data=summary.to_csv(index=False).encode("utf-8-sig"),
