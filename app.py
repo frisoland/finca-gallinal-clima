@@ -6242,11 +6242,44 @@ def analysis_tab(history, soil_type, hoja_threshold):
         st.warning("No hay datos en el periodo seleccionado.")
         return
 
-    st.markdown("#### Disponibilidad y calidad de datos")
-    st.dataframe(avail, use_container_width=True)
+    with st.expander("🔍 Calidad de datos", expanded=False):
+        st.dataframe(avail, use_container_width=True)
 
     st.markdown("#### Resumen global del periodo")
-    st.dataframe(global_summary, use_container_width=True)
+    # Tabla HTML con primera columna sticky + cabecera verde (igual que Previsión)
+    if not global_summary.empty:
+        _gs_cols = list(global_summary.columns)
+        _gs_th = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                  "white-space:nowrap;font-weight:600;font-size:13px;")
+        _gs_th_sticky = "position:sticky;left:0;z-index:2;" + _gs_th
+        _gs_header = "".join(
+            f'<th style="{_gs_th_sticky if i == 0 else _gs_th}">{c}</th>'
+            for i, c in enumerate(_gs_cols)
+        )
+        _gs_body = ""
+        for _, _r in global_summary.iterrows():
+            _cells = ""
+            for _i, _c in enumerate(_gs_cols):
+                _v = _r[_c]
+                _disp = (f"{_v:.1f}" if isinstance(_v, float) and not pd.isna(_v)
+                         else ("—" if (isinstance(_v, float) and pd.isna(_v)) else str(_v)))
+                _bg = "#eef2ee" if _i == 0 else "white"
+                _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                       f"background:{_bg};padding:7px 12px;"
+                       f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+                _cells += f"<td style='{_td}'>{_disp}</td>"
+            _gs_body += f"<tr>{_cells}</tr>"
+        st.markdown(
+            f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+            f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+            f'<table style="border-collapse:collapse;width:100%;">'
+            f'<thead><tr>{_gs_header}</tr></thead>'
+            f'<tbody>{_gs_body}</tbody>'
+            f'</table></div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.dataframe(global_summary, use_container_width=True)
 
     render_interpreted_report(global_summary, avail, soil_type)
 
