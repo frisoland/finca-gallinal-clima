@@ -80,6 +80,20 @@ st.markdown(
             border-radius: 8px !important;
             padding: 4px 8px !important;
         }
+        /* ── Widgets desactivados: fondo gris + etiqueta atenuada ── */
+        [data-testid="stDateInput"]:has([disabled]) > div > div,
+        [data-testid="stSelectbox"]:has([disabled]) > div > div:first-child,
+        [data-testid="stSelectbox"]:has([aria-disabled="true"]) > div > div:first-child {
+            background-color: #dde3e1 !important;
+            border-color: #b0bab8 !important;
+            color: #888 !important;
+        }
+        [data-testid="stDateInput"]:has([disabled]) label,
+        [data-testid="stSelectbox"]:has([disabled]) label,
+        [data-testid="stSelectbox"]:has([aria-disabled="true"]) label {
+            color: #999 !important;
+            font-style: italic !important;
+        }
     </style>
     """,
     unsafe_allow_html=True,
