@@ -6552,6 +6552,58 @@ def compare_month_weeks(history, years, month, week_in_month, soil_type, hoja_th
     return pd.DataFrame(rows)
 
 
+def month_fortnight_period(year, month, fortnight):
+    """
+    Devuelve el periodo de la quincena N de un mes concreto.
+    - Primera quincena (1) = días 1-15 del mes
+    - Segunda quincena (2) = días 16-fin del mes
+    """
+    import calendar
+
+    year = int(year)
+    month = int(month)
+    fortnight = int(fortnight)
+    last_day = calendar.monthrange(year, month)[1]
+    if fortnight == 1:
+        start_day, end_day = 1, 15
+    else:
+        start_day, end_day = 16, last_day
+    start = pd.Timestamp(year=year, month=month, day=start_day, hour=0, minute=0)
+    end   = pd.Timestamp(year=year, month=month, day=end_day,   hour=23, minute=59, second=59)
+    return start, end
+
+
+def compare_month_fortnights(history, years, month, fortnight, soil_type, hoja_threshold):
+    """Compara la misma quincena de un mes entre varios años."""
+    fortnight_label = "1ª quincena" if int(fortnight) == 1 else "2ª quincena"
+    rows = []
+    for y in years:
+        start, end = month_fortnight_period(int(y), int(month), int(fortnight))
+        period = history[(history["fecha_hora"] >= start) & (history["fecha_hora"] <= end)].copy()
+        if period.empty:
+            rows.append({
+                "Comparación": f"{int(y)} · {MONTH_NAMES_ES[int(month)]} · {fortnight_label}",
+                "Año": int(y),
+                "Mes": MONTH_NAMES_ES[int(month)],
+                "Quincena": int(fortnight),
+                "Desde": start,
+                "Hasta": end,
+                "Aviso": "Sin datos",
+            })
+            continue
+        period = add_risk_columns(period, hoja_humeda_threshold=hoja_threshold)
+        row_df = period_summary(period, soil_type, start, end)
+        row = row_df.iloc[0].to_dict() if not row_df.empty else {}
+        row["Comparación"] = f"{int(y)} · {MONTH_NAMES_ES[int(month)]} · {fortnight_label}"
+        row["Año"] = int(y)
+        row["Mes"] = MONTH_NAMES_ES[int(month)]
+        row["Quincena"] = int(fortnight)
+        row["Desde"] = start
+        row["Hasta"] = end
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def compact_comparison_report_table(cmp_df):
     """
     Crea una tabla vertical y visual, pensada para no hacer scroll horizontal.
@@ -6657,25 +6709,66 @@ def render_visual_comparison_report(cmp_df, title="Informe comparativo visual"):
     # Ranking/resumen rápido arriba.
     c1, c2, c3 = st.columns(3)
 
-    def metric_winner(col, label, suffix=""):
+    def metric_winner(col, label="", suffix=""):
         if col not in cmp_df.columns:
             return "Sin dato"
-        valid = cmp_df[["Comparación", col]].copy()
+        _cols = ["Año"] if "Año" in cmp_df.columns else ["Comparación"]
+        valid = cmp_df[_cols + [col]].copy()
         valid[col] = pd.to_numeric(valid[col], errors="coerce")
         valid = valid.dropna(subset=[col])
         if valid.empty:
             return "Sin dato"
         row = valid.loc[valid[col].idxmax()]
-        return f"{row['Comparación']} · {float(row[col]):.2f}{suffix}"
+        _yl = row["Año"] if "Año" in valid.columns else row["Comparación"]
+        try:
+            _yl = int(_yl)
+        except Exception:
+            pass
+        return f"{_yl} · {float(row[col]):.1f}{suffix}"
 
     with c1:
-        st.metric("Más lluvioso", metric_winner("Lluvia total mm", "", " mm"))
+        st.metric("Más lluvioso", metric_winner("Lluvia total mm", suffix=" mm"))
     with c2:
-        st.metric("Más cálido", metric_winner("Temp. media ºC", "", " ºC"))
+        st.metric("Más cálido", metric_winner("Temp. media ºC", suffix=" ºC"))
     with c3:
-        st.metric("Mayor demanda evap.", metric_winner("Índice evaporativo ajustado suelo", "", ""))
+        st.metric("Mayor demanda evap.", metric_winner("Índice evaporativo ajustado suelo"))
 
-    st.dataframe(report, use_container_width=True, hide_index=True)
+    # ── Tabla HTML sticky ─────────────────────────────────────────────────────
+    _rpt = report.reset_index(drop=True)
+    _rpt_cols = list(_rpt.columns)
+    _rpt_th  = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                "white-space:nowrap;font-weight:600;font-size:13px;")
+    _rpt_ths = "position:sticky;left:0;z-index:2;" + _rpt_th
+    _rpt_hdr = "".join(
+        f'<th style="{_rpt_ths if i == 0 else _rpt_th}">{c}</th>'
+        for i, c in enumerate(_rpt_cols)
+    )
+    _rpt_body = ""
+    for _, _r in _rpt.iterrows():
+        _cells = ""
+        for _i, _c in enumerate(_rpt_cols):
+            _v = _r[_c]
+            if isinstance(_v, float) and not pd.isna(_v):
+                _disp = f"{_v:.1f}"
+            elif isinstance(_v, float) and pd.isna(_v):
+                _disp = "—"
+            else:
+                _disp = str(_v)
+            _bg = "#eef2ee" if _i == 0 else "white"
+            _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                   f"background:{_bg};padding:7px 12px;"
+                   f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+            _cells += f"<td style='{_td}'>{_disp}</td>"
+        _rpt_body += f"<tr>{_cells}</tr>"
+    st.markdown(
+        f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+        f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+        f'<table style="border-collapse:collapse;width:100%;">'
+        f'<thead><tr>{_rpt_hdr}</tr></thead>'
+        f'<tbody>{_rpt_body}</tbody>'
+        f'</table></div>',
+        unsafe_allow_html=True,
+    )
 
     st.download_button(
         "Descargar informe comparativo visual",
@@ -6846,6 +6939,96 @@ def comparator_tab(history, soil_type, hoja_threshold):
                     data=cmp_month.to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"comparacion_{month_name.lower()}_semana_{int(week_cmp)}.csv",
                     mime="text/csv",
+                )
+
+    with st.expander("Comparar por quincenas", expanded=False):
+        years_cmp_q = [int(y) for y in sorted(history["fecha_hora"].dt.year.unique())]
+        _today = pd.Timestamp.today()
+        current_month_q = _today.month
+        current_fortnight_q = 1 if _today.day <= 15 else 2
+
+        st.info(
+            "Primera quincena = días 1-15 del mes · Segunda quincena = días 16-fin de mes."
+        )
+
+        col_q1, col_q2, col_q3 = st.columns(3)
+        with col_q1:
+            month_name_q = st.selectbox(
+                "Mes a comparar",
+                options=list(MONTH_NUMBER_BY_NAME_ES.keys()),
+                index=max(0, current_month_q - 1),
+                key="cmp_fortnight_month_v83",
+            )
+            month_cmp_q = MONTH_NUMBER_BY_NAME_ES[month_name_q]
+        with col_q2:
+            fortnight_cmp = st.selectbox(
+                "Quincena",
+                options=[1, 2],
+                index=current_fortnight_q - 1,
+                format_func=lambda x: "1ª quincena (días 1-15)" if x == 1 else "2ª quincena (días 16-fin)",
+                key="cmp_fortnight_half_v83",
+            )
+        with col_q3:
+            usar_todos_anos_q = st.checkbox(
+                "Comparar todos los años disponibles",
+                value=False,
+                key="cmp_fortnight_all_years_v83",
+            )
+
+        selected_years_q_manual = st.multiselect(
+            "Años a comparar",
+            options=years_cmp_q,
+            default=years_cmp_q[-4:] if len(years_cmp_q) >= 4 else years_cmp_q,
+            help="Si activas 'Comparar todos los años disponibles', esta selección se ignora.",
+            key="cmp_fortnight_years_v83",
+        )
+
+        selected_years_q = years_cmp_q if usar_todos_anos_q else selected_years_q_manual
+        selected_years_q = [int(y) for y in selected_years_q]
+
+        if selected_years_q:
+            _fort_label_prev = "1ª quincena" if fortnight_cmp == 1 else "2ª quincena"
+            previews_q = []
+            for y in selected_years_q:
+                s_q, e_q = month_fortnight_period(y, month_cmp_q, fortnight_cmp)
+                previews_q.append(f"{y}: {s_q.strftime('%d/%m/%Y')} - {e_q.strftime('%d/%m/%Y')}")
+            st.caption("Periodos que se compararán: " + " · ".join(previews_q[:8]) + (" ..." if len(previews_q) > 8 else ""))
+
+        if st.button("Comparar quincenas", key="btn_cmp_fortnight_v83", type="primary"):
+            if not selected_years_q:
+                st.warning("Selecciona al menos un año.")
+            else:
+                _fort_label = "1ª quincena" if fortnight_cmp == 1 else "2ª quincena"
+                cmp_fortnight = compare_month_fortnights(
+                    history,
+                    selected_years_q,
+                    int(month_cmp_q),
+                    int(fortnight_cmp),
+                    soil_type,
+                    hoja_threshold,
+                )
+
+                order_map_q = {int(y): i for i, y in enumerate(selected_years_q)}
+                if "Año" in cmp_fortnight.columns:
+                    cmp_fortnight["_orden"] = cmp_fortnight["Año"].map(order_map_q)
+                    cmp_fortnight = cmp_fortnight.sort_values("_orden").drop(columns=["_orden"])
+
+                render_visual_comparison_report(
+                    cmp_fortnight,
+                    title=f"Informe visual · {month_name_q} · {_fort_label}",
+                )
+
+                with st.expander("Tabla completa técnica", expanded=False):
+                    st.dataframe(cmp_fortnight, use_container_width=True)
+
+                render_week_comparison_explanation(cmp_fortnight)
+
+                st.download_button(
+                    "Descargar comparación completa",
+                    data=cmp_fortnight.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"comparacion_{month_name_q.lower()}_{_fort_label.replace(' ', '_')}.csv",
+                    mime="text/csv",
+                    key="dl_fortnight_v83",
                 )
 
     with st.expander("Comparar por semana ISO entre años", expanded=False):
