@@ -5875,7 +5875,6 @@ def period_selector(history):
     min_dt = history["fecha_hora"].min()
     max_dt = history["fecha_hora"].max()
     years_available = sorted(history["fecha_hora"].dt.year.unique())
-    chill_years_available = available_chill_analysis_years(history)
 
     # ── Auto-análisis al abrir la app: últimos 7 días disponibles ────────────
     if st.session_state.get("applied_period") is None:
@@ -5887,47 +5886,50 @@ def period_selector(history):
             "selected_season": None,
         }
 
+    # ── Modo FUERA del form → rerender instantáneo al cambiar (solo UI, sin análisis) ──
+    st.markdown("#### Selección de periodo")
+    mode_input = st.selectbox(
+        "Modo de selección",
+        ["Periodo personalizado", "Última semana disponible", "Último mes disponible", "Año natural"],
+        index=1,
+        key="ps_mode_selector",
+    )
+
+    # Qué campos están activos según el modo
+    is_custom   = mode_input == "Periodo personalizado"
+    is_year     = mode_input == "Año natural"
+    dates_off   = not is_custom   # fechas desactivadas si no es personalizado
+    year_off    = not is_year     # año desactivado si no es año natural
+
     with st.form("period_selection_form_v60"):
-        st.markdown("#### Selección de periodo")
-
-        mode_input = st.selectbox(
-            "Modo de selección",
-            ["Periodo personalizado", "Última semana disponible", "Último mes disponible", "Año natural", "Campaña de frío"],
-            index=1,   # «Última semana disponible» por defecto
-        )
-
         col_a, col_b = st.columns(2)
         with col_a:
-            # Calendario directo: abre en el mes más reciente, sin rerun hasta Submit
             start_date_input = st.date_input(
-                "Fecha inicio (periodo personalizado)",
+                "Fecha inicio",
                 value=(max_dt - pd.Timedelta(days=6)).date(),
                 min_value=min_dt.date(),
                 max_value=max_dt.date(),
-            )
-            selected_year_input = st.selectbox(
-                "Año natural", years_available, index=len(years_available) - 1
+                disabled=dates_off,
             )
         with col_b:
             end_date_input = st.date_input(
-                "Fecha fin (periodo personalizado)",
+                "Fecha fin",
                 value=max_dt.date(),
                 min_value=min_dt.date(),
                 max_value=max_dt.date(),
+                disabled=dates_off,
             )
-            selected_chill_year_input = st.selectbox(
-                "Año de análisis del frío",
-                chill_years_available,
-                index=max(0, len(chill_years_available) - 1),
-                help="Ejemplo: 2020 analiza la campaña 2019/2020.",
-            )
+
+        selected_year_input = st.selectbox(
+            "Año natural",
+            years_available,
+            index=len(years_available) - 1,
+            disabled=year_off,
+        )
 
         submitted = st.form_submit_button("Analizar periodo", type="primary")
 
     if submitted:
-        selected_season = None
-        selected_chill_year = None
-
         if mode_input == "Periodo personalizado":
             start_ts = pd.Timestamp(start_date_input)
             end_ts   = pd.Timestamp(end_date_input) + pd.Timedelta(hours=23)
@@ -5940,14 +5942,9 @@ def period_selector(history):
             end_ts   = max_dt
             start_ts = max_dt - pd.Timedelta(days=30)
 
-        elif mode_input == "Año natural":
+        else:  # Año natural
             start_ts = pd.Timestamp(int(selected_year_input), 1, 1)
             end_ts   = pd.Timestamp(int(selected_year_input), 12, 31, 23)
-
-        else:
-            selected_chill_year = int(selected_chill_year_input)
-            selected_season     = winter_label_from_analysis_year(selected_chill_year)
-            start_ts, end_ts    = winter_period_from_analysis_year(selected_chill_year)
 
         if end_ts < start_ts:
             st.error("La fecha final no puede ser anterior a la fecha inicial.")
@@ -5957,8 +5954,8 @@ def period_selector(history):
             "mode": mode_input,
             "start_ts": start_ts,
             "end_ts":   end_ts,
-            "selected_chill_year": selected_chill_year,
-            "selected_season":     selected_season,
+            "selected_chill_year": None,
+            "selected_season":     None,
         }
 
     return st.session_state.applied_period
