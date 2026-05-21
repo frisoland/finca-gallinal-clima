@@ -5364,23 +5364,53 @@ def render_sencrop_forecast_panel():
             "Considera tratar antes del primer día de riesgo alto."
         )
 
-    # Tabla visual
-    def _style_risk(val):
-        if "🔴" in str(val): return "background-color:#ffe0e0; color:#c00"
-        if "🟠" in str(val): return "background-color:#fff0d0; color:#a05000"
-        if "🟡" in str(val): return "background-color:#ffffd0; color:#808000"
+    # Tabla HTML con primera columna sticky (funciona en móvil al hacer scroll horizontal)
+    def _risk_bg(val):
+        s = str(val)
+        if "🔴" in s: return "#ffe0e0"
+        if "🟠" in s: return "#fff0d0"
+        if "🟡" in s: return "#ffffd0"
         return ""
 
-    # pandas >= 2.1: applymap → map (Styler)
-    _styler_fn = getattr(risk_df.style, "map", None) or risk_df.style.applymap
-    styled = _styler_fn(_style_risk, subset=["Riesgo moteado", "Riesgo monilia"])
-    # Forzar 1 decimal en columnas numéricas (evita que pandas muestre 18.900000)
-    _num_fmt = {c: "{:.1f}" for c in
-                ["T. media (°C)", "HR media (%)", "Lluvia prev. (mm)", "DD carpocapsa previstos"]
-                if c in risk_df.columns}
-    if _num_fmt:
-        styled = styled.format(_num_fmt, na_rep="—")
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    _cols_risk = list(risk_df.columns)
+    _th_base = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                "white-space:nowrap;font-weight:600;font-size:13px;")
+    _th_sticky = "position:sticky;left:0;z-index:2;" + _th_base
+
+    _header_html = "".join(
+        f'<th style="{_th_sticky if i == 0 else _th_base}">{c}</th>'
+        for i, c in enumerate(_cols_risk)
+    )
+
+    _body_html = ""
+    for _, _r in risk_df.iterrows():
+        _cells = ""
+        for _i, _c in enumerate(_cols_risk):
+            _v = _r[_c]
+            # Formato: float → 1 decimal, resto → str
+            _disp = (f"{_v:.1f}" if isinstance(_v, float) and not pd.isna(_v)
+                     else ("—" if (isinstance(_v, float) and pd.isna(_v)) else str(_v)))
+            _col_bg = _risk_bg(_v) if _c in ("Riesgo moteado", "Riesgo monilia") else (
+                "#eef2ee" if _i == 0 else "white"
+            )
+            _td_style = (
+                f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                f"background:{_col_bg};"
+                f"padding:7px 12px;border-bottom:1px solid #e8e8e8;"
+                f"white-space:nowrap;font-size:13px;"
+            )
+            _cells += f"<td style='{_td_style}'>{_disp}</td>"
+        _body_html += f"<tr>{_cells}</tr>"
+
+    st.markdown(
+        f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+        f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+        f'<table style="border-collapse:collapse;width:100%;">'
+        f'<thead><tr>{_header_html}</tr></thead>'
+        f'<tbody>{_body_html}</tbody>'
+        f'</table></div>',
+        unsafe_allow_html=True,
+    )
 
     # ── Datos horarios crudos ─────────────────────────────────────────────────
     def _deg_to_cardinal(deg):
