@@ -5374,14 +5374,21 @@ def render_sencrop_forecast_panel():
     # pandas >= 2.1: applymap → map (Styler)
     _styler_fn = getattr(risk_df.style, "map", None) or risk_df.style.applymap
     styled = _styler_fn(_style_risk, subset=["Riesgo moteado", "Riesgo monilia"])
+    # Forzar 1 decimal en columnas numéricas (evita que pandas muestre 18.900000)
+    _num_fmt = {c: "{:.1f}" for c in
+                ["T. media (°C)", "HR media (%)", "Lluvia prev. (mm)", "DD carpocapsa previstos"]
+                if c in risk_df.columns}
+    if _num_fmt:
+        styled = styled.format(_num_fmt, na_rep="—")
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # ── Datos horarios crudos ─────────────────────────────────────────────────
     def _deg_to_cardinal(deg):
         try:
             if pd.isna(deg): return "—"
-            dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSO","SO","OSO","O","ONO","NO","NNO"]
-            return dirs[round(float(deg) / 22.5) % 16]
+            # 8 puntos cardinales/intercardinales: más intuitivos para el usuario
+            dirs = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"]
+            return dirs[round(float(deg) / 45) % 8]
         except Exception:
             return str(deg)
 
