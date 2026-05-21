@@ -70,6 +70,47 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ── Fondo gris claro + marca de agua con el logo ────────────────────────────
+try:
+    import base64 as _b64bg, os as _osbg
+    if _osbg.path.exists("finca_gallinal_logo.jpeg"):
+        with open("finca_gallinal_logo.jpeg", "rb") as _lf:
+            _bg_b64 = _b64bg.b64encode(_lf.read()).decode()
+        st.markdown(
+            f"""
+            <style>
+            /* Fondo gris suave en toda la app */
+            [data-testid="stAppViewContainer"] {{
+                background-color: #f2f4f0 !important;
+            }}
+            [data-testid="stMain"] {{
+                background-color: transparent !important;
+            }}
+            /* Logo difuminado como marca de agua fija */
+            [data-testid="stAppViewContainer"]::before {{
+                content: "";
+                position: fixed;
+                top: 50%;
+                left: 55%;
+                transform: translate(-50%, -50%);
+                width: 340px;
+                height: 340px;
+                background-image: url("data:image/jpeg;base64,{_bg_b64}");
+                background-size: contain;
+                background-repeat: no-repeat;
+                background-position: center;
+                opacity: 0.055;
+                filter: blur(2px) grayscale(15%);
+                pointer-events: none;
+                z-index: 0;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+except Exception:
+    pass
+
 # ── Botón flotante "volver arriba" ──────────────────────────────────────────
 # Estrategia: el script dentro del iframe inyecta el botón DIRECTAMENTE
 # en document.body del padre (window.parent.document.body.appendChild).
@@ -6177,17 +6218,20 @@ def dashboard_tab(history, soil_type, hoja_threshold):
     c2.metric("Desde", str(min_dt))
     c3.metric("Hasta", str(max_dt))
 
-    st.markdown("#### Disponibilidad global por sensor")
-    avail_global = availability_table(history, min_dt, max_dt)
-    st.dataframe(avail_global, use_container_width=True)
+    with st.expander("🔍 Calidad del dato", expanded=False):
+        avail_global = availability_table(history, min_dt, max_dt)
+        st.dataframe(avail_global, use_container_width=True)
 
-    st.markdown("#### Últimos 30 días disponibles")
+    st.markdown("#### Resumen últimos 30 días")
     last_start = max_dt - pd.Timedelta(days=30)
     last_df = history[(history["fecha_hora"] >= last_start) & (history["fecha_hora"] <= max_dt)].copy()
     if not last_df.empty:
         last_df = add_risk_columns(last_df, hoja_humeda_threshold=hoja_threshold)
         last_summary = period_summary(last_df, soil_type, last_start, max_dt)
-        st.dataframe(last_summary, use_container_width=True)
+        # Tabla vertical: transponer para evitar el scroll horizontal
+        _summary_v = last_summary.T.reset_index()
+        _summary_v.columns = ["Indicador", "Valor"]
+        st.dataframe(_summary_v, use_container_width=True, hide_index=True)
 
 
 def analysis_tab(history, soil_type, hoja_threshold):
