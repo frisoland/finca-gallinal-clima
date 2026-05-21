@@ -2516,13 +2516,48 @@ def render_chill_comparison_explanation(cmp_df, monthly_df=None):
 
         st.markdown("#### Tabla mensual de frío")
         sort_cols = [c for c in ["Año análisis", "Mes orden", "Orden mes campaña"] if c in monthly_df.columns]
-        if sort_cols:
-            monthly_show = monthly_df.sort_values(sort_cols)
-        else:
-            monthly_show = monthly_df.copy()
-        st.dataframe(
-            monthly_show,
-            use_container_width=True,
+        monthly_show = monthly_df.sort_values(sort_cols).copy() if sort_cols else monthly_df.copy()
+
+        # Columnas internas de orden → solo mostrar las relevantes
+        _m_drop = [c for c in ["Campaña frío", "Año análisis", "Mes número",
+                                "Orden mes campaña", "Mes orden"] if c in monthly_show.columns]
+        monthly_show = monthly_show.drop(columns=_m_drop).reset_index(drop=True)
+
+        # Campaña primera (sticky)
+        if "Campaña" in monthly_show.columns:
+            monthly_show = monthly_show[
+                ["Campaña"] + [c for c in monthly_show.columns if c != "Campaña"]
+            ]
+
+        _m_cols = list(monthly_show.columns)
+        _m_th   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                   "white-space:nowrap;font-weight:600;font-size:13px;")
+        _m_ths  = "position:sticky;left:0;z-index:2;" + _m_th
+        _m_hdr  = "".join(
+            f'<th style="{_m_ths if i == 0 else _m_th}">{c}</th>'
+            for i, c in enumerate(_m_cols)
+        )
+        _m_body = ""
+        for _, _r in monthly_show.iterrows():
+            _cells = ""
+            for _i, _c in enumerate(_m_cols):
+                _v = _r[_c]
+                _disp = (f"{_v:.1f}" if isinstance(_v, float) and not pd.isna(_v)
+                         else ("—" if (isinstance(_v, float) and pd.isna(_v)) else str(_v)))
+                _bg = "#eef2ee" if _i == 0 else "white"
+                _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                       f"background:{_bg};padding:7px 12px;"
+                       f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+                _cells += f"<td style='{_td}'>{_disp}</td>"
+            _m_body += f"<tr>{_cells}</tr>"
+        st.markdown(
+            f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+            f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+            f'<table style="border-collapse:collapse;width:100%;">'
+            f'<thead><tr>{_m_hdr}</tr></thead>'
+            f'<tbody>{_m_body}</tbody>'
+            f'</table></div>',
+            unsafe_allow_html=True,
         )
 
 
