@@ -5389,8 +5389,13 @@ def render_sencrop_forecast_panel():
         cols_show = [c for c in CANONICAL_COLUMNS if c in forecast_df.columns and
                      not forecast_df[c].isna().all()]
         display_fc = forecast_df[cols_show].copy()
-        if "dir_viento" in display_fc.columns:
-            display_fc["dir_viento"] = display_fc["dir_viento"].apply(_deg_to_cardinal)
+        # Dirección del viento: grados → cardinal
+        if "viento_direccion" in display_fc.columns:
+            display_fc["viento_direccion"] = display_fc["viento_direccion"].apply(_deg_to_cardinal)
+        # Redondear a 1 decimal: temperatura y viento
+        for _col in ("temp_media", "temp_min", "temp_max", "viento_velocidad", "viento_rafaga"):
+            if _col in display_fc.columns:
+                display_fc[_col] = display_fc[_col].round(1)
         st.dataframe(display_fc, use_container_width=True, hide_index=True)
         st.download_button(
             "⬇️ Descargar predicción CSV",
