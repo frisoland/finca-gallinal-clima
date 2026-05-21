@@ -5343,9 +5343,6 @@ def render_sencrop_panel():
         )
         st.caption("💡 Recuerda guardar el snapshot en Supabase para conservar los datos.")
 
-    # ── Panel de predicción meteorológica ─────────────────────────────────────
-    st.divider()
-    render_sencrop_forecast_panel()
 
 
 def render_sencrop_forecast_panel():
@@ -5683,191 +5680,235 @@ def sencrop_download_all_sensors(token, user_id, start_date, end_date, status_pl
 
 
 def import_panel():
-    st.subheader("Importar / actualizar histórico")
-
-    st.info(
-        "Recomendación práctica: para actualizar el mes actual, puedes subir el CSV del mes completo. "
-        "Usa el modo **Actualizar histórico reemplazando coincidencias por fecha/hora** para que los datos nuevos corrijan o completen los existentes sin duplicar registros."
-    )
-
-    render_sencrop_panel()
-
-    st.divider()
-
-    render_supabase_climate_panel()
-
-    st.divider()
-
-    master_file = st.file_uploader(
-        "Opcional: subir histórico maestro",
-        type=["csv"],
-        accept_multiple_files=False,
-        key="master_history_tab",
-    )
-
-    new_files = st.file_uploader(
-        "Subir nuevos CSV de sensores",
-        type=["csv"],
-        accept_multiple_files=True,
-        key="new_sensor_files_tab",
-    )
-
-    import_mode = st.radio(
-        "Modo de importación",
-        [
-            "Reemplazar histórico actual con los archivos subidos",
-            "Añadir solo datos nuevos, sin sobrescribir fechas existentes",
-            "Actualizar histórico reemplazando coincidencias por fecha/hora",
-        ],
-        index=2,
-        help=(
-            "Para trabajar con el mes actual completo, usa la tercera opción. "
-            "Si una fecha/hora ya existe, se conserva el dato del CSV nuevo. "
-            "Si no existe, se añade."
-        ),
-    )
-
-    with st.expander("Qué hace cada modo", expanded=False):
-        st.markdown(
-            """
-            **Reemplazar histórico actual con los archivos subidos**  
-            Borra el histórico de la sesión y usa solo el histórico maestro y/o los CSV que subas ahora.
-
-            **Añadir solo datos nuevos, sin sobrescribir fechas existentes**  
-            Añade únicamente las horas que no existen todavía. Si una fecha/hora ya existe, se conserva el dato antiguo.
-
-            **Actualizar histórico reemplazando coincidencias por fecha/hora**  
-            Recomendado para subir el mes actual completo. Si una fecha/hora ya existe, se reemplaza por el dato del CSV nuevo. Si no existe, se añade.
-            """
-        )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        do_import = st.button("Importar / actualizar histórico", type="primary")
-    with col2:
-        clear = st.button("Limpiar histórico de esta sesión")
-
-    if clear:
-        st.session_state.history_df = pd.DataFrame(columns=CANONICAL_COLUMNS)
-        st.session_state.last_import_errors = []
-        st.session_state.last_import_diagnostics = []
-        st.session_state.applied_period = None
-        st.rerun()
-
-    if do_import:
-        errors = []
-        diagnostics = []
-
-        before_df = st.session_state.history_df.copy()
-        before_count = len(before_df)
-        before_hours = set(before_df["fecha_hora"].dropna()) if not before_df.empty and "fecha_hora" in before_df.columns else set()
-
-        master_df, master_errors = load_master_history(master_file)
-        errors.extend(master_errors)
-        if master_file is not None:
-            diagnostics.append(diagnose_csv_file(master_file.name, master_file.getvalue()))
-
-        new_df, new_errors = merge_new_files(new_files or [])
-        errors.extend(new_errors)
-        for f in new_files or []:
-            diagnostics.append(diagnose_csv_file(f.name, f.getvalue()))
-
-        master_df = compact_history(master_df) if not master_df.empty else pd.DataFrame(columns=CANONICAL_COLUMNS)
-        new_df = compact_history(new_df) if not new_df.empty else pd.DataFrame(columns=CANONICAL_COLUMNS)
-
-        new_hours = set(new_df["fecha_hora"].dropna()) if not new_df.empty and "fecha_hora" in new_df.columns else set()
-
-        # Base de trabajo:
-        # - Si se sube histórico maestro, se usa como base.
-        # - Si no, se usa el histórico actual de la sesión.
-        if not master_df.empty:
-            base_df = master_df
-        else:
-            base_df = before_df
-
-        base_df = compact_history(base_df) if not base_df.empty else pd.DataFrame(columns=CANONICAL_COLUMNS)
-        base_hours = set(base_df["fecha_hora"].dropna()) if not base_df.empty and "fecha_hora" in base_df.columns else set()
-
-        if import_mode == "Reemplazar histórico actual con los archivos subidos":
-            frames = []
-            if not master_df.empty:
-                frames.append(master_df)
-            if not new_df.empty:
-                frames.append(new_df)
-            if frames:
-                final_df = compact_history(pd.concat(frames, ignore_index=True))
-            else:
-                final_df = pd.DataFrame(columns=CANONICAL_COLUMNS)
-
-        elif import_mode == "Añadir solo datos nuevos, sin sobrescribir fechas existentes":
-            frames = [base_df] if not base_df.empty else []
-            if not new_df.empty:
-                only_new = new_df[~new_df["fecha_hora"].isin(base_hours)].copy()
-                if not only_new.empty:
-                    frames.append(only_new)
-            if frames:
-                final_df = compact_history(pd.concat(frames, ignore_index=True))
-            else:
-                final_df = pd.DataFrame(columns=CANONICAL_COLUMNS)
-
-        else:
-            # Modo recomendado: base primero y CSV nuevo después.
-            # compact_history usa el último valor por fecha/hora, por tanto los CSV nuevos reemplazan coincidencias.
-            frames = []
-            if not base_df.empty:
-                frames.append(base_df)
-            if not new_df.empty:
-                frames.append(new_df)
-            if frames:
-                final_df = compact_history(pd.concat(frames, ignore_index=True))
-            else:
-                final_df = pd.DataFrame(columns=CANONICAL_COLUMNS)
-
-        after_hours = set(final_df["fecha_hora"].dropna()) if not final_df.empty and "fecha_hora" in final_df.columns else set()
-        added_hours = len(after_hours - base_hours)
-        updated_hours = len(new_hours & base_hours) if import_mode == "Actualizar histórico reemplazando coincidencias por fecha/hora" else 0
-        ignored_existing = len(new_hours & base_hours) if import_mode == "Añadir solo datos nuevos, sin sobrescribir fechas existentes" else 0
-
-        st.session_state.history_df = final_df
-        st.session_state.last_import_errors = errors
-        st.session_state.last_import_diagnostics = diagnostics
-        st.session_state.applied_period = None
-
-        st.success("Importación finalizada.")
-        st.write(f"Registros antes: **{before_count}** · registros después: **{len(final_df)}**.")
-        if import_mode == "Actualizar histórico reemplazando coincidencias por fecha/hora":
-            st.write(f"Horas nuevas añadidas: **{added_hours}** · horas existentes actualizadas/reemplazadas: **{updated_hours}**.")
-        elif import_mode == "Añadir solo datos nuevos, sin sobrescribir fechas existentes":
-            st.write(f"Horas nuevas añadidas: **{added_hours}** · horas ya existentes ignoradas: **{ignored_existing}**.")
-        else:
-            st.write("El histórico de la sesión ha sido sustituido por los archivos subidos.")
-
-    if not st.session_state.history_df.empty:
-        hist = st.session_state.history_df
-        st.success(f"Histórico en sesión: {len(hist)} registros horarios.")
-        if "fecha_hora" in hist.columns:
+    # ── Inicialización silenciosa: auto-conectar desde Secrets ───────────────
+    if "sencrop_token"   not in st.session_state: st.session_state.sencrop_token   = None
+    if "sencrop_user_id" not in st.session_state: st.session_state.sencrop_user_id = None
+    if "sencrop_devices" not in st.session_state: st.session_state.sencrop_devices = []
+    if sencrop_is_configured():
+        _direct = sencrop_get_token_from_secrets()
+        if _direct:
+            st.session_state.sencrop_token = _direct
             try:
-                st.caption(
-                    f"Rango actual: {hist['fecha_hora'].min()} → {hist['fecha_hora'].max()}"
-                )
+                st.session_state.sencrop_user_id = str(st.secrets.get("SENCROP_USER_ID", "")).strip() or None
             except Exception:
-                pass
+                st.session_state.sencrop_user_id = None
 
-        st.download_button(
-            "Descargar histórico maestro",
-            data=hist.to_csv(index=False).encode("utf-8-sig"),
-            file_name="historico_finca_gallinal.csv",
-            mime="text/csv",
+    tab_prev, tab_act, tab_con = st.tabs(["📡 Previsión", "⬇️ Actualizar datos", "⚙️ Conexión"])
+
+    # ── TAB 1: PREVISIÓN ──────────────────────────────────────────────────────
+    with tab_prev:
+        render_sencrop_forecast_panel()
+
+    # ── TAB 2: ACTUALIZAR DATOS ───────────────────────────────────────────────
+    with tab_act:
+        token   = st.session_state.get("sencrop_token")
+        user_id = st.session_state.get("sencrop_user_id")
+
+        # ── Sección Sencrop ──────────────────────────────────────────────────
+        st.markdown("#### 🌦️ Descargar desde Sencrop")
+        if not token:
+            st.info("ℹ️ Conecta Sencrop en la pestaña ⚙️ **Conexión** para descargar datos.")
+        elif not user_id:
+            st.info("ℹ️ Configura el User ID en la pestaña ⚙️ **Conexión**.")
+        else:
+            hist  = st.session_state.get("history_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+            today = pd.Timestamp.today().date()
+            if not hist.empty and "fecha_hora" in hist.columns:
+                last_date     = pd.to_datetime(hist["fecha_hora"]).max().date()
+                default_start = last_date
+                st.caption(f"Último dato en histórico: **{last_date}**. Por defecto se descarga desde esa fecha.")
+            else:
+                default_start = today - pd.Timedelta(days=30)
+                st.caption("Sin histórico cargado. Se descargarán los últimos 30 días por defecto.")
+
+            quick = st.selectbox(
+                "Periodo rápido",
+                ["Personalizado", "Últimos 7 días", "Últimos 15 días", "Últimos 30 días",
+                 "Últimos 3 meses", "Últimos 6 meses", "Año actual completo"],
+                key="sencrop_quick_period",
+            )
+            if   quick == "Últimos 7 días":      dl_start, dl_end = today - pd.Timedelta(days=7),   today
+            elif quick == "Últimos 15 días":     dl_start, dl_end = today - pd.Timedelta(days=15),  today
+            elif quick == "Últimos 30 días":     dl_start, dl_end = today - pd.Timedelta(days=30),  today
+            elif quick == "Últimos 3 meses":     dl_start, dl_end = today - pd.Timedelta(days=90),  today
+            elif quick == "Últimos 6 meses":     dl_start, dl_end = today - pd.Timedelta(days=180), today
+            elif quick == "Año actual completo": dl_start, dl_end = pd.Timestamp(today.year, 1, 1).date(), today
+            else:
+                dc3, dc4 = st.columns(2)
+                with dc3: dl_start = st.date_input("Desde", value=default_start, key="sencrop_start")
+                with dc4: dl_end   = st.date_input("Hasta", value=today,         key="sencrop_end")
+
+            st.caption(f"Se descargarán datos del **{dl_start}** al **{dl_end}** de los 4 sensores.")
+
+            merge_mode_sc = st.radio(
+                "Modo",
+                ["Actualizar reemplazando fechas existentes", "Añadir solo datos nuevos"],
+                horizontal=True, key="sencrop_merge_mode",
+            )
+
+            if st.button("⬇️ Descargar e importar los 4 sensores de Sencrop", type="primary", use_container_width=True):
+                status = st.empty()
+                df_sencrop, sensor_errors = sencrop_download_all_sensors(
+                    token, user_id, dl_start, dl_end, status_placeholder=status,
+                )
+                status.empty()
+                if sensor_errors == ["TOKEN_EXPIRED"]:
+                    st.error("🔑 El token de Sencrop ha caducado. Actualiza SENCROP_TOKEN en Secrets y pulsa el botón de abajo.")
+                    st.session_state.sencrop_token = None
+                    if st.button("🔄 Ya actualicé el token en Secrets — recargar ahora", use_container_width=True, key="sencrop_reload_token"):
+                        st.rerun()
+                elif sensor_errors:
+                    for e in sensor_errors:
+                        st.warning(e)
+                elif df_sencrop.empty:
+                    st.warning("No se obtuvieron datos de ningún sensor para ese periodo.")
+                else:
+                    base = st.session_state.get("history_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+                    if base.empty:
+                        final_sc = compact_history(df_sencrop)
+                    elif merge_mode_sc == "Añadir solo datos nuevos":
+                        existing = set(pd.to_datetime(base["fecha_hora"]).dropna())
+                        only_new = df_sencrop[~pd.to_datetime(df_sencrop["fecha_hora"]).isin(existing)]
+                        final_sc = compact_history(pd.concat([base, only_new], ignore_index=True))
+                    else:
+                        final_sc = compact_history(pd.concat([base, df_sencrop], ignore_index=True))
+                    st.session_state.history_df     = final_sc
+                    st.session_state.applied_period = None
+                    rng_min = pd.to_datetime(final_sc["fecha_hora"]).min().date()
+                    rng_max = pd.to_datetime(final_sc["fecha_hora"]).max().date()
+                    st.success(
+                        f"✅ {len(df_sencrop)} registros combinados de los 4 sensores. "
+                        f"Histórico total: **{len(final_sc)}** registros ({rng_min} → {rng_max})."
+                    )
+                    st.caption("💡 Recuerda guardar el snapshot en Supabase para conservar los datos.")
+
+        # ── Sección Supabase ─────────────────────────────────────────────────
+        st.divider()
+        render_supabase_climate_panel()
+
+        # ── Sección CSV ──────────────────────────────────────────────────────
+        st.divider()
+        st.markdown("#### 📁 Importar desde CSV")
+        master_file = st.file_uploader(
+            "Opcional: subir histórico maestro",
+            type=["csv"],
+            accept_multiple_files=False,
+            key="master_history_tab",
         )
+        new_files = st.file_uploader(
+            "Subir nuevos CSV de sensores",
+            type=["csv"],
+            accept_multiple_files=True,
+            key="new_sensor_files_tab",
+        )
+        import_mode = st.radio(
+            "Modo de importación",
+            [
+                "Reemplazar histórico actual con los archivos subidos",
+                "Añadir solo datos nuevos, sin sobrescribir fechas existentes",
+                "Actualizar histórico reemplazando coincidencias por fecha/hora",
+            ],
+            index=2,
+            help=(
+                "Para trabajar con el mes actual completo, usa la tercera opción. "
+                "Si una fecha/hora ya existe, se conserva el dato del CSV nuevo. "
+                "Si no existe, se añade."
+            ),
+        )
+        with st.expander("Qué hace cada modo", expanded=False):
+            st.markdown(
+                """
+                **Reemplazar histórico actual con los archivos subidos**
+                Borra el histórico de la sesión y usa solo el histórico maestro y/o los CSV que subas ahora.
 
-    if st.session_state.last_import_diagnostics:
-        with st.expander("Diagnóstico de archivos importados", expanded=True):
-            st.dataframe(pd.DataFrame(st.session_state.last_import_diagnostics), use_container_width=True)
+                **Añadir solo datos nuevos, sin sobrescribir fechas existentes**
+                Añade únicamente las horas que no existen todavía. Si una fecha/hora ya existe, se conserva el dato antiguo.
 
-    if st.session_state.last_import_errors:
-        st.warning("Avisos de importación:")
-        for e in st.session_state.last_import_errors:
-            st.write(f"- {e}")
+                **Actualizar histórico reemplazando coincidencias por fecha/hora**
+                Recomendado para subir el mes actual completo. Si una fecha/hora ya existe, se reemplaza por el dato del CSV nuevo. Si no existe, se añade.
+                """
+            )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            do_import = st.button("Importar / actualizar histórico", type="primary")
+        with col2:
+            clear = st.button("Limpiar histórico de esta sesión")
+
+        if clear:
+            st.session_state.history_df = pd.DataFrame(columns=CANONICAL_COLUMNS)
+            st.session_state.last_import_errors = []
+            st.session_state.last_import_diagnostics = []
+            st.session_state.applied_period = None
+            st.rerun()
+
+        if do_import:
+            errors = []
+            diagnostics = []
+            before_df    = st.session_state.history_df.copy()
+            before_count = len(before_df)
+            before_hours = set(before_df["fecha_hora"].dropna()) if not before_df.empty and "fecha_hora" in before_df.columns else set()
+
+            master_df, master_errors = load_master_history(master_file)
+            errors.extend(master_errors)
+            if master_file is not None:
+                diagnostics.append(diagnose_csv_file(master_file.name, master_file.getvalue()))
+
+            new_df, new_errors = merge_new_files(new_files or [])
+            errors.extend(new_errors)
+            for f in new_files or []:
+                diagnostics.append(diagnose_csv_file(f.name, f.getvalue()))
+
+            master_df = compact_history(master_df) if not master_df.empty else pd.DataFrame(columns=CANONICAL_COLUMNS)
+            new_df    = compact_history(new_df)    if not new_df.empty    else pd.DataFrame(columns=CANONICAL_COLUMNS)
+            new_hours = set(new_df["fecha_hora"].dropna()) if not new_df.empty and "fecha_hora" in new_df.columns else set()
+
+            if not master_df.empty:
+                base_df = master_df
+            else:
+                base_df = before_df
+            base_df    = compact_history(base_df) if not base_df.empty else pd.DataFrame(columns=CANONICAL_COLUMNS)
+            base_hours = set(base_df["fecha_hora"].dropna()) if not base_df.empty and "fecha_hora" in base_df.columns else set()
+
+            if import_mode == "Reemplazar histórico actual con los archivos subidos":
+                frames = []
+                if not master_df.empty: frames.append(master_df)
+                if not new_df.empty:    frames.append(new_df)
+                final_df = compact_history(pd.concat(frames, ignore_index=True)) if frames else pd.DataFrame(columns=CANONICAL_COLUMNS)
+            elif import_mode == "Añadir solo datos nuevos, sin sobrescribir fechas existentes":
+                frames = [base_df] if not base_df.empty else []
+                if not new_df.empty:
+                    only_new = new_df[~new_df["fecha_hora"].isin(base_hours)].copy()
+                    if not only_new.empty: frames.append(only_new)
+                final_df = compact_history(pd.concat(frames, ignore_index=True)) if frames else pd.DataFrame(columns=CANONICAL_COLUMNS)
+            else:
+                frames = []
+                if not base_df.empty: frames.append(base_df)
+                if not new_df.empty:  frames.append(new_df)
+                final_df = compact_history(pd.concat(frames, ignore_index=True)) if frames else pd.DataFrame(columns=CANONICAL_COLUMNS)
+
+            after_hours    = set(final_df["fecha_hora"].dropna()) if not final_df.empty and "fecha_hora" in final_df.columns else set()
+            added_hours    = len(after_hours - base_hours)
+            updated_hours  = len(new_hours & base_hours) if import_mode == "Actualizar histórico reemplazando coincidencias por fecha/hora" else 0
+            ignored_existing = len(new_hours & base_hours) if import_mode == "Añadir solo datos nuevos, sin sobrescribir fechas existentes" else 0
+
+            st.session_state.history_df            = final_df
+            st.session_state.last_import_errors    = errors
+            st.session_state.last_import_diagnostics = diagnostics
+            st.session_state.applied_period        = None
+
+            st.success("Importación finalizada.")
+            st.write(f"Registros antes: **{before_count}** · registros después: **{len(final_df)}**.")
+            if import_mode == "Actualizar histórico reemplazando coincidencias por fecha/hora":
+                st.write(f"Horas nuevas añadidas: **{added_hours}** · horas existentes actualizadas/reemplazadas: **{updated_hours}**.")
+            elif import_mode == "Añadir solo datos nuevos, sin sobrescribir fechas existentes":
+                st.write(f"Horas nuevas añadidas: **{added_hours}** · horas ya existentes ignoradas: **{ignored_existing}**.")
+            else:
+                st.write("El histórico de la sesión ha sido sustituido por los archivos subidos.")
+
+    # ── TAB 3: CONEXIÓN ───────────────────────────────────────────────────────
+    with tab_con:
+        render_sencrop_panel()
 
 
 def period_selector(history):
