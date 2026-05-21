@@ -65,6 +65,21 @@ st.markdown(
         overflow-y: auto !important;
         overflow-x: hidden !important;
     }
+
+        /* ── Widgets: fondo blanco para contrastar con fondo gris ── */
+        [data-testid="stDateInput"] > div > div,
+        [data-testid="stSelectbox"] > div > div:first-child,
+        [data-testid="stTextInput"] > div > div,
+        [data-testid="stNumberInput"] > div > div,
+        [data-testid="stFileUploader"] > div {
+            background-color: #ffffff !important;
+            border-radius: 6px !important;
+        }
+        [data-testid="stRadio"] > div {
+            background-color: rgba(255,255,255,0.7) !important;
+            border-radius: 8px !important;
+            padding: 4px 8px !important;
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -5276,19 +5291,16 @@ def render_sencrop_forecast_panel():
         "La hoja mojada se toma del sensor si está disponible; si no, se estima desde lluvia y HR previstas."
     )
 
-    fc1, fc2 = st.columns([2, 2])
-    with fc1:
-        modelo_fc = st.radio(
-            "Modelo de predicción",
-            ["⭐ Previsión Sencrop (fusión de modelos)", "📊 Meteoblue BASIC_MLM"],
-            horizontal=True,
-            key="forecast_model_selector",
-            label_visibility="collapsed",
-        )
-        model_key = "sencrop" if modelo_fc.startswith("⭐") else "meteoblue"
-    with fc2:
-        base_temp_fc  = st.number_input("Base DD carpocapsa (°C)", min_value=0.0, max_value=15.0, value=10.0, step=0.5, key="fc_base_temp")
-        upper_temp_fc = st.number_input("Umbral sup. DD (°C)",      min_value=20.0, max_value=40.0, value=31.1, step=0.5, key="fc_upper_temp")
+    modelo_fc = st.radio(
+        "Modelo de predicción",
+        ["⭐ Previsión Sencrop (fusión de modelos)", "📊 Meteoblue BASIC_MLM"],
+        horizontal=True,
+        key="forecast_model_selector",
+        label_visibility="collapsed",
+    )
+    model_key = "sencrop" if modelo_fc.startswith("⭐") else "meteoblue"
+    base_temp_fc  = 10.0
+    upper_temp_fc = 31.1
 
     label_btn = "⭐ Previsión Sencrop" if model_key == "sencrop" else "📊 Meteoblue BASIC_MLM"
     if st.button(f"⬇️ Descargar {label_btn}", type="primary", use_container_width=True, key="btn_download_forecast"):
@@ -5364,34 +5376,22 @@ def render_sencrop_forecast_panel():
     styled = _styler_fn(_style_risk, subset=["Riesgo moteado", "Riesgo monilia"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
-    # ── DD carpocapsa acumulados con predicción ───────────────────────────────
-    biofix_df = st.session_state.get("carpocapsa_biofix_df", pd.DataFrame())
-    if not biofix_df.empty and "Fecha biofix" in biofix_df.columns:
-        with st.expander("📈 DD carpocapsa acumulados — histórico + predicción", expanded=False):
-            # Usar el biofix más reciente
-            bf_dates = pd.to_datetime(biofix_df["Fecha biofix"], errors="coerce").dropna()
-            if not bf_dates.empty:
-                last_biofix = bf_dates.max()
-                dd_evol = forecast_cumulative_dd(
-                    forecast_df, history_df, last_biofix,
-                    base_temp=float(base_temp_fc),
-                    upper_temp=float(upper_temp_fc),
-                )
-                if not dd_evol.empty:
-                    pred_rows = dd_evol[dd_evol["Tipo"] == "Predicción"]
-                    if not pred_rows.empty:
-                        dd_end = pred_rows["DD_acumulados"].iloc[-1]
-                        st.caption(
-                            f"Biofix: **{last_biofix.strftime('%d/%m/%Y')}** · "
-                            f"DD acumulados a fin de la predicción: **{dd_end:.0f} DD**"
-                        )
-                    st.dataframe(dd_evol, use_container_width=True, hide_index=True)
-
     # ── Datos horarios crudos ─────────────────────────────────────────────────
+    def _deg_to_cardinal(deg):
+        try:
+            if pd.isna(deg): return "—"
+            dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSO","SO","OSO","O","ONO","NO","NNO"]
+            return dirs[round(float(deg) / 22.5) % 16]
+        except Exception:
+            return str(deg)
+
     with st.expander("📋 Datos horarios de predicción (raw)", expanded=False):
         cols_show = [c for c in CANONICAL_COLUMNS if c in forecast_df.columns and
                      not forecast_df[c].isna().all()]
-        st.dataframe(forecast_df[cols_show], use_container_width=True, hide_index=True)
+        display_fc = forecast_df[cols_show].copy()
+        if "dir_viento" in display_fc.columns:
+            display_fc["dir_viento"] = display_fc["dir_viento"].apply(_deg_to_cardinal)
+        st.dataframe(display_fc, use_container_width=True, hide_index=True)
         st.download_button(
             "⬇️ Descargar predicción CSV",
             data=forecast_df[cols_show].to_csv(index=False).encode("utf-8-sig"),
@@ -5700,7 +5700,9 @@ def import_panel():
 
         # ── Sección Supabase ─────────────────────────────────────────────────
         st.divider()
-        render_supabase_climate_panel()
+        with st.expander("☁️ Guardar/cargar desde Supabase (nube)", expanded=False):
+            st.caption("La app carga el histórico automáticamente al abrirse. Usa estos botones solo si necesitas forzar una actualización o guardar datos nuevos importados.")
+            render_supabase_climate_panel()
 
         # ── Sección CSV ──────────────────────────────────────────────────────
         st.divider()
