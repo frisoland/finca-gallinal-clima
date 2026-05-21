@@ -6640,7 +6640,51 @@ def comparator_tab(history, soil_type, hoja_threshold):
                 st.warning("Selecciona al menos una campaña de frío.")
             else:
                 cmp_chill = compare_chill_campaigns(history, selected_chill_years_cmp)
-                st.dataframe(cmp_chill, use_container_width=True)
+
+                # ── Preparar tabla de visualización ──────────────────────────
+                _cols_drop = [c for c in ["Comparación", "Año análisis",
+                                          "Horas esperadas", "Horas con datos temperatura"]
+                              if c in cmp_chill.columns]
+                _cd = cmp_chill.drop(columns=_cols_drop).copy()
+                if "Cobertura temperatura %" in _cd.columns:
+                    _cd = _cd.rename(columns={"Cobertura temperatura %": "Calidad del dato %"})
+                # Campaña frío primera
+                if "Campaña frío" in _cd.columns:
+                    _cd = _cd[["Campaña frío"] + [c for c in _cd.columns if c != "Campaña frío"]]
+                _cd = _cd.reset_index(drop=True)
+
+                # ── Tabla HTML sticky ─────────────────────────────────────────
+                _cd_cols = list(_cd.columns)
+                _cd_th   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                            "white-space:nowrap;font-weight:600;font-size:13px;")
+                _cd_ths  = "position:sticky;left:0;z-index:2;" + _cd_th
+                _cd_hdr  = "".join(
+                    f'<th style="{_cd_ths if i == 0 else _cd_th}">{c}</th>'
+                    for i, c in enumerate(_cd_cols)
+                )
+                _cd_body = ""
+                for _, _r in _cd.iterrows():
+                    _cells = ""
+                    for _i, _c in enumerate(_cd_cols):
+                        _v = _r[_c]
+                        _disp = (f"{_v:.1f}" if isinstance(_v, float) and not pd.isna(_v)
+                                 else ("—" if (isinstance(_v, float) and pd.isna(_v)) else str(_v)))
+                        _bg = "#eef2ee" if _i == 0 else "white"
+                        _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                               f"background:{_bg};padding:7px 12px;"
+                               f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+                        _cells += f"<td style='{_td}'>{_disp}</td>"
+                    _cd_body += f"<tr>{_cells}</tr>"
+                st.markdown(
+                    f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+                    f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+                    f'<table style="border-collapse:collapse;width:100%;">'
+                    f'<thead><tr>{_cd_hdr}</tr></thead>'
+                    f'<tbody>{_cd_body}</tbody>'
+                    f'</table></div>',
+                    unsafe_allow_html=True,
+                )
+
                 monthly_chill = monthly_chill_breakdown(history, selected_chill_years_cmp)
                 render_chill_comparison_explanation(cmp_chill, monthly_chill)
                 st.download_button(
