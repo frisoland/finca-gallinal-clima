@@ -2430,27 +2430,59 @@ def render_chill_comparison_explanation(cmp_df, monthly_df=None):
                 f"con **{value_text(min_val, suffix)}**. La diferencia fue de **{diff:.2f}{suffix}**."
             )
 
-    # Comparación par a par resumida.
+    # Comparación par a par — tabla ancha con una columna por métrica
     st.markdown("#### Diferencias entre campañas")
+    st.caption("Cada fila compara dos campañas. El signo indica si la segunda tuvo más (+) o menos (−) frío que la primera.")
     rows = []
-    labels = cmp_df["Comparación"].tolist()
     for i in range(len(cmp_df)):
         for j in range(i + 1, len(cmp_df)):
             a = cmp_df.iloc[i]
             b = cmp_df.iloc[j]
-            parts = []
+            row = {"Campaña A → B": f"{a.get('Comparación', a.get('Campaña frío', '?'))}  →  {b.get('Comparación', b.get('Campaña frío', '?'))}"}
             for col, label, suffix in variables:
                 if col in cmp_df.columns and pd.notna(a.get(col, np.nan)) and pd.notna(b.get(col, np.nan)):
                     diff = b[col] - a[col]
-                    parts.append(f"{label}: {diff:+.2f}{suffix}")
-            if parts:
-                rows.append({
-                    "Comparación": f"{b['Comparación']} frente a {a['Comparación']}",
-                    "Diferencias": "; ".join(parts),
-                })
+                    row[f"Δ {label}"] = f"{diff:+.1f}{suffix}"
+                else:
+                    row[f"Δ {label}"] = "—"
+            rows.append(row)
 
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        _diff_df   = pd.DataFrame(rows).reset_index(drop=True)
+        _diff_cols = list(_diff_df.columns)
+        _d_th      = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                      "white-space:nowrap;font-weight:600;font-size:13px;")
+        _d_ths     = "position:sticky;left:0;z-index:2;" + _d_th
+        _d_hdr     = "".join(
+            f'<th style="{_d_ths if i == 0 else _d_th}">{c}</th>'
+            for i, c in enumerate(_diff_cols)
+        )
+        _d_body = ""
+        for _, _r in _diff_df.iterrows():
+            _cells = ""
+            for _i, _c in enumerate(_diff_cols):
+                _v    = str(_r[_c])
+                # Verde suave si positivo, rojo suave si negativo (solo columnas Δ)
+                if _i > 0 and _v.startswith("+"):
+                    _cell_bg = "#e8f5e9"
+                elif _i > 0 and _v.startswith("-"):
+                    _cell_bg = "#ffebee"
+                else:
+                    _cell_bg = "#eef2ee" if _i == 0 else "white"
+                _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                       f"background:{_cell_bg};padding:7px 12px;"
+                       f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+                _cells += f"<td style='{_td}'>{_v}</td>"
+            _d_body += f"<tr>{_cells}</tr>"
+        st.markdown(
+            f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+            f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+            f'<table style="border-collapse:collapse;width:100%;">'
+            f'<thead><tr>{_d_hdr}</tr></thead>'
+            f'<tbody>{_d_body}</tbody>'
+            f'</table></div>',
+            unsafe_allow_html=True,
+        )
 
     if monthly_df is not None and not monthly_df.empty:
         st.markdown("#### Meses que más aportaron frío")
