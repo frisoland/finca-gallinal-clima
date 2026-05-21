@@ -5877,46 +5877,44 @@ def period_selector(history):
     years_available = sorted(history["fecha_hora"].dt.year.unique())
     chill_years_available = available_chill_analysis_years(history)
 
-    with st.expander("Calendario auxiliar para elegir fechas", expanded=False):
-        st.caption("Este calendario solo ayuda a elegir fechas. No ejecuta análisis automáticamente.")
-        cal_a, cal_b = st.columns(2)
-        with cal_a:
-            aux_cal_start = st.date_input(
-                "Calendario auxiliar inicio",
-                value=st.session_state.get("aux_cal_start", min_dt.date()),
-                min_value=date(int(min_dt.year), 1, 1),
-                max_value=date(int(max_dt.year), 12, 31),
-                key="aux_cal_start",
-            )
-        with cal_b:
-            aux_cal_end = st.date_input(
-                "Calendario auxiliar fin",
-                value=st.session_state.get("aux_cal_end", max_dt.date()),
-                min_value=date(int(min_dt.year), 1, 1),
-                max_value=date(int(max_dt.year), 12, 31),
-                key="aux_cal_end",
-            )
-        st.info(f"Fechas del calendario auxiliar: {aux_cal_start.strftime('%Y-%m-%d')} a {aux_cal_end.strftime('%Y-%m-%d')}.")
+    # ── Auto-análisis al abrir la app: últimos 7 días disponibles ────────────
+    if st.session_state.get("applied_period") is None:
+        st.session_state.applied_period = {
+            "mode": "Última semana disponible",
+            "start_ts": max_dt - pd.Timedelta(days=6),
+            "end_ts": max_dt,
+            "selected_chill_year": None,
+            "selected_season": None,
+        }
 
     with st.form("period_selection_form_v60"):
         st.markdown("#### Selección de periodo")
-        usar_calendario_auxiliar = st.checkbox(
-            "Usar las fechas del calendario auxiliar para el periodo personalizado",
-            value=False,
-        )
 
         mode_input = st.selectbox(
             "Modo de selección",
             ["Periodo personalizado", "Última semana disponible", "Último mes disponible", "Año natural", "Campaña de frío"],
-            index=0,
+            index=1,   # «Última semana disponible» por defecto
         )
 
         col_a, col_b = st.columns(2)
         with col_a:
-            start_txt = st.text_input("Fecha inicio personalizada", value=min_dt.strftime("%Y-%m-%d"))
-            selected_year_input = st.selectbox("Año natural", years_available, index=len(years_available) - 1)
+            # Calendario directo: abre en el mes más reciente, sin rerun hasta Submit
+            start_date_input = st.date_input(
+                "Fecha inicio (periodo personalizado)",
+                value=(max_dt - pd.Timedelta(days=6)).date(),
+                min_value=min_dt.date(),
+                max_value=max_dt.date(),
+            )
+            selected_year_input = st.selectbox(
+                "Año natural", years_available, index=len(years_available) - 1
+            )
         with col_b:
-            end_txt = st.text_input("Fecha fin personalizada", value=max_dt.strftime("%Y-%m-%d"))
+            end_date_input = st.date_input(
+                "Fecha fin (periodo personalizado)",
+                value=max_dt.date(),
+                min_value=min_dt.date(),
+                max_value=max_dt.date(),
+            )
             selected_chill_year_input = st.selectbox(
                 "Año de análisis del frío",
                 chill_years_available,
@@ -5931,36 +5929,25 @@ def period_selector(history):
         selected_chill_year = None
 
         if mode_input == "Periodo personalizado":
-            if usar_calendario_auxiliar:
-                start_date = aux_cal_start
-                end_date = aux_cal_end
-            else:
-                start_date, start_warn = parse_user_date(start_txt, min_dt.date(), min_dt.date(), max_dt.date())
-                end_date, end_warn = parse_user_date(end_txt, max_dt.date(), min_dt.date(), max_dt.date())
-                if start_warn:
-                    st.warning(start_warn)
-                if end_warn:
-                    st.warning(end_warn)
-
-            start_ts = pd.Timestamp(start_date)
-            end_ts = pd.Timestamp(end_date) + pd.Timedelta(hours=23)
+            start_ts = pd.Timestamp(start_date_input)
+            end_ts   = pd.Timestamp(end_date_input) + pd.Timedelta(hours=23)
 
         elif mode_input == "Última semana disponible":
-            end_ts = max_dt
+            end_ts   = max_dt
             start_ts = max_dt - pd.Timedelta(days=6)
 
         elif mode_input == "Último mes disponible":
-            end_ts = max_dt
+            end_ts   = max_dt
             start_ts = max_dt - pd.Timedelta(days=30)
 
         elif mode_input == "Año natural":
             start_ts = pd.Timestamp(int(selected_year_input), 1, 1)
-            end_ts = pd.Timestamp(int(selected_year_input), 12, 31, 23)
+            end_ts   = pd.Timestamp(int(selected_year_input), 12, 31, 23)
 
         else:
             selected_chill_year = int(selected_chill_year_input)
-            selected_season = winter_label_from_analysis_year(selected_chill_year)
-            start_ts, end_ts = winter_period_from_analysis_year(selected_chill_year)
+            selected_season     = winter_label_from_analysis_year(selected_chill_year)
+            start_ts, end_ts    = winter_period_from_analysis_year(selected_chill_year)
 
         if end_ts < start_ts:
             st.error("La fecha final no puede ser anterior a la fecha inicial.")
@@ -5969,9 +5956,9 @@ def period_selector(history):
         st.session_state.applied_period = {
             "mode": mode_input,
             "start_ts": start_ts,
-            "end_ts": end_ts,
+            "end_ts":   end_ts,
             "selected_chill_year": selected_chill_year,
-            "selected_season": selected_season,
+            "selected_season":     selected_season,
         }
 
     return st.session_state.applied_period
