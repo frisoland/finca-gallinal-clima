@@ -6485,7 +6485,48 @@ def cold_tab(history):
 
             comparison_df = chill_column_comparison(history, selected_chill_year)
             st.markdown("#### Comprobación por columna de temperatura")
-            st.dataframe(comparison_df, use_container_width=True)
+
+            # ── Preparar tabla comparación ────────────────────────────────────
+            _cmp = comparison_df.copy()
+            _cmp_drop = [c for c in ["Horas esperadas campaña", "Horas con dato"]
+                         if c in _cmp.columns]
+            _cmp = _cmp.drop(columns=_cmp_drop).reset_index(drop=True)
+
+            # ── Tabla HTML sticky ─────────────────────────────────────────────
+            _cmp_cols = list(_cmp.columns)
+            _cmp_th   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                         "white-space:nowrap;font-weight:600;font-size:13px;")
+            _cmp_ths  = "position:sticky;left:0;z-index:2;" + _cmp_th
+            _cmp_hdr  = "".join(
+                f'<th style="{_cmp_ths if i == 0 else _cmp_th}">{c}</th>'
+                for i, c in enumerate(_cmp_cols)
+            )
+            _cmp_body = ""
+            for _, _r in _cmp.iterrows():
+                _cells = ""
+                for _i, _c in enumerate(_cmp_cols):
+                    _v = _r[_c]
+                    if isinstance(_v, float) and not pd.isna(_v):
+                        _disp = f"{_v:.1f}"
+                    elif isinstance(_v, float) and pd.isna(_v):
+                        _disp = "—"
+                    else:
+                        _disp = str(_v)
+                    _bg = "#eef2ee" if _i == 0 else "white"
+                    _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                           f"background:{_bg};padding:7px 12px;"
+                           f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+                    _cells += f"<td style='{_td}'>{_disp}</td>"
+                _cmp_body += f"<tr>{_cells}</tr>"
+            st.markdown(
+                f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+                f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+                f'<table style="border-collapse:collapse;width:100%;">'
+                f'<thead><tr>{_cmp_hdr}</tr></thead>'
+                f'<tbody>{_cmp_body}</tbody>'
+                f'</table></div>',
+                unsafe_allow_html=True,
+            )
 
             if not chill_daily.empty:
                 chart_df = chill_daily.set_index("fecha_hora")[["horas_menor_7_acum", "utah_acum", "chill_portions_acum"]]
@@ -6497,6 +6538,53 @@ def cold_tab(history):
                 file_name=f"frio_invernal_{selected_season.replace('/', '_')}.csv",
                 mime="text/csv",
             )
+
+            with st.expander("📖 Explicación de modelos de frío", expanded=False):
+                st.markdown("""
+**Los tres modelos cuantifican el frío acumulado durante el invierno, pero con distintos criterios:**
+
+---
+
+#### ❄️ Horas frío < 7 ºC — Modelo clásico
+Cuenta simplemente el número de horas en las que la temperatura es inferior a 7 ºC.
+- **Sencillo e intuitivo**, utilizado históricamente en España y en la mayoría de recomendaciones varietales antiguas.
+- **Limitación:** No tiene en cuenta que las temperaturas cálidas durante el día pueden revertir parte del frío acumulado, lo que lo hace menos preciso en climas mediterráneos con inviernos suaves y días soleados.
+- **Referencia orientativa:** La mayoría de variedades de manzana y pera en zonas frías necesitan entre 800 y 1 400 horas frío.
+
+---
+
+#### 🌡️ Utah Chill Units — Modelo de Richardson
+Desarrollado en 1974, asigna a cada hora un valor positivo o negativo según la temperatura:
+
+| Temperatura | Valor hora |
+|---|---|
+| < 1,4 ºC | 0 |
+| 1,4 – 2,4 ºC | +0,5 |
+| 2,5 – 9,1 ºC | +1,0 |
+| 9,2 – 12,4 ºC | +0,5 |
+| 12,5 – 15,9 ºC | 0 |
+| 16,0 – 18,0 ºC | −0,5 |
+| > 18,0 ºC | −1,0 |
+
+- **Ventaja:** Penaliza los días cálidos que destruyen frío ya acumulado.
+- **Limitación:** En zonas muy cálidas puede dar valores negativos que no reflejan bien la realidad fisiológica del árbol.
+
+---
+
+#### 🔬 Chill Portions — Modelo dinámico (Fishman & Erez)
+El modelo más avanzado y preciso para climas mediterráneos y subtropicales, desarrollado en los años 90. Simula el proceso bioquímico real que ocurre en las yemas en dos fases:
+1. **Fase de inducción:** el frío genera un intermediario reversible (precursor).
+2. **Fase de estabilización:** ese precursor se convierte de forma irreversible en una Chill Portion (unidad de frío).
+
+- **Ventaja clave:** El frío estabilizado **no se puede revertir** con calor posterior, lo que lo hace mucho más fiel al comportamiento real del árbol en inviernos variables.
+- **Ideal para Finca Gallinal:** Al ser el modelo más robusto en inviernos cálidos e irregulares, es el que mejor predice la salida del reposo.
+- **Referencia orientativa:** Variedades de manzana como Golden Delicious necesitan entre 40 y 60 Chill Portions.
+
+---
+
+> 💡 **¿Cuál usar?** Para tomar decisiones agronómicas en zonas con inviernos suaves, se recomienda dar más peso a las **Chill Portions**. Las horas frío < 7 ºC son útiles para comparar con recomendaciones históricas de catálogos varietales.
+                """)
+
 
 
 
