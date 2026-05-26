@@ -9549,41 +9549,75 @@ def irrigation_tab(history, soil_type, hoja_threshold):
 
 
 
-def normalize_phenology_df(df):
-    required = ["Año", "Fase", "Inicio", "Fin", "Observaciones"]
-    out = df.copy()
+# ── Fenología v2: por Campo × Variedad ────────────────────────────────────────
 
+PHENOLOGY_PHASES = [
+    "Reposo invernal",
+    "Yema hinchada",
+    "Brotación",
+    "Floración",
+    "Cuajado",
+    "Crecimiento del fruto",
+    "Maduración",
+    "Cosecha",
+    "Caída de hoja",
+]
+PHENOLOGY_PHASE_ORDER = {p: i + 1 for i, p in enumerate(PHENOLOGY_PHASES)}
+
+
+def get_campo_variedad_pairs():
+    """Devuelve todas las combinaciones (Campo, Variedad) de la base de campos."""
+    pairs = []
+    for row in FIELDS_BASE_ROWS:
+        campo = row["Campo"]
+        for v in str(row.get("Variedades actuales", "")).split(","):
+            v = v.strip()
+            if v:
+                pairs.append((campo, v))
+    return pairs
+
+
+def normalize_phenology_df(df):
+    required = ["Campo", "Variedad", "Año", "Fase", "Inicio", "Fin", "Observaciones"]
+    out = df.copy()
     for col in required:
         if col not in out.columns:
             out[col] = ""
-
     out = out[required].copy()
-    out["Año"] = pd.to_numeric(out["Año"], errors="coerce").astype("Int64")
-    out["Fase"] = out["Fase"].astype(str)
-    out["Inicio"] = pd.to_datetime(out["Inicio"], errors="coerce").dt.strftime("%Y-%m-%d")
-    out["Fin"] = pd.to_datetime(out["Fin"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out["Campo"]         = out["Campo"].fillna("").astype(str)
+    out["Variedad"]      = out["Variedad"].fillna("").astype(str)
+    out["Año"]           = pd.to_numeric(out["Año"], errors="coerce").astype("Int64")
+    out["Fase"]          = out["Fase"].astype(str)
+    out["Inicio"]        = pd.to_datetime(out["Inicio"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out["Fin"]           = pd.to_datetime(out["Fin"], errors="coerce").dt.strftime("%Y-%m-%d")
     out["Observaciones"] = out["Observaciones"].fillna("").astype(str)
-
     return out
 
 
-def phenology_phase_summary(history, phenology_df, soil_type, hoja_threshold, selected_year=None):
+def phenology_phase_summary(history, phenology_df, soil_type, hoja_threshold,
+                             campo=None, variedad=None, selected_year=None):
     rows = []
     if history.empty or phenology_df.empty:
         return pd.DataFrame()
 
     pheno = normalize_phenology_df(phenology_df).dropna(subset=["Año", "Inicio", "Fin"])
+    if campo is not None:
+        pheno = pheno[pheno["Campo"].str.strip() == str(campo).strip()]
+    if variedad is not None:
+        pheno = pheno[pheno["Variedad"].str.strip() == str(variedad).strip()]
     if selected_year is not None:
         pheno = pheno[pheno["Año"].astype(int) == int(selected_year)]
 
     for _, phase in pheno.iterrows():
         start_ts = pd.Timestamp(phase["Inicio"])
-        end_ts = pd.Timestamp(phase["Fin"]) + pd.Timedelta(hours=23)
+        end_ts   = pd.Timestamp(phase["Fin"]) + pd.Timedelta(hours=23)
 
         period = history[(history["fecha_hora"] >= start_ts) & (history["fecha_hora"] <= end_ts)].copy()
 
         if period.empty:
             rows.append({
+                "Campo": phase.get("Campo", ""),
+                "Variedad": phase.get("Variedad", ""),
                 "Año": int(phase["Año"]) if pd.notna(phase["Año"]) else np.nan,
                 "Fase": phase["Fase"],
                 "Inicio": phase["Inicio"],
@@ -9595,24 +9629,23 @@ def phenology_phase_summary(history, phenology_df, soil_type, hoja_threshold, se
         period = add_risk_columns(period, hoja_humeda_threshold=hoja_threshold)
         summary = period_summary(period, soil_type, start_ts, end_ts)
 
-        if summary.empty:
-            row = {}
-        else:
-            row = summary.iloc[0].to_dict()
-
-        row["Año"] = int(phase["Año"]) if pd.notna(phase["Año"]) else np.nan
-        row["Fase"] = phase["Fase"]
-        row["Inicio"] = phase["Inicio"]
-        row["Fin"] = phase["Fin"]
+        row = summary.iloc[0].to_dict() if not summary.empty else {}
+        row["Campo"]    = phase.get("Campo", "")
+        row["Variedad"] = phase.get("Variedad", "")
+        row["Año"]      = int(phase["Año"]) if pd.notna(phase["Año"]) else np.nan
+        row["Fase"]     = phase["Fase"]
+        row["Inicio"]   = phase["Inicio"]
+        row["Fin"]      = phase["Fin"]
         row["Observaciones fenología"] = phase.get("Observaciones", "")
-        row["Aviso"] = ""
+        row["Aviso"]    = ""
         rows.append(row)
 
     if not rows:
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
-    leading = ["Año", "Fase", "Inicio", "Fin", "Observaciones fenología", "Aviso"]
+    leading = ["Campo", "Variedad", "Año", "Fase", "Inicio", "Fin",
+               "Observaciones fenología", "Aviso"]
     remaining = [c for c in df.columns if c not in leading]
     return df[leading + remaining]
 
@@ -9625,14 +9658,22 @@ def render_phenology_interpretation(phase_df):
     st.subheader("Lectura interpretada por fase fenológica")
 
     for _, row in phase_df.iterrows():
-        fase = row.get("Fase", "Fase")
-        year = row.get("Año", "")
-        inicio = row.get("Inicio", "")
-        fin = row.get("Fin", "")
+        fase     = row.get("Fase", "Fase")
+        year     = row.get("Año", "")
+        inicio   = row.get("Inicio", "")
+        fin      = row.get("Fin", "")
+        campo    = str(row.get("Campo", "")).strip()
+        variedad = str(row.get("Variedad", "")).strip()
+
+        title_parts = [str(fase), str(year)]
+        if campo:
+            title_parts.append(campo)
+        if variedad:
+            title_parts.append(variedad)
 
         with st.container(border=True):
-            st.markdown(f"#### {fase} · {year}")
-            st.caption(f"{inicio} a {fin}")
+            st.markdown(f"#### {' · '.join(title_parts)}")
+            st.caption(f"{inicio} → {fin}")
 
             if row.get("Aviso", ""):
                 st.warning(row["Aviso"])
@@ -9688,78 +9729,165 @@ def render_phenology_interpretation(phase_df):
                 st.info(f"Observación de campo: {obs}")
 
 
-
-
-def default_phenology_rows_for_year(year):
-    """
-    Plantilla orientativa por año. Las fechas son un punto de partida editable.
-    No pretende sustituir la observación real de campo.
-    """
+def default_phenology_rows_for_campo_variedad_year(campo, variedad, year):
     y = int(year)
     return [
-        {"Año": y, "Fase": "Reposo invernal", "Inicio": f"{y}-01-01", "Fin": f"{y}-03-15", "Observaciones": ""},
-        {"Año": y, "Fase": "Yema hinchada", "Inicio": f"{y}-03-16", "Fin": f"{y}-03-31", "Observaciones": ""},
-        {"Año": y, "Fase": "Brotación", "Inicio": f"{y}-04-01", "Fin": f"{y}-04-14", "Observaciones": ""},
-        {"Año": y, "Fase": "Floración", "Inicio": f"{y}-04-15", "Fin": f"{y}-05-10", "Observaciones": ""},
-        {"Año": y, "Fase": "Cuajado", "Inicio": f"{y}-05-11", "Fin": f"{y}-06-15", "Observaciones": ""},
-        {"Año": y, "Fase": "Crecimiento del fruto", "Inicio": f"{y}-06-16", "Fin": f"{y}-08-31", "Observaciones": ""},
-        {"Año": y, "Fase": "Maduración", "Inicio": f"{y}-09-01", "Fin": f"{y}-10-15", "Observaciones": ""},
-        {"Año": y, "Fase": "Cosecha", "Inicio": f"{y}-10-16", "Fin": f"{y}-11-15", "Observaciones": ""},
-        {"Año": y, "Fase": "Caída de hoja", "Inicio": f"{y}-11-16", "Fin": f"{y}-12-15", "Observaciones": ""},
+        {"Campo": campo, "Variedad": variedad, "Año": y, "Fase": "Reposo invernal",
+         "Inicio": f"{y}-01-01", "Fin": f"{y}-03-15", "Observaciones": ""},
+        {"Campo": campo, "Variedad": variedad, "Año": y, "Fase": "Yema hinchada",
+         "Inicio": f"{y}-03-16", "Fin": f"{y}-03-31", "Observaciones": ""},
+        {"Campo": campo, "Variedad": variedad, "Año": y, "Fase": "Brotación",
+         "Inicio": f"{y}-04-01", "Fin": f"{y}-04-14", "Observaciones": ""},
+        {"Campo": campo, "Variedad": variedad, "Año": y, "Fase": "Floración",
+         "Inicio": f"{y}-04-15", "Fin": f"{y}-05-10", "Observaciones": ""},
+        {"Campo": campo, "Variedad": variedad, "Año": y, "Fase": "Cuajado",
+         "Inicio": f"{y}-05-11", "Fin": f"{y}-06-15", "Observaciones": ""},
+        {"Campo": campo, "Variedad": variedad, "Año": y, "Fase": "Crecimiento del fruto",
+         "Inicio": f"{y}-06-16", "Fin": f"{y}-08-31", "Observaciones": ""},
+        {"Campo": campo, "Variedad": variedad, "Año": y, "Fase": "Maduración",
+         "Inicio": f"{y}-09-01", "Fin": f"{y}-10-15", "Observaciones": ""},
+        {"Campo": campo, "Variedad": variedad, "Año": y, "Fase": "Cosecha",
+         "Inicio": f"{y}-10-16", "Fin": f"{y}-11-15", "Observaciones": ""},
+        {"Campo": campo, "Variedad": variedad, "Año": y, "Fase": "Caída de hoja",
+         "Inicio": f"{y}-11-16", "Fin": f"{y}-12-15", "Observaciones": ""},
     ]
 
 
 def merge_phenology_template(existing_df, years):
     """
-    Añade fases de los años detectados sin borrar ni pisar lo ya editado.
-
-    Regla:
-    - Si ya existe el par Año + Fase, se conserva tal cual.
-    - Si falta, se añade una fila de plantilla.
+    Añade filas para todas las combinaciones Campo×Variedad de la base de campos.
+    Clave de deduplicación: (Campo, Variedad, Año, Fase).
+    No borra ni modifica lo ya editado.
     """
-    existing = normalize_phenology_df(existing_df) if existing_df is not None and not existing_df.empty else pd.DataFrame(
-        columns=["Año", "Fase", "Inicio", "Fin", "Observaciones"]
-    )
+    existing = (normalize_phenology_df(existing_df)
+                if existing_df is not None and not existing_df.empty
+                else pd.DataFrame(
+                    columns=["Campo", "Variedad", "Año", "Fase", "Inicio", "Fin", "Observaciones"]
+                ))
 
     existing_keys = set()
     for _, row in existing.iterrows():
         if pd.notna(row.get("Año")):
-            existing_keys.add((int(row["Año"]), str(row["Fase"]).strip().lower()))
+            existing_keys.add((
+                str(row.get("Campo", "")).strip().lower(),
+                str(row.get("Variedad", "")).strip().lower(),
+                int(row["Año"]),
+                str(row["Fase"]).strip().lower(),
+            ))
 
+    pairs = get_campo_variedad_pairs()
     new_rows = []
     for y in years:
-        for row in default_phenology_rows_for_year(int(y)):
-            key = (int(row["Año"]), str(row["Fase"]).strip().lower())
-            if key not in existing_keys:
-                new_rows.append(row)
+        for campo, variedad in pairs:
+            for row in default_phenology_rows_for_campo_variedad_year(campo, variedad, int(y)):
+                key = (
+                    row["Campo"].strip().lower(),
+                    row["Variedad"].strip().lower(),
+                    int(row["Año"]),
+                    row["Fase"].strip().lower(),
+                )
+                if key not in existing_keys:
+                    new_rows.append(row)
 
-    if new_rows:
-        merged = pd.concat([existing, pd.DataFrame(new_rows)], ignore_index=True)
-    else:
-        merged = existing.copy()
+    merged = (pd.concat([existing, pd.DataFrame(new_rows)], ignore_index=True)
+              if new_rows else existing.copy())
 
     merged = normalize_phenology_df(merged)
-    merged["_fase_orden"] = merged["Fase"].map({
-        "Reposo invernal": 1,
-        "Yema hinchada": 2,
-        "Brotación": 3,
-        "Floración": 4,
-        "Cuajado": 5,
-        "Crecimiento del fruto": 6,
-        "Maduración": 7,
-        "Cosecha": 8,
-        "Caída de hoja": 9,
-    }).fillna(99)
-    merged = merged.sort_values(["Año", "_fase_orden", "Inicio"]).drop(columns=["_fase_orden"]).reset_index(drop=True)
+    merged["_fase_orden"] = merged["Fase"].map(PHENOLOGY_PHASE_ORDER).fillna(99)
+    merged = (merged
+              .sort_values(["Campo", "Variedad", "Año", "_fase_orden"])
+              .drop(columns=["_fase_orden"])
+              .reset_index(drop=True))
     return merged, len(new_rows)
 
+
+def phenology_compare_variety_across_fields(phenology_df, variedad, year):
+    """
+    Para una variedad+año, devuelve un DataFrame Fase × Campo
+    con el rango de fechas registrado en cada campo.
+    """
+    pheno = normalize_phenology_df(phenology_df).dropna(subset=["Año", "Inicio", "Fin"])
+    pheno = pheno[
+        (pheno["Variedad"].str.strip() == str(variedad).strip()) &
+        (pheno["Año"].astype(int) == int(year))
+    ].copy()
+
+    if pheno.empty:
+        return pd.DataFrame()
+
+    campos = sorted(pheno["Campo"].str.strip().unique())
+    rows_out = []
+    for fase in PHENOLOGY_PHASES:
+        row = {"Fase": fase}
+        for campo in campos:
+            mask = (pheno["Campo"].str.strip() == campo) & (pheno["Fase"].str.strip() == fase)
+            m = pheno[mask]
+            if not m.empty:
+                ini = pd.to_datetime(m.iloc[0]["Inicio"], errors="coerce")
+                fin = pd.to_datetime(m.iloc[0]["Fin"],   errors="coerce")
+                row[campo] = (f"{ini.strftime('%d/%m')} → {fin.strftime('%d/%m')}"
+                              if pd.notna(ini) and pd.notna(fin) else "Sin fecha")
+            else:
+                row[campo] = "—"
+        rows_out.append(row)
+
+    return pd.DataFrame(rows_out)
+
+
+def phenology_phase_across_years(phenology_df, campo, variedad, fase,
+                                  history, soil_type, hoja_threshold):
+    """Para Campo+Variedad+Fase, muestra fechas y clima de cada año."""
+    pheno = normalize_phenology_df(phenology_df).dropna(subset=["Año", "Inicio", "Fin"])
+    pheno = pheno[
+        (pheno["Campo"].str.strip()    == str(campo).strip()) &
+        (pheno["Variedad"].str.strip() == str(variedad).strip()) &
+        (pheno["Fase"].str.strip()     == str(fase).strip())
+    ].copy()
+
+    if pheno.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, phase in pheno.iterrows():
+        y        = int(phase["Año"])
+        start_ts = pd.Timestamp(phase["Inicio"])
+        end_ts   = pd.Timestamp(phase["Fin"]) + pd.Timedelta(hours=23)
+        duration = (pd.Timestamp(phase["Fin"]) - start_ts).days + 1
+
+        base = {"Año": y, "Inicio": phase["Inicio"],
+                "Fin": phase["Fin"], "Duración días": duration}
+
+        period = history[(history["fecha_hora"] >= start_ts) & (history["fecha_hora"] <= end_ts)].copy()
+        if period.empty:
+            base["Aviso"] = "Sin datos"
+            rows.append(base)
+            continue
+
+        period  = add_risk_columns(period, hoja_humeda_threshold=hoja_threshold)
+        summary = period_summary(period, soil_type, start_ts, end_ts)
+        if not summary.empty:
+            for col in summary.columns:
+                base[col] = summary.iloc[0][col]
+        rows.append(base)
+
+    if not rows:
+        return pd.DataFrame()
+
+    df_out = pd.DataFrame(rows).sort_values("Año").reset_index(drop=True)
+    leading = ["Año", "Inicio", "Fin", "Duración días"]
+    remaining = [c for c in df_out.columns if c not in leading]
+    return df_out[leading + remaining]
+
+
 def phenology_tab(history, soil_type, hoja_threshold):
-    st.subheader("Fenología real de Finca Gallinal")
+    st.subheader("Fenología por campo y variedad")
     st.write(
-        "Registra aquí las fechas reales de cada fase fenológica. "
-        "Estas fechas permiten interpretar el clima según la fase del cultivo, no solo por semanas o meses."
+        "Registra las fechas reales de cada fase fenológica para cada combinación "
+        "**campo × variedad** de la finca. Permite analizar el clima específico de cada "
+        "unidad y comparar cómo evoluciona la misma variedad en distintos campos o en distintos años."
     )
 
+    # ── Sección 1: Carga CSV ───────────────────────────────────────────────────
     uploaded_pheno = st.file_uploader(
         "Cargar calendario fenológico CSV",
         type=["csv"],
@@ -9767,10 +9895,6 @@ def phenology_tab(history, soil_type, hoja_threshold):
         key="phenology_csv_upload",
     )
 
-    # Usamos el hash MD5 del contenido como identificador único.
-    # Esto evita el bucle infinito (el uploader conserva el archivo tras st.rerun())
-    # y permite subir un archivo con el mismo nombre/tamaño pero contenido diferente
-    # (por ejemplo, la misma plantilla con fechas actualizadas o años añadidos).
     if uploaded_pheno is not None:
         import hashlib, io as _io
         raw_bytes = uploaded_pheno.getvalue()
@@ -9786,101 +9910,288 @@ def phenology_tab(history, soil_type, hoja_threshold):
             except Exception as e:
                 st.error(f"No se pudo cargar el calendario fenológico: {e}")
 
-    with st.expander("Generar plantilla fenológica para años detectados", expanded=True):
+    # ── Sección 2: Generador de plantilla ─────────────────────────────────────
+    with st.expander("Generar plantilla para todos los campos y variedades", expanded=True):
         if history.empty:
             st.warning(
-                "Primero carga el histórico climático en la pestaña Importación. "
-                "Cuando haya histórico cargado, aquí aparecerán los años detectados."
+                "Primero carga el histórico climático. "
+                "Cuando esté cargado, aquí aparecerán los años detectados."
             )
         else:
             detected_years = sorted([int(y) for y in history["fecha_hora"].dt.year.dropna().unique()])
-            st.write(
-                "Este botón añade las fases fenológicas de los años presentes en el histórico climático. "
-                "**No borra ni modifica** las fechas que ya hayas editado."
-            )
+            pairs = get_campo_variedad_pairs()
+            n_total = len(pairs) * len(detected_years) * len(PHENOLOGY_PHASES)
             st.info(
-                "Regla de seguridad: si ya existe una fila con el mismo Año + Fase, se conserva intacta. "
-                "Solo se añaden las fases que falten."
+                f"**{len(pairs)} combinaciones Campo×Variedad** en la base de campos · "
+                f"**{len(detected_years)} años** en el histórico. "
+                f"La plantilla completa tendría **{n_total} filas** "
+                f"({len(pairs)} combos × {len(detected_years)} años × {len(PHENOLOGY_PHASES)} fases). "
+                f"Solo se añaden las que faltan; **no se borra nada ya editado**."
             )
-            st.write("Años detectados en el histórico: " + ", ".join(map(str, detected_years)))
+            st.write("Años detectados: " + ", ".join(map(str, detected_years)))
 
-            if st.button("Generar / completar plantilla sin borrar datos existentes", type="primary", key="generate_pheno_template_v65"):
+            if st.button(
+                "Generar / completar plantilla sin borrar datos existentes",
+                type="primary",
+                key="generate_pheno_template_v2",
+            ):
                 merged, added = merge_phenology_template(st.session_state.phenology_df, detected_years)
                 st.session_state.phenology_df = merged
                 st.session_state.phenology_editor_version += 1
                 st.session_state["last_phase_summary"] = pd.DataFrame()
-
                 if added > 0:
-                    st.success(f"Plantilla actualizada. Se añadieron {added} filas nuevas sin modificar las existentes.")
+                    st.success(f"Plantilla actualizada — {added} filas nuevas añadidas sin modificar las existentes.")
                 else:
-                    st.info("No había fases nuevas que añadir. La tabla ya contenía esos años/fases.")
-
+                    st.info("No había filas nuevas que añadir. La tabla ya estaba completa.")
                 st.rerun()
 
-    st.markdown("#### Tabla editable de fenología")
-    st.caption("Puedes editar fechas, fases y observaciones. Usa formato de fecha YYYY-MM-DD.")
-
-    editor_key = f"phenology_editor_{st.session_state.phenology_editor_version}"
-
-    edited = st.data_editor(
-        st.session_state.phenology_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        key=editor_key,
+    # ── Sección 3: Editor con filtros ─────────────────────────────────────────
+    st.markdown("#### Editar calendario fenológico")
+    st.caption(
+        "Filtra por campo, variedad y año para ver solo las filas que necesitas editar. "
+        "Formato de fecha: **YYYY-MM-DD**."
     )
 
-    # Solo actualizar session_state si el usuario realmente cambió algo en el editor.
-    # Comparar por valores evita el bucle infinito de rerun que ocurre cuando
-    # se asigna incondicionalmente en cada renderizado.
-    try:
-        if not edited.equals(st.session_state.phenology_df):
-            st.session_state.phenology_df = normalize_phenology_df(edited)
-    except Exception:
-        st.session_state.phenology_df = normalize_phenology_df(edited)
+    pheno_cur    = st.session_state.phenology_df
+    _ph_campos   = sorted([c for c in pheno_cur["Campo"].dropna().unique()    if str(c).strip()])
+    _ph_vars     = sorted([v for v in pheno_cur["Variedad"].dropna().unique() if str(v).strip()])
+    _ph_years    = sorted([int(y) for y in pheno_cur["Año"].dropna().unique()])
+
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        filt_campo = st.selectbox("Campo",    ["Todos"] + _ph_campos, key="pheno_filt_campo")
+    with fc2:
+        filt_var   = st.selectbox("Variedad", ["Todas"] + _ph_vars,   key="pheno_filt_variedad")
+    with fc3:
+        filt_yr    = st.selectbox("Año",      ["Todos"] + _ph_years,  key="pheno_filt_year")
+
+    # Build filter mask preserving original index for merge-back
+    _mask = pd.Series([True] * len(pheno_cur), index=pheno_cur.index)
+    if filt_campo != "Todos":
+        _mask &= (pheno_cur["Campo"] == filt_campo)
+    if filt_var != "Todas":
+        _mask &= (pheno_cur["Variedad"] == filt_var)
+    if filt_yr != "Todos":
+        _mask &= (pheno_cur["Año"].astype(str) == str(filt_yr))
+
+    _edit_slice = pheno_cur[_mask].reset_index(drop=True)
+    _untouched  = pheno_cur[~_mask]
+
+    # Changing the filter resets the editor (new key → fresh render)
+    _fsig      = f"{filt_campo}_{filt_var}_{filt_yr}".replace(" ", "_")
+    editor_key = f"pheno_ed_{st.session_state.phenology_editor_version}_{_fsig}"
+
+    if _edit_slice.empty and (_mask.sum() == 0):
+        st.info("No hay filas para este filtro. Genera la plantilla primero o ajusta los filtros.")
+    else:
+        edited = st.data_editor(
+            _edit_slice,
+            num_rows="dynamic",
+            use_container_width=True,
+            key=editor_key,
+        )
+        # Merge edited slice back into full df
+        try:
+            _en = normalize_phenology_df(edited)
+            _un = (normalize_phenology_df(_untouched)
+                   if not _untouched.empty
+                   else pd.DataFrame(columns=["Campo", "Variedad", "Año", "Fase", "Inicio", "Fin", "Observaciones"]))
+            _full_new = normalize_phenology_df(pd.concat([_un, _en], ignore_index=True))
+            if not _full_new.equals(normalize_phenology_df(pheno_cur)):
+                st.session_state.phenology_df = _full_new
+        except Exception:
+            pass  # Silent fail — never lose data
 
     st.download_button(
-        "Descargar calendario fenológico",
+        "Descargar calendario fenológico completo",
         data=st.session_state.phenology_df.to_csv(index=False).encode("utf-8-sig"),
         file_name="calendario_fenologico_finca_gallinal.csv",
         mime="text/csv",
     )
 
     if history.empty:
-        st.info("Carga primero el histórico climático para analizar por fases.")
+        st.info("Carga primero el histórico climático para poder analizar por fases.")
         return
 
-    years = sorted([int(y) for y in st.session_state.phenology_df["Año"].dropna().unique()])
-    if not years:
-        st.warning("Añade al menos un año en la tabla fenológica.")
+    pheno_now = st.session_state.phenology_df
+    if pheno_now.empty or pheno_now["Inicio"].isna().all():
+        st.info("Genera la plantilla o carga un CSV con fechas fenológicas para comenzar el análisis.")
         return
 
-    selected_year = st.selectbox("Año fenológico a analizar", years, index=len(years)-1)
+    # ── Sección 4: Análisis ────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Análisis fenológico")
 
-    if st.button("Analizar fases fenológicas", type="primary"):
-        phase_df = phenology_phase_summary(
-            history,
-            st.session_state.phenology_df,
-            soil_type,
-            hoja_threshold,
-            selected_year=selected_year,
+    an_campos = sorted([c for c in pheno_now["Campo"].dropna().unique()    if str(c).strip()])
+    an_vars   = sorted([v for v in pheno_now["Variedad"].dropna().unique() if str(v).strip()])
+    an_years  = sorted([int(y) for y in pheno_now["Año"].dropna().unique()])
+
+    tab_unit, tab_vcf, tab_evo = st.tabs([
+        "📍 Por unidad (campo + variedad + año)",
+        "🔄 Variedad entre campos",
+        "📅 Evolución temporal",
+    ])
+
+    # ── Tab 1: Por unidad ─────────────────────────────────────────────────────
+    with tab_unit:
+        st.markdown(
+            "Selecciona un campo, una variedad y un año para ver el análisis climático "
+            "de cada fase fenológica de esa combinación concreta."
         )
+        col_u1, col_u2, col_u3 = st.columns(3)
+        with col_u1:
+            sel_campo_u = st.selectbox(
+                "Campo", an_campos if an_campos else ["—"], key="pheno_an_campo_unit"
+            )
+        with col_u2:
+            _vars_u = sorted(pheno_now[pheno_now["Campo"] == sel_campo_u]["Variedad"].dropna().unique().tolist())
+            sel_var_u = st.selectbox(
+                "Variedad", _vars_u if _vars_u else ["—"], key="pheno_an_var_unit"
+            )
+        with col_u3:
+            sel_year_u = st.selectbox(
+                "Año", an_years if an_years else [2026],
+                index=len(an_years) - 1 if an_years else 0,
+                key="pheno_an_year_unit",
+            )
 
-        st.session_state["last_phase_summary"] = phase_df
+        if st.button("Analizar fases", type="primary", key="btn_pheno_unit"):
+            if sel_campo_u in ("—", "") or sel_var_u in ("—", ""):
+                st.warning("Selecciona un campo y una variedad válidos.")
+            else:
+                _ps = phenology_phase_summary(
+                    history, pheno_now, soil_type, hoja_threshold,
+                    campo=sel_campo_u, variedad=sel_var_u, selected_year=sel_year_u,
+                )
+                st.session_state["last_phase_summary"] = _ps
 
-    phase_df = st.session_state.get("last_phase_summary", pd.DataFrame())
+        phase_df = st.session_state.get("last_phase_summary", pd.DataFrame())
+        if not phase_df.empty:
+            st.markdown(f"#### Resumen climático · {sel_campo_u} · {sel_var_u} · {sel_year_u}")
+            st.dataframe(phase_df, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Descargar resumen por fases",
+                data=phase_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"fenologia_{sel_campo_u}_{sel_var_u}_{sel_year_u}.csv".replace(" ", "_"),
+                mime="text/csv",
+                key="dl_pheno_unit",
+            )
+            render_phenology_interpretation(phase_df)
 
-    if not phase_df.empty:
-        st.markdown("#### Resumen climático por fase")
-        st.dataframe(phase_df, use_container_width=True)
-
-        st.download_button(
-            "Descargar resumen por fases",
-            data=phase_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"resumen_fenologico_{selected_year}.csv",
-            mime="text/csv",
+    # ── Tab 2: Variedad entre campos ──────────────────────────────────────────
+    with tab_vcf:
+        st.markdown(
+            "Compara en qué fecha ocurre cada fase para la **misma variedad** "
+            "en distintos campos. Útil para detectar diferencias de microclima o exposición."
         )
+        col_v1, col_v2 = st.columns(2)
+        with col_v1:
+            sel_var_vcf = st.selectbox(
+                "Variedad", an_vars if an_vars else ["—"], key="pheno_an_var_vcf"
+            )
+        with col_v2:
+            sel_year_vcf = st.selectbox(
+                "Año", an_years if an_years else [2026],
+                index=len(an_years) - 1 if an_years else 0,
+                key="pheno_an_year_vcf",
+            )
 
-        render_phenology_interpretation(phase_df)
+        if st.button("Comparar campos", type="primary", key="btn_pheno_vcf"):
+            if sel_var_vcf in ("—", ""):
+                st.warning("Selecciona una variedad válida.")
+            else:
+                _vcf = phenology_compare_variety_across_fields(pheno_now, sel_var_vcf, sel_year_vcf)
+                st.session_state["last_vcf_df"] = _vcf
+
+        vcf_df = st.session_state.get("last_vcf_df", pd.DataFrame())
+        if not vcf_df.empty:
+            st.markdown(f"#### {sel_var_vcf} · {sel_year_vcf} · Fechas por campo")
+            st.caption(
+                "Cada columna es un campo. Las celdas muestran inicio → fin de la fase. "
+                "Los '—' indican que ese campo no tiene fechas registradas para esa fase."
+            )
+            # Sticky HTML table
+            _vc = list(vcf_df.columns)
+            _vth  = "background:#1a2e1e;color:white;padding:8px 12px;white-space:nowrap;font-weight:600;font-size:13px;"
+            _vths = "position:sticky;left:0;z-index:2;" + _vth
+            _vhdr = "".join(
+                f'<th style="{_vths if i == 0 else _vth}">{c}</th>'
+                for i, c in enumerate(_vc)
+            )
+            _vbody = ""
+            for _, _r in vcf_df.iterrows():
+                _cells = ""
+                for _i, _c in enumerate(_vc):
+                    _v    = str(_r[_c])
+                    _bg   = "#eef2ee" if _i == 0 else ("white" if _v != "—" else "#f9f9f9")
+                    _clr  = "#888" if _v == "—" else "inherit"
+                    _td   = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                             f"background:{_bg};color:{_clr};padding:7px 12px;"
+                             f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+                    _cells += f"<td style='{_td}'>{_v}</td>"
+                _vbody += f"<tr>{_cells}</tr>"
+            st.markdown(
+                f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+                f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+                f'<table style="border-collapse:collapse;width:100%;">'
+                f'<thead><tr>{_vhdr}</tr></thead>'
+                f'<tbody>{_vbody}</tbody>'
+                f'</table></div>',
+                unsafe_allow_html=True,
+            )
+            st.download_button(
+                "Descargar comparación entre campos",
+                data=vcf_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"comparacion_campos_{sel_var_vcf}_{sel_year_vcf}.csv".replace(" ", "_"),
+                mime="text/csv",
+                key="dl_vcf",
+            )
+
+    # ── Tab 3: Evolución temporal ─────────────────────────────────────────────
+    with tab_evo:
+        st.markdown(
+            "Selecciona un campo, variedad y fase para ver cómo ha cambiado esa fase "
+            "a lo largo de los años registrados, junto con el clima de cada período."
+        )
+        col_e1, col_e2, col_e3 = st.columns(3)
+        with col_e1:
+            sel_campo_evo = st.selectbox(
+                "Campo", an_campos if an_campos else ["—"], key="pheno_an_campo_evo"
+            )
+        with col_e2:
+            _vars_evo = sorted(
+                pheno_now[pheno_now["Campo"] == sel_campo_evo]["Variedad"].dropna().unique().tolist()
+            ) if sel_campo_evo not in ("—", "") else an_vars
+            sel_var_evo = st.selectbox(
+                "Variedad", _vars_evo if _vars_evo else ["—"], key="pheno_an_var_evo"
+            )
+        with col_e3:
+            _fi = PHENOLOGY_PHASES.index("Floración") if "Floración" in PHENOLOGY_PHASES else 0
+            sel_fase_evo = st.selectbox(
+                "Fase", PHENOLOGY_PHASES, index=_fi, key="pheno_an_fase_evo"
+            )
+
+        if st.button("Ver evolución temporal", type="primary", key="btn_pheno_evo"):
+            if sel_campo_evo in ("—", "") or sel_var_evo in ("—", ""):
+                st.warning("Selecciona un campo y una variedad válidos.")
+            else:
+                _evo = phenology_phase_across_years(
+                    pheno_now, sel_campo_evo, sel_var_evo, sel_fase_evo,
+                    history, soil_type, hoja_threshold,
+                )
+                st.session_state["last_evo_df"] = _evo
+
+        evo_df = st.session_state.get("last_evo_df", pd.DataFrame())
+        if not evo_df.empty:
+            st.markdown(f"#### {sel_fase_evo} · {sel_campo_evo} · {sel_var_evo} — por año")
+            st.dataframe(evo_df, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Descargar evolución temporal",
+                data=evo_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"evolucion_{sel_campo_evo}_{sel_var_evo}_{sel_fase_evo}.csv".replace(" ", "_"),
+                mime="text/csv",
+                key="dl_evo",
+            )
 
 
 
@@ -12255,17 +12566,9 @@ if "last_import_diagnostics" not in st.session_state:
 if "applied_period" not in st.session_state:
     st.session_state.applied_period = None
 if "phenology_df" not in st.session_state:
-    st.session_state.phenology_df = pd.DataFrame([
-        {"Año": 2026, "Fase": "Reposo invernal", "Inicio": "2026-01-01", "Fin": "2026-03-15", "Observaciones": ""},
-        {"Año": 2026, "Fase": "Yema hinchada", "Inicio": "2026-03-16", "Fin": "2026-03-31", "Observaciones": ""},
-        {"Año": 2026, "Fase": "Brotación", "Inicio": "2026-04-01", "Fin": "2026-04-14", "Observaciones": ""},
-        {"Año": 2026, "Fase": "Floración", "Inicio": "2026-04-15", "Fin": "2026-05-10", "Observaciones": ""},
-        {"Año": 2026, "Fase": "Cuajado", "Inicio": "2026-05-11", "Fin": "2026-06-15", "Observaciones": ""},
-        {"Año": 2026, "Fase": "Crecimiento del fruto", "Inicio": "2026-06-16", "Fin": "2026-08-31", "Observaciones": ""},
-        {"Año": 2026, "Fase": "Maduración", "Inicio": "2026-09-01", "Fin": "2026-10-15", "Observaciones": ""},
-        {"Año": 2026, "Fase": "Cosecha", "Inicio": "2026-10-16", "Fin": "2026-11-15", "Observaciones": ""},
-        {"Año": 2026, "Fase": "Caída de hoja", "Inicio": "2026-11-16", "Fin": "2026-12-15", "Observaciones": ""},
-    ])
+    st.session_state.phenology_df = pd.DataFrame(
+        columns=["Campo", "Variedad", "Año", "Fase", "Inicio", "Fin", "Observaciones"]
+    )
 if "phenology_editor_version" not in st.session_state:
     st.session_state.phenology_editor_version = 0
 if "activities_df" not in st.session_state:
