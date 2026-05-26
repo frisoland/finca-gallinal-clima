@@ -9952,7 +9952,12 @@ def phenology_tab(history, soil_type, hoja_threshold):
         "Formato de fecha: **YYYY-MM-DD**."
     )
 
-    pheno_cur    = st.session_state.phenology_df
+    # Normalizar siempre al leer: garantiza que "Campo" y "Variedad" existan
+    # aunque el session_state venga de una sesión anterior al rediseño.
+    pheno_cur = normalize_phenology_df(st.session_state.phenology_df)
+    if not pheno_cur.equals(normalize_phenology_df(st.session_state.phenology_df)):
+        st.session_state.phenology_df = pheno_cur
+
     _ph_campos   = sorted([c for c in pheno_cur["Campo"].dropna().unique()    if str(c).strip()])
     _ph_vars     = sorted([v for v in pheno_cur["Variedad"].dropna().unique() if str(v).strip()])
     _ph_years    = sorted([int(y) for y in pheno_cur["Año"].dropna().unique()])
@@ -10013,7 +10018,7 @@ def phenology_tab(history, soil_type, hoja_threshold):
         st.info("Carga primero el histórico climático para poder analizar por fases.")
         return
 
-    pheno_now = st.session_state.phenology_df
+    pheno_now = normalize_phenology_df(st.session_state.phenology_df)
     if pheno_now.empty or pheno_now["Inicio"].isna().all():
         st.info("Genera la plantilla o carga un CSV con fechas fenológicas para comenzar el análisis.")
         return
