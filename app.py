@@ -6434,7 +6434,54 @@ def cold_tab(history):
         if chill_summary.empty:
             st.warning("No hay datos de temperatura para esa campaña.")
         else:
-            st.dataframe(chill_summary, use_container_width=True)
+            # ── Preparar tabla ────────────────────────────────────────────────
+            _cs = chill_summary.copy()
+            _cs_drop = [c for c in ["Horas esperadas", "Horas con datos temperatura"]
+                        if c in _cs.columns]
+            _cs = _cs.drop(columns=_cs_drop)
+            if "Cobertura temperatura %" in _cs.columns:
+                _cs = _cs.rename(columns={"Cobertura temperatura %": "Calidad del dato %"})
+            if "Campaña frío" in _cs.columns:
+                _cs = _cs[["Campaña frío"] + [c for c in _cs.columns if c != "Campaña frío"]]
+            _cs = _cs.reset_index(drop=True)
+
+            # ── Tabla HTML sticky ─────────────────────────────────────────────
+            _cs_cols = list(_cs.columns)
+            _cs_th   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                        "white-space:nowrap;font-weight:600;font-size:13px;")
+            _cs_ths  = "position:sticky;left:0;z-index:2;" + _cs_th
+            _cs_hdr  = "".join(
+                f'<th style="{_cs_ths if i == 0 else _cs_th}">{c}</th>'
+                for i, c in enumerate(_cs_cols)
+            )
+            _cs_body = ""
+            for _, _r in _cs.iterrows():
+                _cells = ""
+                for _i, _c in enumerate(_cs_cols):
+                    _v = _r[_c]
+                    if isinstance(_v, float) and not pd.isna(_v):
+                        _disp = f"{_v:.1f}"
+                    elif isinstance(_v, float) and pd.isna(_v):
+                        _disp = "—"
+                    elif hasattr(_v, "strftime"):
+                        _disp = _v.strftime("%d/%m/%Y")
+                    else:
+                        _disp = str(_v)
+                    _bg = "#eef2ee" if _i == 0 else "white"
+                    _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                           f"background:{_bg};padding:7px 12px;"
+                           f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+                    _cells += f"<td style='{_td}'>{_disp}</td>"
+                _cs_body += f"<tr>{_cells}</tr>"
+            st.markdown(
+                f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+                f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+                f'<table style="border-collapse:collapse;width:100%;">'
+                f'<thead><tr>{_cs_hdr}</tr></thead>'
+                f'<tbody>{_cs_body}</tbody>'
+                f'</table></div>',
+                unsafe_allow_html=True,
+            )
 
             comparison_df = chill_column_comparison(history, selected_chill_year)
             st.markdown("#### Comprobación por columna de temperatura")
