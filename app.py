@@ -13201,6 +13201,150 @@ def _dec_bar_color(value):
     return "#2ca02c"
 
 
+# ── Catálogo de fungicidas por defecto ────────────────────────────────────────
+DEFAULT_FUNGICIDE_CATALOG = [
+    {"Producto": "FOLICUR 25 WG",   "Objetivos": "Moteado, Oídio",        "Tipo": "Sistémico curativo",   "Plazo seguridad días": 7,  "Notas": "Tebuconazol. Curativo hasta 72h post-infección."},
+    {"Producto": "SIGNUM",          "Objetivos": "Monilia, Moteado",       "Tipo": "Sistémico preventivo", "Plazo seguridad días": 7,  "Notas": "Boscalid+Piraclostrobina. Alta persistencia."},
+    {"Producto": "FLINT 50 WG",     "Objetivos": "Moteado, Oídio",         "Tipo": "Sistémico",            "Plazo seguridad días": 14, "Notas": "Trifloxistrobina. Preventivo y curativo."},
+    {"Producto": "SWITCH 62.5 WG",  "Objetivos": "Monilia",                "Tipo": "Sistémico",            "Plazo seguridad días": 7,  "Notas": "Ciprodinilo+Fludioxonil. Específico monilia."},
+    {"Producto": "CAPTAN 80 WG",    "Objetivos": "Moteado",                "Tipo": "Contacto preventivo",  "Plazo seguridad días": 14, "Notas": "Preventivo. Se lava con lluvia >20mm."},
+    {"Producto": "KUMULUS DF",      "Objetivos": "Oídio",                  "Tipo": "Contacto",             "Plazo seguridad días": 21, "Notas": "Azufre. Solo preventivo. No usar con T>30ºC."},
+]
+# Inicialización session_state del catálogo (aquí, después de la constante)
+if "fungicide_catalog_df" not in st.session_state:
+    st.session_state.fungicide_catalog_df = pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG)
+
+
+def get_product_recommendation(dominant_risk_list, catalog_df):
+    """Devuelve lista de productos del catálogo que cubren el riesgo dominante."""
+    if catalog_df is None or catalog_df.empty:
+        return "—"
+    suggestions = []
+    for _, row in catalog_df.iterrows():
+        targets = str(row.get("Objetivos", "")).lower()
+        for risk in dominant_risk_list:
+            if risk.lower() in targets:
+                suggestions.append(str(row["Producto"]))
+                break
+    return ", ".join(sorted(set(suggestions))) if suggestions else "Revisar catálogo"
+
+
+def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16):
+    """
+    Para cada campo de la finca, calcula el estado de protección y
+    la acción recomendada para hoy.
+    """
+    today = pd.Timestamp.now().normalize()
+    rows  = []
+
+    # Pre-process activities once
+    acts_clean = pd.DataFrame()
+    if not activities_df.empty and "Campos reconocidos" in activities_df.columns:
+        acts_clean = activities_df.copy()
+        acts_clean["Fecha_dt"] = pd.to_datetime(acts_clean["Fecha"], errors="coerce")
+        acts_clean = acts_clean.dropna(subset=["Fecha_dt"])
+
+    for field_row in FIELDS_BASE_ROWS:
+        campo      = field_row["Campo"]
+        variedades = field_row.get("Variedades actuales", "")
+
+        # ── Último tratamiento ────────────────────────────────────────────────
+        last_date    = None
+        last_product = "Sin registro"
+        if not acts_clean.empty:
+            mask = acts_clean["Campos reconocidos"].fillna("").str.contains(
+                re.escape(campo), case=False, regex=True
+            )
+            campo_acts = acts_clean[mask].sort_values("Fecha_dt", ascending=False)
+            if not campo_acts.empty:
+                last = campo_acts.iloc[0]
+                last_date    = last["Fecha_dt"].normalize()
+                last_product = str(last.get("Producto", "")).strip() or "Sin especificar"
+
+        days_since = (today - last_date).days if last_date is not None else 999
+
+        # ── Lluvia y eventos desde el último tratamiento ──────────────────────
+        rain_since          = 0.0
+        mills_events_since  = 0
+        monilia_events_since = 0
+        max_mills_since     = 0.0
+        max_monilia_since   = 0.0
+
+        ref_date = last_date if last_date is not None else today - pd.Timedelta(days=persistence_days)
+
+        if not history_df.empty:
+            h = history_df.copy()
+            h["fecha_hora"] = pd.to_datetime(h["fecha_hora"])
+            h_since = h[h["fecha_hora"] >= ref_date]
+            rain_since = round(float(pd.to_numeric(h_since["lluvia_mm"], errors="coerce").sum()), 1)
+
+        if not risk_df.empty:
+            hist_risk = risk_df[(risk_df["Fecha"] >= ref_date) & (~risk_df["Es_prediccion"])]
+            mills_events_since   = int((hist_risk["Mills_valor"].fillna(0)   >= 100).sum())
+            monilia_events_since = int((hist_risk["Monilia_valor"].fillna(0) >= 100).sum())
+            max_mills_since      = float(hist_risk["Mills_valor"].fillna(0).max())
+            max_monilia_since    = float(hist_risk["Monilia_valor"].fillna(0).max())
+
+        # ── Previsión 3 días ──────────────────────────────────────────────────
+        fc_mills_max   = 0.0
+        fc_monilia_max = 0.0
+        fc_rain        = 0.0
+        if not risk_df.empty:
+            fc = risk_df[
+                risk_df["Es_prediccion"] &
+                (risk_df["Fecha"] >= today) &
+                (risk_df["Fecha"] <= today + pd.Timedelta(days=3))
+            ]
+            if not fc.empty:
+                fc_mills_max   = float(fc["Mills_valor"].fillna(0).max())
+                fc_monilia_max = float(fc["Monilia_valor"].fillna(0).max())
+                fc_rain        = float(fc["Lluvia"].fillna(0).sum())
+
+        # ── Lógica de decisión ────────────────────────────────────────────────
+        # Cobertura caducada si: días >= umbral, o días >= 12 y lluvia >= 35mm
+        unprotected  = (days_since >= persistence_days) or (days_since >= 12 and rain_since >= 35)
+        high_risk    = (mills_events_since >= 2 or max_mills_since >= 150 or monilia_events_since >= 1)
+        medium_risk  = (mills_events_since >= 1 or max_mills_since >= 50)
+        fc_alert     = (fc_mills_max >= 100 or fc_monilia_max >= 100 or fc_rain >= 20)
+
+        if unprotected and (high_risk or fc_alert):
+            priority = 1; action = "🔴 TRATAR HOY";              row_bg = "#ffcdd2"
+        elif unprotected:
+            priority = 2; action = "🟠 Planificar (sin cobertura)"; row_bg = "#ffe0b2"
+        elif (medium_risk or fc_alert) and days_since >= 12:
+            priority = 3; action = "🟡 Revisar – riesgo activo";  row_bg = "#fff9c4"
+        else:
+            priority = 4; action = "🟢 OK";                       row_bg = "#f1f8f1"
+
+        dominant = []
+        if mills_events_since > 0 or fc_mills_max >= 50:
+            dominant.append("Moteado")
+        if monilia_events_since > 0 or fc_monilia_max >= 50:
+            dominant.append("Monilia")
+        if not dominant:
+            dominant = ["—"]
+
+        rows.append({
+            "Campo":             campo,
+            "Variedades":        variedades,
+            "Último trat.":     (last_date.strftime("%d/%m/%Y") if last_date else "Sin registro"),
+            "Días sin trat.":   (days_since if days_since < 999 else "—"),
+            "Lluvia desde mm":  rain_since,
+            "Eventos infección": mills_events_since + monilia_events_since,
+            "Previsión Mills":  int(fc_mills_max),
+            "Lluvia prevista mm": round(fc_rain, 1),
+            "Riesgo principal": ", ".join(dominant),
+            "🎯 Acción":        action,
+            "_priority":        priority,
+            "_bg":              row_bg,
+        })
+
+    df = (pd.DataFrame(rows)
+          .sort_values(["_priority", "Días sin trat."], ascending=[True, False])
+          .reset_index(drop=True))
+    return df
+
+
 def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, upper_temp=31.1):
     """
     DataFrame diario con valores de riesgo para Moteado, Monilia, Oídio y DD Carpocapsa.
@@ -13641,6 +13785,125 @@ def render_decisiones_panel():
         "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
         "**predicción Sencrop** — para tomar decisiones de tratamiento con días de antelación."
     )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PANEL DE DECISIÓN DIARIA
+    # ══════════════════════════════════════════════════════════════════════════
+    with st.expander("⚙️ Catálogo de fungicidas", expanded=False):
+        st.caption(
+            "Define aquí los productos disponibles. La columna **Objetivos** debe contener "
+            "el nombre de la enfermedad separado por comas (ej: *Moteado, Oídio*). "
+            "Las recomendaciones del panel diario se generan desde esta tabla."
+        )
+        _catalog_key = "fungicide_catalog_editor_v1"
+        _catalog_edited = st.data_editor(
+            st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG)),
+            num_rows="dynamic",
+            use_container_width=True,
+            key=_catalog_key,
+        )
+        try:
+            if not _catalog_edited.equals(st.session_state.get("fungicide_catalog_df", pd.DataFrame())):
+                st.session_state["fungicide_catalog_df"] = _catalog_edited
+        except Exception:
+            st.session_state["fungicide_catalog_df"] = _catalog_edited
+
+    st.markdown("### 📋 Panel de decisión diaria")
+
+    _persist_days = st.slider(
+        "Días de persistencia del tratamiento (umbral de protección caducada)",
+        min_value=10, max_value=25, value=16, step=1,
+        help="Por encima de este umbral de días sin tratar, el campo se considera sin cobertura.",
+        key="dec_persist_days",
+    )
+
+    # Construir risk_df rápido (solo los últimos 60 días + forecast) para el panel
+    _risk_quick = build_risk_timeline(history_df, forecast_df, days_back=60)
+
+    _catalog_df = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
+    _dec_df = daily_treatment_decision(history_df, activities_df, _risk_quick, persistence_days=_persist_days)
+
+    if _dec_df.empty:
+        st.info("Carga el histórico y las actuaciones de Agroptima para generar el panel de decisión.")
+    else:
+        # ── Resumen ejecutivo ────────────────────────────────────────────────
+        _n_red    = (_dec_df["_priority"] == 1).sum()
+        _n_orange = (_dec_df["_priority"] == 2).sum()
+        _n_yellow = (_dec_df["_priority"] == 3).sum()
+        _n_green  = (_dec_df["_priority"] == 4).sum()
+
+        _s1, _s2, _s3, _s4 = st.columns(4)
+        _s1.metric("🔴 Tratar hoy",         _n_red)
+        _s2.metric("🟠 Sin cobertura",       _n_orange)
+        _s3.metric("🟡 Revisar",             _n_yellow)
+        _s4.metric("🟢 OK",                  _n_green)
+
+        # ── Tabla HTML con colores por fila ───────────────────────────────────
+        _display_cols = [
+            "Campo", "Variedades", "Último trat.", "Días sin trat.",
+            "Lluvia desde mm", "Eventos infección",
+            "Previsión Mills", "Riesgo principal", "🎯 Acción", "Producto sugerido",
+        ]
+
+        # Añadir columna de producto sugerido
+        _dec_display = _dec_df.copy()
+        _dec_display["Producto sugerido"] = _dec_display["Riesgo principal"].apply(
+            lambda risks: get_product_recommendation(
+                [r.strip() for r in str(risks).split(",") if r.strip() != "—"],
+                _catalog_df,
+            )
+        )
+
+        _th = ("background:#1a2e1e;color:white;padding:8px 12px;"
+               "white-space:nowrap;font-weight:600;font-size:13px;")
+        _hdr = "".join(f'<th style="{_th}">{c}</th>' for c in _display_cols)
+
+        _tbody = ""
+        for _, _r in _dec_display.iterrows():
+            _bg = _r["_bg"]
+            _cells = ""
+            for _c in _display_cols:
+                _v = _r.get(_c, "")
+                _td = (f"background:{_bg};padding:7px 12px;border-bottom:1px solid #e8e8e8;"
+                       f"white-space:nowrap;font-size:13px;")
+                _cells += f"<td style='{_td}'>{_v}</td>"
+            _tbody += f"<tr>{_cells}</tr>"
+
+        st.markdown(
+            f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+            f'border-radius:8px;border:1px solid #ddd;margin-bottom:1.5rem;">'
+            f'<table style="border-collapse:collapse;width:100%;">'
+            f'<thead><tr>{_hdr}</tr></thead>'
+            f'<tbody>{_tbody}</tbody>'
+            f'</table></div>',
+            unsafe_allow_html=True,
+        )
+
+        st.caption(
+            "🔴 **Tratar hoy** = sin cobertura + riesgo activo o previsión de infección. "
+            "🟠 **Sin cobertura** = días o lluvia superan umbral, pero no hay eventos activos. "
+            "🟡 **Revisar** = cobertura activa pero con eventos de infección recientes. "
+            "🟢 **OK** = protegido y sin alertas."
+        )
+
+        with st.expander("Descargar tabla de decisión", expanded=False):
+            _dl_cols = [c for c in _display_cols if c != "🎯 Acción"]
+            _dl_cols.append("Acción")
+            _dec_dl = _dec_display.rename(columns={"🎯 Acción": "Acción"})[
+                [c for c in ["Campo", "Variedades", "Último trat.", "Días sin trat.",
+                              "Lluvia desde mm", "Eventos infección", "Previsión Mills",
+                              "Riesgo principal", "Acción", "Producto sugerido"]]
+            ]
+            st.download_button(
+                "⬇️ Descargar panel de decisión (CSV)",
+                data=_dec_dl.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"decision_tratamiento_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="dl_decision_panel",
+            )
+
+    st.markdown("---")
+    st.markdown("### 📈 Gráficas de riesgo detalladas")
 
     # ── Parámetros ────────────────────────────────────────────────────────────
     p1, p2, p3 = st.columns([1, 1, 2])
