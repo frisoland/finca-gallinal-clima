@@ -13317,18 +13317,113 @@ if _needs_reset:
     st.session_state.fungicide_catalog_version = _CATALOG_VERSION
 
 
-def get_product_recommendation(dominant_risk_list, catalog_df):
-    """Devuelve productos del catálogo que cubren el riesgo dominante (priorizando menor uso reciente)."""
+# ── Ranking de eficacia por patógeno (fuente: FRAC guidelines + ensayos en frutales) ──────────
+# Puntuación 1-4: 4 = primera elección científica, 1 = elección secundaria
+# Basado en: modo de acción, eficacia documentada en Venturia inaequalis / Monilia spp. /
+# Podosphaera leucotricha, velocidad de acción curativa y persistencia residual.
+PRODUCT_EFFICACY_RANKING = {
+    "Monilia": {
+        # Luna Experience: SDHI (C2) + DMI (G1) — doble modo de acción sistémico.
+        # Eficacia >90% contra M. laxa y M. fructigena (ensayos BASF 2018-2022).
+        "LUNA EXPERIENCE": 4,
+        # Signum: SDHI (C2) + QoI (C3) — alta persistencia, excelente en floración.
+        "SIGNUM":          3,
+        # Folicur: DMI (G1) — actividad curativa aceptable sobre Monilia, menor que SDHI.
+        "FOLICUR 25 WG":   2,
+        # Flint: QoI (C3) — actividad limitada sobre Monilia spp.
+        "FLINT 50 WG":     1,
+    },
+    "Moteado": {
+        # Flint: QoI (C3) — primera elección preventiva contra Venturia inaequalis.
+        # Excelente actividad de vapor-fase y traslaminar (Bayer CropScience).
+        "FLINT 50 WG":     4,
+        # Folicur: DMI (G1) — acción curativa hasta 72h post-infección Mills.
+        "FOLICUR 25 WG":   3,
+        # Luna Experience: SDHI + DMI — amplio espectro, buen curativo.
+        "LUNA EXPERIENCE": 2,
+        # Signum: SDHI + QoI — buena actividad preventiva sobre Venturia.
+        "SIGNUM":          2,
+    },
+    "Oídio": {
+        # Flint: QoI — primera elección contra Podosphaera leucotricha.
+        "FLINT 50 WG":     4,
+        # Folicur: DMI — buena eficacia sistémica sobre oídio.
+        "FOLICUR 25 WG":   3,
+        # Luna Experience: SDHI + DMI — eficaz sobre oídio por componente triazol.
+        "LUNA EXPERIENCE": 2,
+        # Signum: actividad inferior sobre Podosphaera vs QoI puros.
+        "SIGNUM":          1,
+    },
+}
+
+# FRAC de cada producto del catálogo 2026 (para filtro de rotación)
+PRODUCT_FRAC_MAP = {
+    "FOLICUR 25 WG":  ["G1"],
+    "SIGNUM":         ["C2", "C3"],
+    "FLINT 50 WG":    ["C3"],
+    "LUNA EXPERIENCE":["C2", "G1"],
+}
+
+
+def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None):
+    """
+    Devuelve (producto_recomendado, alternativa, motivo) con lógica científica:
+      1. Puntúa cada producto del catálogo por eficacia en los riesgos activos.
+      2. Penaliza productos que comparten grupo FRAC con el último producto usado
+         (gestión de resistencias — FRAC guidelines).
+      3. Devuelve el de mayor puntuación como recomendación y el siguiente como alternativa.
+    """
     if catalog_df is None or catalog_df.empty:
-        return "—"
-    suggestions = []
-    for _, row in catalog_df.iterrows():
-        targets = str(row.get("Objetivos", "")).lower()
-        for risk in dominant_risk_list:
-            if risk.lower() in targets:
-                suggestions.append(str(row["Producto"]))
+        return "—", "—", "Sin catálogo"
+
+    risks = [r.strip() for r in dominant_risk_list if r.strip() not in ("—", "")]
+    if not risks:
+        return "—", "—", "Sin riesgo activo"
+
+    # Grupos FRAC del último producto usado → para penalizar repetición
+    last_fracs = set()
+    if last_product and last_product not in ("Sin registro", "Sin especificar", "nan", ""):
+        for prod_key, fracs in PRODUCT_FRAC_MAP.items():
+            if prod_key.upper() in str(last_product).upper():
+                last_fracs.update(fracs)
                 break
-    return ", ".join(sorted(set(suggestions))) if suggestions else "Revisar catálogo"
+
+    scores = {}
+    for _, row in catalog_df.iterrows():
+        prod = str(row.get("Producto", "")).strip()
+        if not prod:
+            continue
+        # Suma de eficacia en cada riesgo activo
+        score = sum(
+            PRODUCT_EFFICACY_RANKING.get(risk, {}).get(prod, 0)
+            for risk in risks
+        )
+        # Penalización por rotación: -5 si comparte FRAC con el último producto
+        prod_fracs = set(PRODUCT_FRAC_MAP.get(prod, []))
+        if last_fracs and prod_fracs & last_fracs:
+            score -= 5   # penalización suficiente para desplazarlo como primera opción
+        if score > 0:
+            scores[prod] = score
+
+    if not scores:
+        return "Revisar catálogo", "—", "Sin coincidencias en catálogo"
+
+    ranked = sorted(scores.items(), key=lambda x: -x[1])
+    primary   = ranked[0][0]
+    alternate = ranked[1][0] if len(ranked) > 1 else "—"
+
+    # Motivo legible
+    rotation_note = ""
+    if last_fracs and last_product and last_product not in ("Sin registro", "Sin especificar"):
+        avoided = [p for p, s in scores.items()
+                   if set(PRODUCT_FRAC_MAP.get(p, [])) & last_fracs and p != primary]
+        if avoided:
+            rotation_note = f" (rotación vs {last_product.split()[0]})"
+
+    primary_risks = " + ".join(risks)
+    motivo = f"Mayor eficacia en {primary_risks}{rotation_note}"
+
+    return primary, alternate, motivo
 
 
 def build_rotation_advice(activities_df, catalog_df=None):
@@ -13498,19 +13593,21 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             dominant = ["—"]
 
         rows.append({
-            "Campo":             campo,
-            "Variedades":        variedades,
-            "Último trat.":     (last_date.strftime("%d/%m/%Y") if last_date else "Sin registro"),
-            "Días sin trat.":   (days_since if days_since < 999 else "—"),
-            "Lluvia desde mm":  rain_since,
-            "Eventos infección": mills_events_since + monilia_events_since,
-            "Previsión Mills":  int(fc_mills_max),
+            "Campo":              campo,
+            "Variedades":         variedades,
+            "Último trat.":      (last_date.strftime("%d/%m/%Y") if last_date else "Sin registro"),
+            "Días sin trat.":    (days_since if days_since < 999 else "—"),
+            "Lluvia desde mm":   rain_since,
+            "Eventos infección":  mills_events_since + monilia_events_since,
+            "Previsión Mills":   int(fc_mills_max),
             "Lluvia prevista mm": round(fc_rain, 1),
-            "Riesgo principal": ", ".join(dominant),
-            "🎯 Acción":        action,
-            "_priority":        priority,
-            "_bg":              row_bg,
-            "_days_sort":       days_since,  # numérico puro para ordenar
+            "Riesgo principal":  ", ".join(dominant),
+            "🎯 Acción":         action,
+            "_priority":         priority,
+            "_bg":               row_bg,
+            "_days_sort":        days_since,
+            "_last_product":     last_product,   # para calcular rotación en el render
+            "_dominant_list":    dominant,        # lista Python para get_smart_recommendation
         })
 
     df = (pd.DataFrame(rows)
@@ -14069,21 +14166,29 @@ def render_decisiones_panel():
         _s3.metric("🟡 Revisar",             _n_yellow)
         _s4.metric("🟢 OK",                  _n_green)
 
+        # ── Calcular recomendaciones por campo usando ranking científico ────────
+        _dec_display = _dec_df.copy()
+        _rec_primary  = []
+        _rec_alt      = []
+        _rec_motivo   = []
+        for _, _r in _dec_display.iterrows():
+            _dom = _r.get("_dominant_list", [])
+            _lp  = str(_r.get("_last_product", ""))
+            _p, _a, _m = get_smart_recommendation(_dom, _catalog_df, last_product=_lp)
+            _rec_primary.append(_p)
+            _rec_alt.append(_a)
+            _rec_motivo.append(_m)
+        _dec_display["1ª elección"]  = _rec_primary
+        _dec_display["Alternativa"]  = _rec_alt
+        _dec_display["Por qué"]      = _rec_motivo
+
         # ── Tabla HTML con colores por fila ───────────────────────────────────
         _display_cols = [
             "Campo", "Variedades", "Último trat.", "Días sin trat.",
             "Lluvia desde mm", "Eventos infección",
-            "Previsión Mills", "Riesgo principal", "🎯 Acción", "Producto sugerido",
+            "Previsión Mills", "Riesgo principal", "🎯 Acción",
+            "1ª elección", "Alternativa", "Por qué",
         ]
-
-        # Añadir columna de producto sugerido
-        _dec_display = _dec_df.copy()
-        _dec_display["Producto sugerido"] = _dec_display["Riesgo principal"].apply(
-            lambda risks: get_product_recommendation(
-                [r.strip() for r in str(risks).split(",") if r.strip() != "—"],
-                _catalog_df,
-            )
-        )
 
         _th = ("background:#1a2e1e;color:white;padding:8px 12px;"
                "white-space:nowrap;font-weight:600;font-size:13px;")
@@ -14095,8 +14200,11 @@ def render_decisiones_panel():
             _cells = ""
             for _c in _display_cols:
                 _v = _r.get(_c, "")
+                # "Por qué" puede ser largo → permitir wrap
+                _wrap = "normal" if _c == "Por qué" else "nowrap"
+                _min_w = "min-width:180px;" if _c == "Por qué" else ""
                 _td = (f"background:{_bg};padding:7px 12px;border-bottom:1px solid #e8e8e8;"
-                       f"white-space:nowrap;font-size:13px;")
+                       f"white-space:{_wrap};font-size:13px;{_min_w}")
                 _cells += f"<td style='{_td}'>{_v}</td>"
             _tbody += f"<tr>{_cells}</tr>"
 
@@ -14118,12 +14226,12 @@ def render_decisiones_panel():
         )
 
         with st.expander("Descargar tabla de decisión", expanded=False):
-            _dl_cols = [c for c in _display_cols if c != "🎯 Acción"]
-            _dl_cols.append("Acción")
             _dec_dl = _dec_display.rename(columns={"🎯 Acción": "Acción"})[
                 [c for c in ["Campo", "Variedades", "Último trat.", "Días sin trat.",
                               "Lluvia desde mm", "Eventos infección", "Previsión Mills",
-                              "Riesgo principal", "Acción", "Producto sugerido"]]
+                              "Riesgo principal", "Acción",
+                              "1ª elección", "Alternativa", "Por qué"]
+                 if c in _dec_display.columns or c == "Acción"]
             ]
             st.download_button(
                 "⬇️ Descargar panel de decisión (CSV)",
