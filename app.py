@@ -13211,7 +13211,12 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Plazo seguridad días": 7,
         "FRAC": "G1",
         "Familia": "Triazol (DMI)",
-        "Notas": "Tebuconazol. Curativo hasta 72h post-infección. No repetir >3 veces/campaña.",
+        "Notas": (
+            "Tebuconazol 25%. Inhibe la biosíntesis de ergosterol (FRAC G1). "
+            "Acción curativa eficaz hasta 72h post-infección en moteado (Venturia). "
+            "Redistribución sistémica acrópeta. Máx 3 aplicaciones/campaña para evitar resistencias. "
+            "Efecto secundario sobre raleo de fruto si se aplica en floración."
+        ),
     },
     {
         "Producto": "SIGNUM",
@@ -13220,7 +13225,13 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Plazo seguridad días": 7,
         "FRAC": "C2+C3",
         "Familia": "SDHI + Estrobilurina",
-        "Notas": "Boscalid+Piraclostrobina. Alta persistencia. No mezclar con Flint (mismo grupo C3).",
+        "Notas": (
+            "Boscalid 26,7% + Piraclostrobina 6,7%. Doble modo de acción: inhibe la cadena "
+            "respiratoria mitocondrial en el complejo II (SDHI) y III (QoI). Alta actividad "
+            "preventiva y larga persistencia (~14-21 días). Especialmente eficaz contra "
+            "Monilia laxa en floración y Monilia fructigena en precosecha. "
+            "No mezclar ni alternar de forma consecutiva con Flint (ambos contienen FRAC C3)."
+        ),
     },
     {
         "Producto": "FLINT 50 WG",
@@ -13229,7 +13240,13 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Plazo seguridad días": 14,
         "FRAC": "C3",
         "Familia": "Estrobilurina (QoI)",
-        "Notas": "Trifloxistrobina. No usar >2 veces seguidas; alternar con grupos G1 o E. No mezclar con Signum.",
+        "Notas": (
+            "Trifloxistrobina 50%. Inhibe el complejo III de la cadena respiratoria (FRAC C3). "
+            "Excelente actividad preventiva y vapor-fase; penetración traslaminar. "
+            "Eficaz contra Venturia (moteado) y Podosphaera (oídio). "
+            "Máx 2 aplicaciones consecutivas; alternar con G1 o C2+G1. "
+            "No aplicar junto a Signum (acumulación de presión selectiva sobre FRAC C3)."
+        ),
     },
     {
         "Producto": "LUNA EXPERIENCE",
@@ -13238,7 +13255,14 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Plazo seguridad días": 7,
         "FRAC": "C2+G1",
         "Familia": "SDHI + Triazol",
-        "Notas": "Fluopyram+Tebuconazol. Muy eficaz contra Monilia. Amplio espectro. Máx 2 aplicaciones/campaña.",
+        "Notas": (
+            "Fluopyram 200 g/L + Tebuconazol 200 g/L. SDHI (FRAC C2) + DMI triazol (FRAC G1). "
+            "Doble modo de acción sistémico con excelente actividad contra Monilia spp. "
+            "(M. laxa y M. fructigena), moteado y oídio. Acción curativa y de parada del "
+            "desarrollo miceliar hasta 96-120h post-infección. "
+            "Alta eficacia en condiciones de alta presión. Máx 2 aplicaciones/campaña; "
+            "no repetir consecutivamente con Folicur (ambos FRAC G1)."
+        ),
     },
 ]
 
@@ -13281,9 +13305,16 @@ ROTATION_ALTERNATIVES = [
     },
 ]
 
-# Inicialización session_state del catálogo (aquí, después de la constante)
-if "fungicide_catalog_df" not in st.session_state:
+# Inicialización session_state del catálogo — versión 2 (fuerza reseteo si hay productos obsoletos)
+_CATALOG_VERSION = "v2_2026"
+_VALID_PRODUCTS_2026 = {"FOLICUR 25 WG", "SIGNUM", "FLINT 50 WG", "LUNA EXPERIENCE"}
+_needs_reset = (
+    "fungicide_catalog_df" not in st.session_state
+    or st.session_state.get("fungicide_catalog_version") != _CATALOG_VERSION
+)
+if _needs_reset:
     st.session_state.fungicide_catalog_df = pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG)
+    st.session_state.fungicide_catalog_version = _CATALOG_VERSION
 
 
 def get_product_recommendation(dominant_risk_list, catalog_df):
