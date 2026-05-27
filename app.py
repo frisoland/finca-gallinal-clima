@@ -13378,16 +13378,51 @@ PRODUCT_MAX_APPLICATIONS = {
 SDHI_GROUP_MAX_COMBINED = 3
 
 
+def _campo_exact_in_list(campos_str, campo_name):
+    """
+    True si campo_name aparece como elemento exacto (no como subcadena)
+    en la lista de campos separados por coma.
+    "Huertona" NO coincide con "La Huertona" ni con "Huertona Nueva".
+    """
+    campos_list = [c.strip().lower() for c in str(campos_str).split(",")]
+    return campo_name.strip().lower() in campos_list
+
+
+def _normalize_product_to_catalog(prod_raw):
+    """
+    Normaliza el nombre de un producto de Agroptima al clave del catálogo.
+    Usa matching bidireccional por primera palabra para cubrir variantes de nombre.
+    Devuelve la clave del catálogo o None si no hay coincidencia.
+    """
+    prod_up = str(prod_raw).strip().upper()
+    for catalog_key in PRODUCT_MAX_APPLICATIONS:
+        first_word = catalog_key.split()[0].upper()   # "FOLICUR", "SIGNUM", "FLINT", "LUNA"
+        cat_up     = catalog_key.upper()
+        if (first_word in prod_up          # "FLINT" en "FLINT 50 WG" ✓
+                or cat_up in prod_up       # "FLINT 50 WG" en "FLINT 50 WG EXTRA" ✓
+                or prod_up in cat_up       # "FLINT" en "FLINT 50 WG" ✓
+                or prod_up == first_word): # coincidencia exacta de primera palabra ✓
+            return catalog_key
+    return None
+
+
 def count_field_applications(activities_df, campo, year=None):
     """
-    Cuenta cuántas veces se ha aplicado cada fungicida a un campo en la campaña.
-    Devuelve dict {producto_normalizado: n_aplicaciones} y total SDHI.
-    Solo cuenta actuaciones del año actual (o `year` si se especifica).
+    Cuenta cuántas veces se ha aplicado cada fungicida del catálogo a un campo
+    en la campaña (año actual o `year`).
+
+    Correcciones respecto a versión anterior:
+    - Matching EXACTO de campo (no subcadena): "Huertona" no coincide con
+      "La Huertona" ni "Huertona 2". Evita falsos positivos.
+    - Deduplicación por (fecha_dia, campos_reconocidos, producto_normalizado):
+      si la misma pasada aparece duplicada en el CSV importado, cuenta 1 vez.
+
+    Devuelve (dict {producto_catálogo: n_pases}, sdhi_total).
     """
     if year is None:
         year = pd.Timestamp.now().year
 
-    counts = {}
+    counts     = {}
     sdhi_total = 0
 
     if activities_df.empty or "Campos reconocidos" not in activities_df.columns:
@@ -13398,32 +13433,45 @@ def count_field_applications(activities_df, campo, year=None):
     _acts = _acts.dropna(subset=["Fecha_dt"])
     _acts = _acts[_acts["Fecha_dt"].dt.year == int(year)]
 
-    # Filtrar solo fungicidas
+    if _acts.empty:
+        return counts, sdhi_total
+
+    # 1. Solo fungicidas confirmados
     _mask_fung = _acts.apply(
         lambda r: is_fungicide_activity(r.get("Producto", ""), r.get("Trabajo", "")),
         axis=1,
     )
     _acts = _acts[_mask_fung]
 
-    # Filtrar por campo
-    _mask_campo = _acts["Campos reconocidos"].fillna("").str.contains(
-        re.escape(campo), case=False, regex=True
-    )
-    campo_acts = _acts[_mask_campo]
+    if _acts.empty:
+        return counts, sdhi_total
 
+    # 2. Matching EXACTO por campo (split por coma, comparación case-insensitive)
+    _mask_campo = _acts["Campos reconocidos"].fillna("").apply(
+        lambda x: _campo_exact_in_list(x, campo)
+    )
+    campo_acts = _acts[_mask_campo].copy()
+
+    if campo_acts.empty:
+        return counts, sdhi_total
+
+    # 3. Normalizar producto al catálogo para poder deduplicar
+    campo_acts["_prod_norm"] = campo_acts["Producto"].apply(_normalize_product_to_catalog)
+    campo_acts = campo_acts[campo_acts["_prod_norm"].notna()]  # solo productos reconocidos
+
+    # 4. Deduplicar: misma fecha + mismo campo + mismo producto = misma pasada
+    #    Esto elimina duplicados de importación sin eliminar pasadas reales distintas
+    campo_acts["_fecha_dia"] = campo_acts["Fecha_dt"].dt.date
+    campo_acts = campo_acts.drop_duplicates(
+        subset=["_fecha_dia", "Campos reconocidos", "_prod_norm"]
+    )
+
+    # 5. Contar
     for _, row in campo_acts.iterrows():
-        prod_raw = str(row.get("Producto", "")).strip().upper()
-        # Normalizar al nombre del catálogo
-        matched_key = None
-        for catalog_key in PRODUCT_MAX_APPLICATIONS:
-            first_word = catalog_key.split()[0].upper()
-            if first_word in prod_raw or catalog_key.upper() in prod_raw or prod_raw in catalog_key.upper():
-                matched_key = catalog_key
-                break
-        if matched_key:
-            counts[matched_key] = counts.get(matched_key, 0) + 1
-            if "C2" in PRODUCT_FRAC_MAP.get(matched_key, []):
-                sdhi_total += 1
+        matched_key = row["_prod_norm"]
+        counts[matched_key] = counts.get(matched_key, 0) + 1
+        if "C2" in PRODUCT_FRAC_MAP.get(matched_key, []):
+            sdhi_total += 1
 
     return counts, sdhi_total
 
@@ -13709,11 +13757,12 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         variedades = field_row.get("Variedades actuales", "")
 
         # ── Último tratamiento FUNGICIDA ──────────────────────────────────────
+        # Matching EXACTO: "Huertona" no puede coincidir con "La Huertona"
         last_date    = None
         last_product = "Sin registro"
         if not acts_clean.empty:
-            mask = acts_clean["Campos reconocidos"].fillna("").str.contains(
-                re.escape(campo), case=False, regex=True
+            mask = acts_clean["Campos reconocidos"].fillna("").apply(
+                lambda x: _campo_exact_in_list(x, campo)
             )
             campo_acts = acts_clean[mask].sort_values("Fecha_dt", ascending=False)
             if not campo_acts.empty:
