@@ -13573,6 +13573,144 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
     return primary, alternate, " · ".join(parts)
 
 
+def build_treatment_narrative(days_since, rain_since, mills_events_since,
+                              monilia_events_since, fc_mills_max, fc_monilia_max,
+                              fc_rain, last_product, persistence_days, priority,
+                              last_date=None):
+    """
+    Genera una narrativa en lenguaje claro explicando POR QUÉ se recomienda
+    (o no) un tratamiento fungicida hoy para un campo concreto.
+
+    Clasifica el tipo de tratamiento (preventivo / curativo / no necesario)
+    y lista los factores activos con su base científica resumida.
+
+    Referencias:
+    - Umbral Mills: Mills & Laplante 1951 (temperatura + horas de mojadura foliar).
+    - Ventana curativa DMI/SDHI: 48-96h post-infección (Köller 2001; BASF Luna ficha).
+    - Umbral lavado sistémicos: ~35 mm acumulados (EPPO PP 1/5; fichas técnicas FRAC).
+    - Persistencia: 14-21 días según producto (etiqueta registro MAPA).
+    - Monilia: T óptima infección 20-25°C + humedad alta (Villarino et al. 2012; EPPO PM7/18).
+    """
+    reasons   = []   # frases de razón, en orden de importancia
+    tipo      = ""   # "Preventivo" / "Curativo" / "No necesario"
+    urgencia  = ""   # adjetivo de urgencia para el encabezado
+
+    last_prod_short = (str(last_product).split()[0].capitalize()
+                       if last_product not in ("Sin registro", "Sin especificar", "nan", "")
+                       else "último fungicida")
+    last_date_str = (last_date.strftime("%d/%m") if last_date is not None else "fecha desconocida")
+
+    # ── 1. Previsión de infección (razón más urgente) ──────────────────────────
+    if fc_mills_max >= 100:
+        reasons.append(
+            f"Evento Mills previsto (índice {int(fc_mills_max)}): "
+            f"temperatura + mojadura foliar superan umbral de infección de Venturia inaequalis "
+            f"(Mills & Laplante 1951). Aplicar ANTES de la lluvia para acción preventiva."
+        )
+        tipo = "Preventivo urgente"
+
+    if fc_monilia_max >= 100:
+        reasons.append(
+            f"Condiciones óptimas para Monilia spp. previstas (índice {int(fc_monilia_max)}): "
+            f"temperatura y humedad en rango de máxima infección (20-25°C, HR >90%). "
+            f"Especialmente crítico en fruto en desarrollo (Villarino et al. 2012)."
+        )
+        if not tipo:
+            tipo = "Preventivo urgente"
+
+    if fc_rain >= 15 and not fc_mills_max >= 100:
+        reasons.append(
+            f"Lluvia prevista de {fc_rain:.0f} mm en los próximos 3 días: "
+            f"favorece mojadura foliar y puede coincidir con el fin de la cobertura actual."
+        )
+
+    # ── 2. Estado de la cobertura actual ──────────────────────────────────────
+    if days_since >= persistence_days:
+        reasons.append(
+            f"Cobertura caducada: {days_since} días desde {last_prod_short} ({last_date_str}). "
+            f"La persistencia estimada de los sistémicos es de {persistence_days} días en campo "
+            f"(etiqueta MAPA; FRAC persistence data). El campo está sin protección activa."
+        )
+        if not tipo:
+            tipo = "Preventivo"
+    elif days_since >= 12 and rain_since >= 35:
+        reasons.append(
+            f"Lavado por lluvia: {rain_since:.0f} mm acumulados desde {last_prod_short} ({last_date_str}). "
+            f"Los fungicidas sistémicos pierden eficacia preventiva a partir de ~35 mm acumulados "
+            f"(EPPO PP 1/5; fichas FRAC grupo C2-C3). La cobertura está comprometida."
+        )
+        if not tipo:
+            tipo = "Preventivo"
+
+    # ── 3. Exposición acumulada sin cobertura ─────────────────────────────────
+    total_events = mills_events_since + monilia_events_since
+    if total_events >= 3:
+        reasons.append(
+            f"{total_events} eventos de infección registrados sin cobertura activa "
+            f"desde {last_prod_short} ({last_date_str}) "
+            f"({mills_events_since} Mills + {monilia_events_since} Monilia). "
+            f"Cada evento representa un período de infección completado; "
+            f"la latencia hasta síntomas visibles es de 9-21 días según temperatura "
+            f"(Rühmer 1998; modelo Mills). El daño de esas infecciones está en curso."
+        )
+    elif total_events > 0 and days_since >= 10:
+        reasons.append(
+            f"{total_events} evento(s) de infección desde el último fungicida. "
+            f"Vigilar próxima semana: la latencia puede mostrar síntomas en 10-21 días."
+        )
+
+    # ── 4. Ventana curativa ───────────────────────────────────────────────────
+    # Si el último evento real fue reciente (aproximado: hay eventos y cobertura caducada
+    # pero todavía dentro del umbral de 96h para SDHI/triazoles)
+    if total_events >= 1 and days_since >= persistence_days and days_since <= persistence_days + 4:
+        reasons.append(
+            "Posible ventana curativa activa: los fungicidas DMI (triazoles) y SDHI "
+            "pueden detener infecciones incipientes hasta 48-96h post-eventos "
+            "(Köller 2001; BASF ficha Luna Experience). "
+            "Preferir productos con acción curativa (Folicur, Luna Experience)."
+        )
+        tipo = "Curativo + preventivo"
+
+    # ── 5. Sin razón para tratar ──────────────────────────────────────────────
+    if priority == 4:
+        tipo = "No necesario hoy"
+        dias_resto = max(0, persistence_days - days_since)
+        reasons.append(
+            f"Cobertura activa: {days_since} días desde {last_prod_short} ({last_date_str}), "
+            f"~{dias_resto} días de margen estimados. "
+            f"Sin previsión de eventos de infección en los próximos 3 días. "
+            f"Tratar sin justificación añade presión de resistencia innecesaria (FRAC 2024)."
+        )
+
+    if not reasons:
+        if priority == 3:
+            reasons.append(
+                f"Cobertura próxima a caducar ({days_since} días desde {last_prod_short}). "
+                f"Sin previsión de infección inmediata. Planificar tratamiento preventivo "
+                f"en los próximos 3-5 días antes de que la ventana de riesgo se abra."
+            )
+            tipo = "Planificar preventivo"
+        else:
+            reasons.append("Revisar manualmente: situación no clasificada.")
+            tipo = "Revisar"
+
+    if not tipo:
+        tipo = "Preventivo"
+
+    # ── Encabezado de tipo ────────────────────────────────────────────────────
+    tipo_emoji = {
+        "Preventivo urgente":    "🛡️ Preventivo urgente",
+        "Preventivo":            "🛡️ Preventivo",
+        "Planificar preventivo": "📅 Planificar preventivo",
+        "Curativo + preventivo": "⚕️ Curativo + preventivo",
+        "No necesario hoy":      "✅ Sin tratamiento",
+        "Revisar":               "🔍 Revisar",
+    }.get(tipo, f"🛡️ {tipo}")
+
+    narrative = f"[{tipo_emoji}] " + " | ".join(reasons)
+    return narrative
+
+
 def build_rotation_advice(activities_df, catalog_df=None):
     """
     Analiza los productos usados en la campaña actual y propone rotaciones
@@ -13896,6 +14034,21 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         else:
             _last_label = "⚠️ Sin fungicida registrado"
 
+        # Narrativa explicativa del motivo de tratamiento
+        _narrative = build_treatment_narrative(
+            days_since         = days_since,
+            rain_since         = rain_since,
+            mills_events_since = mills_events_since,
+            monilia_events_since = monilia_events_since,
+            fc_mills_max       = fc_mills_max,
+            fc_monilia_max     = fc_monilia_max,
+            fc_rain            = fc_rain,
+            last_product       = last_product,
+            persistence_days   = persistence_days,
+            priority           = priority,
+            last_date          = last_date,
+        )
+
         rows.append({
             "Campo":              campo,
             "Variedades":         variedades,
@@ -13908,12 +14061,13 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "Pases campaña":     _pases_label,
             "Riesgo principal":  ", ".join(dominant),
             "🎯 Acción":         action,
+            "📋 Motivo":         _narrative,
             "_priority":         priority,
             "_bg":               row_bg,
             "_days_sort":        days_since,
             "_last_product":     last_product,
             "_dominant_list":    dominant,
-            "_app_counts":       _app_counts,   # dict para get_smart_recommendation
+            "_app_counts":       _app_counts,
             "_sdhi_total":       _sdhi_total,
         })
 
@@ -14500,6 +14654,7 @@ def render_decisiones_panel():
             "Lluvia desde mm", "Eventos infección", "Previsión Mills",
             "Pases campaña", "Riesgo principal",
             "1ª elección", "Alternativa", "Por qué",
+            "📋 Motivo",
         ]
 
         # Estilos base
@@ -14518,15 +14673,22 @@ def render_decisiones_panel():
             _style = _TH_CORNER if _i == 0 else _TH_BASE
             _hdr_cells += f'<th style="{_style}">{_c}</th>'
 
-        # Filas
+        # Filas — la columna "📋 Motivo" muestra solo el tipo en la tabla compacta
+        # (el texto completo está en el expander de análisis detallado de abajo)
         _tbody = ""
         for _, _r in _dec_display.iterrows():
             _bg   = _r["_bg"]
             _cells = ""
             for _i, _c in enumerate(_display_cols):
-                _v = _r.get(_c, "")
+                if _c == "📋 Motivo":
+                    # Extraer solo el tipo entre corchetes: "[🛡️ Preventivo urgente]"
+                    _full = str(_r.get(_c, ""))
+                    import re as _re
+                    _match = _re.match(r"\[([^\]]+)\]", _full)
+                    _v = _match.group(1) if _match else _full[:40]
+                else:
+                    _v = _r.get(_c, "")
                 if _i == 0:
-                    # Columna Campo: sticky izquierda con fondo del color de prioridad
                     _style = _TD_STICKY + f"background:{_bg};"
                 else:
                     _wrap  = "normal" if _c in ("Por qué", "Último fungicida", "Pases campaña") else "nowrap"
@@ -14548,6 +14710,45 @@ def render_decisiones_panel():
             f'</table></div>',
             unsafe_allow_html=True,
         )
+
+        # ── Análisis detallado por campo (expander) ───────────────────────────
+        with st.expander("📋 Ver análisis detallado por campo", expanded=False):
+            st.markdown(
+                "Explicación completa del motivo de cada recomendación, "
+                "con los factores activos y su base científica."
+            )
+            for _, _r in _dec_display.iterrows():
+                _bg_hex = _r["_bg"]
+                _campo  = _r["Campo"]
+                _accion = _r["🎯 Acción"]
+                _motivo = str(_r.get("📋 Motivo", ""))
+                _prod1  = _r.get("1ª elección", "—")
+                _prod2  = _r.get("Alternativa", "—")
+
+                # Separar tipo y razones del string narrativo
+                import re as _re2
+                _match2 = _re2.match(r"\[([^\]]+)\]\s*(.*)", _motivo, _re2.DOTALL)
+                if _match2:
+                    _tipo_str   = _match2.group(1)
+                    _razones_str = _match2.group(2)
+                else:
+                    _tipo_str   = ""
+                    _razones_str = _motivo
+
+                # Dividir razones por " | "
+                _razones = [r.strip() for r in _razones_str.split(" | ") if r.strip()]
+
+                st.markdown(
+                    f'<div style="background:{_bg_hex};border-radius:8px;'
+                    f'padding:12px 16px;margin-bottom:10px;border-left:4px solid #1a2e1e;">'
+                    f'<b style="font-size:15px;">{_campo}</b> &nbsp;·&nbsp; '
+                    f'<span style="font-size:13px;">{_accion}</span><br>'
+                    f'<span style="font-size:12px;color:#555;">1ª elección: <b>{_prod1}</b> · Alternativa: <b>{_prod2}</b></span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                for _idx, _razon in enumerate(_razones, 1):
+                    st.markdown(f"**{_idx}.** {_razon}")
 
         st.caption(
             "🔴 **Tratar hoy** — infección prevista + sin cobertura. "
