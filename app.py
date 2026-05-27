@@ -13337,10 +13337,12 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "🎯 Acción":        action,
             "_priority":        priority,
             "_bg":              row_bg,
+            "_days_sort":       days_since,  # numérico puro para ordenar
         })
 
     df = (pd.DataFrame(rows)
-          .sort_values(["_priority", "Días sin trat."], ascending=[True, False])
+          .sort_values(["_priority", "_days_sort"], ascending=[True, False])
+          .drop(columns=["_days_sort"])
           .reset_index(drop=True))
     return df
 
