@@ -13201,22 +13201,93 @@ def _dec_bar_color(value):
     return "#2ca02c"
 
 
-# ── Catálogo de fungicidas por defecto ────────────────────────────────────────
+# ── Catálogo de fungicidas — campaña 2026 ─────────────────────────────────────
+# Solo los productos disponibles en almacén. Columna "FRAC" para gestión de resistencias.
 DEFAULT_FUNGICIDE_CATALOG = [
-    {"Producto": "FOLICUR 25 WG",   "Objetivos": "Moteado, Oídio",        "Tipo": "Sistémico curativo",   "Plazo seguridad días": 7,  "Notas": "Tebuconazol. Curativo hasta 72h post-infección."},
-    {"Producto": "SIGNUM",          "Objetivos": "Monilia, Moteado",       "Tipo": "Sistémico preventivo", "Plazo seguridad días": 7,  "Notas": "Boscalid+Piraclostrobina. Alta persistencia."},
-    {"Producto": "FLINT 50 WG",     "Objetivos": "Moteado, Oídio",         "Tipo": "Sistémico",            "Plazo seguridad días": 14, "Notas": "Trifloxistrobina. Preventivo y curativo."},
-    {"Producto": "SWITCH 62.5 WG",  "Objetivos": "Monilia",                "Tipo": "Sistémico",            "Plazo seguridad días": 7,  "Notas": "Ciprodinilo+Fludioxonil. Específico monilia."},
-    {"Producto": "CAPTAN 80 WG",    "Objetivos": "Moteado",                "Tipo": "Contacto preventivo",  "Plazo seguridad días": 14, "Notas": "Preventivo. Se lava con lluvia >20mm."},
-    {"Producto": "KUMULUS DF",      "Objetivos": "Oídio",                  "Tipo": "Contacto",             "Plazo seguridad días": 21, "Notas": "Azufre. Solo preventivo. No usar con T>30ºC."},
+    {
+        "Producto": "FOLICUR 25 WG",
+        "Objetivos": "Moteado, Oídio",
+        "Tipo": "Sistémico curativo",
+        "Plazo seguridad días": 7,
+        "FRAC": "G1",
+        "Familia": "Triazol (DMI)",
+        "Notas": "Tebuconazol. Curativo hasta 72h post-infección. No repetir >3 veces/campaña.",
+    },
+    {
+        "Producto": "SIGNUM",
+        "Objetivos": "Monilia, Moteado",
+        "Tipo": "Sistémico preventivo",
+        "Plazo seguridad días": 7,
+        "FRAC": "C2+C3",
+        "Familia": "SDHI + Estrobilurina",
+        "Notas": "Boscalid+Piraclostrobina. Alta persistencia. No mezclar con Flint (mismo grupo C3).",
+    },
+    {
+        "Producto": "FLINT 50 WG",
+        "Objetivos": "Moteado, Oídio",
+        "Tipo": "Sistémico preventivo/curativo",
+        "Plazo seguridad días": 14,
+        "FRAC": "C3",
+        "Familia": "Estrobilurina (QoI)",
+        "Notas": "Trifloxistrobina. No usar >2 veces seguidas; alternar con grupos G1 o E. No mezclar con Signum.",
+    },
+    {
+        "Producto": "LUNA EXPERIENCE",
+        "Objetivos": "Monilia, Moteado, Oídio",
+        "Tipo": "Sistémico curativo + preventivo",
+        "Plazo seguridad días": 7,
+        "FRAC": "C2+G1",
+        "Familia": "SDHI + Triazol",
+        "Notas": "Fluopyram+Tebuconazol. Muy eficaz contra Monilia. Amplio espectro. Máx 2 aplicaciones/campaña.",
+    },
 ]
+
+# Biblioteca de alternativas para rotación (productos no en almacén pero relevantes)
+ROTATION_ALTERNATIVES = [
+    {
+        "Producto": "SWITCH 62.5 WG",
+        "Objetivos": "Monilia",
+        "FRAC": "D1+E2",
+        "Familia": "Anilinopirimidina + Fenilpirrole",
+        "Motivo rotación": "Grupo D1+E2 totalmente distinto a los usados en 2026. Ideal para romper ciclo de resistencia en Monilia.",
+    },
+    {
+        "Producto": "CAPTAN 80 WG",
+        "Objetivos": "Moteado",
+        "FRAC": "M4",
+        "Familia": "Multi-sitio (contacto)",
+        "Motivo rotación": "Grupo M (multi-sitio). Sin riesgo de resistencia. Alterna con sistémicos para reducir presión de selección.",
+    },
+    {
+        "Producto": "TELDOR 500 SC",
+        "Objetivos": "Monilia",
+        "FRAC": "E2",
+        "Familia": "Fenilpirrole",
+        "Motivo rotación": "Fenhexamid. Específico de Monilia. Grupo E2 no usado en 2026; muy recomendable para rotación.",
+    },
+    {
+        "Producto": "THIRAM (Pomarsol)",
+        "Objetivos": "Moteado",
+        "FRAC": "M3",
+        "Familia": "Multi-sitio (contacto)",
+        "Motivo rotación": "Multi-sitio, sin riesgo de resistencia. Complemento de contacto para reducir dependencia de sistémicos.",
+    },
+    {
+        "Producto": "KUMULUS DF",
+        "Objetivos": "Oídio",
+        "FRAC": "M2",
+        "Familia": "Inorgánico (Azufre)",
+        "Motivo rotación": "Azufre. Grupo M2 sin resistencias conocidas. Solo preventivo. No usar con T>30°C.",
+    },
+]
+
 # Inicialización session_state del catálogo (aquí, después de la constante)
 if "fungicide_catalog_df" not in st.session_state:
     st.session_state.fungicide_catalog_df = pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG)
 
 
 def get_product_recommendation(dominant_risk_list, catalog_df):
-    """Devuelve lista de productos del catálogo que cubren el riesgo dominante."""
+    """Devuelve productos del catálogo que cubren el riesgo dominante (priorizando menor uso reciente)."""
     if catalog_df is None or catalog_df.empty:
         return "—"
     suggestions = []
@@ -13227,6 +13298,77 @@ def get_product_recommendation(dominant_risk_list, catalog_df):
                 suggestions.append(str(row["Producto"]))
                 break
     return ", ".join(sorted(set(suggestions))) if suggestions else "Revisar catálogo"
+
+
+def build_rotation_advice(activities_df, catalog_df=None):
+    """
+    Analiza los productos usados en la campaña actual y propone rotaciones
+    para la próxima campaña basándose en grupos FRAC.
+    Devuelve dict con:
+      - 'used_products': {producto: n_aplicaciones}
+      - 'used_fracs': set de grupos FRAC usados
+      - 'advice': lista de dicts con alternativas recomendadas
+      - 'warnings': lista de alertas (ej. mismo grupo repetido)
+    """
+    used_products = {}
+    used_fracs    = set()
+    warnings      = []
+
+    if not activities_df.empty and "Producto" in activities_df.columns:
+        current_year = pd.Timestamp.now().year
+        acts = activities_df.copy()
+        acts["Fecha_dt"] = pd.to_datetime(acts.get("Fecha", pd.Series(dtype=str)), errors="coerce")
+        acts = acts[acts["Fecha_dt"].dt.year == current_year]
+        for _, r in acts.iterrows():
+            prod = str(r.get("Producto", "")).strip()
+            if prod and prod != "nan":
+                used_products[prod] = used_products.get(prod, 0) + 1
+
+    # Mapear productos usados a sus grupos FRAC mediante el catálogo
+    if catalog_df is not None and not catalog_df.empty:
+        for _, r in catalog_df.iterrows():
+            prod = str(r.get("Producto", "")).strip()
+            frac = str(r.get("FRAC", "")).strip()
+            if prod in used_products and frac:
+                for f in frac.split("+"):
+                    used_fracs.add(f.strip())
+
+    # Advertencias de rotación dentro del catálogo actual
+    if catalog_df is not None and not catalog_df.empty:
+        # Estrobilurina usada más de 2 veces
+        qoi_count = sum(v for k, v in used_products.items()
+                        if any(k.upper() in r.get("Producto","").upper() and "C3" in str(r.get("FRAC",""))
+                               for _, r in catalog_df.iterrows()))
+        if qoi_count > 2:
+            warnings.append("⚠️ Estrobilurinas (FRAC C3) usadas más de 2 veces en la campaña. Riesgo de resistencia en Moteado.")
+        # Triazol acumulado
+        g1_count = sum(v for k, v in used_products.items()
+                       if any(k.upper() in r.get("Producto","").upper() and "G1" in str(r.get("FRAC",""))
+                              for _, r in catalog_df.iterrows()))
+        if g1_count > 3:
+            warnings.append("⚠️ Triazoles (FRAC G1) usados >3 veces. Considera alternar con grupos D1 o E para Monilia.")
+
+    # Alternativas recomendadas: productos de ROTATION_ALTERNATIVES cuyo FRAC no está en los usados
+    advice = []
+    for alt in ROTATION_ALTERNATIVES:
+        alt_fracs = {f.strip() for f in str(alt.get("FRAC","")).split("+")}
+        # Recomendar si al menos uno de sus grupos FRAC no está ya en el arsenal 2026
+        new_groups = alt_fracs - used_fracs - {"C2", "C3", "G1"}  # excluir grupos ya en almacén
+        if new_groups or alt_fracs.isdisjoint(used_fracs):
+            advice.append({
+                "Producto":       alt["Producto"],
+                "Para":           alt["Objetivos"],
+                "FRAC":           alt["FRAC"],
+                "Familia":        alt["Familia"],
+                "Por qué rotar":  alt["Motivo rotación"],
+            })
+
+    return {
+        "used_products": used_products,
+        "used_fracs":    used_fracs,
+        "advice":        advice,
+        "warnings":      warnings,
+    }
 
 
 def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16):
@@ -13791,13 +13933,13 @@ def render_decisiones_panel():
     # ══════════════════════════════════════════════════════════════════════════
     # PANEL DE DECISIÓN DIARIA
     # ══════════════════════════════════════════════════════════════════════════
-    with st.expander("⚙️ Catálogo de fungicidas", expanded=False):
+    with st.expander("⚙️ Catálogo de fungicidas (campaña activa)", expanded=False):
         st.caption(
-            "Define aquí los productos disponibles. La columna **Objetivos** debe contener "
-            "el nombre de la enfermedad separado por comas (ej: *Moteado, Oídio*). "
-            "Las recomendaciones del panel diario se generan desde esta tabla."
+            "Productos disponibles en almacén esta campaña. "
+            "La columna **Objetivos** guía las recomendaciones del panel diario. "
+            "La columna **FRAC** se usa para el asesor de rotación de la próxima campaña."
         )
-        _catalog_key = "fungicide_catalog_editor_v1"
+        _catalog_key = "fungicide_catalog_editor_v2"
         _catalog_edited = st.data_editor(
             st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG)),
             num_rows="dynamic",
@@ -13809,6 +13951,62 @@ def render_decisiones_panel():
                 st.session_state["fungicide_catalog_df"] = _catalog_edited
         except Exception:
             st.session_state["fungicide_catalog_df"] = _catalog_edited
+
+    with st.expander("🔄 Planificación de rotación — próxima campaña", expanded=False):
+        st.markdown(
+            "Análisis de los grupos FRAC usados en la campaña actual y propuesta de alternativas "
+            "para **reducir el riesgo de resistencias** en la próxima temporada."
+        )
+        _rot_catalog = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
+        _rot = build_rotation_advice(activities_df, _rot_catalog)
+
+        # ── Productos usados esta campaña ──────────────────────────────────────
+        if _rot["used_products"]:
+            _col_u, _col_f = st.columns([2, 1])
+            with _col_u:
+                st.markdown("**Productos aplicados esta campaña:**")
+                _up_rows = [{"Producto": k, "Aplicaciones": v} for k, v in sorted(_rot["used_products"].items(), key=lambda x: -x[1])]
+                _up_df   = pd.DataFrame(_up_rows)
+                st.dataframe(_up_df, hide_index=True, use_container_width=True)
+            with _col_f:
+                st.markdown("**Grupos FRAC activos:**")
+                for _f in sorted(_rot["used_fracs"]):
+                    st.markdown(f"- **{_f}**")
+        else:
+            st.info("Carga las actuaciones de Agroptima para ver el análisis de uso.")
+
+        # ── Advertencias ───────────────────────────────────────────────────────
+        if _rot["warnings"]:
+            for _w in _rot["warnings"]:
+                st.warning(_w)
+
+        # ── Alternativas recomendadas ──────────────────────────────────────────
+        if _rot["advice"]:
+            st.markdown("---")
+            st.markdown("#### 💡 Alternativas recomendadas para la próxima campaña")
+            st.caption(
+                "Productos de grupos FRAC distintos a los usados en 2026. "
+                "Incorporarlos rompe el ciclo de selección de resistencias."
+            )
+            _adv_df = pd.DataFrame(_rot["advice"])
+            # Tabla HTML con encabezados verdes
+            _th = "background:#1a2e1e;color:white;padding:8px 12px;white-space:nowrap;font-weight:600;font-size:13px;"
+            _td_s = "padding:7px 12px;border-bottom:1px solid #e8e8e8;font-size:13px;white-space:nowrap;"
+            _hdr_rot = "".join(f'<th style="{_th}">{c}</th>' for c in _adv_df.columns)
+            _body_rot = ""
+            for _, _r in _adv_df.iterrows():
+                _cells = "".join(f'<td style="{_td_s}">{_r[c]}</td>' for c in _adv_df.columns)
+                _body_rot += f"<tr>{_cells}</tr>"
+            st.markdown(
+                f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #ddd;margin-top:0.5rem;">'
+                f'<table style="border-collapse:collapse;width:100%;">'
+                f'<thead><tr>{_hdr_rot}</tr></thead>'
+                f'<tbody>{_body_rot}</tbody>'
+                f'</table></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.success("✅ El catálogo actual ya cubre una buena diversidad de grupos FRAC. Sin alternativas urgentes.")
 
     st.markdown("### 📋 Panel de decisión diaria")
 
