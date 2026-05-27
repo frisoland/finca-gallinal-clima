@@ -13364,14 +13364,81 @@ PRODUCT_FRAC_MAP = {
     "LUNA EXPERIENCE":["C2", "G1"],
 }
 
+# Límites de aplicación por campaña según registro MAPA + guías FRAC
+# Fuente: ficha registro MAPA, FRAC Code List 2024, fichas técnicas fabricante
+PRODUCT_MAX_APPLICATIONS = {
+    "FOLICUR 25 WG":  3,   # FRAC G1 (DMI): máx 3 en frutales. MAPA: 3 app/campaña.
+    "SIGNUM":         2,   # FRAC C2 (SDHI): máx 2 estricto. FRAC recomienda ≤2 SDHI/campaña.
+    "FLINT 50 WG":    2,   # FRAC C3 (QoI): máx 2 en manzano/peral. MAPA: 2 app/campaña.
+    "LUNA EXPERIENCE":2,   # FRAC C2+G1: componente SDHI marca límite en 2. BASF ficha técnica.
+}
 
-def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None):
+# Límite combinado del grupo SDHI (C2): Signum + Luna Experience juntos ≤ 3 por campaña
+# para no agotar el grupo SDHI completo. (FRAC SDHI resistance risk guidelines, 2022)
+SDHI_GROUP_MAX_COMBINED = 3
+
+
+def count_field_applications(activities_df, campo, year=None):
+    """
+    Cuenta cuántas veces se ha aplicado cada fungicida a un campo en la campaña.
+    Devuelve dict {producto_normalizado: n_aplicaciones} y total SDHI.
+    Solo cuenta actuaciones del año actual (o `year` si se especifica).
+    """
+    if year is None:
+        year = pd.Timestamp.now().year
+
+    counts = {}
+    sdhi_total = 0
+
+    if activities_df.empty or "Campos reconocidos" not in activities_df.columns:
+        return counts, sdhi_total
+
+    _acts = activities_df.copy()
+    _acts["Fecha_dt"] = pd.to_datetime(_acts["Fecha"], errors="coerce")
+    _acts = _acts.dropna(subset=["Fecha_dt"])
+    _acts = _acts[_acts["Fecha_dt"].dt.year == int(year)]
+
+    # Filtrar solo fungicidas
+    _mask_fung = _acts.apply(
+        lambda r: is_fungicide_activity(r.get("Producto", ""), r.get("Trabajo", "")),
+        axis=1,
+    )
+    _acts = _acts[_mask_fung]
+
+    # Filtrar por campo
+    _mask_campo = _acts["Campos reconocidos"].fillna("").str.contains(
+        re.escape(campo), case=False, regex=True
+    )
+    campo_acts = _acts[_mask_campo]
+
+    for _, row in campo_acts.iterrows():
+        prod_raw = str(row.get("Producto", "")).strip().upper()
+        # Normalizar al nombre del catálogo
+        matched_key = None
+        for catalog_key in PRODUCT_MAX_APPLICATIONS:
+            first_word = catalog_key.split()[0].upper()
+            if first_word in prod_raw or catalog_key.upper() in prod_raw or prod_raw in catalog_key.upper():
+                matched_key = catalog_key
+                break
+        if matched_key:
+            counts[matched_key] = counts.get(matched_key, 0) + 1
+            if "C2" in PRODUCT_FRAC_MAP.get(matched_key, []):
+                sdhi_total += 1
+
+    return counts, sdhi_total
+
+
+def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
+                              app_counts=None, sdhi_total=0):
     """
     Devuelve (producto_recomendado, alternativa, motivo) con lógica científica:
-      1. Puntúa cada producto del catálogo por eficacia en los riesgos activos.
-      2. Penaliza productos que comparten grupo FRAC con el último producto usado
-         (gestión de resistencias — FRAC guidelines).
-      3. Devuelve el de mayor puntuación como recomendación y el siguiente como alternativa.
+      1. Eficacia por patógeno (PRODUCT_EFFICACY_RANKING).
+      2. Penalización por rotación FRAC (no repetir mismo grupo).
+      3. Penalización por límite de aplicaciones alcanzado (PRODUCT_MAX_APPLICATIONS).
+      4. Penalización por límite SDHI combinado (Signum + Luna ≤ 3/campaña).
+
+    app_counts: dict {producto: n_aplicaciones_campaña} para el campo en cuestión.
+    sdhi_total: total de aplicaciones de cualquier SDHI (C2) en la campaña para ese campo.
     """
     if catalog_df is None or catalog_df.empty:
         return "—", "—", "Sin catálogo"
@@ -13380,59 +13447,82 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None):
     if not risks:
         return "—", "—", "Sin riesgo activo"
 
-    # Grupos FRAC del último producto usado → para penalizar repetición
-    # Matching bidireccional: "Flint" debe detectar "FLINT 50 WG" y viceversa.
-    # Se comparan los tokens principales (primera palabra de cada nombre).
+    if app_counts is None:
+        app_counts = {}
+
+    # ── Grupos FRAC del último producto usado → penalizar repetición ──────────
     last_fracs = set()
+    _last_name = ""
     if last_product and last_product not in ("Sin registro", "Sin especificar", "nan", "", "⚠️ Sin fungicida registrado"):
         _lp_norm = str(last_product).upper().strip()
         for prod_key, fracs in PRODUCT_FRAC_MAP.items():
-            _pk_norm = prod_key.upper()
-            _pk_first = _pk_norm.split()[0]          # "FLINT", "FOLICUR", "SIGNUM", "LUNA"
+            _pk_norm  = prod_key.upper()
+            _pk_first = _pk_norm.split()[0]
             _lp_first = _lp_norm.split()[0]
-            if (_pk_norm in _lp_norm                 # catalog key dentro de last_product
-                    or _lp_norm in _pk_norm          # last_product dentro de catalog key
-                    or _pk_first in _lp_norm         # primera palabra del catálogo en last_product
-                    or _lp_first in _pk_norm):       # primera palabra de last_product en catálogo
+            if (_pk_norm in _lp_norm or _lp_norm in _pk_norm
+                    or _pk_first in _lp_norm or _lp_first in _pk_norm):
                 last_fracs.update(fracs)
+                _last_name = prod_key
                 break
 
     scores = {}
+    limit_notes = {}   # avisos de límite para incluir en el motivo
+
     for _, row in catalog_df.iterrows():
         prod = str(row.get("Producto", "")).strip()
         if not prod:
             continue
-        # Suma de eficacia en cada riesgo activo
-        score = sum(
-            PRODUCT_EFFICACY_RANKING.get(risk, {}).get(prod, 0)
-            for risk in risks
-        )
-        # Penalización por rotación: -5 si comparte FRAC con el último producto
+
+        # 1. Eficacia base
+        score = sum(PRODUCT_EFFICACY_RANKING.get(risk, {}).get(prod, 0) for risk in risks)
+
+        # 2. Penalización rotación FRAC (-5): desplaza al siguiente grupo sin bloquearlo
         prod_fracs = set(PRODUCT_FRAC_MAP.get(prod, []))
         if last_fracs and prod_fracs & last_fracs:
-            score -= 5   # penalización suficiente para desplazarlo como primera opción
-        if score > 0:
+            score -= 5
+
+        # 3. Penalización límite de aplicaciones (-10 si se ha alcanzado el límite):
+        #    restamos más fuerte para sacarlo de la primera elección pero mantenerlo
+        #    como alternativa informativa si no hay nada más
+        n_used = app_counts.get(prod, 0)
+        max_app = PRODUCT_MAX_APPLICATIONS.get(prod, 99)
+        if n_used >= max_app:
+            score -= 10
+            limit_notes[prod] = f"límite {max_app} pases alcanzado"
+        elif n_used == max_app - 1:
+            limit_notes[prod] = f"{n_used}/{max_app} pases"
+
+        # 4. Penalización SDHI combinado: si Signum+Luna ya suman ≥ límite
+        if "C2" in prod_fracs and sdhi_total >= SDHI_GROUP_MAX_COMBINED:
+            score -= 10
+            limit_notes[prod] = limit_notes.get(prod, "") + " (grupo SDHI agotado)"
+
+        if score > -10:   # mantener incluso penalizados para usarlos como alternativa informativa
             scores[prod] = score
 
     if not scores:
-        return "Revisar catálogo", "—", "Sin coincidencias en catálogo"
+        return "Revisar catálogo", "—", "Sin productos disponibles en catálogo"
 
     ranked = sorted(scores.items(), key=lambda x: -x[1])
     primary   = ranked[0][0]
     alternate = ranked[1][0] if len(ranked) > 1 else "—"
 
-    # Motivo legible
-    rotation_note = ""
-    if last_fracs and last_product and last_product not in ("Sin registro", "Sin especificar"):
-        avoided = [p for p, s in scores.items()
-                   if set(PRODUCT_FRAC_MAP.get(p, [])) & last_fracs and p != primary]
-        if avoided:
-            rotation_note = f" (rotación vs {last_product.split()[0]})"
+    # ── Motivo legible ─────────────────────────────────────────────────────────
+    parts = [f"Eficacia en {' + '.join(risks)}"]
 
-    primary_risks = " + ".join(risks)
-    motivo = f"Mayor eficacia en {primary_risks}{rotation_note}"
+    if _last_name and last_fracs:
+        same_group = [p for p in scores if set(PRODUCT_FRAC_MAP.get(p, [])) & last_fracs and p != primary]
+        if same_group:
+            parts.append(f"rota vs {_last_name.split()[0]} (FRAC {'+'.join(sorted(last_fracs))})")
 
-    return primary, alternate, motivo
+    p_apps = app_counts.get(primary, 0)
+    p_max  = PRODUCT_MAX_APPLICATIONS.get(primary, 99)
+    parts.append(f"{p_apps}/{p_max} pases usados")
+
+    if primary in limit_notes:
+        parts.append(limit_notes[primary])
+
+    return primary, alternate, " · ".join(parts)
 
 
 def build_rotation_advice(activities_df, catalog_df=None):
@@ -13739,6 +13829,18 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         if not dominant:
             dominant = ["—"]
 
+        # Conteo de aplicaciones en la campaña actual para este campo
+        _app_counts, _sdhi_total = count_field_applications(
+            activities_df, campo, year=today.year
+        )
+        # Resumen legible de pases: "Flint 1/2 · Folicur 0/3"
+        _pases_parts = []
+        for _pk, _pmax in PRODUCT_MAX_APPLICATIONS.items():
+            _n = _app_counts.get(_pk, 0)
+            _short = _pk.split()[0]   # "FOLICUR", "SIGNUM", "FLINT", "LUNA"
+            _pases_parts.append(f"{_short} {_n}/{_pmax}")
+        _pases_label = " · ".join(_pases_parts)
+
         # Texto descriptivo del último fungicida aplicado
         if last_date:
             _last_label = f"{last_date.strftime('%d/%m/%Y')} · {last_product}"
@@ -13754,13 +13856,16 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "Eventos infección":  mills_events_since + monilia_events_since,
             "Previsión Mills":   int(fc_mills_max),
             "Lluvia prevista mm": round(fc_rain, 1),
+            "Pases campaña":     _pases_label,
             "Riesgo principal":  ", ".join(dominant),
             "🎯 Acción":         action,
             "_priority":         priority,
             "_bg":               row_bg,
             "_days_sort":        days_since,
-            "_last_product":     last_product,   # para calcular rotación en el render
-            "_dominant_list":    dominant,        # lista Python para get_smart_recommendation
+            "_last_product":     last_product,
+            "_dominant_list":    dominant,
+            "_app_counts":       _app_counts,   # dict para get_smart_recommendation
+            "_sdhi_total":       _sdhi_total,
         })
 
     df = (pd.DataFrame(rows)
@@ -14325,9 +14430,14 @@ def render_decisiones_panel():
         _rec_alt      = []
         _rec_motivo   = []
         for _, _r in _dec_display.iterrows():
-            _dom = _r.get("_dominant_list", [])
-            _lp  = str(_r.get("_last_product", ""))
-            _p, _a, _m = get_smart_recommendation(_dom, _catalog_df, last_product=_lp)
+            _dom  = _r.get("_dominant_list", [])
+            _lp   = str(_r.get("_last_product", ""))
+            _ac   = _r.get("_app_counts", {})
+            _sdhi = int(_r.get("_sdhi_total", 0))
+            _p, _a, _m = get_smart_recommendation(
+                _dom, _catalog_df, last_product=_lp,
+                app_counts=_ac, sdhi_total=_sdhi,
+            )
             _rec_primary.append(_p)
             _rec_alt.append(_a)
             _rec_motivo.append(_m)
@@ -14335,57 +14445,75 @@ def render_decisiones_panel():
         _dec_display["Alternativa"]  = _rec_alt
         _dec_display["Por qué"]      = _rec_motivo
 
-        # ── Tabla HTML con colores por fila ───────────────────────────────────
+        # ── Tabla HTML: scroll vertical + horizontal, columna Campo fija ─────
         _display_cols = [
-            "Campo", "Variedades", "Último fungicida", "Días sin trat.",
-            "Lluvia desde mm", "Eventos infección",
-            "Previsión Mills", "Riesgo principal", "🎯 Acción",
+            "Campo", "🎯 Acción", "Último fungicida", "Días sin trat.",
+            "Lluvia desde mm", "Eventos infección", "Previsión Mills",
+            "Pases campaña", "Riesgo principal",
             "1ª elección", "Alternativa", "Por qué",
         ]
 
-        _th = ("background:#1a2e1e;color:white;padding:8px 12px;"
-               "white-space:nowrap;font-weight:600;font-size:13px;")
-        _hdr = "".join(f'<th style="{_th}">{c}</th>' for c in _display_cols)
+        # Estilos base
+        _TH_BASE   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                      "font-weight:600;font-size:13px;white-space:nowrap;"
+                      "position:sticky;top:0;z-index:2;")
+        _TH_CORNER = _TH_BASE + "left:0;z-index:4;"   # esquina superior izquierda
+        _TD_STICKY = ("position:sticky;left:0;z-index:1;"
+                      "padding:7px 12px;border-bottom:1px solid #ddd;"
+                      "font-weight:600;font-size:13px;white-space:nowrap;"
+                      "border-right:2px solid #1a2e1e;")
 
+        # Cabecera
+        _hdr_cells = ""
+        for _i, _c in enumerate(_display_cols):
+            _style = _TH_CORNER if _i == 0 else _TH_BASE
+            _hdr_cells += f'<th style="{_style}">{_c}</th>'
+
+        # Filas
         _tbody = ""
         for _, _r in _dec_display.iterrows():
-            _bg = _r["_bg"]
+            _bg   = _r["_bg"]
             _cells = ""
-            for _c in _display_cols:
+            for _i, _c in enumerate(_display_cols):
                 _v = _r.get(_c, "")
-                # "Por qué" puede ser largo → permitir wrap
-                _wrap = "normal" if _c == "Por qué" else "nowrap"
-                _min_w = "min-width:180px;" if _c == "Por qué" else ""
-                _td = (f"background:{_bg};padding:7px 12px;border-bottom:1px solid #e8e8e8;"
-                       f"white-space:{_wrap};font-size:13px;{_min_w}")
-                _cells += f"<td style='{_td}'>{_v}</td>"
+                if _i == 0:
+                    # Columna Campo: sticky izquierda con fondo del color de prioridad
+                    _style = _TD_STICKY + f"background:{_bg};"
+                else:
+                    _wrap  = "normal" if _c in ("Por qué", "Último fungicida", "Pases campaña") else "nowrap"
+                    _mw    = "min-width:160px;" if _c == "Por qué" else ""
+                    _style = (f"background:{_bg};padding:7px 12px;"
+                              f"border-bottom:1px solid #ddd;"
+                              f"white-space:{_wrap};font-size:13px;{_mw}")
+                _cells += f'<td style="{_style}">{_v}</td>'
             _tbody += f"<tr>{_cells}</tr>"
 
+        # Contenedor con doble scroll y altura máxima
         st.markdown(
-            f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
-            f'border-radius:8px;border:1px solid #ddd;margin-bottom:1.5rem;">'
-            f'<table style="border-collapse:collapse;width:100%;">'
-            f'<thead><tr>{_hdr}</tr></thead>'
+            f'<div style="overflow-x:auto;overflow-y:auto;max-height:420px;'
+            f'-webkit-overflow-scrolling:touch;'
+            f'border-radius:8px;border:1px solid #ccc;margin-bottom:1.5rem;">'
+            f'<table style="border-collapse:collapse;min-width:100%;">'
+            f'<thead><tr>{_hdr_cells}</tr></thead>'
             f'<tbody>{_tbody}</tbody>'
             f'</table></div>',
             unsafe_allow_html=True,
         )
 
         st.caption(
-            "🔴 **Tratar hoy** = sin cobertura + riesgo activo o previsión de infección. "
-            "🟠 **Sin cobertura** = días o lluvia superan umbral, pero no hay eventos activos. "
-            "🟡 **Revisar** = cobertura activa pero con eventos de infección recientes. "
-            "🟢 **OK** = protegido y sin alertas."
+            "🔴 **Tratar hoy** — infección prevista + sin cobertura. "
+            "🟠 **Tratar pronto** — exposición acumulada + sin cobertura. "
+            "🟡 **Planificar** — sin cobertura activa pero sin urgencia inmediata. "
+            "🟢 **OK** — protegido y sin previsión de infección. "
+            "· *Pases campaña*: aplicaciones registradas / máximo por registro MAPA."
         )
 
         with st.expander("Descargar tabla de decisión", expanded=False):
-            _dec_dl = _dec_display.rename(columns={"🎯 Acción": "Acción"})[
-                [c for c in ["Campo", "Variedades", "Último fungicida", "Días sin trat.",
-                              "Lluvia desde mm", "Eventos infección", "Previsión Mills",
-                              "Riesgo principal", "Acción",
-                              "1ª elección", "Alternativa", "Por qué"]
-                 if c in _dec_display.columns or c == "Acción"]
-            ]
+            _dl_export_cols = ["Campo", "🎯 Acción", "Último fungicida", "Días sin trat.",
+                               "Lluvia desde mm", "Eventos infección", "Previsión Mills",
+                               "Pases campaña", "Riesgo principal",
+                               "1ª elección", "Alternativa", "Por qué"]
+            _dec_dl = _dec_display[[c for c in _dl_export_cols if c in _dec_display.columns]]
             st.download_button(
                 "⬇️ Descargar panel de decisión (CSV)",
                 data=_dec_dl.to_csv(index=False).encode("utf-8-sig"),
