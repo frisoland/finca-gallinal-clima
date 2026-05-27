@@ -13381,10 +13381,19 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None):
         return "—", "—", "Sin riesgo activo"
 
     # Grupos FRAC del último producto usado → para penalizar repetición
+    # Matching bidireccional: "Flint" debe detectar "FLINT 50 WG" y viceversa.
+    # Se comparan los tokens principales (primera palabra de cada nombre).
     last_fracs = set()
-    if last_product and last_product not in ("Sin registro", "Sin especificar", "nan", ""):
+    if last_product and last_product not in ("Sin registro", "Sin especificar", "nan", "", "⚠️ Sin fungicida registrado"):
+        _lp_norm = str(last_product).upper().strip()
         for prod_key, fracs in PRODUCT_FRAC_MAP.items():
-            if prod_key.upper() in str(last_product).upper():
+            _pk_norm = prod_key.upper()
+            _pk_first = _pk_norm.split()[0]          # "FLINT", "FOLICUR", "SIGNUM", "LUNA"
+            _lp_first = _lp_norm.split()[0]
+            if (_pk_norm in _lp_norm                 # catalog key dentro de last_product
+                    or _lp_norm in _pk_norm          # last_product dentro de catalog key
+                    or _pk_first in _lp_norm         # primera palabra del catálogo en last_product
+                    or _lp_first in _pk_norm):       # primera palabra de last_product en catálogo
                 last_fracs.update(fracs)
                 break
 
@@ -13662,26 +13671,71 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
                 fc_rain        = float(fc["Lluvia"].fillna(0).sum())
 
         # ── Lógica de decisión ────────────────────────────────────────────────
-        # Cobertura caducada si: días >= umbral, o días >= 12 y lluvia >= 35mm
-        unprotected  = (days_since >= persistence_days) or (days_since >= 12 and rain_since >= 35)
-        high_risk    = (mills_events_since >= 2 or max_mills_since >= 150 or monilia_events_since >= 1)
-        medium_risk  = (mills_events_since >= 1 or max_mills_since >= 50)
-        fc_alert     = (fc_mills_max >= 100 or fc_monilia_max >= 100 or fc_rain >= 20)
+        # Basada en EPPO PP1/5 (Venturia), CABI compendium y guías RIMpro:
+        #
+        # COBERTURA CADUCADA: criterio temporal + efecto lluvia acumulada
+        #   - Más de `persistence_days` días sin fungicida, O
+        #   - Más de 12 días Y lluvia acumulada ≥ 35 mm (lixivia el contacto preventivo)
+        unprotected = (days_since >= persistence_days) or (days_since >= 12 and rain_since >= 35)
 
-        if unprotected and (high_risk or fc_alert):
-            priority = 1; action = "🔴 TRATAR HOY";              row_bg = "#ffcdd2"
+        # PREVISIÓN DE INFECCIÓN (próximos 3 días) — el factor más urgente.
+        # Si hay cobertura caducada + previsión → tratar ANTES de que llegue la lluvia.
+        fc_mills_event   = fc_mills_max >= 100    # evento Mills confirmado en previsión
+        fc_monilia_event = fc_monilia_max >= 100   # evento Monilia en previsión
+        fc_rain_alert    = fc_rain >= 15           # ≥15 mm previstos (umbral lavado + infección)
+        fc_alert = fc_mills_event or fc_monilia_event or fc_rain_alert
+
+        # EXPOSICIÓN ACUMULADA SIN COBERTURA: eventos Mills/Monilia desde el último fungicida.
+        # Cada evento = período de infección completado (latencia 9-21 días, Rühmer 1998).
+        # NO dispara "tratar hoy" por sí solo, pero aumenta la urgencia de planificar.
+        # Umbral: ≥3 eventos sin cobertura = exposición seria (no hay número en la bibliografía
+        # pero es conservador para frutales de pepita en fase sensible).
+        accumulated_exposure = (mills_events_since + monilia_events_since) >= 3
+
+        # ── Prioridades ───────────────────────────────────────────────────────
+        if unprotected and fc_alert:
+            # Sin cobertura + infección inminente: actuar antes de la lluvia
+            priority = 1
+            action   = "🔴 TRATAR HOY — infección prevista"
+            row_bg   = "#ffcdd2"
+
+        elif unprotected and accumulated_exposure:
+            # Sin cobertura + exposición acumulada seria + sin previsión inmediata:
+            # planificar en ≤2 días, no es una emergencia de hoy pero no puede esperar
+            priority = 2
+            action   = "🟠 Tratar pronto — cobertura caducada"
+            row_bg   = "#ffe0b2"
+
         elif unprotected:
-            priority = 2; action = "🟠 Planificar (sin cobertura)"; row_bg = "#ffe0b2"
-        elif (medium_risk or fc_alert) and days_since >= 12:
-            priority = 3; action = "🟡 Revisar – riesgo activo";  row_bg = "#fff9c4"
-        else:
-            priority = 4; action = "🟢 OK";                       row_bg = "#f1f8f1"
+            # Sin cobertura pero sin previsión ni exposición seria:
+            # ventana segura corta, planificar en 3-5 días
+            priority = 3
+            action   = "🟡 Planificar — sin cobertura activa"
+            row_bg   = "#fff9c4"
 
+        elif fc_alert and days_since >= 10:
+            # Cobertura aún activa pero próxima a caducar + previsión de infección:
+            # la lluvia puede lavar o coincidir con fin de cobertura
+            priority = 3
+            action   = "🟡 Vigilar — infección prevista"
+            row_bg   = "#fff9c4"
+
+        else:
+            # Cobertura activa y sin previsión de infección
+            priority = 4
+            action   = "🟢 OK — protegido"
+            row_bg   = "#f1f8f1"
+
+        # Riesgo dominante (para seleccionar producto)
+        # Solo incluye patógenos con previsión activa o exposición acumulada relevante
         dominant = []
-        if mills_events_since > 0 or fc_mills_max >= 50:
+        if fc_mills_event or (mills_events_since >= 2 and unprotected):
             dominant.append("Moteado")
-        if monilia_events_since > 0 or fc_monilia_max >= 50:
+        if fc_monilia_event or (monilia_events_since >= 1 and unprotected):
             dominant.append("Monilia")
+        if not dominant and unprotected:
+            # Sin riesgo específico confirmado pero sin cobertura → espectro amplio
+            dominant = ["Moteado", "Monilia"]
         if not dominant:
             dominant = ["—"]
 
