@@ -13497,26 +13497,119 @@ def build_rotation_advice(activities_df, catalog_df=None):
     }
 
 
+# ── Clasificador de tratamientos fungicidas ────────────────────────────────────
+# Palabras clave de materias activas y nombres comerciales de FUNGICIDAS.
+# Fuente: FRAC, Registro de productos fitosanitarios MAPA (España).
+_FUNGICIDE_KEYWORDS = {
+    # ── Materias activas ──────────────────────────────────────────────────────
+    "tebuconazol", "boscalid", "piraclostrobin", "trifloxistrobin", "fluopyram",
+    "captan", "thiram", "tiram", "mancozeb", "mancoceb", "maneb", "zineb", "folpet",
+    "azufre", "sulfur", "cobre", "copper", "oxicloruro", "hidroxido calcico",
+    "bordeaux", "bordeauxs", "bordelesa",
+    "fenhexamid", "ciprodinil", "fludioxonil", "dodina",
+    "myclobutanil", "miclobutanil", "penconazol", "difenoconazol", "propiconazol",
+    "iprodiona", "iprodione", "pyrimethanil", "pirimatanil", "kresoxim",
+    "dithianon", "ditianon", "captafol", "tolylfluanid", "metiram",
+    "metrafenona", "quinoxifen", "spiroxamina", "espiroxamina",
+    "cyflufenamid", "ciflufenamid", "proquinazid",
+    # ── Nombres comerciales (catálogo propio + habituales en frutales) ────────
+    "folicur", "signum", "flint", "luna experience", "luna",
+    "switch", "teldor", "kumulus", "pomarsol", "merpan",
+    "chorus", "scala", "bellis", "cantus", "headline",
+    "score", "sico", "bumper", "tilt",
+    "delan", "syllit", "ventu",
+    # ── Términos genéricos de tipo de trabajo ─────────────────────────────────
+    "fungicida", "fungicide", "antifúngico", "fitosanitario fungicida",
+    "tratamiento fungicida", "aplicacion fungicida",
+}
+
+# Palabras clave de NO-fungicidas: si el producto o trabajo contiene alguna de estas
+# Y no contiene ninguna keyword fungicida, se descarta como tratamiento fúngico.
+_NON_FUNGICIDE_KEYWORDS = {
+    # ── Insecticidas ──────────────────────────────────────────────────────────
+    "bactur", "bacillus", "thuringiensis", "xentari", "dipel",
+    "spinosad", "spintor", "tracer", "success",
+    "karate", "lambda", "lambdacialotrina", "cipermetrin", "deltametrin",
+    "chlorpyrifos", "clorpirifos", "dimethoate", "dimetoato",
+    "imidacloprid", "imidacloprid", "acetamiprid", "tiamethoxam",
+    "confidor", "mospilan", "actara", "chess", "movento",
+    "pirimicarb", "pirimor", "calypso", "thiacloprid",
+    "insecticida", "insecticide",
+    # ── Acaricidas ────────────────────────────────────────────────────────────
+    "aracan", "abamectin", "abamectina", "vertimec", "kraft",
+    "envidor", "oberon", "spirodiclofen", "hexitiazox",
+    "bifenazato", "floramite", "nexter", "pyridaben",
+    "acaricida", "acaricide",
+    # ── Herbicidas ────────────────────────────────────────────────────────────
+    "herbicida", "herbicide", "glifosato", "roundup", "glyphosate",
+    "simazina", "terbutilazina", "pendimetalina",
+    # ── Abonos y fertilizantes ─────────────────────────────────────────────────
+    "abono", "fertilizante", "fertirrigacion", "npk", "nitrogeno",
+    "fosforo", "potasio", "calcio foliar", "boro foliar", "magnesio",
+    "aminoacido", "alga", "humus", "humico", "fulvico",
+    # ── Confusión sexual / feromonas ──────────────────────────────────────────
+    "feromona", "confusion sexual", "isomate", "disrupt", "checkmate",
+    "trampa", "diffuser",
+    # ── Otros ─────────────────────────────────────────────────────────────────
+    "nematicida", "bactericida", "caolinita", "kaolin", "surround",
+    "aceite mineral", "aceite parafina",
+}
+
+
+def is_fungicide_activity(producto_str, trabajo_str=""):
+    """
+    Devuelve True si una actuación de Agroptima es un tratamiento fungicida.
+
+    Lógica de decisión (conservadora: si hay duda, NO es fungicida):
+    1. Construye un texto combinado con producto + tipo de trabajo.
+    2. Si contiene alguna keyword NON_FUNGICIDE y ninguna FUNGICIDE → False.
+    3. Si contiene alguna keyword FUNGICIDE → True.
+    4. Si el campo 'Trabajo' menciona explícitamente "fungicida" → True.
+    5. En caso de duda (texto vacío o no clasificable) → False (conservador).
+    """
+    texto = (str(producto_str) + " " + str(trabajo_str)).lower()
+
+    tiene_fungicida    = any(kw in texto for kw in _FUNGICIDE_KEYWORDS)
+    tiene_no_fungicida = any(kw in texto for kw in _NON_FUNGICIDE_KEYWORDS)
+
+    if tiene_no_fungicida and not tiene_fungicida:
+        return False   # claramente no es fungicida
+    if tiene_fungicida:
+        return True    # confirmado fungicida
+    # texto ambiguo o vacío → conservador: no contamos como cobertura fungicida
+    return False
+
+
 def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16):
     """
-    Para cada campo de la finca, calcula el estado de protección y
+    Para cada campo de la finca, calcula el estado de protección FUNGICIDA y
     la acción recomendada para hoy.
+    Solo tiene en cuenta aplicaciones de fungicidas (filtradas con is_fungicide_activity).
     """
     today = pd.Timestamp.now().normalize()
     rows  = []
 
-    # Pre-process activities once
+    # Pre-process activities: solo fungicidas, con fecha válida
     acts_clean = pd.DataFrame()
     if not activities_df.empty and "Campos reconocidos" in activities_df.columns:
-        acts_clean = activities_df.copy()
-        acts_clean["Fecha_dt"] = pd.to_datetime(acts_clean["Fecha"], errors="coerce")
-        acts_clean = acts_clean.dropna(subset=["Fecha_dt"])
+        _acts = activities_df.copy()
+        _acts["Fecha_dt"] = pd.to_datetime(_acts["Fecha"], errors="coerce")
+        _acts = _acts.dropna(subset=["Fecha_dt"])
+        # Filtrar SOLO fungicidas
+        _mask_fung = _acts.apply(
+            lambda r: is_fungicide_activity(
+                r.get("Producto", ""),
+                r.get("Trabajo", ""),
+            ),
+            axis=1,
+        )
+        acts_clean = _acts[_mask_fung].copy()
 
     for field_row in FIELDS_BASE_ROWS:
         campo      = field_row["Campo"]
         variedades = field_row.get("Variedades actuales", "")
 
-        # ── Último tratamiento ────────────────────────────────────────────────
+        # ── Último tratamiento FUNGICIDA ──────────────────────────────────────
         last_date    = None
         last_product = "Sin registro"
         if not acts_clean.empty:
@@ -13592,10 +13685,16 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         if not dominant:
             dominant = ["—"]
 
+        # Texto descriptivo del último fungicida aplicado
+        if last_date:
+            _last_label = f"{last_date.strftime('%d/%m/%Y')} · {last_product}"
+        else:
+            _last_label = "⚠️ Sin fungicida registrado"
+
         rows.append({
             "Campo":              campo,
             "Variedades":         variedades,
-            "Último trat.":      (last_date.strftime("%d/%m/%Y") if last_date else "Sin registro"),
+            "Último fungicida":  _last_label,
             "Días sin trat.":    (days_since if days_since < 999 else "—"),
             "Lluvia desde mm":   rain_since,
             "Eventos infección":  mills_events_since + monilia_events_since,
@@ -14184,7 +14283,7 @@ def render_decisiones_panel():
 
         # ── Tabla HTML con colores por fila ───────────────────────────────────
         _display_cols = [
-            "Campo", "Variedades", "Último trat.", "Días sin trat.",
+            "Campo", "Variedades", "Último fungicida", "Días sin trat.",
             "Lluvia desde mm", "Eventos infección",
             "Previsión Mills", "Riesgo principal", "🎯 Acción",
             "1ª elección", "Alternativa", "Por qué",
@@ -14227,7 +14326,7 @@ def render_decisiones_panel():
 
         with st.expander("Descargar tabla de decisión", expanded=False):
             _dec_dl = _dec_display.rename(columns={"🎯 Acción": "Acción"})[
-                [c for c in ["Campo", "Variedades", "Último trat.", "Días sin trat.",
+                [c for c in ["Campo", "Variedades", "Último fungicida", "Días sin trat.",
                               "Lluvia desde mm", "Eventos infección", "Previsión Mills",
                               "Riesgo principal", "Acción",
                               "1ª elección", "Alternativa", "Por qué"]
