@@ -13390,20 +13390,25 @@ def _campo_exact_in_list(campos_str, campo_name):
 
 def _normalize_product_to_catalog(prod_raw):
     """
-    Normaliza el nombre de un producto de Agroptima al clave del catálogo.
-    Usa matching bidireccional por primera palabra para cubrir variantes de nombre.
-    Devuelve la clave del catálogo o None si no hay coincidencia.
+    Normaliza el nombre de un producto de Agroptima a las claves del catálogo.
+    Devuelve LISTA de claves coincidentes (puede haber varias si la celda contiene
+    varios productos: "FLINT 50 WG + SIGNUM" → ["FLINT 50 WG", "SIGNUM"]).
+
+    Agroptima puede registrar en UNA celda varios productos mezclados en el mismo
+    caldo (p.ej. "FLINT 50 WG + BACTUR WG"). En ese caso se detectan TODOS los
+    fungicidas del catálogo presentes y se ignoran los no-fungicidas.
     """
     prod_up = str(prod_raw).strip().upper()
+    matches = []
     for catalog_key in PRODUCT_MAX_APPLICATIONS:
         first_word = catalog_key.split()[0].upper()   # "FOLICUR", "SIGNUM", "FLINT", "LUNA"
         cat_up     = catalog_key.upper()
-        if (first_word in prod_up          # "FLINT" en "FLINT 50 WG" ✓
-                or cat_up in prod_up       # "FLINT 50 WG" en "FLINT 50 WG EXTRA" ✓
-                or prod_up in cat_up       # "FLINT" en "FLINT 50 WG" ✓
-                or prod_up == first_word): # coincidencia exacta de primera palabra ✓
-            return catalog_key
-    return None
+        if (first_word in prod_up
+                or cat_up in prod_up
+                or prod_up in cat_up
+                or prod_up == first_word):
+            matches.append(catalog_key)
+    return matches  # lista vacía si no hay coincidencias
 
 
 def count_field_applications(activities_df, campo, year=None):
@@ -13411,11 +13416,16 @@ def count_field_applications(activities_df, campo, year=None):
     Cuenta cuántas veces se ha aplicado cada fungicida del catálogo a un campo
     en la campaña (año actual o `year`).
 
-    Correcciones respecto a versión anterior:
-    - Matching EXACTO de campo (no subcadena): "Huertona" no coincide con
-      "La Huertona" ni "Huertona 2". Evita falsos positivos.
-    - Deduplicación por (fecha_dia, campos_reconocidos, producto_normalizado):
-      si la misma pasada aparece duplicada en el CSV importado, cuenta 1 vez.
+    Maneja correctamente:
+    - Pasadas mixtas: fungicida + insecticida en la misma fila ("FLINT + BACTUR")
+      o en filas separadas el mismo día. Solo cuentan los fungicidas del catálogo.
+    - Pasadas con varios fungicidas: "FLINT + SIGNUM" → cuenta 1 pase de cada uno.
+    - Filas duplicadas de importación: (fecha, campo, producto) idénticos → 1 pase.
+    - Matching exacto de campo: "Huertona" no coincide con "La Huertona".
+
+    Lógica de agrupación:
+    - Todas las filas fungicidas del mismo campo y la misma fecha = misma pasada.
+    - Cada producto del catálogo detectado en esa pasada suma 1 pase a su contador.
 
     Devuelve (dict {producto_catálogo: n_pases}, sdhi_total).
     """
@@ -13436,7 +13446,7 @@ def count_field_applications(activities_df, campo, year=None):
     if _acts.empty:
         return counts, sdhi_total
 
-    # 1. Solo fungicidas confirmados
+    # 1. Solo filas con al menos un fungicida confirmado
     _mask_fung = _acts.apply(
         lambda r: is_fungicide_activity(r.get("Producto", ""), r.get("Trabajo", "")),
         axis=1,
@@ -13446,7 +13456,7 @@ def count_field_applications(activities_df, campo, year=None):
     if _acts.empty:
         return counts, sdhi_total
 
-    # 2. Matching EXACTO por campo (split por coma, comparación case-insensitive)
+    # 2. Matching EXACTO del campo
     _mask_campo = _acts["Campos reconocidos"].fillna("").apply(
         lambda x: _campo_exact_in_list(x, campo)
     )
@@ -13455,23 +13465,26 @@ def count_field_applications(activities_df, campo, year=None):
     if campo_acts.empty:
         return counts, sdhi_total
 
-    # 3. Normalizar producto al catálogo para poder deduplicar
-    campo_acts["_prod_norm"] = campo_acts["Producto"].apply(_normalize_product_to_catalog)
-    campo_acts = campo_acts[campo_acts["_prod_norm"].notna()]  # solo productos reconocidos
-
-    # 4. Deduplicar: misma fecha + mismo campo + mismo producto = misma pasada
-    #    Esto elimina duplicados de importación sin eliminar pasadas reales distintas
     campo_acts["_fecha_dia"] = campo_acts["Fecha_dt"].dt.date
-    campo_acts = campo_acts.drop_duplicates(
-        subset=["_fecha_dia", "Campos reconocidos", "_prod_norm"]
-    )
 
-    # 5. Contar
+    # 3. Agrupar por fecha (= misma pasada).
+    #    Recopilar todos los productos fungicidas del catálogo aplicados ese día.
+    #    Deduplica automáticamente filas repetidas del mismo producto en la misma fecha.
+    seen = set()   # (fecha, producto_catálogo) ya contados → evita doble conteo
+
     for _, row in campo_acts.iterrows():
-        matched_key = row["_prod_norm"]
-        counts[matched_key] = counts.get(matched_key, 0) + 1
-        if "C2" in PRODUCT_FRAC_MAP.get(matched_key, []):
-            sdhi_total += 1
+        prod_raw  = str(row.get("Producto", ""))
+        fecha_dia = row["_fecha_dia"]
+        matched   = _normalize_product_to_catalog(prod_raw)   # lista de claves
+
+        for catalog_key in matched:
+            dedup_key = (fecha_dia, catalog_key)
+            if dedup_key in seen:
+                continue   # misma fecha + mismo producto ya contado (fila duplicada)
+            seen.add(dedup_key)
+            counts[catalog_key] = counts.get(catalog_key, 0) + 1
+            if "C2" in PRODUCT_FRAC_MAP.get(catalog_key, []):
+                sdhi_total += 1
 
     return counts, sdhi_total
 
@@ -13498,20 +13511,28 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
     if app_counts is None:
         app_counts = {}
 
-    # ── Grupos FRAC del último producto usado → penalizar repetición ──────────
+    # ── Grupos FRAC de TODOS los productos de la última pasada → penalizar repetición ──
+    # last_product puede ser "FLINT 50 WG + SIGNUM" si se mezclaron en el mismo caldo.
+    # Recogemos los grupos FRAC de todos ellos para no repetir ninguno en la recomendación.
     last_fracs = set()
-    _last_name = ""
-    if last_product and last_product not in ("Sin registro", "Sin especificar", "nan", "", "⚠️ Sin fungicida registrado"):
-        _lp_norm = str(last_product).upper().strip()
-        for prod_key, fracs in PRODUCT_FRAC_MAP.items():
-            _pk_norm  = prod_key.upper()
-            _pk_first = _pk_norm.split()[0]
-            _lp_first = _lp_norm.split()[0]
-            if (_pk_norm in _lp_norm or _lp_norm in _pk_norm
-                    or _pk_first in _lp_norm or _lp_first in _pk_norm):
-                last_fracs.update(fracs)
-                _last_name = prod_key
-                break
+    _last_names = []
+    _invalid = ("Sin registro", "Sin especificar", "nan", "", "⚠️ Sin fungicida registrado")
+    if last_product and last_product not in _invalid:
+        # Separar productos por " + " o "," para manejar mezclas de caldo
+        _lp_parts = [p.strip() for p in str(last_product).replace(",", "+").split("+") if p.strip()]
+        for _lp in _lp_parts:
+            _lp_norm  = _lp.upper()
+            for prod_key, fracs in PRODUCT_FRAC_MAP.items():
+                _pk_norm  = prod_key.upper()
+                _pk_first = _pk_norm.split()[0]
+                _lp_first = _lp_norm.split()[0]
+                if (_pk_norm in _lp_norm or _lp_norm in _pk_norm
+                        or _pk_first in _lp_norm or _lp_first in _pk_norm):
+                    last_fracs.update(fracs)
+                    if prod_key not in _last_names:
+                        _last_names.append(prod_key)
+                    break
+    _last_name = " + ".join([p.split()[0] for p in _last_names]) if _last_names else ""
 
     scores = {}
     limit_notes = {}   # avisos de límite para incluir en el motivo
@@ -13894,19 +13915,40 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         campo      = field_row["Campo"]
         variedades = field_row.get("Variedades actuales", "")
 
-        # ── Último tratamiento FUNGICIDA ──────────────────────────────────────
-        # Matching EXACTO: "Huertona" no puede coincidir con "La Huertona"
-        last_date    = None
-        last_product = "Sin registro"
+        # ── Última pasada fungicida ───────────────────────────────────────────
+        # Matching EXACTO de campo. Agrupa por fecha para recoger TODOS los
+        # fungicidas aplicados ese día (e.g. FLINT + SIGNUM en el mismo caldo).
+        # Los productos no-fungicidas (Bactur, Aracan…) se ignoraron al filtrar acts_clean.
+        last_date       = None
+        last_products   = []   # lista de todos los fungicidas de la última pasada
+        last_product    = "Sin registro"   # representación legible para display
         if not acts_clean.empty:
             mask = acts_clean["Campos reconocidos"].fillna("").apply(
                 lambda x: _campo_exact_in_list(x, campo)
             )
-            campo_acts = acts_clean[mask].sort_values("Fecha_dt", ascending=False)
-            if not campo_acts.empty:
-                last = campo_acts.iloc[0]
-                last_date    = last["Fecha_dt"].normalize()
-                last_product = str(last.get("Producto", "")).strip() or "Sin especificar"
+            campo_acts_all = acts_clean[mask].sort_values("Fecha_dt", ascending=False)
+            if not campo_acts_all.empty:
+                last_date = campo_acts_all.iloc[0]["Fecha_dt"].normalize()
+                # Todos los productos fungicidas del mismo día = misma pasada
+                same_day = campo_acts_all[
+                    campo_acts_all["Fecha_dt"].dt.normalize() == last_date
+                ]
+                # Normalizar cada fila al catálogo y recoger todos los productos únicos
+                _prods_set = []
+                _seen_keys = set()
+                for _, _row in same_day.iterrows():
+                    for _ck in _normalize_product_to_catalog(_row.get("Producto", "")):
+                        if _ck not in _seen_keys:
+                            _prods_set.append(_ck)
+                            _seen_keys.add(_ck)
+                    # También guardar nombre original para display cuando no está en catálogo
+                    _raw = str(_row.get("Producto", "")).strip()
+                    if _raw and not _normalize_product_to_catalog(_raw):
+                        pass  # producto no catalogado → no se muestra en last_products
+                last_products = _prods_set if _prods_set else [
+                    str(same_day.iloc[0].get("Producto", "Sin especificar")).strip()
+                ]
+                last_product = " + ".join(last_products) if last_products else "Sin especificar"
 
         days_since = (today - last_date).days if last_date is not None else 999
 
