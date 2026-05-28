@@ -2676,6 +2676,19 @@ def parse_agroptima_activities_excel(uploaded_file):
     diagnostics["Columnas detectadas"] = ", ".join(list(raw.columns))
     diagnostics["Registros leídos"] = int(len(raw))
 
+    # Agroptima exporta actividades multi-producto con filas de continuación:
+    # la primera fila tiene Fecha+Campos+ID, las siguientes solo tienen el producto
+    # con None/NaN en esos campos. Forward-fill propaga el contexto de actividad
+    # a todas las filas del mismo tratamiento.
+    _ACTIVITY_FILL_COLS = [
+        "Fecha", "Campos", "ha totales", "Trabajos",
+        "Cultivos / variedades", "Personal", "Cuadrillas",
+        "Personal Externo", "Máquinas", "Comentarios", "ID",
+    ]
+    for _col in _ACTIVITY_FILL_COLS:
+        if _col in raw.columns:
+            raw[_col] = raw[_col].ffill()
+
     required = ["Fecha", "Campos", "ha totales", "Trabajos", "Productos", "Cantidad", "Unidades de la cantidad", "Dosis o rendimiento", "Unidades de dosis", "Comentarios"]
     for col in required:
         if col not in raw.columns:
