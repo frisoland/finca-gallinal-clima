@@ -11701,15 +11701,16 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     today = pd.Timestamp.today().normalize()
 
     # ── Umbral mínimo de DD para asignar un tratamiento a una ventana ─────────
-    # Un tratamiento cubre el campo ENTERO: si se trata el 25/05, todas las
-    # ventanas con ≥50 DD desde su trigger quedan cubiertas, aunque solo haya
-    # una razón principal (la ventana más antigua con más DD).
-    # 50 DD es suficientemente alto para rechazar tratamientos "el mismo día"
-    # o "2-3 días después" del trigger (DD = 0-30), y suficientemente bajo
-    # para cubrir el caso real: trigger el 18/05, tratamiento el 25/05 (~67 DD).
-    # Los originales "tratado preventivo con 14 DD / 39 DD" quedan rechazados
-    # porque 14 < 50 y 39 < 50.
-    _MIN_DD_FOR_TREATMENT = 50
+    # Un tratamiento se considera válido para una ventana SOLO si se hizo con
+    # ≥ 90 DD desde el trigger de esa lectura, es decir, dentro del período de
+    # eclosión real (la ventana activa empieza en 90 DD).
+    #
+    # Lógica sin consumo: un mismo tratamiento puede cubrir VARIAS ventanas
+    # el mismo día siempre que cada una tenga ≥ 90 DD acumulados desde su
+    # trigger. Un tratamiento a 71 DD (pre-ventana) NO cuenta — la ventana
+    # sigue en "Activa — tratar" para avisar que hay que intervenir.
+    # Esto evita la falsa sensación de seguridad con tratamientos preventivos.
+    _MIN_DD_FOR_TREATMENT = 90
 
     # Normalizar fechas del calendario DD una sola vez (eficiencia)
     _fechas_dd_norm = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
