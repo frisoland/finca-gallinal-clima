@@ -11682,33 +11682,86 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     rows = []
     today = pd.Timestamp.today().normalize()
 
+    # ── Umbral mínimo de DD para asignar un tratamiento a una ventana ─────────
+    # El usuario indica que trata a ≥80 DD como mínimo.
+    # Usamos 75 DD como margen para cubrir ligeras variaciones del cálculo horario.
+    # Por debajo de este umbral un tratamiento se considera hecho por otra causa
+    # (ventana anterior, otro campo, preventivo no relacionado con esta lectura).
+    _MIN_DD_FOR_TREATMENT = 75
+
+    # Normalizar fechas del calendario DD una sola vez (eficiencia)
+    _fechas_dd_norm = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
+    if _fechas_dd_norm.dt.tz is not None:
+        _fechas_dd_norm = _fechas_dd_norm.dt.tz_localize(None)
+
+    # ── Helpers de matching (definidos UNA vez, fuera del loop) ───────────────
+    def _campo_match_carpo(campos_str, target):
+        campos_list = [c.strip().lower() for c in str(campos_str).split(",")]
+        target_low = target.strip().lower()
+        if target_low in campos_list:
+            return True
+        return any(target_low in c or c in target_low for c in campos_list if len(c) >= 3)
+
+    # Determinar columnas de producto/trabajo/comentarios de treatments una sola vez
+    if not treatments.empty:
+        _prod_col   = "Productos" if "Productos" in treatments.columns else "Producto"
+        _trab_col   = "Trabajo" if "Trabajo" in treatments.columns else (
+                      "trabajo" if "trabajo" in treatments.columns else None)
+        _comt_col   = "Comentarios" if "Comentarios" in treatments.columns else None
+        _campos_col = next((c for c in ["Campos reconocidos", "Campos", "campo", "campos_reconocidos"]
+                            if c in treatments.columns), None)
+    else:
+        _prod_col = _trab_col = _comt_col = _campos_col = None
+
+    def _has_carpocapsa(row):
+        texto = str(row.get(_prod_col, "") or "")
+        if _trab_col:
+            texto += " " + str(row.get(_trab_col, "") or "")
+        if _comt_col:
+            texto += " " + str(row.get(_comt_col, "") or "")
+        return text_contains_any_keyword(texto, CARPOCAPSA_TREATMENT_KEYWORDS)
+
     for zona in traps["Campo/Zona"].unique():
-        zona_str = str(zona).strip()
+        zona_str   = str(zona).strip()
         zona_traps = traps[traps["Campo/Zona"].astype(str).str.strip() == zona_str].sort_values("Fecha")
 
-        # Lecturas que superan el umbral
-        trigger_reads = zona_traps[zona_traps["_capturas"] >= capture_threshold]
+        # Lecturas que superan el umbral, ordenadas de MÁS ANTIGUA a MÁS NUEVA
+        # (imprescindible para que la lógica de consumo funcione bien)
+        trigger_reads = zona_traps[zona_traps["_capturas"] >= capture_threshold].sort_values("Fecha")
+
+        # Pre-filtrar tratamientos de carpocapsa para esta zona
+        campo_treats_carp = pd.DataFrame()
+        if not treatments.empty and _campos_col:
+            campo_base = zona_str.split(" - ")[0].strip() if " - " in zona_str else zona_str
+            _campo_all = treatments[
+                treatments[_campos_col].apply(lambda x: _campo_match_carpo(x, campo_base))
+            ]
+            if not _campo_all.empty:
+                campo_treats_carp = (
+                    _campo_all[_campo_all.apply(_has_carpocapsa, axis=1)]
+                    .sort_values("fecha_dt")
+                    .copy()
+                )
+
+        # Tratamientos ya consumidos por ventanas anteriores de esta zona.
+        # Clave: date() del tratamiento (un mismo día solo puede cerrar UNA ventana).
+        _used_trat_dates = set()
 
         for _, trow in trigger_reads.iterrows():
             trigger_date = trow["Fecha"]
-            capturas = int(trow["_capturas"])
+            capturas     = int(trow["_capturas"])
 
-            # Calcular DD acumulados desde trigger_date hasta hoy
-            # daily_dd tiene columnas "Fecha" y "DD día" (no usa el index como fecha)
+            # ── DD acumulados desde trigger hasta hoy ─────────────────────────
             trigger_norm = pd.Timestamp(trigger_date).normalize()
             if trigger_norm.tzinfo is not None:
                 trigger_norm = trigger_norm.tz_localize(None)
-            fechas_norm = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
-            if fechas_norm.dt.tz is not None:
-                fechas_norm = fechas_norm.dt.tz_localize(None)
-            dd_future = daily_dd[fechas_norm >= trigger_norm]
+            dd_future  = daily_dd[_fechas_dd_norm >= trigger_norm]
             dd_current = float(dd_future["DD día"].sum()) if not dd_future.empty else 0.0
 
-            # Fecha estimada para 90 DD y dd_active_end DD
-            date_90, _  = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_start)
+            date_90,  _ = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_start)
             date_end, _ = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_end)
 
-            # Estado base (por DD)
+            # ── Estado base (solo por DD, antes de conocer si hay tratamiento) ─
             if dd_current < dd_active_start:
                 estado = "⏳ En espera"
                 estado_orden = 1
@@ -11719,77 +11772,53 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 estado = "✅ Cerrada"
                 estado_orden = 2
 
-            # Buscar tratamiento posterior en ese campo
-            trat_fecha = ""
-            trat_dd = ""
+            # ── Buscar tratamiento para ESTA ventana ──────────────────────────
+            trat_fecha   = ""
+            trat_dd      = ""
             trat_producto = ""
-            if not treatments.empty and "fecha_dt" in treatments.columns:
-                # Buscar coincidencia de campo en actuaciones.
-                # Se normaliza el nombre: "GY - Gallinal" → base = "GY"
-                campos_col = next((c for c in ["Campos reconocidos", "Campos", "campo", "campos_reconocidos"]
-                                   if c in treatments.columns), None)
-                if campos_col:
-                    campo_base = zona_str.split(" - ")[0].strip() if " - " in zona_str else zona_str
-                    # Matching por campo: primero exacto (split por coma), luego substring como fallback
-                    def _campo_match_carpo(campos_str, target):
-                        campos_list = [c.strip().lower() for c in str(campos_str).split(",")]
-                        target_low = target.strip().lower()
-                        # Coincidencia exacta primero
-                        if target_low in campos_list:
-                            return True
-                        # Fallback: substring (para casos como "Sector 3" en zona y "Sector 3, 4" en actividad)
-                        return any(target_low in c or c in target_low for c in campos_list if len(c) >= 3)
-                    campo_treats = treatments[
-                        treatments[campos_col].apply(lambda x: _campo_match_carpo(x, campo_base))
-                    ]
-                else:
-                    campo_treats = pd.DataFrame()
 
-                if not campo_treats.empty:
-                    # Solo actuaciones DESPUÉS del trigger
-                    post = campo_treats[campo_treats["fecha_dt"] >= trigger_date].sort_values("fecha_dt")
-                    if not post.empty:
-                        # Detectar carpocapsa en Producto Y en Trabajo/Comentarios
-                        # (Agroptima puede registrar el tratamiento en cualquier campo de texto)
-                        productos_col_t = "Productos" if "Productos" in post.columns else "Producto"
-                        trabajo_col_t   = "Trabajo" if "Trabajo" in post.columns else "trabajo" if "trabajo" in post.columns else None
-                        coment_col_t    = "Comentarios" if "Comentarios" in post.columns else None
+            if not campo_treats_carp.empty:
+                # Solo tratamientos posteriores al trigger de esta lectura
+                post = campo_treats_carp[campo_treats_carp["fecha_dt"] >= trigger_date]
 
-                        def _has_carpocapsa_product(row):
-                            texto = str(row.get(productos_col_t, "") or "")
-                            if trabajo_col_t:
-                                texto += " " + str(row.get(trabajo_col_t, "") or "")
-                            if coment_col_t:
-                                texto += " " + str(row.get(coment_col_t, "") or "")
-                            return text_contains_any_keyword(texto, CARPOCAPSA_TREATMENT_KEYWORDS)
+                for _, t_row in post.iterrows():
+                    t_date_key = t_row["fecha_dt"].date()
 
-                        post_carp = post[post.apply(_has_carpocapsa_product, axis=1)]
+                    # ① El tratamiento ya fue asignado a una ventana anterior → saltar
+                    if t_date_key in _used_trat_dates:
+                        continue
 
-                        if not post_carp.empty:
-                            t_row = post_carp.iloc[0]
-                            trat_fecha = t_row["fecha_dt"].strftime("%d/%m/%Y")
-                            t_fecha = pd.Timestamp(t_row["fecha_dt"]).normalize()
-                            if t_fecha.tzinfo is not None:
-                                t_fecha = t_fecha.tz_localize(None)
-                            fechas2 = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
-                            if fechas2.dt.tz is not None:
-                                fechas2 = fechas2.dt.tz_localize(None)
-                            dd_at_trat = daily_dd[
-                                (fechas2 >= trigger_norm) & (fechas2 <= t_fecha)
-                            ]["DD día"].sum()
-                            trat_dd = round(float(dd_at_trat), 1)
-                            trat_producto = str(t_row.get(productos_col_t, t_row.get("producto", ""))).strip()
+                    # ② Calcular DD acumulados desde el trigger hasta el tratamiento
+                    t_norm = pd.Timestamp(t_row["fecha_dt"]).normalize()
+                    if t_norm.tzinfo is not None:
+                        t_norm = t_norm.tz_localize(None)
+                    dd_at_trat_val = float(
+                        daily_dd[(_fechas_dd_norm >= trigger_norm) & (_fechas_dd_norm <= t_norm)
+                                 ]["DD día"].sum()
+                    )
+                    dd_at_trat_val = round(dd_at_trat_val, 1)
 
-                            # ── Actualizar estado si hay tratamiento ──────────────────────────
-                            # Si la ventana estaba activa y ya se trató → cerrar visualmente
-                            if estado_orden == 0:
-                                estado = "✅ Tratado — ventana cubierta"
-                                estado_orden = 3  # aparece después de las activas sin tratar
-                            elif estado_orden == 1:
-                                estado = "✅ Tratado — preventivo"
-                                estado_orden = 3
+                    # ③ Umbral mínimo: el usuario nunca trata antes de ~80 DD.
+                    # Si el DD al tratar es menor que _MIN_DD_FOR_TREATMENT,
+                    # este tratamiento fue por otra causa (ventana anterior, etc.).
+                    if dd_at_trat_val < _MIN_DD_FOR_TREATMENT:
+                        continue
 
-            # Para ventanas en espera, mostrar dias restantes hasta ventana activa
+                    # ④ Asignar el tratamiento a esta ventana y marcarlo consumido
+                    trat_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
+                    trat_dd       = dd_at_trat_val
+                    trat_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
+                    _used_trat_dates.add(t_date_key)
+
+                    # Actualizar estado
+                    if estado_orden in (0, 1):
+                        estado = "✅ Tratado — ventana cubierta"
+                    else:
+                        estado = "✅ Tratado — cerrada"
+                    estado_orden = 3
+                    break  # un solo tratamiento por ventana
+
+            # ── Info extra ────────────────────────────────────────────────────
             if estado_orden == 1 and pd.notna(date_90):
                 dias_restantes = max(0, (date_90.date() - pd.Timestamp.today().date()).days)
                 info_extra = f"{dias_restantes}d hasta ventana"
@@ -11800,11 +11829,8 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             else:
                 info_extra = "—"
 
-            # DD actual: si ya hay tratamiento, congelar en los DD del día del tratamiento
-            if trat_fecha and trat_dd != "":
-                dd_display = trat_dd  # congelado en el momento del tratamiento
-            else:
-                dd_display = round(dd_current, 1)
+            # DD display: congelar en el momento del tratamiento si ya se trató
+            dd_display = trat_dd if (trat_fecha and trat_dd != "") else round(dd_current, 1)
 
             rows.append({
                 "Campo/Zona":                    zona_str,
