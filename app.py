@@ -11712,6 +11712,12 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     # Esto evita la falsa sensación de seguridad con tratamientos preventivos.
     _MIN_DD_FOR_TREATMENT = 90
 
+    # ── Periodo de reentrada de Bactur (días mínimos entre aplicaciones) ──────
+    # Bactur (Bacillus thuringiensis) tiene un período de reentrada de 7 días:
+    # aunque los DD indiquen "tratar ahora", si el último tratamiento fue hace
+    # menos de 7 días hay que esperar para no tratar doblado.
+    _BACTUR_REENTRY_DAYS = 7
+
     # Normalizar fechas del calendario DD una sola vez (eficiencia)
     _fechas_dd_norm = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
     if _fechas_dd_norm.dt.tz is not None:
@@ -11779,6 +11785,18 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     .sort_values("fecha_dt")
                     .copy()
                 )
+
+        # ── Restricción de reentrada Bactur para esta zona ────────────────────
+        # Calculada UNA VEZ por zona: fecha del último tratamiento de carpocapsa.
+        # Si fue hace menos de _BACTUR_REENTRY_DAYS, las ventanas activas no
+        # se pueden tratar todavía.
+        _reentry_days_left = 0
+        _last_treat_str    = ""
+        if not campo_treats_carp.empty:
+            _last_treat_dt     = campo_treats_carp["fecha_dt"].max().normalize()
+            _days_since_treat  = int((today - _last_treat_dt).days)
+            _reentry_days_left = max(0, _BACTUR_REENTRY_DAYS - _days_since_treat)
+            _last_treat_str    = _last_treat_dt.strftime("%d/%m")
 
         for _, trow in trigger_reads.iterrows():
             trigger_date = trow["Fecha"]
@@ -11854,6 +11872,16 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             else:
                 info_extra = "—"
 
+            # ── Restricción de reentrada Bactur ───────────────────────────────
+            # Si la ventana está activa pero el último tratamiento fue hace
+            # menos de _BACTUR_REENTRY_DAYS, NO se puede volver a tratar todavía.
+            _reentry_wait = 0
+            if estado_orden == 0 and _reentry_days_left > 0:
+                _reentry_wait = _reentry_days_left
+                estado    = f"⏳ Activa — esperar {_reentry_days_left}d"
+                info_extra = (f"Reentrada Bactur: esperar {_reentry_days_left}d "
+                              f"(último trat. {_last_treat_str})")
+
             # DD display: congelar en el momento del tratamiento si ya se trató
             dd_display = trat_dd if (trat_fecha and trat_dd != "") else round(dd_current, 1)
 
@@ -11867,6 +11895,7 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 "Estado":                        estado,
                 "Info":                          info_extra,
                 "_orden":                        estado_orden,
+                "_reentry_wait":                 _reentry_wait,
                 "Tratamiento fecha":             trat_fecha,
                 "DD al tratar":                  trat_dd,
                 "Producto":                      trat_producto,
@@ -12412,7 +12441,9 @@ def carpocapsa_tab(history):
             else:
                 df_show = multi_df
 
-            st.dataframe(df_show, use_container_width=True, hide_index=True)
+            # Ocultar columnas internas (prefijo _)
+            _display_cols = [c for c in df_show.columns if not c.startswith("_")]
+            st.dataframe(df_show[_display_cols], use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar ventanas carpocapsa CSV",
                 data=multi_df.to_csv(index=False).encode("utf-8-sig"),
@@ -14918,6 +14949,11 @@ def carpocapsa_sync_annotation(campo_name, windows_df):
 
     # ── 1. Ventana activa sin tratar ──────────────────────────────────────────
     if not activas.empty:
+        # Comprobar si hay restricción de reentrada Bactur
+        if "_reentry_wait" in activas.columns:
+            max_wait = int(activas["_reentry_wait"].fillna(0).max())
+            if max_wait > 0:
+                return f"⏳ Esperar {max_wait}d — reentrada Bactur", "soon"
         return "🐛 Combinar HOY — ventana activa", "now"
 
     # ── 2. En espera — extraer días más próximos ──────────────────────────────
