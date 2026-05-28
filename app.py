@@ -11701,11 +11701,15 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     today = pd.Timestamp.today().normalize()
 
     # ── Umbral mínimo de DD para asignar un tratamiento a una ventana ─────────
-    # El usuario indica que trata a ≥80 DD como mínimo.
-    # Usamos 75 DD como margen para cubrir ligeras variaciones del cálculo horario.
-    # Por debajo de este umbral un tratamiento se considera hecho por otra causa
-    # (ventana anterior, otro campo, preventivo no relacionado con esta lectura).
-    _MIN_DD_FOR_TREATMENT = 75
+    # Un tratamiento cubre el campo ENTERO: si se trata el 25/05, todas las
+    # ventanas con ≥50 DD desde su trigger quedan cubiertas, aunque solo haya
+    # una razón principal (la ventana más antigua con más DD).
+    # 50 DD es suficientemente alto para rechazar tratamientos "el mismo día"
+    # o "2-3 días después" del trigger (DD = 0-30), y suficientemente bajo
+    # para cubrir el caso real: trigger el 18/05, tratamiento el 25/05 (~67 DD).
+    # Los originales "tratado preventivo con 14 DD / 39 DD" quedan rechazados
+    # porque 14 < 50 y 39 < 50.
+    _MIN_DD_FOR_TREATMENT = 50
 
     # Normalizar fechas del calendario DD una sola vez (eficiencia)
     _fechas_dd_norm = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
@@ -11761,10 +11765,6 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     .copy()
                 )
 
-        # Tratamientos ya consumidos por ventanas anteriores de esta zona.
-        # Clave: date() del tratamiento (un mismo día solo puede cerrar UNA ventana).
-        _used_trat_dates = set()
-
         for _, trow in trigger_reads.iterrows():
             trigger_date = trow["Fecha"]
             capturas     = int(trow["_capturas"])
@@ -11800,13 +11800,7 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 post = campo_treats_carp[campo_treats_carp["fecha_dt"] >= trigger_date]
 
                 for _, t_row in post.iterrows():
-                    t_date_key = t_row["fecha_dt"].date()
-
-                    # ① El tratamiento ya fue asignado a una ventana anterior → saltar
-                    if t_date_key in _used_trat_dates:
-                        continue
-
-                    # ② Calcular DD acumulados desde el trigger hasta el tratamiento
+                    # ① Calcular DD acumulados desde el trigger hasta el tratamiento
                     t_norm = pd.Timestamp(t_row["fecha_dt"]).normalize()
                     if t_norm.tzinfo is not None:
                         t_norm = t_norm.tz_localize(None)
@@ -11816,17 +11810,15 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     )
                     dd_at_trat_val = round(dd_at_trat_val, 1)
 
-                    # ③ Umbral mínimo: el usuario nunca trata antes de ~80 DD.
-                    # Si el DD al tratar es menor que _MIN_DD_FOR_TREATMENT,
-                    # este tratamiento fue por otra causa (ventana anterior, etc.).
+                    # ② Umbral mínimo: rechazar tratamientos en el mismo día o
+                    # muy poco después del trigger (DD = 0-39 = "preventivo").
                     if dd_at_trat_val < _MIN_DD_FOR_TREATMENT:
                         continue
 
-                    # ④ Asignar el tratamiento a esta ventana y marcarlo consumido
+                    # ③ Asignar el tratamiento a esta ventana
                     trat_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
                     trat_dd       = dd_at_trat_val
                     trat_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
-                    _used_trat_dates.add(t_date_key)
 
                     # Actualizar estado
                     if estado_orden in (0, 1):
