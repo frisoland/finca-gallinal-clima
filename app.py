@@ -12422,7 +12422,8 @@ def carpocapsa_tab(history):
             )
         else:
             # Métricas resumen
-            n_activas   = len(multi_df[multi_df["Estado"].str.contains("Activa",   na=False)])
+            # "reentrada" = ventanas ⚠️ Tratar — reentrada: Xd (tratadas pero bloqueadas)
+            n_activas   = len(multi_df[multi_df["Estado"].str.contains("Activa|reentrada", na=False)])
             n_espera    = len(multi_df[multi_df["Estado"].str.contains("espera",   na=False)])
             n_cerradas  = len(multi_df[multi_df["Estado"].str.contains("Cerrada",  na=False)])
             n_tratadas  = len(multi_df[multi_df["Estado"].str.contains("Tratado",  na=False)])
@@ -12436,7 +12437,7 @@ def carpocapsa_tab(history):
             # Obtener todos los estados reales del DataFrame para el filtro dinámico
             _estados_disponibles = sorted(multi_df["Estado"].dropna().unique().tolist())
             _default_estados = [e for e in _estados_disponibles
-                                if "Activa" in e or "espera" in e or "Tratado" in e]
+                                if "Activa" in e or "espera" in e or "Tratado" in e or "reentrada" in e]
 
             # Filtro de estado
             estado_filter = st.multiselect(
