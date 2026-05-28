@@ -14535,6 +14535,190 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     return fig
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SEGUIMIENTO DE TODOS LOS FITOSANITARIOS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Catálogo de productos conocidos con su tipo y plazo de seguridad.
+# Se usa para clasificar actuaciones de Agroptima y calcular días de franquicia.
+# Fuente: Registro de productos fitosanitarios MAPA, fichas técnicas fabricante.
+PHYTOSANITARY_CATALOG = [
+    # ── Fungicidas (catálogo propio 2026) ─────────────────────────────────────
+    {"Producto": "FOLICUR 25 WG",    "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Moteado, Oídio"},
+    {"Producto": "SIGNUM",           "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Monilia, Moteado"},
+    {"Producto": "FLINT 50 WG",      "Tipo": "Fungicida",     "Plazo días": 14, "Objetivo": "Moteado, Oídio"},
+    {"Producto": "LUNA EXPERIENCE",  "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Monilia, Moteado, Oídio"},
+    # ── Insecticidas biológicos ────────────────────────────────────────────────
+    {"Producto": "BACTUR",           "Tipo": "Insecticida biológico", "Plazo días": 0,  "Objetivo": "Carpocapsa, Tortrix, Orugas"},
+    {"Producto": "XENTARI",          "Tipo": "Insecticida biológico", "Plazo días": 0,  "Objetivo": "Carpocapsa, Orugas"},
+    {"Producto": "DIPEL",            "Tipo": "Insecticida biológico", "Plazo días": 0,  "Objetivo": "Carpocapsa, Orugas"},
+    {"Producto": "SPINTOR",          "Tipo": "Insecticida biológico", "Plazo días": 7,  "Objetivo": "Carpocapsa, Trips"},
+    # ── Insecticidas químicos ──────────────────────────────────────────────────
+    {"Producto": "KARATE ZEON",      "Tipo": "Insecticida",   "Plazo días": 7,  "Objetivo": "Pulgón, Trips, Orugas"},
+    {"Producto": "MOSPILAN",         "Tipo": "Insecticida",   "Plazo días": 14, "Objetivo": "Pulgón, Psila"},
+    {"Producto": "CONFIDOR",         "Tipo": "Insecticida",   "Plazo días": 21, "Objetivo": "Pulgón, Psila"},
+    {"Producto": "MOVENTO",          "Tipo": "Insecticida",   "Plazo días": 14, "Objetivo": "Pulgón, Psila, Ácaros"},
+    # ── Acaricidas ────────────────────────────────────────────────────────────
+    {"Producto": "ARACAN",           "Tipo": "Acaricida",     "Plazo días": 14, "Objetivo": "Ácaros"},
+    {"Producto": "VERTIMEC",         "Tipo": "Acaricida",     "Plazo días": 14, "Objetivo": "Ácaros"},
+    {"Producto": "ENVIDOR",          "Tipo": "Acaricida",     "Plazo días": 14, "Objetivo": "Ácaros"},
+    {"Producto": "OBERON",           "Tipo": "Acaricida",     "Plazo días": 28, "Objetivo": "Ácaros"},
+    # ── Confusión sexual ──────────────────────────────────────────────────────
+    {"Producto": "ISOMATE",          "Tipo": "Confusión sexual", "Plazo días": 0, "Objetivo": "Carpocapsa"},
+    {"Producto": "CHECKMATE",        "Tipo": "Confusión sexual", "Plazo días": 0, "Objetivo": "Carpocapsa"},
+    {"Producto": "DISRUPT",          "Tipo": "Confusión sexual", "Plazo días": 0, "Objetivo": "Carpocapsa"},
+]
+
+# Mapa rápido: primera palabra en mayúsculas → entrada del catálogo
+_PHYTO_CATALOG_INDEX = {}
+for _entry in PHYTOSANITARY_CATALOG:
+    _first = _entry["Producto"].split()[0].upper()
+    if _first not in _PHYTO_CATALOG_INDEX:
+        _PHYTO_CATALOG_INDEX[_first] = _entry
+    # También indexar por nombre completo en mayúsculas
+    _PHYTO_CATALOG_INDEX[_entry["Producto"].upper()] = _entry
+
+
+def _classify_phyto_product(producto_str):
+    """
+    Clasifica un producto de Agroptima según el catálogo fitosanitario completo.
+    Devuelve dict con Tipo, Plazo días, Objetivo (o valores por defecto si no reconocido).
+    Diferente de classify_product() (que clasifica para Carpocapsa/fungicida/abono).
+    """
+    prod_up = str(producto_str).strip().upper()
+    # Búsqueda exacta primero
+    if prod_up in _PHYTO_CATALOG_INDEX:
+        return _PHYTO_CATALOG_INDEX[prod_up]
+    # Búsqueda por primera palabra
+    first_word = prod_up.split()[0] if prod_up else ""
+    if first_word in _PHYTO_CATALOG_INDEX:
+        return _PHYTO_CATALOG_INDEX[first_word]
+    # Búsqueda parcial: ¿alguna clave del índice está contenida en el nombre del producto?
+    for key, entry in _PHYTO_CATALOG_INDEX.items():
+        if len(key) >= 4 and key in prod_up:
+            return entry
+    # No reconocido → clasificar por keywords genéricas
+    if is_fungicide_activity(producto_str):
+        return {"Producto": producto_str, "Tipo": "Fungicida",    "Plazo días": 7,  "Objetivo": "Ver etiqueta"}
+    _prod_low = prod_up.lower()
+    for kw in _NON_FUNGICIDE_KEYWORDS:
+        if kw in _prod_low:
+            if kw in ("bactur", "bacillus", "thuringiensis", "spinosad", "dipel", "xentari"):
+                return {"Producto": producto_str, "Tipo": "Insecticida biológico", "Plazo días": 0, "Objetivo": "Lepidópteros"}
+            if kw in ("aracan", "abamectin", "abamectina", "envidor", "oberon"):
+                return {"Producto": producto_str, "Tipo": "Acaricida", "Plazo días": 14, "Objetivo": "Ácaros"}
+            if kw in ("karate", "lambda", "cipermetrin", "deltametrin", "imidacloprid", "acetamiprid"):
+                return {"Producto": producto_str, "Tipo": "Insecticida", "Plazo días": 14, "Objetivo": "Ver etiqueta"}
+    return {"Producto": producto_str, "Tipo": "No clasificado", "Plazo días": None, "Objetivo": "—"}
+
+
+def build_phytosanitary_tracking(activities_df, year=None):
+    """
+    Genera un DataFrame con el seguimiento de TODOS los productos fitosanitarios
+    aplicados en la campaña, por campo.
+
+    Columnas: Campo | Producto | Tipo | Objetivo | Último uso | Días desde uso |
+              Pases campaña | Plazo seguridad días | Estado plazo
+
+    Excluye abonos, fertirrigación y herbicidas (no son fitosanitarios de cultivo).
+    """
+    if year is None:
+        year = pd.Timestamp.now().year
+    today = pd.Timestamp.now().normalize()
+
+    if activities_df.empty or "Campos reconocidos" not in activities_df.columns:
+        return pd.DataFrame()
+
+    _acts = activities_df.copy()
+    _acts["Fecha_dt"] = pd.to_datetime(_acts["Fecha"], errors="coerce")
+    _acts = _acts.dropna(subset=["Fecha_dt"])
+    _acts = _acts[_acts["Fecha_dt"].dt.year == int(year)]
+
+    if _acts.empty:
+        return pd.DataFrame()
+
+    # Excluir abonos, herbicidas y no-fitosanitarios
+    _EXCLUDE_KW = {
+        "abono", "fertilizante", "fertirrigacion", "npk", "nitrogeno",
+        "fosforo", "potasio", "aminoacido", "alga", "humico", "fulvico",
+        "herbicida", "glifosato", "roundup", "simazina",
+        "aceite mineral", "aceite parafina",
+    }
+
+    def _is_excluded(prod):
+        t = str(prod).lower()
+        return any(kw in t for kw in _EXCLUDE_KW)
+
+    _acts = _acts[~_acts["Producto"].apply(_is_excluded)]
+    if _acts.empty:
+        return pd.DataFrame()
+
+    # Expandir: una fila por campo × producto × fecha
+    records = []
+    for _, row in _acts.iterrows():
+        campos_str = str(row.get("Campos reconocidos", "") or row.get("Campos", ""))
+        campos = [c.strip() for c in campos_str.split(",") if c.strip()]
+        prod_raw = str(row.get("Producto", "")).strip()
+        if not prod_raw or prod_raw.lower() == "nan":
+            continue
+        fecha_dt = row["Fecha_dt"].normalize()
+        info = _classify_phyto_product(prod_raw)
+        for campo in campos:
+            records.append({
+                "Campo":       campo,
+                "Producto":    prod_raw,
+                "Tipo":        info["Tipo"],
+                "Objetivo":    info["Objetivo"],
+                "Plazo días":  info["Plazo días"],
+                "Fecha_dt":    fecha_dt,
+            })
+
+    if not records:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(records)
+    df["Fecha_dt"] = pd.to_datetime(df["Fecha_dt"])
+
+    # Agrupar: por campo × producto → último uso + conteo de pases
+    rows_out = []
+    for (campo, prod), grp in df.groupby(["Campo", "Producto"], sort=False):
+        info       = _classify_phyto_product(prod)
+        last_fecha = grp["Fecha_dt"].max()
+        dias       = int((today - last_fecha).days)
+        n_pases    = grp["Fecha_dt"].dt.date.nunique()  # pasadas únicas por fecha
+        plazo      = info["Plazo días"]
+
+        if plazo is None:
+            estado = "—"
+        elif plazo == 0:
+            estado = "✅ Sin plazo"
+        elif dias <= plazo:
+            restantes = plazo - dias
+            estado = f"⚠️ En plazo ({restantes}d restantes)" if restantes <= 7 else f"🔒 En plazo ({restantes}d restantes)"
+        else:
+            estado = "✅ Plazo superado"
+
+        rows_out.append({
+            "Campo":           campo,
+            "Producto":        prod,
+            "Tipo":            info["Tipo"],
+            "Objetivo":        info["Objetivo"],
+            "Último uso":      last_fecha.strftime("%d/%m/%Y"),
+            "Días desde uso":  dias,
+            "Pases campaña":   n_pases,
+            "Plazo seg. días": plazo if plazo is not None else "—",
+            "Estado plazo":    estado,
+        })
+
+    if not rows_out:
+        return pd.DataFrame()
+
+    result = (pd.DataFrame(rows_out)
+              .sort_values(["Campo", "Tipo", "Días desde uso"])
+              .reset_index(drop=True))
+    return result
+
+
 def render_decisiones_panel():
     """Panel de decisiones agronómicas con 4 gráficas estilo RIMpro."""
     try:
@@ -14812,6 +14996,149 @@ def render_decisiones_panel():
                 file_name=f"decision_tratamiento_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
                 key="dl_decision_panel",
+            )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SEGUIMIENTO COMPLETO DE FITOSANITARIOS POR CAMPO
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("### 📦 Seguimiento de fitosanitarios por campo")
+    st.caption(
+        "Todos los productos fitosanitarios aplicados esta campaña, agrupados por campo. "
+        "Incluye fungicidas, insecticidas, acaricidas y confusión sexual. "
+        "Permite controlar los pases por producto y verificar los plazos de seguridad antes de la recolección."
+    )
+
+    _phyto_df = build_phytosanitary_tracking(activities_df)
+
+    if _phyto_df.empty:
+        st.info("Carga las actuaciones de Agroptima para ver el seguimiento de fitosanitarios.")
+    else:
+        # ── Colores por tipo de producto ──────────────────────────────────────
+        _TYPE_COLORS = {
+            "Fungicida":             "#e8f5e9",  # verde claro
+            "Insecticida biológico": "#e3f2fd",  # azul claro
+            "Insecticida":           "#fff3e0",  # naranja claro
+            "Acaricida":             "#fce4ec",  # rosa claro
+            "Confusión sexual":      "#f3e5f5",  # lila claro
+            "No clasificado":        "#f5f5f5",  # gris claro
+        }
+        _TYPE_BADGES = {
+            "Fungicida":             "#2e7d32",
+            "Insecticida biológico": "#1565c0",
+            "Insecticida":           "#e65100",
+            "Acaricida":             "#880e4f",
+            "Confusión sexual":      "#6a1b9a",
+            "No clasificado":        "#616161",
+        }
+
+        # ── Tabla HTML con scroll y columna Campo fija ─────────────────────────
+        _PT_TH_BASE   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                         "font-weight:600;font-size:13px;white-space:nowrap;"
+                         "position:sticky;top:0;z-index:2;")
+        _PT_TH_CORNER = _PT_TH_BASE + "left:0;z-index:4;"
+        _PT_TD_STICKY = ("position:sticky;left:0;z-index:1;"
+                         "padding:7px 12px;border-bottom:1px solid #ddd;"
+                         "font-weight:600;font-size:13px;white-space:nowrap;"
+                         "border-right:2px solid #1a2e1e;")
+
+        _pt_display_cols = [
+            "Campo", "Producto", "Tipo", "Objetivo",
+            "Último uso", "Días desde uso", "Pases campaña",
+            "Plazo seg. días", "Estado plazo",
+        ]
+
+        # Cabecera
+        _pt_hdr = ""
+        for _i, _c in enumerate(_pt_display_cols):
+            _s = _PT_TH_CORNER if _i == 0 else _PT_TH_BASE
+            _pt_hdr += f'<th style="{_s}">{_c}</th>'
+
+        # Filas
+        _pt_tbody = ""
+        _prev_campo = None
+        for _, _r in _phyto_df.iterrows():
+            _campo  = _r["Campo"]
+            _tipo   = _r["Tipo"]
+            _estado = _r["Estado plazo"]
+            _row_bg = _TYPE_COLORS.get(_tipo, "#f5f5f5")
+
+            # Badge de tipo con color
+            _badge_color = _TYPE_BADGES.get(_tipo, "#616161")
+            _tipo_badge  = (
+                f'<span style="background:{_badge_color};color:white;'
+                f'border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;">'
+                f'{_tipo}</span>'
+            )
+
+            # Estado plazo con color semáforo
+            if "⚠️" in str(_estado):
+                _estado_bg = "#fff3e0"; _estado_color = "#e65100"
+            elif "🔒" in str(_estado):
+                _estado_bg = "#e8f5e9"; _estado_color = "#2e7d32"
+            elif "✅" in str(_estado):
+                _estado_bg = "#f5f5f5"; _estado_color = "#616161"
+            else:
+                _estado_bg = "#f5f5f5"; _estado_color = "#616161"
+            _estado_styled = (
+                f'<span style="background:{_estado_bg};color:{_estado_color};'
+                f'border-radius:4px;padding:2px 7px;font-size:12px;">{_estado}</span>'
+            )
+
+            # Separador visual entre campos
+            _campo_display = _campo if _campo != _prev_campo else ""
+            _prev_campo = _campo
+
+            _pt_cells = ""
+            for _i, _c in enumerate(_pt_display_cols):
+                if _i == 0:
+                    _style = _PT_TD_STICKY + f"background:{_row_bg};"
+                    _val   = _campo_display
+                elif _c == "Tipo":
+                    _style = f"background:{_row_bg};padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;"
+                    _val   = _tipo_badge
+                elif _c == "Estado plazo":
+                    _style = f"background:{_row_bg};padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;"
+                    _val   = _estado_styled
+                else:
+                    _style = f"background:{_row_bg};padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;font-size:13px;"
+                    _val   = _r.get(_c, "—")
+                _pt_cells += f'<td style="{_style}">{_val}</td>'
+            _pt_tbody += f"<tr>{_pt_cells}</tr>"
+
+        st.markdown(
+            f'<div style="overflow-x:auto;overflow-y:auto;max-height:450px;'
+            f'-webkit-overflow-scrolling:touch;'
+            f'border-radius:8px;border:1px solid #ccc;margin-bottom:1rem;">'
+            f'<table style="border-collapse:collapse;min-width:100%;">'
+            f'<thead><tr>{_pt_hdr}</tr></thead>'
+            f'<tbody>{_pt_tbody}</tbody>'
+            f'</table></div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── Leyenda de colores ─────────────────────────────────────────────────
+        _leg_parts = []
+        for _t, _bg in _TYPE_COLORS.items():
+            _bc = _TYPE_BADGES.get(_t, "#616161")
+            _leg_parts.append(
+                f'<span style="display:inline-flex;align-items:center;margin-right:14px;">'
+                f'<span style="width:12px;height:12px;background:{_bg};border:1px solid {_bc};'
+                f'border-radius:2px;display:inline-block;margin-right:5px;"></span>'
+                f'<span style="font-size:12px;color:#555;">{_t}</span></span>'
+            )
+        st.markdown(
+            f'<div style="margin-top:4px;margin-bottom:0.5rem;">{"".join(_leg_parts)}</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── Botón de descarga ──────────────────────────────────────────────────
+        with st.expander("⬇️ Descargar seguimiento fitosanitarios", expanded=False):
+            st.download_button(
+                "⬇️ Descargar (CSV)",
+                data=_phyto_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"fitosanitarios_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="dl_phyto_tracking",
             )
 
     st.markdown("---")
