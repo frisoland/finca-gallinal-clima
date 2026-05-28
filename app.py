@@ -2677,13 +2677,18 @@ def parse_agroptima_activities_excel(uploaded_file):
     diagnostics["Registros leídos"] = int(len(raw))
 
     # Agroptima exporta actividades multi-producto con filas de continuación:
-    # la primera fila tiene Fecha+Campos+ID, las siguientes solo tienen el producto
+    # la primera fila tiene Fecha+Campos etc., las siguientes solo tienen el producto
     # con None/NaN en esos campos. Forward-fill propaga el contexto de actividad
     # a todas las filas del mismo tratamiento.
+    # IMPORTANTE: NO ffill la columna "ID" — cada producto continúa en su propia
+    # fila de continuación sin ID (None). Si se ffill el ID, ambas filas (FLINT y
+    # BACTUR) tendrían el mismo "ID Agroptima" y la deduplicación en
+    # merge_activities_history descartaría una de ellas (normalmente la primera).
     _ACTIVITY_FILL_COLS = [
         "Fecha", "Campos", "ha totales", "Trabajos",
         "Cultivos / variedades", "Personal", "Cuadrillas",
-        "Personal Externo", "Máquinas", "Comentarios", "ID",
+        "Personal Externo", "Máquinas", "Comentarios",
+        # "ID" excluido intencionalmente — ver nota arriba
     ]
     for _col in _ACTIVITY_FILL_COLS:
         if _col in raw.columns:
