@@ -11873,14 +11873,23 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 info_extra = "—"
 
             # ── Restricción de reentrada Bactur ───────────────────────────────
-            # Si la ventana está activa pero el último tratamiento fue hace
-            # menos de _BACTUR_REENTRY_DAYS, NO se puede volver a tratar todavía.
+            # Si hay reentrada activa (último trat. hace < _BACTUR_REENTRY_DAYS):
+            #   · ventana activa sin tratar  → bloquear, mostrar espera
+            #   · ventana tratada aún abierta → avisar que habría que retreatar
+            #     pero no se puede todavía (Bactur solo dura ~7 días)
             _reentry_wait = 0
-            if estado_orden == 0 and _reentry_days_left > 0:
+            if _reentry_days_left > 0:
                 _reentry_wait = _reentry_days_left
-                estado    = f"⏳ Activa — esperar {_reentry_days_left}d"
-                info_extra = (f"Reentrada Bactur: esperar {_reentry_days_left}d "
-                              f"(último trat. {_last_treat_str})")
+                if estado_orden == 0:
+                    # Ventana activa sin tratar + reentrada activa
+                    estado     = f"⏳ Activa — esperar {_reentry_days_left}d"
+                    info_extra = (f"Reentrada Bactur: esperar {_reentry_days_left}d "
+                                  f"(último trat. {_last_treat_str})")
+                elif estado_orden == 3 and "ventana cubierta" in estado:
+                    # Ventana tratada pero aún abierta: habría que volver a tratar
+                    estado     = f"⚠️ Tratar — reentrada: {_reentry_days_left}d"
+                    info_extra = (f"Habría que tratar · esperar {_reentry_days_left}d "
+                                  f"(trat. {_last_treat_str})")
 
             # DD display: congelar en el momento del tratamiento si ya se trató
             dd_display = trat_dd if (trat_fecha and trat_dd != "") else round(dd_current, 1)
@@ -14943,9 +14952,10 @@ def carpocapsa_sync_annotation(campo_name, windows_df):
     if matched.empty:
         return "", "none"
 
-    activas    = matched[matched["Estado"].str.contains("Activa",  na=False)]
-    tratadas   = matched[matched["Estado"].str.contains("Tratado", na=False)]
-    en_espera  = matched[matched["Estado"].str.contains("espera",  na=False)]
+    activas    = matched[matched["Estado"].str.contains("Activa",    na=False)]
+    # "reentrada" captura las ventanas ⚠️ Tratar — reentrada: Xd
+    tratadas   = matched[matched["Estado"].str.contains("Tratado|reentrada", na=False)]
+    en_espera  = matched[matched["Estado"].str.contains("espera",    na=False)]
 
     # ── 1. Ventana activa sin tratar ──────────────────────────────────────────
     if not activas.empty:
@@ -14975,8 +14985,12 @@ def carpocapsa_sync_annotation(campo_name, windows_df):
                 return f"⏳ Carpocapsa en {min_days}d", "none"
         return "⏳ En espera carpocapsa", "none"
 
-    # ── 3. Ya tratado ─────────────────────────────────────────────────────────
+    # ── 3. Ya tratado (o tratado pero en espera de reentrada) ────────────────
     if not tratadas.empty:
+        if "_reentry_wait" in tratadas.columns:
+            max_wait = int(tratadas["_reentry_wait"].fillna(0).max())
+            if max_wait > 0:
+                return f"⚠️ Tratar hoy — esperar {max_wait}d (reentrada)", "soon"
         return "✅ Carpocapsa cubierta", "done"
 
     return "", "none"
