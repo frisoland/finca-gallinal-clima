@@ -14750,6 +14750,77 @@ def build_phytosanitary_tracking(activities_df, year=None):
     return result
 
 
+def carpocapsa_sync_annotation(campo_name, windows_df):
+    """
+    Dado un campo del panel de fungicidas, busca si hay una ventana de carpocapsa
+    activa, próxima o ya tratada para ese campo.
+
+    Devuelve (texto_anotacion, nivel_urgencia):
+      nivel_urgencia: "now" | "soon" | "later" | "done" | "none"
+
+    Lógica de prioridad:
+      1. Ventana activa sin tratamiento → combinar HOY (fungicida + carpocapsa)
+      2. Ventana en ≤3 días             → esperar y combinar
+      3. Ventana en 4-7 días            → valorar esperar
+      4. Ventana ya tratada             → sin urgencia, ya cubierta
+      5. Sin ventana relevante          → sin anotación
+    """
+    if windows_df is None or windows_df.empty:
+        return "", "none"
+
+    campo_low = str(campo_name).strip().lower()
+
+    def _carpo_campo_match(zona_str):
+        z     = str(zona_str).strip().lower()
+        z_base = z.split(" - ")[0].strip()
+        c_base = campo_low.split(" - ")[0].strip()
+        if z == campo_low or z_base == c_base:
+            return True
+        # Substring bidireccional (mínimo 4 caracteres para evitar falsos)
+        if len(c_base) >= 4 and c_base in z:
+            return True
+        if len(z_base) >= 4 and z_base in campo_low:
+            return True
+        return False
+
+    matched = windows_df[windows_df["Campo/Zona"].apply(_carpo_campo_match)]
+    if matched.empty:
+        return "", "none"
+
+    activas    = matched[matched["Estado"].str.contains("Activa",  na=False)]
+    tratadas   = matched[matched["Estado"].str.contains("Tratado", na=False)]
+    en_espera  = matched[matched["Estado"].str.contains("espera",  na=False)]
+
+    # ── 1. Ventana activa sin tratar ──────────────────────────────────────────
+    if not activas.empty:
+        return "🐛 Combinar HOY — ventana activa", "now"
+
+    # ── 2. En espera — extraer días más próximos ──────────────────────────────
+    if not en_espera.empty:
+        min_days = None
+        for _, _r in en_espera.iterrows():
+            _info = str(_r.get("Info", ""))
+            _m = re.match(r"(\d+)d hasta ventana", _info)
+            if _m:
+                _d = int(_m.group(1))
+                if min_days is None or _d < min_days:
+                    min_days = _d
+        if min_days is not None:
+            if min_days <= 3:
+                return f"🐛 Ventana en ~{min_days}d — esperar y combinar", "soon"
+            elif min_days <= 7:
+                return f"🐛 Ventana en ~{min_days}d — valorar esperar", "later"
+            else:
+                return f"⏳ Carpocapsa en {min_days}d", "none"
+        return "⏳ En espera carpocapsa", "none"
+
+    # ── 3. Ya tratado ─────────────────────────────────────────────────────────
+    if not tratadas.empty:
+        return "✅ Carpocapsa cubierta", "done"
+
+    return "", "none"
+
+
 def render_decisiones_panel():
     """Panel de decisiones agronómicas con 4 gráficas estilo RIMpro."""
     try:
@@ -14884,12 +14955,30 @@ def render_decisiones_panel():
         _s3.metric("🟡 Revisar",             _n_yellow)
         _s4.metric("🟢 OK",                  _n_green)
 
+        # ── Ventanas de carpocapsa para sincronizar tratamientos ──────────────
+        # Calcula una única vez las ventanas activas/en espera de carpocapsa
+        # para todos los campos, y luego anota cada fila del panel de fungicidas.
+        _carpo_sync_map = {}   # campo → (texto, nivel)
+        _carpo_windows  = pd.DataFrame()
+        if not traps_df.empty and not history_df.empty:
+            try:
+                _carpo_windows = carpocapsa_build_multi_windows(
+                    traps_df,
+                    history_df,
+                    activities_df=activities_df,
+                    campaign_year=pd.Timestamp.now().year,
+                )
+            except Exception:
+                _carpo_windows = pd.DataFrame()
+
         # ── Calcular recomendaciones por campo usando ranking científico ────────
         _dec_display = _dec_df.copy()
         _rec_primary  = []
         _rec_alt      = []
         _rec_motivo   = []
+        _rec_combo    = []   # anotación de sync carpocapsa
         for _, _r in _dec_display.iterrows():
+            _campo = str(_r.get("Campo", ""))
             _dom  = _r.get("_dominant_list", [])
             _lp   = str(_r.get("_last_product", ""))
             _ac   = _r.get("_app_counts", {})
@@ -14901,13 +14990,21 @@ def render_decisiones_panel():
             _rec_primary.append(_p)
             _rec_alt.append(_a)
             _rec_motivo.append(_m)
+            # Sync carpocapsa
+            _ann, _lvl = carpocapsa_sync_annotation(_campo, _carpo_windows)
+            _carpo_sync_map[_campo] = (_ann, _lvl)
+            _rec_combo.append((_ann, _lvl))
+
         _dec_display["1ª elección"]  = _rec_primary
         _dec_display["Alternativa"]  = _rec_alt
         _dec_display["Por qué"]      = _rec_motivo
+        _dec_display["_combo_ann"]   = [t for t, _ in _rec_combo]
+        _dec_display["_combo_lvl"]   = [l for _, l in _rec_combo]
 
         # ── Tabla HTML: scroll vertical + horizontal, columna Campo fija ─────
         _display_cols = [
-            "Campo", "🎯 Acción", "Último fungicida", "Días sin trat.",
+            "Campo", "🎯 Acción", "🐛 Combo cuba",
+            "Último fungicida", "Días sin trat.",
             "Lluvia desde mm", "Eventos infección", "Previsión Mills",
             "Pases campaña", "Riesgo principal",
             "1ª elección", "Alternativa", "Por qué",
@@ -14930,6 +15027,15 @@ def render_decisiones_panel():
             _style = _TH_CORNER if _i == 0 else _TH_BASE
             _hdr_cells += f'<th style="{_style}">{_c}</th>'
 
+        # Colores para la columna de sincronización carpocapsa
+        _COMBO_STYLES = {
+            "now":  {"bg": "#ff8f00", "color": "white",   "fw": "700"},   # naranja oscuro — combinar HOY
+            "soon": {"bg": "#ffe082", "color": "#4a2c00", "fw": "700"},   # amarillo — próxima ventana
+            "later":{"bg": "#fff9c4", "color": "#555",    "fw": "400"},   # amarillo claro
+            "done": {"bg": "#c8e6c9", "color": "#1b5e20", "fw": "400"},   # verde claro — cubierta
+            "none": {"bg": "transparent", "color": "#aaa","fw": "400"},
+        }
+
         # Filas — la columna "📋 Motivo" muestra solo el tipo en la tabla compacta
         # (el texto completo está en el expander de análisis detallado de abajo)
         _tbody = ""
@@ -14937,22 +15043,40 @@ def render_decisiones_panel():
             _bg   = _r["_bg"]
             _cells = ""
             for _i, _c in enumerate(_display_cols):
-                if _c == "📋 Motivo":
+                if _c == "🐛 Combo cuba":
+                    _ann = str(_r.get("_combo_ann", ""))
+                    _lvl = str(_r.get("_combo_lvl", "none"))
+                    _cs  = _COMBO_STYLES.get(_lvl, _COMBO_STYLES["none"])
+                    if _ann:
+                        _v = (
+                            f'<span style="background:{_cs["bg"]};color:{_cs["color"]};'
+                            f'font-weight:{_cs["fw"]};border-radius:4px;'
+                            f'padding:2px 7px;font-size:12px;white-space:nowrap;">'
+                            f'{_ann}</span>'
+                        )
+                    else:
+                        _v = '<span style="color:#ccc;font-size:12px;">—</span>'
+                    _style = (f"background:{_bg};padding:6px 10px;"
+                              f"border-bottom:1px solid #ddd;white-space:nowrap;")
+                elif _c == "📋 Motivo":
                     # Extraer solo el tipo entre corchetes: "[🛡️ Preventivo urgente]"
                     _full = str(_r.get(_c, ""))
                     import re as _re
                     _match = _re.match(r"\[([^\]]+)\]", _full)
                     _v = _match.group(1) if _match else _full[:40]
-                else:
-                    _v = _r.get(_c, "")
-                if _i == 0:
-                    _style = _TD_STICKY + f"background:{_bg};"
-                else:
-                    _wrap  = "normal" if _c in ("Por qué", "Último fungicida", "Pases campaña") else "nowrap"
-                    _mw    = "min-width:160px;" if _c == "Por qué" else ""
                     _style = (f"background:{_bg};padding:7px 12px;"
                               f"border-bottom:1px solid #ddd;"
-                              f"white-space:{_wrap};font-size:13px;{_mw}")
+                              f"white-space:nowrap;font-size:13px;")
+                else:
+                    _v = _r.get(_c, "")
+                    if _i == 0:
+                        _style = _TD_STICKY + f"background:{_bg};"
+                    else:
+                        _wrap  = "normal" if _c in ("Por qué", "Último fungicida", "Pases campaña") else "nowrap"
+                        _mw    = "min-width:160px;" if _c == "Por qué" else ""
+                        _style = (f"background:{_bg};padding:7px 12px;"
+                                  f"border-bottom:1px solid #ddd;"
+                                  f"white-space:{_wrap};font-size:13px;{_mw}")
                 _cells += f'<td style="{_style}">{_v}</td>'
             _tbody += f"<tr>{_cells}</tr>"
 
@@ -14995,11 +15119,23 @@ def render_decisiones_panel():
                 # Dividir razones por " | "
                 _razones = [r.strip() for r in _razones_str.split(" | ") if r.strip()]
 
+                _combo_ann = str(_r.get("_combo_ann", ""))
+                _combo_lvl = str(_r.get("_combo_lvl", "none"))
+                _cs_det = _COMBO_STYLES.get(_combo_lvl, _COMBO_STYLES["none"])
+                _combo_html = ""
+                if _combo_ann:
+                    _combo_html = (
+                        f'<br><span style="background:{_cs_det["bg"]};color:{_cs_det["color"]};'
+                        f'font-weight:{_cs_det["fw"]};border-radius:4px;'
+                        f'padding:2px 8px;font-size:12px;">{_combo_ann}</span>'
+                    )
+
                 st.markdown(
                     f'<div style="background:{_bg_hex};border-radius:8px;'
                     f'padding:12px 16px;margin-bottom:10px;border-left:4px solid #1a2e1e;">'
                     f'<b style="font-size:15px;">{_campo}</b> &nbsp;·&nbsp; '
-                    f'<span style="font-size:13px;">{_accion}</span><br>'
+                    f'<span style="font-size:13px;">{_accion}</span>'
+                    f'{_combo_html}<br>'
                     f'<span style="font-size:12px;color:#555;">1ª elección: <b>{_prod1}</b> · Alternativa: <b>{_prod2}</b></span>'
                     f'</div>',
                     unsafe_allow_html=True,
@@ -15012,15 +15148,20 @@ def render_decisiones_panel():
             "🟠 **Tratar pronto** — exposición acumulada + sin cobertura. "
             "🟡 **Planificar** — sin cobertura activa pero sin urgencia inmediata. "
             "🟢 **OK** — protegido y sin previsión de infección. "
-            "· *Pases campaña*: aplicaciones registradas / máximo por registro MAPA."
+            "· *Pases campaña*: aplicaciones registradas / máximo por registro MAPA. "
+            "· **🐛 Combo cuba**: oportunidad de combinar fungicida + insecticida carpocapsa en la misma cuba — "
+            "🟠 ventana activa (tratar hoy), 🟡 ventana próxima (valorar esperar), ✅ ya cubierta."
         )
 
         with st.expander("Descargar tabla de decisión", expanded=False):
-            _dl_export_cols = ["Campo", "🎯 Acción", "Último fungicida", "Días sin trat.",
-                               "Lluvia desde mm", "Eventos infección", "Previsión Mills",
-                               "Pases campaña", "Riesgo principal",
+            _dl_export_cols = ["Campo", "🎯 Acción", "🐛 Combo cuba", "Último fungicida",
+                               "Días sin trat.", "Lluvia desde mm", "Eventos infección",
+                               "Previsión Mills", "Pases campaña", "Riesgo principal",
                                "1ª elección", "Alternativa", "Por qué"]
-            _dec_dl = _dec_display[[c for c in _dl_export_cols if c in _dec_display.columns]]
+            # Para el CSV la columna combo usa texto plano (sin HTML)
+            _dec_dl = _dec_display.copy()
+            _dec_dl["🐛 Combo cuba"] = _dec_dl["_combo_ann"]
+            _dec_dl = _dec_dl[[c for c in _dl_export_cols if c in _dec_dl.columns]]
             st.download_button(
                 "⬇️ Descargar panel de decisión (CSV)",
                 data=_dec_dl.to_csv(index=False).encode("utf-8-sig"),
