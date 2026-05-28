@@ -15002,13 +15002,15 @@ def render_decisiones_panel():
         _dec_display["_combo_lvl"]   = [l for _, l in _rec_combo]
 
         # ── Tabla HTML: scroll vertical + horizontal, columna Campo fija ─────
+        # Orden: columnas de acción inmediata primero (visible sin scroll),
+        # recomendaciones en bloque central, combo cuba junto a la elección.
         _display_cols = [
-            "Campo", "🎯 Acción", "🐛 Combo cuba",
+            "Campo", "🎯 Acción",
             "Último fungicida", "Días sin trat.",
             "Lluvia desde mm", "Eventos infección", "Previsión Mills",
             "Pases campaña", "Riesgo principal",
-            "1ª elección", "Alternativa", "Por qué",
-            "📋 Motivo",
+            "1ª elección", "Alternativa", "🐛 Combo cuba",
+            "Por qué", "📋 Motivo",
         ]
 
         # Estilos base
