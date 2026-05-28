@@ -14643,6 +14643,52 @@ def _classify_phyto_product(producto_str):
     return {"Producto": producto_str, "Tipo": "No clasificado", "Plazo días": None, "Objetivo": "—"}
 
 
+def _split_multi_product(prod_str):
+    """
+    Divide una cadena de productos que puede contener varios mezclados en la misma
+    cuba, tal como los exporta Agroptima tras clean_agroptima_bullet_text:
+      "FLINT 50 WG, BACTUR WG"  →  ["FLINT 50 WG", "BACTUR WG"]
+      "LUNA EXPERIENCE"          →  ["LUNA EXPERIENCE"]
+
+    Heurística: el separador es una COMA seguida de espacio donde la parte
+    siguiente empieza por un token reconocido en el catálogo fitosanitario O
+    tiene al menos 3 caracteres en mayúsculas.  Esto evita partir nombres como
+    "BACTUR 2X, WG" mal si alguien escribiera eso, aunque en la práctica
+    Agroptima ya da el nombre comercial limpio.
+    """
+    if not prod_str or str(prod_str).lower() == "nan":
+        return []
+
+    # Primero intentar con punto y coma (separador más inequívoco)
+    parts = [p.strip() for p in str(prod_str).replace(";", ",").split(",") if p.strip()]
+
+    if len(parts) <= 1:
+        return parts
+
+    # Filtrar fragmentos vacíos o que sean claramente continuación del nombre
+    # (menos de 2 caracteres, o solo números/unidades como "25", "WG", "50")
+    _UNIT_TOKENS = {"WG", "WP", "SC", "EC", "SL", "CS", "GR", "DP", "EW",
+                    "25", "50", "75", "80", "100", "2X", "L", "KG", "G"}
+    cleaned = []
+    pending = ""
+    for part in parts:
+        tok = part.strip().upper()
+        if tok in _UNIT_TOKENS or (len(tok) <= 2 and not tok.isalpha()):
+            # Es una unidad o código, pegar al anterior
+            if cleaned:
+                cleaned[-1] = cleaned[-1] + " " + part.strip()
+            elif pending:
+                pending = pending + " " + part.strip()
+        else:
+            if pending:
+                cleaned.append(pending)
+            pending = part.strip()
+    if pending:
+        cleaned.append(pending)
+
+    return cleaned if cleaned else [prod_str]
+
+
 def build_phytosanitary_tracking(activities_df, year=None):
     """
     Genera un DataFrame con el seguimiento de TODOS los productos fitosanitarios
@@ -14684,7 +14730,11 @@ def build_phytosanitary_tracking(activities_df, year=None):
     if _acts.empty:
         return pd.DataFrame()
 
-    # Expandir: una fila por campo × producto × fecha
+    # Expandir: una fila por campo × producto individual × fecha
+    # IMPORTANTE: Agroptima puede exportar varios productos en una misma celda
+    # separados por coma (p.ej. "FLINT 50 WG, BACTUR WG" cuando se mezclan en
+    # la misma cuba). Hay que desglosarlos para que cada producto se contabilice
+    # por separado.
     records = []
     for _, row in _acts.iterrows():
         campos_str = str(row.get("Campos reconocidos", "") or row.get("Campos", ""))
@@ -14693,16 +14743,23 @@ def build_phytosanitary_tracking(activities_df, year=None):
         if not prod_raw or prod_raw.lower() == "nan":
             continue
         fecha_dt = row["Fecha_dt"].normalize()
-        info = _classify_phyto_product(prod_raw)
-        for campo in campos:
-            records.append({
-                "Campo":       campo,
-                "Producto":    prod_raw,
-                "Tipo":        info["Tipo"],
-                "Objetivo":    info["Objetivo"],
-                "Plazo días":  info["Plazo días"],
-                "Fecha_dt":    fecha_dt,
-            })
+
+        # Separar productos individuales (pueden venir como "PROD A, PROD B")
+        # Usamos heurística: si una parte coincide con catálogo o tiene ≥4 chars
+        # la tratamos como producto separado; si no, puede ser continuación del nombre.
+        productos_individuales = _split_multi_product(prod_raw)
+
+        for prod_individual in productos_individuales:
+            info = _classify_phyto_product(prod_individual)
+            for campo in campos:
+                records.append({
+                    "Campo":       campo,
+                    "Producto":    prod_individual,
+                    "Tipo":        info["Tipo"],
+                    "Objetivo":    info["Objetivo"],
+                    "Plazo días":  info["Plazo días"],
+                    "Fecha_dt":    fecha_dt,
+                })
 
     if not records:
         return pd.DataFrame()
