@@ -11720,10 +11720,24 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     # ── Helpers de matching (definidos UNA vez, fuera del loop) ───────────────
     def _campo_match_carpo(campos_str, target):
         campos_list = [c.strip().lower() for c in str(campos_str).split(",")]
-        target_low = target.strip().lower()
+        target_low  = target.strip().lower()
         if target_low in campos_list:
             return True
-        return any(target_low in c or c in target_low for c in campos_list if len(c) >= 3)
+
+        def _substr_whole(needle, haystack):
+            """Subcadena completa: el siguiente carácter no puede ser alnum ni guión."""
+            idx = haystack.find(needle)
+            if idx == -1:
+                return False
+            end = idx + len(needle)
+            if end >= len(haystack):
+                return True
+            return not (haystack[end].isalnum() or haystack[end] == "-")
+
+        return any(
+            _substr_whole(target_low, c) or _substr_whole(c, target_low)
+            for c in campos_list if len(c) >= 3
+        )
 
     # Determinar columnas de producto/trabajo/comentarios de treatments una sola vez
     if not treatments.empty:
@@ -14865,15 +14879,32 @@ def carpocapsa_sync_annotation(campo_name, windows_df):
     campo_low = str(campo_name).strip().lower()
 
     def _carpo_campo_match(zona_str):
-        z     = str(zona_str).strip().lower()
+        z      = str(zona_str).strip().lower()
         z_base = z.split(" - ")[0].strip()
         c_base = campo_low.split(" - ")[0].strip()
         if z == campo_low or z_base == c_base:
             return True
+
+        def _substr_whole(needle, haystack):
+            """
+            True si needle aparece en haystack como palabra completa:
+            el carácter siguiente a la coincidencia debe ser fin de cadena,
+            espacio o un separador no alfanumérico/no guión.
+            Esto evita que 'sector 10' coincida con 'sector 10-b'.
+            """
+            idx = haystack.find(needle)
+            if idx == -1:
+                return False
+            end = idx + len(needle)
+            if end >= len(haystack):
+                return True            # coincidencia exacta al final
+            next_ch = haystack[end]
+            return not (next_ch.isalnum() or next_ch == "-")
+
         # Substring bidireccional (mínimo 4 caracteres para evitar falsos)
-        if len(c_base) >= 4 and c_base in z:
+        if len(c_base) >= 4 and _substr_whole(c_base, z):
             return True
-        if len(z_base) >= 4 and z_base in campo_low:
+        if len(z_base) >= 4 and _substr_whole(z_base, campo_low):
             return True
         return False
 
