@@ -11708,7 +11708,7 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             date_90, _  = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_start)
             date_end, _ = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_end)
 
-            # Estado
+            # Estado base (por DD)
             if dd_current < dd_active_start:
                 estado = "⏳ En espera"
                 estado_orden = 1
@@ -11724,35 +11724,48 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             trat_dd = ""
             trat_producto = ""
             if not treatments.empty and "fecha_dt" in treatments.columns:
-                # Buscar coincidencia de campo en actuaciones
-                # Se usa Campo base del Excel de capturas (columna "Campo base") para el cruce,
-                # porque GY - Gallinal y GY - Amariega tienen Campo base = GY en Agroptima
+                # Buscar coincidencia de campo en actuaciones.
+                # Se normaliza el nombre: "GY - Gallinal" → base = "GY"
                 campos_col = next((c for c in ["Campos reconocidos", "Campos", "campo", "campos_reconocidos"]
                                    if c in treatments.columns), None)
                 if campos_col:
-                    # Buscar zona_str directamente O el campo base si hay guion
                     campo_base = zona_str.split(" - ")[0].strip() if " - " in zona_str else zona_str
+                    # Matching por campo: primero exacto (split por coma), luego substring como fallback
+                    def _campo_match_carpo(campos_str, target):
+                        campos_list = [c.strip().lower() for c in str(campos_str).split(",")]
+                        target_low = target.strip().lower()
+                        # Coincidencia exacta primero
+                        if target_low in campos_list:
+                            return True
+                        # Fallback: substring (para casos como "Sector 3" en zona y "Sector 3, 4" en actividad)
+                        return any(target_low in c or c in target_low for c in campos_list if len(c) >= 3)
                     campo_treats = treatments[
-                        treatments[campos_col].astype(str).str.contains(campo_base, case=False, na=False)
+                        treatments[campos_col].apply(lambda x: _campo_match_carpo(x, campo_base))
                     ]
                 else:
                     campo_treats = pd.DataFrame()
 
                 if not campo_treats.empty:
-                    # Solo tratamientos de carpocapsa DESPUÉS del trigger
+                    # Solo actuaciones DESPUÉS del trigger
                     post = campo_treats[campo_treats["fecha_dt"] >= trigger_date].sort_values("fecha_dt")
                     if not post.empty:
-                        # Filtrar solo los que tienen producto de carpocapsa
+                        # Detectar carpocapsa en Producto Y en Trabajo/Comentarios
+                        # (Agroptima puede registrar el tratamiento en cualquier campo de texto)
                         productos_col_t = "Productos" if "Productos" in post.columns else "Producto"
-                        post_carp = post[
-                            post[productos_col_t].fillna("").astype(str).apply(
-                                lambda x: text_contains_any_keyword(x, CARPOCAPSA_TREATMENT_KEYWORDS)
-                            )
-                        ]
-                        if post_carp.empty:
-                            # No hay tratamiento de carpocapsa — no mostrar nada
-                            pass
-                        else:
+                        trabajo_col_t   = "Trabajo" if "Trabajo" in post.columns else "trabajo" if "trabajo" in post.columns else None
+                        coment_col_t    = "Comentarios" if "Comentarios" in post.columns else None
+
+                        def _has_carpocapsa_product(row):
+                            texto = str(row.get(productos_col_t, "") or "")
+                            if trabajo_col_t:
+                                texto += " " + str(row.get(trabajo_col_t, "") or "")
+                            if coment_col_t:
+                                texto += " " + str(row.get(coment_col_t, "") or "")
+                            return text_contains_any_keyword(texto, CARPOCAPSA_TREATMENT_KEYWORDS)
+
+                        post_carp = post[post.apply(_has_carpocapsa_product, axis=1)]
+
+                        if not post_carp.empty:
                             t_row = post_carp.iloc[0]
                             trat_fecha = t_row["fecha_dt"].strftime("%d/%m/%Y")
                             t_fecha = pd.Timestamp(t_row["fecha_dt"]).normalize()
@@ -11765,7 +11778,16 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                                 (fechas2 >= trigger_norm) & (fechas2 <= t_fecha)
                             ]["DD día"].sum()
                             trat_dd = round(float(dd_at_trat), 1)
-                            trat_producto = str(t_row.get("Productos", t_row.get("Producto", t_row.get("producto", "")))).strip()
+                            trat_producto = str(t_row.get(productos_col_t, t_row.get("producto", ""))).strip()
+
+                            # ── Actualizar estado si hay tratamiento ──────────────────────────
+                            # Si la ventana estaba activa y ya se trató → cerrar visualmente
+                            if estado_orden == 0:
+                                estado = "✅ Tratado — ventana cubierta"
+                                estado_orden = 3  # aparece después de las activas sin tratar
+                            elif estado_orden == 1:
+                                estado = "✅ Tratado — preventivo"
+                                estado_orden = 3
 
             # Para ventanas en espera, mostrar dias restantes hasta ventana activa
             if estado_orden == 1 and pd.notna(date_90):
@@ -11773,6 +11795,8 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 info_extra = f"{dias_restantes}d hasta ventana"
             elif estado_orden == 0:
                 info_extra = "⚠️ Tratar ahora"
+            elif estado_orden == 3:
+                info_extra = f"Tratado {trat_fecha}"
             else:
                 info_extra = "—"
 
@@ -12309,20 +12333,27 @@ def carpocapsa_tab(history):
             )
         else:
             # Métricas resumen
-            n_activas  = len(multi_df[multi_df["Estado"].str.contains("Activa",  na=False)])
-            n_espera   = len(multi_df[multi_df["Estado"].str.contains("espera",  na=False)])
-            n_cerradas = len(multi_df[multi_df["Estado"].str.contains("Cerrada", na=False)])
+            n_activas   = len(multi_df[multi_df["Estado"].str.contains("Activa",   na=False)])
+            n_espera    = len(multi_df[multi_df["Estado"].str.contains("espera",   na=False)])
+            n_cerradas  = len(multi_df[multi_df["Estado"].str.contains("Cerrada",  na=False)])
+            n_tratadas  = len(multi_df[multi_df["Estado"].str.contains("Tratado",  na=False)])
 
-            mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("🔴 Ventanas activas",   n_activas)
-            mc2.metric("⏳ En espera",           n_espera)
-            mc3.metric("✅ Cerradas",            n_cerradas)
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("🔴 Pendientes de tratar", n_activas)
+            mc2.metric("⏳ En espera",             n_espera)
+            mc3.metric("✅ Cubiertas / tratadas",  n_tratadas)
+            mc4.metric("🔒 Cerradas por DD",       n_cerradas)
+
+            # Obtener todos los estados reales del DataFrame para el filtro dinámico
+            _estados_disponibles = sorted(multi_df["Estado"].dropna().unique().tolist())
+            _default_estados = [e for e in _estados_disponibles
+                                if "Activa" in e or "espera" in e or "Tratado" in e]
 
             # Filtro de estado
             estado_filter = st.multiselect(
                 "Filtrar por estado",
-                ["🔴 Activa — tratar", "⏳ En espera", "✅ Cerrada"],
-                default=["🔴 Activa — tratar", "⏳ En espera"],
+                _estados_disponibles,
+                default=_default_estados,
                 key="carp_estado_filter",
             )
             if estado_filter:
