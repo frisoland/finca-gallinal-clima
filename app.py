@@ -11946,11 +11946,9 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     trat_dd       = dd_at_trat_val
                     trat_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
 
-                    # Actualizar estado
-                    if estado_orden in (0, 1):
-                        estado = "✅ Tratado — ventana cubierta"
-                    else:
-                        estado = "✅ Tratado — cerrada"
+                    # Tratado = siempre cerrada (verde). No hay distinción entre
+                    # "ventana cubierta" y "cerrada": una vez tratado, el campo pasa a verde.
+                    estado       = "✅ Tratado — cerrada"
                     estado_orden = 3
                     break  # un solo tratamiento por ventana
 
@@ -11978,8 +11976,9 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     estado     = f"⏳ Activa — esperar {_reentry_days_left}d"
                     info_extra = (f"Reentrada Bactur: esperar {_reentry_days_left}d "
                                   f"(último trat. {_last_treat_str})")
-                elif estado_orden == 3 and "ventana cubierta" in estado:
-                    # Ventana tratada pero aún abierta: habría que volver a tratar
+                elif estado_orden == 3 and dd_current <= dd_active_end:
+                    # Ventana tratada, aún dentro del rango activo (< 130 DD):
+                    # habría que dar un segundo pase pero la reentrada lo bloquea
                     estado     = f"⚠️ Tratar — reentrada: {_reentry_days_left}d"
                     info_extra = (f"Habría que tratar · esperar {_reentry_days_left}d "
                                   f"(trat. {_last_treat_str})")
@@ -12549,7 +12548,36 @@ def carpocapsa_tab(history):
 
             # Ocultar columnas internas (prefijo _)
             _display_cols = [c for c in df_show.columns if not c.startswith("_")]
-            st.dataframe(df_show[_display_cols], use_container_width=True, hide_index=True)
+
+            # ── Colores por fila según estado ──────────────────────────────────
+            # Verde   : Tratado — cerrada  (acción completada)
+            # Naranja : Reentrada / solapamiento (bloqueado por plazo de seguridad)
+            # Rojo    : Activa — tratar (ventana abierta, acción urgente)
+            # Blanco  : En espera (< 90 DD, aún no hay que actuar)
+            # Gris    : Cerrada sin tratar (fuera de ventana, sin tratamiento)
+            def _carpo_row_color(row):
+                try:
+                    e = str(row.get("Estado", ""))
+                except Exception:
+                    e = ""
+                if "Tratado" in e:
+                    bg = "#d6f0da"   # verde claro
+                elif "esperar" in e or "reentrada" in e:
+                    bg = "#fff0b3"   # naranja/amarillo claro
+                elif "Activa" in e:
+                    bg = "#ffd6d6"   # rojo claro
+                elif "Cerrada" in e:
+                    bg = "#e8e8e8"   # gris (cerrada sin tratar)
+                else:
+                    bg = ""          # blanco (en espera)
+                return [f"background-color: {bg}" if bg else "" for _ in row]
+
+            _df_vis = df_show[_display_cols]
+            try:
+                _styled = _df_vis.style.apply(_carpo_row_color, axis=1)
+                st.dataframe(_styled, use_container_width=True, hide_index=True)
+            except Exception:
+                st.dataframe(_df_vis, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar ventanas carpocapsa CSV",
                 data=multi_df.to_csv(index=False).encode("utf-8-sig"),
