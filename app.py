@@ -5225,6 +5225,29 @@ def sencrop_get_token_from_secrets():
         return None
 
 
+def _sencrop_user_from_jwt(token: str) -> str:
+    """
+    Extrae el user_id del payload JWT de Sencrop sin verificar la firma
+    (solo lectura del campo 'sub', que Sencrop usa como ID numérico de usuario).
+    Devuelve cadena vacía si el token no es un JWT válido.
+    """
+    try:
+        import base64 as _b64, json as _json
+        parts = token.split(".")
+        if len(parts) < 2:
+            return ""
+        payload_b64 = parts[1]
+        # Restaurar padding Base64url → Base64
+        padding = (4 - len(payload_b64) % 4) % 4
+        payload_b64 += "=" * padding
+        payload = _json.loads(_b64.b64decode(payload_b64))
+        # Sencrop usa 'sub' como ID numérico de usuario
+        uid = payload.get("sub") or payload.get("userId") or payload.get("user_id") or ""
+        return str(uid) if uid else ""
+    except Exception:
+        return ""
+
+
 def render_sencrop_panel():
     """Panel de integración directa con Sencrop en la pestaña Importación."""
     st.markdown("### 🌦️ Importar datos directamente desde Sencrop")
@@ -5255,10 +5278,25 @@ def render_sencrop_panel():
     direct_token = sencrop_get_token_from_secrets()
     if direct_token:
         st.session_state.sencrop_token = direct_token
+        # Intentar leer user_id de Secrets
+        _stored_uid = ""
         try:
-            st.session_state.sencrop_user_id = str(st.secrets.get("SENCROP_USER_ID", "")).strip() or None
+            _stored_uid = str(st.secrets.get("SENCROP_USER_ID", "")).strip()
         except Exception:
-            st.session_state.sencrop_user_id = None
+            pass
+        # Decodificar JWT para obtener el user_id real del token (sin llamada de red)
+        _jwt_uid = _sencrop_user_from_jwt(direct_token)
+        if _jwt_uid:
+            # El JWT tiene user_id → tiene prioridad sobre el guardado en Secrets
+            st.session_state.sencrop_user_id = _jwt_uid
+            if _stored_uid and _stored_uid != _jwt_uid:
+                st.warning(
+                    f"⚠️ El User ID en Secrets (`{_stored_uid}`) no coincide con el del token "
+                    f"(`{_jwt_uid}`). La app usará `{_jwt_uid}` automáticamente. "
+                    f"Actualiza `SENCROP_USER_ID = \"{_jwt_uid}\"` en Secrets para eliminar este aviso."
+                )
+        else:
+            st.session_state.sencrop_user_id = _stored_uid or None
 
     # ── Estado de conexión ────────────────────────────────────────────────────
     if st.session_state.sencrop_token and direct_token:
@@ -5344,28 +5382,54 @@ def render_sencrop_panel():
 
     with st.expander("🔍 Diagnóstico: listar mis dispositivos en Sencrop", expanded=False):
         st.caption("Muestra todos los dispositivos asociados a tu cuenta con sus IDs reales.")
+        # Mostrar user_id detectado vs almacenado
+        _diag_jwt_uid = _sencrop_user_from_jwt(st.session_state.sencrop_token or "")
+        _diag_stored  = ""
+        try:
+            _diag_stored = str(st.secrets.get("SENCROP_USER_ID", "")).strip()
+        except Exception:
+            pass
+        st.markdown(
+            f"- **User ID en Secrets:** `{_diag_stored or '—'}`\n"
+            f"- **User ID detectado del JWT:** `{_diag_jwt_uid or '(no disponible)'}`\n"
+            f"- **User ID activo en sesión:** `{st.session_state.get('sencrop_user_id', '—')}`"
+        )
+        if _diag_jwt_uid and _diag_stored and _diag_jwt_uid != _diag_stored:
+            st.error(
+                f"❌ **E_USER_MISMATCH**: El token pertenece al usuario `{_diag_jwt_uid}` "
+                f"pero Secrets tiene `SENCROP_USER_ID = \"{_diag_stored}\"`. "
+                f"Actualiza Secrets con `SENCROP_USER_ID = \"{_diag_jwt_uid}\"` o elimina esa línea."
+            )
         if st.button("Consultar mis dispositivos", key="sencrop_list_devices"):
             headers_dbg = {"Authorization": f"Bearer {st.session_state.sencrop_token}"}
             uid = st.session_state.sencrop_user_id
-            # Intentar varias URLs posibles
             for url in [
                 f"{SENCROP_API_BASE}/users/{uid}/devices",
-                f"{SENCROP_API_INFRA}/organisations/17094/devices",
-                f"{SENCROP_API_INFRA}/organisations/17094/modules",
+                f"{SENCROP_API_BASE}/users/me",
+                f"{SENCROP_API_INFRA}/app/station/measurement-page/measurements/hourly"
+                f"?organisationId=17094&stationId=11653&measures=temperature"
+                f"&startDatetime=2026-05-28T00:00:00.000%2B02:00"
+                f"&endDatetime=2026-05-28T23:59:59.999%2B02:00&enableFilling=true",
             ]:
                 try:
                     r = requests.get(url, headers=headers_dbg, timeout=30)
-                    st.write(f"**URL:** `{url}` → Status: {r.status_code}")
+                    st.write(f"**URL:** `{url[:80]}...` → Status: {r.status_code}")
                     if r.status_code == 200:
                         try:
                             data = r.json()
-                            st.json(data if isinstance(data, dict) else {"devices": data[:10]})
+                            st.json(data if isinstance(data, dict) else {"devices": data[:5]})
                         except Exception:
-                            st.code(r.text[:1000])
-                        break
+                            st.code(r.text[:500])
                     else:
                         try:
-                            st.json(r.json())
+                            resp_json = r.json()
+                            err_code = (resp_json.get("error") or {}).get("code", "")
+                            if err_code == "E_USER_MISMATCH":
+                                st.error(f"❌ E_USER_MISMATCH — actualiza SENCROP_USER_ID a `{_diag_jwt_uid}`")
+                            elif err_code == "JWT_EXPIRED" or r.status_code == 401:
+                                st.error("❌ Token caducado — actualiza SENCROP_TOKEN en Secrets")
+                            else:
+                                st.json(resp_json)
                         except Exception:
                             st.code(r.text[:300])
                 except Exception as e:
@@ -5644,7 +5708,11 @@ def sencrop_get_statistics(token, user_id, device_id, start_date, end_date, meas
             except Exception:
                 continue
 
-            if r.status_code == 401 or "JWT_EXPIRED" in r.text:
+            if r.status_code == 401:
+                if "E_USER_MISMATCH" in r.text:
+                    return pd.DataFrame(), "USER_MISMATCH"
+                return pd.DataFrame(), "TOKEN_EXPIRED"
+            if "JWT_EXPIRED" in r.text:
                 return pd.DataFrame(), "TOKEN_EXPIRED"
             if r.status_code != 200:
                 continue
@@ -5718,8 +5786,8 @@ def sencrop_download_all_sensors(token, user_id, start_date, end_date, status_pl
             sensor["id"], start_date, end_date,
             measures=sensor["measures"],
         )
-        if err == "TOKEN_EXPIRED":
-            return pd.DataFrame(), ["TOKEN_EXPIRED"]
+        if err in ("TOKEN_EXPIRED", "USER_MISMATCH"):
+            return pd.DataFrame(), [err]
         elif err:
             errors.append(f"Aviso {sensor['nombre']}: {err}")
         elif not df.empty:
@@ -5745,10 +5813,17 @@ def import_panel():
         _direct = sencrop_get_token_from_secrets()
         if _direct:
             st.session_state.sencrop_token = _direct
+            _imp_stored_uid = ""
             try:
-                st.session_state.sencrop_user_id = str(st.secrets.get("SENCROP_USER_ID", "")).strip() or None
+                _imp_stored_uid = str(st.secrets.get("SENCROP_USER_ID", "")).strip()
             except Exception:
-                st.session_state.sencrop_user_id = None
+                pass
+            # Priorizar el user_id extraído del JWT sobre el guardado en Secrets
+            _imp_jwt_uid = _sencrop_user_from_jwt(_direct)
+            if _imp_jwt_uid:
+                st.session_state.sencrop_user_id = _imp_jwt_uid
+            else:
+                st.session_state.sencrop_user_id = _imp_stored_uid or None
 
     tab_prev, tab_act, tab_con = st.tabs(["📡 Previsión", "⬇️ Actualizar datos", "⚙️ Conexión"])
 
@@ -5809,7 +5884,16 @@ def import_panel():
                     token, user_id, dl_start, dl_end, status_placeholder=status,
                 )
                 status.empty()
-                if sensor_errors == ["TOKEN_EXPIRED"]:
+                if sensor_errors == ["USER_MISMATCH"]:
+                    _mismatch_jwt = _sencrop_user_from_jwt(token or "")
+                    st.error(
+                        f"❌ **E_USER_MISMATCH** — El token pertenece a un usuario diferente al configurado. "
+                        + (f"El token corresponde al usuario `{_mismatch_jwt}`. " if _mismatch_jwt else "")
+                        + f"Actualiza `SENCROP_USER_ID = \"{_mismatch_jwt or '???'}\"` en Secrets."
+                    )
+                    if st.button("🔄 Ya actualicé Secrets — recargar ahora", use_container_width=True, key="sencrop_reload_mismatch"):
+                        st.rerun()
+                elif sensor_errors == ["TOKEN_EXPIRED"]:
                     st.error("🔑 El token de Sencrop ha caducado. Actualiza SENCROP_TOKEN en Secrets y pulsa el botón de abajo.")
                     st.session_state.sencrop_token = None
                     if st.button("🔄 Ya actualicé el token en Secrets — recargar ahora", use_container_width=True, key="sencrop_reload_token"):
