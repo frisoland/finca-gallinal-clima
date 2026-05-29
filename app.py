@@ -11987,7 +11987,7 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             # El DD en el momento del tratamiento ya tiene su propia columna "DD al tratar".
             # Congelarlo creaba confusión: una ventana más reciente podía parecer tener
             # más DD que una anterior ya tratada.
-            dd_display = round(dd_current, 1)
+            dd_display = int(round(dd_current))
 
             rows.append({
                 "Campo/Zona":                    zona_str,
