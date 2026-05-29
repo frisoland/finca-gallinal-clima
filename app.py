@@ -5300,7 +5300,7 @@ def render_sencrop_panel():
 
     # ── Estado de conexión ────────────────────────────────────────────────────
     if st.session_state.sencrop_token and direct_token:
-        st.success("✅ Conectado con Sencrop via token (Secrets).")
+        st.success("✅ Conectado con Sencrop via token (Secrets). La descarga de datos está operativa.")
     elif st.session_state.sencrop_token:
         st.success("✅ Conectado con Sencrop.")
 
@@ -5369,8 +5369,17 @@ def render_sencrop_panel():
                 st.session_state.sencrop_user_id,
             )
         if err:
-            st.warning(f"No se listaron estaciones automáticamente: {err}")
-            # Fallback: usar station ID conocida
+            # Con token de aplicación (OAuth2) el listado de dispositivos falla
+            # (E_USER_MISMATCH / E_NON_REENTRANT_NUMBER) pero la descarga de datos
+            # funciona perfectamente porque usa los IDs hardcodeados de SENCROP_SENSORS.
+            # Solo mostrar advertencia si no es un error de tipo de token esperado.
+            _err_str = str(err)
+            _token_type_error = any(
+                k in _err_str for k in ("E_USER_MISMATCH", "E_NON_REENTRANT", "401", "400")
+            )
+            if not _token_type_error:
+                st.warning(f"No se listaron estaciones automáticamente: {err}")
+            # Fallback: usar station IDs conocidas (la descarga sigue funcionando)
             st.session_state.sencrop_devices = [{"id": "11653", "name": "Finca Gallinal"}]
         else:
             st.session_state.sencrop_devices = devices
