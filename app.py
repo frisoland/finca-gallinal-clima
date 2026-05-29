@@ -5690,7 +5690,7 @@ def sencrop_get_statistics(token, user_id, device_id, start_date, end_date, meas
         "relativeHumidity": "hr_max",
     }
 
-    while current_end > start_ts:
+    while current_end >= start_ts:
         days_chunk  = min(chunk_size, (current_end - start_ts).days + 1)
         chunk_start = current_end - pd.Timedelta(days=days_chunk - 1)
         tz_offset   = "+02:00"
