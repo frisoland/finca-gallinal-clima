@@ -11984,8 +11984,11 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     info_extra = (f"Habría que tratar · esperar {_reentry_days_left}d "
                                   f"(trat. {_last_treat_str})")
 
-            # DD display: congelar en el momento del tratamiento si ya se trató
-            dd_display = trat_dd if (trat_fecha and trat_dd != "") else round(dd_current, 1)
+            # "DD actual" muestra siempre el acumulado real desde el trigger hasta HOY.
+            # El DD en el momento del tratamiento ya tiene su propia columna "DD al tratar".
+            # Congelarlo creaba confusión: una ventana más reciente podía parecer tener
+            # más DD que una anterior ya tratada.
+            dd_display = round(dd_current, 1)
 
             rows.append({
                 "Campo/Zona":                    zona_str,
