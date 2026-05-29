@@ -120,7 +120,7 @@ try:
                Así el área de activación del sidebar (izquierda) no interfiere
                con los controles interactivos de la página. */
             [data-testid="stMain"] .block-container {{
-                padding-left: 3.5rem !important;
+                padding-left: 5.5rem !important;
             }}
             /* Logo difuminado como marca de agua fija */
             [data-testid="stAppViewContainer"]::before {{
