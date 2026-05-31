@@ -15128,6 +15128,159 @@ def carpocapsa_sync_annotation(campo_name, windows_df):
     return "", "none"
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Integración con Telegram — informe diario
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def telegram_is_configured():
+    """True si hay token y chat_id de Telegram en Secrets."""
+    try:
+        token = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "")).strip()
+        chat  = str(st.secrets.get("TELEGRAM_CHAT_ID", "")).strip()
+        return bool(token and chat)
+    except Exception:
+        return False
+
+
+def telegram_send_message(text, parse_mode="HTML"):
+    """Envía un mensaje al chat configurado. Devuelve (ok, detalle)."""
+    try:
+        token = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "")).strip()
+        chat  = str(st.secrets.get("TELEGRAM_CHAT_ID", "")).strip()
+    except Exception:
+        return False, "No se pudieron leer las credenciales de Telegram."
+    if not token or not chat:
+        return False, "Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID en Secrets."
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat,
+                "text": text,
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+        )
+        if r.status_code == 200:
+            return True, "Mensaje enviado correctamente."
+        return False, f"Error {r.status_code}: {r.text[:300]}"
+    except Exception as e:
+        return False, f"Error de conexión: {e}"
+
+
+def telegram_discover_chats():
+    """Consulta getUpdates para listar los chats que han escrito al bot.
+    Útil para descubrir el chat_id. Devuelve dict {chat_id: nombre} o None."""
+    try:
+        token = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "")).strip()
+    except Exception:
+        return None
+    if not token:
+        return None
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{token}/getUpdates", timeout=20)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        chats = {}
+        for upd in data.get("result", []):
+            msg  = upd.get("message") or upd.get("channel_post") or {}
+            chat = msg.get("chat", {})
+            cid  = chat.get("id")
+            if cid is not None:
+                nombre = (chat.get("title") or chat.get("username")
+                          or chat.get("first_name") or "—")
+                chats[str(cid)] = nombre
+        return chats
+    except Exception:
+        return None
+
+
+def build_daily_report_text(history_df, traps_df, activities_df,
+                            forecast_df=None, persistence_days=16):
+    """Construye el texto del informe diario centrado en lo urgente:
+    carpocapsa (ventanas activas / bloqueadas) + fungicidas (tratar hoy / sin cobertura).
+    Formato HTML para Telegram."""
+    import html as _html
+
+    def _esc(v):
+        return _html.escape(str(v))
+
+    today_str = pd.Timestamp.today().strftime("%d/%m/%Y")
+    lines = ["🌳 <b>Finca Gallinal — Informe diario</b>", f"📅 {today_str}", ""]
+
+    # ── 1. Carpocapsa: ventanas urgentes ──────────────────────────────────────
+    carpo_red, carpo_orange = [], []
+    try:
+        cw = carpocapsa_build_multi_windows(
+            traps_df, history_df, activities_df=activities_df,
+            campaign_year=pd.Timestamp.now().year,
+        )
+    except Exception:
+        cw = pd.DataFrame()
+
+    if not cw.empty:
+        for _, r in cw.iterrows():
+            e     = str(r.get("Estado", ""))
+            campo = _esc(r.get("Campo/Zona", ""))
+            dd    = r.get("DD actual", "")
+            info  = _esc(r.get("Info", ""))
+            if "Activa" in e and "esperar" not in e:
+                carpo_red.append(f"  🔴 <b>{campo}</b> — {dd} DD · {info}")
+            elif "esperar" in e or "reentrada" in e:
+                carpo_orange.append(f"  🟠 <b>{campo}</b> — {info}")
+
+    lines.append("🐛 <b>CARPOCAPSA</b>")
+    if carpo_red:
+        lines.append("<b>Tratar ahora:</b>")
+        lines.extend(carpo_red)
+    if carpo_orange:
+        lines.append("<b>Bloqueado por plazo de seguridad:</b>")
+        lines.extend(carpo_orange)
+    if not carpo_red and not carpo_orange:
+        lines.append("  ✅ Sin ventanas activas hoy.")
+    lines.append("")
+
+    # ── 2. Fungicidas: campos que requieren acción ────────────────────────────
+    try:
+        _risk = build_risk_timeline(
+            history_df,
+            forecast_df if forecast_df is not None else pd.DataFrame(),
+            days_back=60,
+        )
+        dec = daily_treatment_decision(
+            history_df, activities_df, _risk, persistence_days=persistence_days
+        )
+    except Exception:
+        dec = pd.DataFrame()
+
+    lines.append("🍎 <b>FUNGICIDAS</b>")
+    if not dec.empty and "_priority" in dec.columns:
+        red    = dec[dec["_priority"] == 1]
+        orange = dec[dec["_priority"] == 2]
+        if not red.empty:
+            lines.append("<b>Tratar hoy:</b>")
+            for _, r in red.iterrows():
+                campo  = _esc(r.get("Campo", ""))
+                accion = _esc(r.get("🎯 Acción", ""))
+                lines.append(f"  🔴 <b>{campo}</b> — {accion}")
+        if not orange.empty:
+            lines.append("<b>Sin cobertura vigente:</b>")
+            for _, r in orange.iterrows():
+                campo = _esc(r.get("Campo", ""))
+                dias  = r.get("Días sin trat.", "")
+                lines.append(f"  🟠 <b>{campo}</b> — {dias} días sin tratar")
+        if red.empty and orange.empty:
+            lines.append("  ✅ Todos los campos con cobertura vigente.")
+    else:
+        lines.append("  ℹ️ Sin datos suficientes para el panel de decisión.")
+
+    lines.append("")
+    lines.append("<i>Generado automáticamente desde la app Finca Gallinal.</i>")
+    return "\n".join(lines)
+
+
 def render_decisiones_panel():
     """Panel de decisiones agronómicas con 4 gráficas estilo RIMpro."""
     try:
@@ -15153,6 +15306,61 @@ def render_decisiones_panel():
         "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
         "**predicción Sencrop** — para tomar decisiones de tratamiento con días de antelación."
     )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # INFORME A TELEGRAM
+    # ══════════════════════════════════════════════════════════════════════════
+    with st.expander("📲 Enviar informe a Telegram", expanded=False):
+        if not telegram_is_configured():
+            st.info(
+                "Para activar el envío a Telegram, añade en **Secrets** de Streamlit:\n\n"
+                "```toml\n"
+                "TELEGRAM_BOT_TOKEN = \"tu_token_del_bot\"\n"
+                "TELEGRAM_CHAT_ID = \"tu_chat_id\"\n"
+                "```\n\n"
+                "El **token** te lo da @BotFather al crear el bot. "
+                "El **chat_id** lo descubres escribiendo un mensaje a tu bot y pulsando el botón de abajo."
+            )
+            try:
+                _tok = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "")).strip()
+            except Exception:
+                _tok = ""
+            if _tok:
+                if st.button("🔍 Descubrir mi chat_id", key="tg_discover"):
+                    _chats = telegram_discover_chats()
+                    if _chats:
+                        st.success("Chats que han escrito al bot:")
+                        for _cid, _nom in _chats.items():
+                            st.code(f'TELEGRAM_CHAT_ID = "{_cid}"   # {_nom}')
+                    else:
+                        st.warning(
+                            "No se detectó ningún chat. Escribe primero un mensaje a tu bot "
+                            "en Telegram (por ejemplo «hola») y vuelve a pulsar."
+                        )
+        else:
+            st.success("✅ Telegram configurado. La app puede enviar informes.")
+            _vista = st.checkbox("Ver el informe antes de enviar", value=True, key="tg_preview")
+            if _vista:
+                _preview = build_daily_report_text(
+                    history_df, traps_df, activities_df,
+                    forecast_df=forecast_df,
+                    persistence_days=st.session_state.get("dec_persist_days", 16),
+                )
+                # Mostrar como texto plano (quitar etiquetas HTML para la vista previa)
+                import re as _re_tg
+                _plain = _re_tg.sub(r"</?[^>]+>", "", _preview)
+                st.text(_plain)
+            if st.button("📤 Enviar informe ahora", type="primary", key="tg_send"):
+                _msg = build_daily_report_text(
+                    history_df, traps_df, activities_df,
+                    forecast_df=forecast_df,
+                    persistence_days=st.session_state.get("dec_persist_days", 16),
+                )
+                _ok, _detalle = telegram_send_message(_msg)
+                if _ok:
+                    st.success(f"✅ {_detalle}")
+                else:
+                    st.error(f"❌ {_detalle}")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PANEL DE DECISIÓN DIARIA
