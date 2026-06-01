@@ -10786,6 +10786,33 @@ def render_top_banner():
         unsafe_allow_html=True,
     )
 
+    # ── Indicador de frescura de los datos climáticos ─────────────────────────
+    try:
+        _hist = st.session_state.get("history_df", pd.DataFrame())
+        if _hist is not None and not _hist.empty and "fecha_hora" in _hist.columns:
+            _last = pd.to_datetime(_hist["fecha_hora"], errors="coerce").max()
+            if pd.notna(_last):
+                _ahora = pd.Timestamp.now()
+                _horas = (_ahora - _last).total_seconds() / 3600.0
+                _fecha_txt = _last.strftime("%d/%m/%Y · %H:%M")
+                if _horas <= 36:
+                    st.success(f"🌦️ Datos climáticos actualizados hasta **{_fecha_txt}**.")
+                elif _horas <= 24 * 7:
+                    _dias = int(_horas // 24)
+                    st.warning(
+                        f"🌦️ Datos climáticos hasta **{_fecha_txt}** "
+                        f"(hace ~{_dias} día/s). Descarga de Sencrop para actualizar."
+                    )
+                else:
+                    st.error(
+                        f"🌦️ Datos climáticos desactualizados: último registro **{_fecha_txt}**. "
+                        f"Conviene descargar de Sencrop."
+                    )
+        else:
+            st.info("🌦️ Aún no hay datos climáticos cargados. Descarga desde Sencrop.")
+    except Exception:
+        pass
+
 
 def build_weekly_pdf_report(metrics, report_md, acts_period, priority_table):
     """Crea un PDF bonito y legible del informe semanal."""
