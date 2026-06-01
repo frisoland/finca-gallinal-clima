@@ -15264,21 +15264,28 @@ def build_daily_report_text(history_df, traps_df, activities_df,
 
     lines.append("🍎 <b>FUNGICIDAS</b>")
     if not dec.empty and "_priority" in dec.columns:
-        red    = dec[dec["_priority"] == 1]
-        orange = dec[dec["_priority"] == 2]
+        red    = dec[dec["_priority"] == 1]   # tratar hoy (infección prevista)
+        orange = dec[dec["_priority"] == 2]   # tratar pronto (cobertura caducada + exposición)
+        yellow = dec[dec["_priority"] == 3]   # planificar (sin cobertura activa)
         if not red.empty:
-            lines.append("<b>Tratar hoy:</b>")
+            lines.append("<b>🔴 Tratar HOY (infección prevista):</b>")
             for _, r in red.iterrows():
                 campo  = _esc(r.get("Campo", ""))
-                accion = _esc(r.get("🎯 Acción", ""))
-                lines.append(f"  🔴 <b>{campo}</b> — {accion}")
+                dias   = r.get("Días sin trat.", "")
+                lines.append(f"  • <b>{campo}</b> — {dias} días sin tratar")
         if not orange.empty:
-            lines.append("<b>Sin cobertura vigente:</b>")
+            lines.append("<b>🟠 Tratar pronto (cobertura caducada):</b>")
             for _, r in orange.iterrows():
                 campo = _esc(r.get("Campo", ""))
                 dias  = r.get("Días sin trat.", "")
-                lines.append(f"  🟠 <b>{campo}</b> — {dias} días sin tratar")
-        if red.empty and orange.empty:
+                lines.append(f"  • <b>{campo}</b> — {dias} días sin tratar")
+        if not yellow.empty:
+            lines.append("<b>🟡 Planificar (sin cobertura activa):</b>")
+            for _, r in yellow.iterrows():
+                campo = _esc(r.get("Campo", ""))
+                dias  = r.get("Días sin trat.", "")
+                lines.append(f"  • <b>{campo}</b> — {dias} días sin tratar")
+        if red.empty and orange.empty and yellow.empty:
             lines.append("  ✅ Todos los campos con cobertura vigente.")
     else:
         lines.append("  ℹ️ Sin datos suficientes para el panel de decisión.")
