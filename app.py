@@ -10,6 +10,12 @@ import streamlit as st
 import streamlit.components.v1 as _st_components
 import requests
 import copy
+import os
+
+# Modo "headless": cuando la app se importa desde un script externo (p. ej. el
+# informe diario automático de GitHub Actions) NO se debe renderizar la interfaz.
+# Solo se reutilizan las funciones de cálculo y el autocargado de datos.
+_HEADLESS = os.environ.get("FINCA_GALLINAL_HEADLESS") == "1"
 
 
 st.set_page_config(
@@ -12924,7 +12930,8 @@ if not st.session_state.autoload_forecast_done and sencrop_is_configured():
             st.session_state["sencrop_token"]  = _fc_token
 
 # Main layout
-render_top_banner()
+if not _HEADLESS:
+    render_top_banner()
 
 # Default settings.
 # No escribimos manualmente en claves usadas por widgets, porque Streamlit lo bloquea.
@@ -15974,298 +15981,300 @@ Aparece en todos los gráficos como referencia. La lluvia genera hoja mojada (ri
         """)
 
 
-# ── Navegación lateral ────────────────────────────────────────────────────────
-if "nav_page" not in st.session_state:
-    st.session_state.nav_page = "dashboard"
+# ── Render de la interfaz: solo cuando NO estamos en modo headless ───────────
+if not _HEADLESS:
+    # ── Navegación lateral ────────────────────────────────────────────────────────
+    if "nav_page" not in st.session_state:
+        st.session_state.nav_page = "dashboard"
 
-# CSS: estilo del sidebar
-st.markdown("""
-<style>
-/* ── Scrollbar fino y verde en el sidebar ── */
-section[data-testid="stSidebar"] ::-webkit-scrollbar { width: 4px; }
-section[data-testid="stSidebar"] ::-webkit-scrollbar-track { background: transparent; }
-section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb {
-    background: rgba(27,107,53,0.35);
-    border-radius: 4px;
-}
-section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb:hover {
-    background: rgba(27,107,53,0.65);
-}
-/* Botones de navegación: alineados a la izquierda, sin borde */
-section[data-testid="stSidebar"] button {
-    text-align: left !important;
-    justify-content: flex-start !important;
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    border-radius: 6px !important;
-    padding: 4px 10px !important;
-    font-size: 0.9rem !important;
-    color: inherit !important;
-    width: 100% !important;
-}
-section[data-testid="stSidebar"] button:hover {
-    background: rgba(27,107,53,0.10) !important;
-}
-/* Título del grupo */
-section[data-testid="stSidebar"] .nav-group {
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: #888;
-    margin: 12px 0 2px 10px;
-}
-/* Página activa: fondo verde suave + borde izquierdo */
-.nav-active-item {
-    background: rgba(27,107,53,0.13) !important;
-    color: #1b6b35 !important;
-    font-weight: 600;
-    padding: 6px 10px 6px 8px;
-    border-radius: 6px;
-    border-left: 3px solid #1b6b35;
-    font-size: 0.9rem;
-    display: block;
-    margin: 1px 0;
-    cursor: default;
-    line-height: 1.5;
-}
-/* ── Cabecera de página ── */
-.page-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 0 0 18px 0;
-    padding-bottom: 10px;
-    border-bottom: 2px solid rgba(27,107,53,0.15);
-}
-.page-header-icon {
-    font-size: 2rem;
-    line-height: 1;
-}
-.page-header-text { display: flex; flex-direction: column; gap: 1px; }
-.page-header-title {
-    font-size: 1.45rem;
-    font-weight: 700;
-    color: #1a1a1a;
-    line-height: 1.2;
-    margin: 0;
-}
-.page-header-crumb {
-    font-size: 0.74rem;
-    color: #aaa;
-    letter-spacing: 0.03em;
-    margin: 0;
-}
-/* Breadcrumb encima del contenido (legacy, por si se usa en algún sitio) */
-.page-breadcrumb {
-    color: #aaa;
-    font-size: 0.78rem;
-    margin: 0 0 6px 0;
-    letter-spacing: 0.02em;
-}
-/* ── Animación fade-in al cambiar de página ── */
-@keyframes fg-fadein {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0);   }
-}
-section[data-testid="stMain"] > div:first-child {
-    animation: fg-fadein 0.25s ease-out;
-}
-/* ── Ítem activo: borde animado que se desliza ── */
-@keyframes fg-activeslide {
-    from { border-left-width: 0px; padding-left: 11px; }
-    to   { border-left-width: 3px; padding-left: 8px;  }
-}
-.nav-active-item {
-    animation: fg-activeslide 0.18s ease-out;
-}
-/* ── Footer del sidebar ── */
-.sidebar-footer {
-    font-size: 0.68rem;
-    color: #bbb;
-    text-align: center;
-    padding: 6px 0 2px 0;
-    letter-spacing: 0.02em;
-    line-height: 1.5;
-}
-/* ── Grupos colapsables en sidebar ── */
-section[data-testid="stSidebar"] [data-testid="stExpander"] {
-    border: none !important;
-    box-shadow: none !important;
-    background: transparent !important;
-}
-section[data-testid="stSidebar"] [data-testid="stExpander"] details {
-    border: none !important;
-    background: transparent !important;
-}
-section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
-    font-size: 0.73rem !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.06em !important;
-    text-transform: uppercase !important;
-    color: #888 !important;
-    padding: 5px 4px 3px 8px !important;
-    margin-top: 6px !important;
-}
-section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
-    color: #555 !important;
-    background: rgba(0,0,0,0.03) !important;
-    border-radius: 4px !important;
-}
-section[data-testid="stSidebar"] [data-testid="stExpander"] details > div {
-    padding-top: 0 !important;
-    padding-bottom: 2px !important;
-}
-</style>
-""", unsafe_allow_html=True)
+    # CSS: estilo del sidebar
+    st.markdown("""
+    <style>
+    /* ── Scrollbar fino y verde en el sidebar ── */
+    section[data-testid="stSidebar"] ::-webkit-scrollbar { width: 4px; }
+    section[data-testid="stSidebar"] ::-webkit-scrollbar-track { background: transparent; }
+    section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb {
+        background: rgba(27,107,53,0.35);
+        border-radius: 4px;
+    }
+    section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb:hover {
+        background: rgba(27,107,53,0.65);
+    }
+    /* Botones de navegación: alineados a la izquierda, sin borde */
+    section[data-testid="stSidebar"] button {
+        text-align: left !important;
+        justify-content: flex-start !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        border-radius: 6px !important;
+        padding: 4px 10px !important;
+        font-size: 0.9rem !important;
+        color: inherit !important;
+        width: 100% !important;
+    }
+    section[data-testid="stSidebar"] button:hover {
+        background: rgba(27,107,53,0.10) !important;
+    }
+    /* Título del grupo */
+    section[data-testid="stSidebar"] .nav-group {
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #888;
+        margin: 12px 0 2px 10px;
+    }
+    /* Página activa: fondo verde suave + borde izquierdo */
+    .nav-active-item {
+        background: rgba(27,107,53,0.13) !important;
+        color: #1b6b35 !important;
+        font-weight: 600;
+        padding: 6px 10px 6px 8px;
+        border-radius: 6px;
+        border-left: 3px solid #1b6b35;
+        font-size: 0.9rem;
+        display: block;
+        margin: 1px 0;
+        cursor: default;
+        line-height: 1.5;
+    }
+    /* ── Cabecera de página ── */
+    .page-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 0 18px 0;
+        padding-bottom: 10px;
+        border-bottom: 2px solid rgba(27,107,53,0.15);
+    }
+    .page-header-icon {
+        font-size: 2rem;
+        line-height: 1;
+    }
+    .page-header-text { display: flex; flex-direction: column; gap: 1px; }
+    .page-header-title {
+        font-size: 1.45rem;
+        font-weight: 700;
+        color: #1a1a1a;
+        line-height: 1.2;
+        margin: 0;
+    }
+    .page-header-crumb {
+        font-size: 0.74rem;
+        color: #aaa;
+        letter-spacing: 0.03em;
+        margin: 0;
+    }
+    /* Breadcrumb encima del contenido (legacy, por si se usa en algún sitio) */
+    .page-breadcrumb {
+        color: #aaa;
+        font-size: 0.78rem;
+        margin: 0 0 6px 0;
+        letter-spacing: 0.02em;
+    }
+    /* ── Animación fade-in al cambiar de página ── */
+    @keyframes fg-fadein {
+        from { opacity: 0; transform: translateY(6px); }
+        to   { opacity: 1; transform: translateY(0);   }
+    }
+    section[data-testid="stMain"] > div:first-child {
+        animation: fg-fadein 0.25s ease-out;
+    }
+    /* ── Ítem activo: borde animado que se desliza ── */
+    @keyframes fg-activeslide {
+        from { border-left-width: 0px; padding-left: 11px; }
+        to   { border-left-width: 3px; padding-left: 8px;  }
+    }
+    .nav-active-item {
+        animation: fg-activeslide 0.18s ease-out;
+    }
+    /* ── Footer del sidebar ── */
+    .sidebar-footer {
+        font-size: 0.68rem;
+        color: #bbb;
+        text-align: center;
+        padding: 6px 0 2px 0;
+        letter-spacing: 0.02em;
+        line-height: 1.5;
+    }
+    /* ── Grupos colapsables en sidebar ── */
+    section[data-testid="stSidebar"] [data-testid="stExpander"] {
+        border: none !important;
+        box-shadow: none !important;
+        background: transparent !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stExpander"] details {
+        border: none !important;
+        background: transparent !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+        font-size: 0.73rem !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.06em !important;
+        text-transform: uppercase !important;
+        color: #888 !important;
+        padding: 5px 4px 3px 8px !important;
+        margin-top: 6px !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+        color: #555 !important;
+        background: rgba(0,0,0,0.03) !important;
+        border-radius: 4px !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stExpander"] details > div {
+        padding-top: 0 !important;
+        padding-bottom: 2px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# Metadatos de cada página: (icono, grupo, nombre)
-_PAGE_META: dict = {
-    "dashboard":     ("📊", "Clima",   "Dashboard"),
-    "sencrop":       ("🌦️", "Clima",   "Sencrop"),
-    "analisis":      ("🔎", "Clima",   "Análisis"),
-    "comparador":    ("📈", "Clima",   "Comparador"),
-    "frio":          ("❄️", "Clima",   "Frío"),
-    "fenologia":     ("🌱", "Cultivo", "Fenología"),
-    "sanidad":       ("🍄", "Cultivo", "Sanidad"),
-    "decisiones":    ("🎯", "Cultivo", "Decisiones"),
-    "carpocapsa":    ("🐛", "Cultivo", "Carpocapsa"),
-    "riego":         ("💧", "Cultivo", "Riego"),
-    "campos":        ("🌳", "Gestión", "Campos"),
-    "agroptima":     ("🧾", "Gestión", "Agroptima"),
-    "produccion":    ("🍎", "Gestión", "Producción"),
-    "informe":       ("📝", "Gestión", "Informe semanal"),
-    "instrucciones": ("📘", "",        "Instrucciones"),
-    "configuracion": ("⚙️", "",        "Configuración"),
-}
+    # Metadatos de cada página: (icono, grupo, nombre)
+    _PAGE_META: dict = {
+        "dashboard":     ("📊", "Clima",   "Dashboard"),
+        "sencrop":       ("🌦️", "Clima",   "Sencrop"),
+        "analisis":      ("🔎", "Clima",   "Análisis"),
+        "comparador":    ("📈", "Clima",   "Comparador"),
+        "frio":          ("❄️", "Clima",   "Frío"),
+        "fenologia":     ("🌱", "Cultivo", "Fenología"),
+        "sanidad":       ("🍄", "Cultivo", "Sanidad"),
+        "decisiones":    ("🎯", "Cultivo", "Decisiones"),
+        "carpocapsa":    ("🐛", "Cultivo", "Carpocapsa"),
+        "riego":         ("💧", "Cultivo", "Riego"),
+        "campos":        ("🌳", "Gestión", "Campos"),
+        "agroptima":     ("🧾", "Gestión", "Agroptima"),
+        "produccion":    ("🍎", "Gestión", "Producción"),
+        "informe":       ("📝", "Gestión", "Informe semanal"),
+        "instrucciones": ("📘", "",        "Instrucciones"),
+        "configuracion": ("⚙️", "",        "Configuración"),
+    }
 
-def _nav_btn(label: str, page_key: str) -> None:
-    """Botón de navegación. Página activa → div resaltado; inactiva → botón normal."""
-    current = st.session_state.get("nav_page", "dashboard")
-    if current == page_key:
-        st.markdown(f'<div class="nav-active-item">{label}</div>', unsafe_allow_html=True)
-    else:
-        if st.button(label, key=f"nav_{page_key}", use_container_width=True):
-            st.session_state.nav_page = page_key
+    def _nav_btn(label: str, page_key: str) -> None:
+        """Botón de navegación. Página activa → div resaltado; inactiva → botón normal."""
+        current = st.session_state.get("nav_page", "dashboard")
+        if current == page_key:
+            st.markdown(f'<div class="nav-active-item">{label}</div>', unsafe_allow_html=True)
+        else:
+            if st.button(label, key=f"nav_{page_key}", use_container_width=True):
+                st.session_state.nav_page = page_key
 
-def _render_page_header(page_key: str) -> None:
-    """Cabecera visual con icono grande, título y breadcrumb de grupo."""
-    meta = _PAGE_META.get(page_key)
-    if meta:
-        icon, group, name = meta
-        crumb = f"{group}  ›  {name}" if group else ""
+    def _render_page_header(page_key: str) -> None:
+        """Cabecera visual con icono grande, título y breadcrumb de grupo."""
+        meta = _PAGE_META.get(page_key)
+        if meta:
+            icon, group, name = meta
+            crumb = f"{group}  ›  {name}" if group else ""
+            st.markdown(
+                f'<div class="page-header">'
+                f'  <span class="page-header-icon">{icon}</span>'
+                f'  <div class="page-header-text">'
+                f'    <p class="page-header-title">{name}</p>'
+                f'    {"<p class=\"page-header-crumb\">" + crumb + "</p>" if crumb else ""}'
+                f'  </div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    # Páginas por grupo (para auto-expandir el grupo activo)
+    _CLIMA_PAGES   = {"dashboard","sencrop","analisis","comparador","frio"}
+    _CULTIVO_PAGES = {"fenologia","sanidad","decisiones","carpocapsa","riego"}
+    _GESTION_PAGES = {"campos","agroptima","produccion","informe"}
+
+    _active_page = st.session_state.get("nav_page","dashboard")
+    if _active_page in _CLIMA_PAGES:   st.session_state["grp_clima"]   = True
+    if _active_page in _CULTIVO_PAGES: st.session_state["grp_cultivo"] = True
+    if _active_page in _GESTION_PAGES: st.session_state["grp_gestion"] = True
+
+    with st.sidebar:
+        # Título con logo inline (base64) en lugar del emoji 🌿
+        try:
+            import base64 as _b64, os as _os
+            if _os.path.exists("finca_gallinal_logo.jpeg"):
+                with open("finca_gallinal_logo.jpeg", "rb") as _lf:
+                    _logo_b64 = _b64.b64encode(_lf.read()).decode()
+                # Imagen 379x379px: manzana en top ~60%, texto FINCA/GALLINAL en bottom ~40%.
+                # Contenedor 70×42px recorta el texto inferior (overflow:hidden).
+                # mix-blend-mode:multiply elimina el fondo blanco fundiéndolo con el sidebar.
+                st.markdown(
+                    f'<p style="display:flex;align-items:center;gap:8px;'
+                    f'font-size:1.22rem;font-weight:700;margin:4px 0 2px 0;line-height:1;">'
+                    f'<span style="display:inline-block;width:70px;height:42px;'
+                    f'overflow:hidden;flex-shrink:0;">'
+                    f'<img src="data:image/jpeg;base64,{_logo_b64}" '
+                    f'style="width:70px;height:70px;display:block;mix-blend-mode:multiply;">'
+                    f'</span>'
+                    f'Finca Gallinal</p>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown("## 🌿 Finca Gallinal")
+        except Exception:
+            st.markdown("## 🌿 Finca Gallinal")
+        st.caption("Plataforma agroclimática")
+        st.divider()
+
+        with st.expander("🌤️  Clima", expanded=True, key="grp_clima"):
+            _nav_btn("📊 Dashboard",   "dashboard")
+            _nav_btn("🌦️ Sencrop",    "sencrop")
+            _nav_btn("🔎 Análisis",    "analisis")
+            _nav_btn("📈 Comparador",  "comparador")
+            _nav_btn("❄️ Frío",        "frio")
+
+        with st.expander("🌿  Cultivo", expanded=True, key="grp_cultivo"):
+            _nav_btn("🌱 Fenología",   "fenologia")
+            _nav_btn("🍄 Sanidad",     "sanidad")
+            _nav_btn("🎯 Decisiones",  "decisiones")
+            _nav_btn("🐛 Carpocapsa",  "carpocapsa")
+            _nav_btn("💧 Riego",       "riego")
+
+        with st.expander("📋  Gestión", expanded=True, key="grp_gestion"):
+            _nav_btn("🌳 Campos",          "campos")
+            _nav_btn("🧾 Agroptima",        "agroptima")
+            _nav_btn("🍎 Producción",       "produccion")
+            _nav_btn("📝 Informe semanal",  "informe")
+
+        st.divider()
+        _nav_btn("📘 Instrucciones",  "instrucciones")
+        _nav_btn("⚙️ Configuración",  "configuracion")
+        st.divider()
         st.markdown(
-            f'<div class="page-header">'
-            f'  <span class="page-header-icon">{icon}</span>'
-            f'  <div class="page-header-text">'
-            f'    <p class="page-header-title">{name}</p>'
-            f'    {"<p class=\"page-header-crumb\">" + crumb + "</p>" if crumb else ""}'
-            f'  </div>'
-            f'</div>',
+            '<p class="sidebar-footer">🌿 Finca Gallinal<br>Plataforma agroclimática v2</p>',
             unsafe_allow_html=True,
         )
 
-# Páginas por grupo (para auto-expandir el grupo activo)
-_CLIMA_PAGES   = {"dashboard","sencrop","analisis","comparador","frio"}
-_CULTIVO_PAGES = {"fenologia","sanidad","decisiones","carpocapsa","riego"}
-_GESTION_PAGES = {"campos","agroptima","produccion","informe"}
+    # ── Contenido principal según página seleccionada ─────────────────────────────
+    _page = st.session_state.get("nav_page", "dashboard")
+    _render_page_header(_page)
 
-_active_page = st.session_state.get("nav_page","dashboard")
-if _active_page in _CLIMA_PAGES:   st.session_state["grp_clima"]   = True
-if _active_page in _CULTIVO_PAGES: st.session_state["grp_cultivo"] = True
-if _active_page in _GESTION_PAGES: st.session_state["grp_gestion"] = True
-
-with st.sidebar:
-    # Título con logo inline (base64) en lugar del emoji 🌿
-    try:
-        import base64 as _b64, os as _os
-        if _os.path.exists("finca_gallinal_logo.jpeg"):
-            with open("finca_gallinal_logo.jpeg", "rb") as _lf:
-                _logo_b64 = _b64.b64encode(_lf.read()).decode()
-            # Imagen 379x379px: manzana en top ~60%, texto FINCA/GALLINAL en bottom ~40%.
-            # Contenedor 70×42px recorta el texto inferior (overflow:hidden).
-            # mix-blend-mode:multiply elimina el fondo blanco fundiéndolo con el sidebar.
-            st.markdown(
-                f'<p style="display:flex;align-items:center;gap:8px;'
-                f'font-size:1.22rem;font-weight:700;margin:4px 0 2px 0;line-height:1;">'
-                f'<span style="display:inline-block;width:70px;height:42px;'
-                f'overflow:hidden;flex-shrink:0;">'
-                f'<img src="data:image/jpeg;base64,{_logo_b64}" '
-                f'style="width:70px;height:70px;display:block;mix-blend-mode:multiply;">'
-                f'</span>'
-                f'Finca Gallinal</p>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown("## 🌿 Finca Gallinal")
-    except Exception:
-        st.markdown("## 🌿 Finca Gallinal")
-    st.caption("Plataforma agroclimática")
-    st.divider()
-
-    with st.expander("🌤️  Clima", expanded=True, key="grp_clima"):
-        _nav_btn("📊 Dashboard",   "dashboard")
-        _nav_btn("🌦️ Sencrop",    "sencrop")
-        _nav_btn("🔎 Análisis",    "analisis")
-        _nav_btn("📈 Comparador",  "comparador")
-        _nav_btn("❄️ Frío",        "frio")
-
-    with st.expander("🌿  Cultivo", expanded=True, key="grp_cultivo"):
-        _nav_btn("🌱 Fenología",   "fenologia")
-        _nav_btn("🍄 Sanidad",     "sanidad")
-        _nav_btn("🎯 Decisiones",  "decisiones")
-        _nav_btn("🐛 Carpocapsa",  "carpocapsa")
-        _nav_btn("💧 Riego",       "riego")
-
-    with st.expander("📋  Gestión", expanded=True, key="grp_gestion"):
-        _nav_btn("🌳 Campos",          "campos")
-        _nav_btn("🧾 Agroptima",        "agroptima")
-        _nav_btn("🍎 Producción",       "produccion")
-        _nav_btn("📝 Informe semanal",  "informe")
-
-    st.divider()
-    _nav_btn("📘 Instrucciones",  "instrucciones")
-    _nav_btn("⚙️ Configuración",  "configuracion")
-    st.divider()
-    st.markdown(
-        '<p class="sidebar-footer">🌿 Finca Gallinal<br>Plataforma agroclimática v2</p>',
-        unsafe_allow_html=True,
-    )
-
-# ── Contenido principal según página seleccionada ─────────────────────────────
-_page = st.session_state.get("nav_page", "dashboard")
-_render_page_header(_page)
-
-if _page == "dashboard":
-    dashboard_tab(history, soil_type, hoja_threshold)
-elif _page == "sencrop":
-    import_panel()
-elif _page == "analisis":
-    analysis_tab(history, soil_type, hoja_threshold)
-elif _page == "comparador":
-    comparator_tab(history, soil_type, hoja_threshold)
-elif _page == "frio":
-    cold_tab(history)
-elif _page == "fenologia":
-    phenology_tab(history, soil_type, hoja_threshold)
-elif _page == "sanidad":
-    health_tab(history, soil_type, hoja_threshold)
-elif _page == "decisiones":
-    render_decisiones_panel()
-elif _page == "carpocapsa":
-    carpocapsa_tab(history)
-elif _page == "riego":
-    irrigation_tab(history, soil_type, hoja_threshold)
-elif _page == "campos":
-    fields_tab()
-elif _page == "agroptima":
-    activities_tab()
-elif _page == "produccion":
-    produccion_tab(history)
-elif _page == "informe":
-    weekly_report_tab(history, soil_type, hoja_threshold)
-elif _page == "instrucciones":
-    instructions_tab()
-elif _page == "configuracion":
-    settings_tab()
+    if _page == "dashboard":
+        dashboard_tab(history, soil_type, hoja_threshold)
+    elif _page == "sencrop":
+        import_panel()
+    elif _page == "analisis":
+        analysis_tab(history, soil_type, hoja_threshold)
+    elif _page == "comparador":
+        comparator_tab(history, soil_type, hoja_threshold)
+    elif _page == "frio":
+        cold_tab(history)
+    elif _page == "fenologia":
+        phenology_tab(history, soil_type, hoja_threshold)
+    elif _page == "sanidad":
+        health_tab(history, soil_type, hoja_threshold)
+    elif _page == "decisiones":
+        render_decisiones_panel()
+    elif _page == "carpocapsa":
+        carpocapsa_tab(history)
+    elif _page == "riego":
+        irrigation_tab(history, soil_type, hoja_threshold)
+    elif _page == "campos":
+        fields_tab()
+    elif _page == "agroptima":
+        activities_tab()
+    elif _page == "produccion":
+        produccion_tab(history)
+    elif _page == "informe":
+        weekly_report_tab(history, soil_type, hoja_threshold)
+    elif _page == "instrucciones":
+        instructions_tab()
+    elif _page == "configuracion":
+        settings_tab()
