@@ -2,7 +2,7 @@ name: Informe diario Telegram
 
 on:
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 4 * * *"
   workflow_dispatch:
 
 jobs:
