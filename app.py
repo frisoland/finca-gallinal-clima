@@ -5946,7 +5946,8 @@ def import_panel():
                         f"✅ {len(df_sencrop)} registros combinados de los 4 sensores. "
                         f"Histórico total: **{len(final_sc)}** registros ({rng_min} → {rng_max})."
                     )
-                    st.caption("💡 Recuerda guardar el snapshot en Supabase para conservar los datos.")
+                    # Guardado automático del snapshot en Supabase (sin pasos manuales)
+                    autosave_climate_snapshot_to_supabase()
 
         # ── Sección Supabase ─────────────────────────────────────────────────
         st.divider()
@@ -11640,6 +11641,28 @@ def autosave_carpocapsa_to_supabase():
             st.warning(f"⚠️ No se pudo guardar el snapshot de carpocapsa: {msg}")
     except Exception as e:
         st.warning(f"⚠️ Error en el guardado automático de carpocapsa: {e}")
+
+
+def autosave_climate_snapshot_to_supabase():
+    """Crea/actualiza automáticamente el snapshot climático comprimido en Supabase
+    tras una descarga de datos. Silencioso si Supabase no está configurado; nunca
+    rompe la descarga si el guardado falla."""
+    if not supabase_is_configured():
+        return
+    try:
+        df = st.session_state.get("history_df", pd.DataFrame())
+        if df is None or df.empty:
+            return
+        _box = st.empty()
+        _box.info("☁️ Actualizando snapshot climático en Supabase…")
+        ok, msg = upload_climate_snapshot_to_supabase(df, status_box=_box)
+        _box.empty()
+        if ok:
+            st.caption(f"☁️ Snapshot climático actualizado automáticamente en Supabase · {msg}")
+        else:
+            st.warning(f"⚠️ No se pudo actualizar el snapshot climático: {msg}")
+    except Exception as e:
+        st.warning(f"⚠️ Error en el guardado automático del snapshot climático: {e}")
 
 
 def load_carpocapsa_snapshot_from_supabase():
