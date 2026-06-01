@@ -148,44 +148,46 @@ def main():
         print(f"ERROR importando app.py: {exc}", file=sys.stderr)
         raise
 
-    # ── DIAGNÓSTICO ───────────────────────────────────────────────────────────
-    print("=" * 60)
-    print("DIAGNÓSTICO DE ENTORNO")
-    def _mask(v):
-        if not v:
-            return "(vacío)"
-        return f"{v[:6]}…{v[-4:]} (len={len(v)})"
-    print(f"  SUPABASE_URL       presente: {_mask(os.environ.get('SUPABASE_URL',''))}")
-    print(f"  SUPABASE_KEY       presente: {_mask(os.environ.get('SUPABASE_KEY',''))}")
-    print(f"  TELEGRAM_BOT_TOKEN presente: {_mask(os.environ.get('TELEGRAM_BOT_TOKEN',''))}")
-    print(f"  TELEGRAM_CHAT_ID   presente: {_mask(os.environ.get('TELEGRAM_CHAT_ID',''))}")
-    try:
-        print(f"  supabase_is_configured() = {app.supabase_is_configured()}")
-        _u, _k = app.get_supabase_credentials()
-        print(f"  URL normalizada: {_u}")
-    except Exception as _e:
-        print(f"  ERROR comprobando config Supabase: {_e}")
-
-    # Llamadas directas a los loaders para ver qué devuelve Supabase
-    print("-" * 60)
-    print("CARGA DIRECTA DESDE SUPABASE")
-    try:
-        _h, _hmsg = app.load_climate_snapshot_from_supabase(use_cache=False)
-        print(f"  histórico  → {0 if _h is None else len(_h)} filas · msg: {_hmsg}")
-    except Exception as _e:
-        print(f"  histórico  → EXCEPCIÓN: {_e}")
-    try:
-        _a, _amsg = app.load_activities_from_supabase()
-        print(f"  actuaciones→ {0 if _a is None else len(_a)} filas · msg: {_amsg}")
-    except Exception as _e:
-        print(f"  actuaciones→ EXCEPCIÓN: {_e}")
-    try:
-        _t, _b, _d, _cmsg = app.load_carpocapsa_snapshot_from_supabase()
-        print(f"  carpocapsa → trampas: {0 if _t is None else len(_t)} · "
-              f"biofix: {0 if _b is None else len(_b)} · msg: {_cmsg}")
-    except Exception as _e:
-        print(f"  carpocapsa → EXCEPCIÓN: {_e}")
-    print("=" * 60)
+    # ── DIAGNÓSTICO (solo si REPORT_DEBUG=1) ──────────────────────────────────
+    # Para depurar problemas de carga, define la variable de entorno REPORT_DEBUG=1
+    # en el workflow. En el día a día permanece silencioso.
+    _DEBUG = os.environ.get("REPORT_DEBUG") == "1"
+    if _DEBUG:
+        print("=" * 60)
+        print("DIAGNÓSTICO DE ENTORNO")
+        def _mask(v):
+            if not v:
+                return "(vacío)"
+            return f"{v[:6]}…{v[-4:]} (len={len(v)})"
+        print(f"  SUPABASE_URL       presente: {_mask(os.environ.get('SUPABASE_URL',''))}")
+        print(f"  SUPABASE_KEY       presente: {_mask(os.environ.get('SUPABASE_KEY',''))}")
+        print(f"  TELEGRAM_BOT_TOKEN presente: {_mask(os.environ.get('TELEGRAM_BOT_TOKEN',''))}")
+        print(f"  TELEGRAM_CHAT_ID   presente: {_mask(os.environ.get('TELEGRAM_CHAT_ID',''))}")
+        try:
+            print(f"  supabase_is_configured() = {app.supabase_is_configured()}")
+            _u, _k = app.get_supabase_credentials()
+            print(f"  URL normalizada: {_u}")
+        except Exception as _e:
+            print(f"  ERROR comprobando config Supabase: {_e}")
+        print("-" * 60)
+        print("CARGA DIRECTA DESDE SUPABASE")
+        try:
+            _h, _hmsg = app.load_climate_snapshot_from_supabase(use_cache=False)
+            print(f"  histórico  → {0 if _h is None else len(_h)} filas · msg: {_hmsg}")
+        except Exception as _e:
+            print(f"  histórico  → EXCEPCIÓN: {_e}")
+        try:
+            _a, _amsg = app.load_activities_from_supabase()
+            print(f"  actuaciones→ {0 if _a is None else len(_a)} filas · msg: {_amsg}")
+        except Exception as _e:
+            print(f"  actuaciones→ EXCEPCIÓN: {_e}")
+        try:
+            _t, _b, _d, _cmsg = app.load_carpocapsa_snapshot_from_supabase()
+            print(f"  carpocapsa → trampas: {0 if _t is None else len(_t)} · "
+                  f"biofix: {0 if _b is None else len(_b)} · msg: {_cmsg}")
+        except Exception as _e:
+            print(f"  carpocapsa → EXCEPCIÓN: {_e}")
+        print("=" * 60)
 
     ss = app.st.session_state
 
@@ -226,31 +228,32 @@ def main():
           f"actuaciones: {len(activities)} · trampas: {len(traps)} · "
           f"biofix: {len(biofix)} · previsión: {len(forecast)}")
 
-    # ── DIAGNÓSTICO de cálculo (sin try/except, para ver excepciones reales) ────
-    print("-" * 60)
-    print("CÁLCULO DE VENTANAS / DECISIONES")
-    import traceback as _tb
-    try:
-        _cw = app.carpocapsa_build_multi_windows(
-            traps, history, activities_df=activities,
-            campaign_year=pd.Timestamp.now().year,
-        )
-        print(f"  carpocapsa_build_multi_windows → {len(_cw)} ventanas")
-        if not _cw.empty:
-            print("  Estados:", _cw['Estado'].value_counts().to_dict())
-    except Exception:
-        print("  EXCEPCIÓN en carpocapsa_build_multi_windows:")
-        _tb.print_exc()
-    try:
-        _rk = app.build_risk_timeline(history, forecast, days_back=60)
-        _dc = app.daily_treatment_decision(history, activities, _rk, persistence_days=16)
-        print(f"  daily_treatment_decision → {len(_dc)} filas")
-        if not _dc.empty and "_priority" in _dc.columns:
-            print("  Prioridades:", _dc['_priority'].value_counts().to_dict())
-    except Exception:
-        print("  EXCEPCIÓN en daily_treatment_decision:")
-        _tb.print_exc()
-    print("=" * 60)
+    # ── DIAGNÓSTICO de cálculo (solo si REPORT_DEBUG=1) ────────────────────────
+    if _DEBUG:
+        print("-" * 60)
+        print("CÁLCULO DE VENTANAS / DECISIONES")
+        import traceback as _tb
+        try:
+            _cw = app.carpocapsa_build_multi_windows(
+                traps, history, activities_df=activities,
+                campaign_year=pd.Timestamp.now().year,
+            )
+            print(f"  carpocapsa_build_multi_windows → {len(_cw)} ventanas")
+            if not _cw.empty:
+                print("  Estados:", _cw['Estado'].value_counts().to_dict())
+        except Exception:
+            print("  EXCEPCIÓN en carpocapsa_build_multi_windows:")
+            _tb.print_exc()
+        try:
+            _rk = app.build_risk_timeline(history, forecast, days_back=60)
+            _dc = app.daily_treatment_decision(history, activities, _rk, persistence_days=16)
+            print(f"  daily_treatment_decision → {len(_dc)} filas")
+            if not _dc.empty and "_priority" in _dc.columns:
+                print("  Prioridades:", _dc['_priority'].value_counts().to_dict())
+        except Exception:
+            print("  EXCEPCIÓN en daily_treatment_decision:")
+            _tb.print_exc()
+        print("=" * 60)
 
     # Construir el informe (mismo texto que el botón manual de la app)
     texto = app.build_daily_report_text(
