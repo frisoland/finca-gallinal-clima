@@ -137,6 +137,64 @@ def _install_streamlit_stub():
     return st_stub
 
 
+def refresh_sencrop_data(app, history):
+    """Descarga de Sencrop las horas nuevas (desde la última registrada hasta hoy),
+    las fusiona con el histórico y sube el snapshot actualizado a Supabase.
+    Devuelve el histórico actualizado. Nunca lanza: ante cualquier fallo conserva
+    el histórico que ya tenía."""
+    print("-" * 60)
+    print("DESCARGA AUTOMÁTICA DE SENCROP")
+    try:
+        if not app.sencrop_is_configured():
+            print("  Sencrop no configurado (faltan SENCROP_APP_ID/SECRET o SENCROP_TOKEN). Se omite.")
+            return history
+
+        token = app.sencrop_get_token_from_secrets()
+        if not token:
+            print("  No se pudo obtener el token de Sencrop. Se omite la descarga.")
+            return history
+
+        today = pd.Timestamp.today().normalize().date()
+        if history is not None and not history.empty:
+            last_dt = pd.to_datetime(history["fecha_hora"]).max()
+            start_date = last_dt.date()
+            print(f"  Última hora registrada: {last_dt}")
+        else:
+            start_date = today - pd.Timedelta(days=30)
+            print("  Sin histórico previo; se descargan los últimos 30 días.")
+
+        print(f"  Descargando Sencrop {start_date} → {today}…")
+        # El user_id no se usa en el endpoint de medidas (usa organisationId/stationId)
+        df_new, errs = app.sencrop_download_all_sensors(token, "", start_date, today)
+        if errs:
+            print(f"  Avisos/errores Sencrop: {errs}")
+        if df_new is None or df_new.empty:
+            print("  No se descargaron datos nuevos.")
+            return history
+
+        # Fusionar solo las horas que no teníamos
+        if history is None or history.empty:
+            merged = app.compact_history(df_new)
+            n_prev = 0
+        else:
+            n_prev = len(history)
+            existing = set(pd.to_datetime(history["fecha_hora"]).dropna())
+            only_new = df_new[~pd.to_datetime(df_new["fecha_hora"]).isin(existing)]
+            merged = app.compact_history(pd.concat([history, only_new], ignore_index=True))
+        n_added = len(merged) - n_prev
+        print(f"  Histórico: {n_prev} → {len(merged)} filas (+{n_added} nuevas)")
+
+        # Subir snapshot actualizado a Supabase
+        ok, msg = app.upload_climate_snapshot_to_supabase(merged)
+        print(f"  Snapshot Supabase: {'OK' if ok else 'FALLO'} · {msg}")
+        return merged
+    except Exception as exc:
+        import traceback as _tb
+        print(f"  EXCEPCIÓN en la descarga de Sencrop: {exc}")
+        _tb.print_exc()
+        return history
+
+
 def main():
     _install_streamlit_stub()
 
@@ -223,6 +281,11 @@ def main():
                 ss["carpocapsa_biofix_df"] = _b
         except Exception as _e:
             print(f"  (fallback carpocapsa falló: {_e})")
+
+    # ── Descarga automática de Sencrop: actualiza el histórico hasta hoy ──────
+    # Descarga las horas nuevas desde la última registrada y guarda el snapshot
+    # actualizado en Supabase, para que el informe use datos frescos.
+    history = refresh_sencrop_data(app, history)
 
     print(f"Datos finales → histórico: {len(history)} filas · "
           f"actuaciones: {len(activities)} · trampas: {len(traps)} · "
