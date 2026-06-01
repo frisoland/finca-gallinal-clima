@@ -13111,6 +13111,28 @@ def upload_produccion_to_supabase(df):
     return True, f"Producción guardada: {len(df)} filas, años {años[0]}–{años[-1]}."
 
 
+def autosave_produccion_to_supabase():
+    """Guarda automáticamente los datos de producción en Supabase tras importar.
+    Silencioso si Supabase no está configurado; nunca rompe la importación."""
+    if not supabase_is_configured():
+        return
+    try:
+        df = st.session_state.get("produccion_df", pd.DataFrame())
+        if df is None or df.empty:
+            return
+        ok, msg = upload_produccion_to_supabase(df)
+        if ok:
+            try:
+                st.toast("☁️ Producción guardada en Supabase", icon="✅")
+            except Exception:
+                pass
+            st.caption(f"☁️ Guardado automático en Supabase · {msg}")
+        else:
+            st.warning(f"⚠️ No se pudo guardar la producción en Supabase: {msg}")
+    except Exception as e:
+        st.warning(f"⚠️ Error en el guardado automático de producción: {e}")
+
+
 def produccion_tab(history):
     st.subheader("🍎 Producción · Histórico y análisis")
 
@@ -13142,6 +13164,8 @@ def produccion_tab(history):
                     st.session_state.produccion_df = df_nuevo
                     años = sorted(df_nuevo["Año"].unique())
                     st.success(f"Importado: {len(df_nuevo)} filas, años {años}.")
+                    # Guardado automático en Supabase (sin pasos manuales)
+                    autosave_produccion_to_supabase()
 
         with col2:
             st.markdown("**Supabase**")
