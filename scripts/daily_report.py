@@ -87,12 +87,20 @@ class _StreamlitStub(types.ModuleType):
         return None
 
     def cache_data(self, *a, **k):
-        # Soporta @st.cache_data y @st.cache_data(ttl=...)
-        if a and callable(a[0]) and not k:
-            return a[0]
-        def deco(fn):
+        # Soporta @st.cache_data y @st.cache_data(ttl=...).
+        # En Streamlit real, la función decorada gana métodos .clear() y
+        # .clear_all(); el stub los añade como no-ops para no romper el código
+        # que llama, por ejemplo, cached_download_climate_snapshot.clear().
+        def _wrap(fn):
+            try:
+                fn.clear = lambda *aa, **kk: None
+                fn.clear_all = lambda *aa, **kk: None
+            except Exception:
+                pass
             return fn
-        return deco
+        if a and callable(a[0]) and not k:
+            return _wrap(a[0])
+        return _wrap
 
     cache_resource = cache_data
 
@@ -187,22 +195,32 @@ def main():
     biofix     = ss.get("carpocapsa_biofix_df",  pd.DataFrame())
     forecast   = ss.get("forecast_df",           pd.DataFrame())
 
-    # Si el autoload del import no rellenó session_state, cargar aquí directamente
+    # Si el autoload del import no rellenó session_state, cargar aquí directamente.
+    # Cada carga va protegida para que un fallo aislado no tumbe el informe.
     if (history is None or history.empty):
-        _h, _ = app.load_climate_snapshot_from_supabase(use_cache=False)
-        if _h is not None and not _h.empty:
-            history = _h
+        try:
+            _h, _ = app.load_climate_snapshot_from_supabase(use_cache=False)
+            if _h is not None and not _h.empty:
+                history = _h
+        except Exception as _e:
+            print(f"  (fallback histórico falló: {_e})")
     if (activities is None or activities.empty):
-        _a, _ = app.load_activities_from_supabase()
-        if _a is not None and not _a.empty:
-            activities = _a
+        try:
+            _a, _ = app.load_activities_from_supabase()
+            if _a is not None and not _a.empty:
+                activities = _a
+        except Exception as _e:
+            print(f"  (fallback actuaciones falló: {_e})")
     if (traps is None or traps.empty) or (biofix is None or biofix.empty):
-        _t, _b, _d, _ = app.load_carpocapsa_snapshot_from_supabase()
-        if _t is not None and not _t.empty:
-            traps = _t
-        if _b is not None and not _b.empty:
-            biofix = _b
-            ss["carpocapsa_biofix_df"] = _b
+        try:
+            _t, _b, _d, _ = app.load_carpocapsa_snapshot_from_supabase()
+            if _t is not None and not _t.empty:
+                traps = _t
+            if _b is not None and not _b.empty:
+                biofix = _b
+                ss["carpocapsa_biofix_df"] = _b
+        except Exception as _e:
+            print(f"  (fallback carpocapsa falló: {_e})")
 
     print(f"Datos finales → histórico: {len(history)} filas · "
           f"actuaciones: {len(activities)} · trampas: {len(traps)} · "
