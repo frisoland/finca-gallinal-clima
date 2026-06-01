@@ -11617,6 +11617,11 @@ def autosave_activities_to_supabase():
             return
         ok, msg = upsert_activities_to_supabase(df)
         if ok:
+            # toast sobrevive al st.rerun() posterior (la caption se borraría)
+            try:
+                st.toast("☁️ Actuaciones guardadas en Supabase", icon="✅")
+            except Exception:
+                pass
             st.caption(f"☁️ Guardado automático en Supabase · {msg}")
         else:
             st.warning(f"⚠️ No se pudo guardar automáticamente en Supabase: {msg}")
@@ -11636,6 +11641,11 @@ def autosave_carpocapsa_to_supabase():
             st.session_state.get("carpocapsa_damage_df",  pd.DataFrame()),
         )
         if ok:
+            # toast sobrevive al st.rerun() posterior (la caption se borraría)
+            try:
+                st.toast("☁️ Snapshot carpocapsa guardado en Supabase", icon="✅")
+            except Exception:
+                pass
             st.caption(f"☁️ Snapshot carpocapsa guardado automáticamente en Supabase · {msg}")
         else:
             st.warning(f"⚠️ No se pudo guardar el snapshot de carpocapsa: {msg}")
@@ -11658,6 +11668,10 @@ def autosave_climate_snapshot_to_supabase():
         ok, msg = upload_climate_snapshot_to_supabase(df, status_box=_box)
         _box.empty()
         if ok:
+            try:
+                st.toast("☁️ Snapshot climático actualizado en Supabase", icon="✅")
+            except Exception:
+                pass
             st.caption(f"☁️ Snapshot climático actualizado automáticamente en Supabase · {msg}")
         else:
             st.warning(f"⚠️ No se pudo actualizar el snapshot climático: {msg}")
