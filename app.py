@@ -4099,7 +4099,8 @@ def render_agroptima_panel():
                 n_new  = stats.get("inserted", 0)
                 n_upd  = stats.get("updated", 0)
                 st.success(f"✅ {len(activities_df_new)} actividades procesadas — {n_new} nuevas, {n_upd} actualizadas.")
-                st.info("Pulsa **Guardar actuaciones actuales en Supabase** más abajo para conservar los cambios.")
+                # Guardado automático en Supabase (sin pasos manuales)
+                autosave_activities_to_supabase()
         except Exception as e:
             st.error(f"Error procesando el Excel: {e}")
 
@@ -4181,6 +4182,8 @@ def activities_tab():
                 st.session_state.activities_df = merged
                 st.session_state.last_activities_import_stats = stats
                 st.success("Histórico de actuaciones actualizado.")
+                # Guardado automático en Supabase (sin pasos manuales)
+                autosave_activities_to_supabase()
 
     with st.expander("Opción avanzada: cargar histórico maestro CSV descargado desde la app", expanded=False):
         st.caption(
@@ -11602,6 +11605,43 @@ def upload_carpocapsa_snapshot_to_supabase(traps_df, biofix_df, damage_df):
     return True, "Snapshot carpocapsa guardado: " + ", ".join(saved) + "."
 
 
+def autosave_activities_to_supabase():
+    """Guarda automáticamente las actuaciones Agroptima en Supabase tras importar.
+    Silencioso si Supabase no está configurado; nunca rompe la importación."""
+    if not supabase_is_configured():
+        return
+    try:
+        df = st.session_state.get("activities_df", pd.DataFrame())
+        if df is None or df.empty:
+            return
+        ok, msg = upsert_activities_to_supabase(df)
+        if ok:
+            st.caption(f"☁️ Guardado automático en Supabase · {msg}")
+        else:
+            st.warning(f"⚠️ No se pudo guardar automáticamente en Supabase: {msg}")
+    except Exception as e:
+        st.warning(f"⚠️ Error en el guardado automático a Supabase: {e}")
+
+
+def autosave_carpocapsa_to_supabase():
+    """Guarda automáticamente el snapshot de carpocapsa (capturas, biofix, daños)
+    en Supabase tras importar. Silencioso si Supabase no está configurado."""
+    if not supabase_is_configured():
+        return
+    try:
+        ok, msg = upload_carpocapsa_snapshot_to_supabase(
+            st.session_state.get("carpocapsa_traps_df",  pd.DataFrame()),
+            st.session_state.get("carpocapsa_biofix_df",  pd.DataFrame()),
+            st.session_state.get("carpocapsa_damage_df",  pd.DataFrame()),
+        )
+        if ok:
+            st.caption(f"☁️ Snapshot carpocapsa guardado automáticamente en Supabase · {msg}")
+        else:
+            st.warning(f"⚠️ No se pudo guardar el snapshot de carpocapsa: {msg}")
+    except Exception as e:
+        st.warning(f"⚠️ Error en el guardado automático de carpocapsa: {e}")
+
+
 def load_carpocapsa_snapshot_from_supabase():
     """Descarga los tres archivos Parquet de carpocapsa desde Supabase Storage.
     Devuelve (traps_df, biofix_df, damage_df, mensaje)."""
@@ -12272,6 +12312,8 @@ def carpocapsa_tab(history):
                     st.write(f"- {m}")
                 if imported:
                     st.success("Datos de carpocapsa importados en la sesión.")
+                    # Guardado automático del snapshot en Supabase (sin pasos manuales)
+                    autosave_carpocapsa_to_supabase()
                     st.rerun()
                 else:
                     st.error("No se importaron datos. Revisa que el Excel tenga la hoja Capturas_App.")
@@ -12404,6 +12446,8 @@ def carpocapsa_tab(history):
         previous = previous[pd.to_numeric(previous.get("Campaña", pd.Series(dtype=float)), errors="coerce") != int(campaign_year)] if not previous.empty and "Campaña" in previous.columns else pd.DataFrame(columns=CARPOCAPSA_DEFAULT_TRAP_COLUMNS)
         st.session_state.carpocapsa_traps_df = pd.concat([previous, prepared], ignore_index=True)
         st.success(f"Capturas de {campaign_year} guardadas en sesión.")
+        # Guardado automático del snapshot en Supabase (sin pasos manuales)
+        autosave_carpocapsa_to_supabase()
         st.rerun()
 
     traps_prepared = carpocapsa_prepare_traps_df(traps_edit)
