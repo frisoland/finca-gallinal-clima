@@ -5015,7 +5015,9 @@ SENCROP_SENSORS = [
         "id":       "26768",
         "ref":      "WC007301",
         "nombre":   "Viento",
-        "measures": ["windSpeed", "windGust", "windDirection"],
+        # windGust primero: si la estación expone la ráfaga real, tiene prioridad
+        # sobre el máximo de windSpeed para rellenar viento_rafaga.
+        "measures": ["windGust", "windSpeed", "windDirection"],
     },
     {
         "id":       "16899",
@@ -5840,6 +5842,12 @@ def sencrop_get_statistics(token, user_id, device_id, start_date, end_date, meas
     measure_max_col = {
         "temperature":      "temp_max",
         "relativeHumidity": "hr_max",
+        # La ráfaga es, por definición, el pico de viento del intervalo. Sencrop
+        # suele exponerla como el máximo: tanto si llega como "windGust:max" como
+        # "windSpeed:max", la guardamos en viento_rafaga (antes se descartaba y por
+        # eso la ráfaga salía siempre vacía/nan).
+        "windGust":         "viento_rafaga",
+        "windSpeed":        "viento_rafaga",
     }
 
     while current_end >= start_ts:
