@@ -10170,6 +10170,7 @@ def phenology_tab(history, soil_type, hoja_threshold):
                 st.session_state.phenology_editor_version += 1
                 st.session_state["phenology_last_uploaded_hash"] = file_hash
                 st.success("Calendario fenológico cargado correctamente.")
+                autosave_phenology_to_supabase()   # guardado automático en la nube
                 st.rerun()
             except Exception as e:
                 st.error(f"No se pudo cargar el calendario fenológico: {e}")
@@ -10207,6 +10208,7 @@ def phenology_tab(history, soil_type, hoja_threshold):
                     st.success(f"Plantilla actualizada — {added} filas nuevas añadidas sin modificar las existentes.")
                 else:
                     st.info("No había filas nuevas que añadir. La tabla ya estaba completa.")
+                autosave_phenology_to_supabase()   # guardado automático en la nube
                 st.rerun()
 
     # ── Sección 3: Editor con filtros ─────────────────────────────────────────
@@ -10271,12 +10273,25 @@ def phenology_tab(history, soil_type, hoja_threshold):
         except Exception:
             pass  # Silent fail — never lose data
 
-    st.download_button(
-        "Descargar calendario fenológico completo",
-        data=st.session_state.phenology_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="calendario_fenologico_finca_gallinal.csv",
-        mime="text/csv",
-    )
+    _pc1, _pc2 = st.columns(2)
+    with _pc1:
+        st.download_button(
+            "Descargar calendario fenológico completo",
+            data=st.session_state.phenology_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="calendario_fenologico_finca_gallinal.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with _pc2:
+        # Guardado manual en Supabase para conservar las ediciones de la tabla.
+        # (Las importaciones de CSV/plantilla se guardan solas automáticamente.)
+        if st.button("☁️ Guardar fenología en Supabase", use_container_width=True,
+                     type="primary", key="save_phenology_supabase"):
+            ok, msg = upload_phenology_to_supabase(st.session_state.phenology_df)
+            if ok:
+                st.success(f"✅ {msg}")
+            else:
+                st.error(f"❌ {msg}")
 
     if history.empty:
         st.info("Carga primero el histórico climático para poder analizar por fases.")
@@ -13169,6 +13184,76 @@ def load_produccion_from_supabase():
         return None, f"Error leyendo Parquet: {e}"
 
 
+# ── Funciones de Supabase para Fenología ─────────────────────────────────────
+SUPABASE_PHENOLOGY_FILE = "fenologia_historica.parquet"
+
+
+def phenology_storage_url():
+    url, _ = get_supabase_credentials()
+    return f"{url.rstrip('/')}/storage/v1/object/climate-snapshots/{SUPABASE_PHENOLOGY_FILE}"
+
+
+def load_phenology_from_supabase():
+    if not supabase_is_configured():
+        return None, "Supabase no configurado."
+    headers = supabase_headers()
+    headers.pop("Prefer", None)
+    try:
+        r = requests.get(phenology_storage_url(), headers=headers, timeout=60)
+    except Exception as e:
+        return None, f"Error de conexión: {e}"
+    if r.status_code != 200:
+        return None, "No se encontró fenología en Supabase."
+    try:
+        df = pd.read_parquet(io.BytesIO(r.content), engine="pyarrow")
+        return df, f"Fenología cargada: {len(df)} filas."
+    except Exception as e:
+        return None, f"Error leyendo Parquet: {e}"
+
+
+def upload_phenology_to_supabase(df):
+    if not supabase_is_configured():
+        return False, "Supabase no configurado."
+    if df is None or df.empty:
+        return False, "No hay fenología para guardar."
+    out = normalize_phenology_df(df)   # tipos estables para Parquet
+    buf = io.BytesIO()
+    out.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
+    buf.seek(0)
+    headers = supabase_headers()
+    headers["Content-Type"] = "application/octet-stream"
+    headers["x-upsert"] = "true"
+    try:
+        r = requests.post(phenology_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+    except Exception as e:
+        return False, f"Error de conexión: {e}"
+    if r.status_code not in (200, 201):
+        return False, f"Error {r.status_code}: {r.text[:200]}"
+    return True, f"Fenología guardada: {len(out)} filas."
+
+
+def autosave_phenology_to_supabase():
+    """Guarda automáticamente la fenología en Supabase tras editarla/importarla.
+    Silencioso si Supabase no está configurado; nunca rompe la edición."""
+    if not supabase_is_configured():
+        return
+    try:
+        df = st.session_state.get("phenology_df", pd.DataFrame())
+        if df is None or df.empty:
+            return
+        ok, msg = upload_phenology_to_supabase(df)
+        if ok:
+            try:
+                st.toast("☁️ Fenología guardada en Supabase", icon="✅")
+            except Exception:
+                pass
+            st.caption(f"☁️ Guardado automático en Supabase · {msg}")
+        else:
+            st.warning(f"⚠️ No se pudo guardar la fenología en Supabase: {msg}")
+    except Exception as e:
+        st.warning(f"⚠️ Error en el guardado automático de fenología: {e}")
+
+
 # ── Auto-carga Supabase al arrancar (una sola vez por sesión) ─────────────────
 # Carga Agroptima, Producción y Carpocapsa automáticamente si Supabase está
 # configurado y los datos de sesión están vacíos.
@@ -13195,6 +13280,12 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         _prod_df, _ = load_produccion_from_supabase()
         if _prod_df is not None and not _prod_df.empty:
             st.session_state.produccion_df = _prod_df
+
+    # Fenología (calendario fenológico por campo × variedad × año)
+    if st.session_state.get("phenology_df", pd.DataFrame()).empty:
+        _phen_df, _ = load_phenology_from_supabase()
+        if _phen_df is not None and not _phen_df.empty:
+            st.session_state.phenology_df = normalize_phenology_df(_phen_df)
 
     # Carpocapsa (capturas, biofix y daños)
     if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
