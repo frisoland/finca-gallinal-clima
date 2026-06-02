@@ -2645,6 +2645,20 @@ def normalize_agroptima_columns(df):
     return out
 
 
+def filter_only_fitosanitario(df):
+    """Mantiene solo las filas cuyo Trabajo es un tratamiento fitosanitario.
+    Descarta herbicidas, abonados, podas y cualquier otro trabajo, que no son
+    relevantes para el análisis sanitario (carpocapsa, moteado, monilia…).
+    Si no existe la columna Trabajo, devuelve el df sin tocar (no rompe nada)."""
+    if df is None or df.empty:
+        return df
+    _col = "Trabajo" if "Trabajo" in df.columns else ("trabajo" if "trabajo" in df.columns else None)
+    if _col is None:
+        return df
+    mask = df[_col].astype(str).str.contains("fitosanitario", case=False, na=False)
+    return df[mask].reset_index(drop=True)
+
+
 def parse_agroptima_activities_excel(uploaded_file):
     """Lee un Excel de actividades de Agroptima y lo convierte a tabla limpia."""
     if uploaded_file is None:
@@ -2752,6 +2766,11 @@ def parse_agroptima_activities_excel(uploaded_file):
         })
 
     clean = pd.DataFrame(rows)
+
+    # ── Filtrar SOLO tratamientos fitosanitarios ──────────────────────────────
+    # No interesan herbicidas, abonados, podas, etc. para el análisis sanitario.
+    clean = filter_only_fitosanitario(clean)
+
     if not clean.empty:
         clean = clean.sort_values(["Fecha", "Campos"], ascending=[False, True]).reset_index(drop=True)
 
@@ -3828,6 +3847,9 @@ def load_activities_from_supabase(page_size=1000, max_pages=100):
         out[app_col] = db_df[db_col] if db_col in db_df.columns else ""
 
     out = normalize_activities_df(out)
+    # Filtrar herbicidas/otros: la app solo trabaja con tratamientos fitosanitarios.
+    # (Limpia también los herbicidas que pudieran estar ya guardados en Supabase.)
+    out = filter_only_fitosanitario(out)
     visible = out.drop(columns=[c for c in ["_clave_fallback", "_clave_importacion"] if c in out.columns], errors="ignore")
     return visible, f"Actuaciones cargadas desde Supabase: {len(visible)} registros."
 
