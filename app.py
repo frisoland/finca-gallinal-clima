@@ -2831,13 +2831,25 @@ def normalize_activities_df(df):
     # Clave alternativa para casos sin ID Agroptima real.
     # Incluye Cantidad además de Superficie/Dosis para distinguir productos
     # distintos de la misma mezcla con misma dosis pero distinta cantidad.
+    # IMPORTANTE: conversión robusta a NaN. En pandas, `serie_float.round(4).astype(str)`
+    # puede dejar el NaN como float, y al concatenar `"a|" + NaN = NaN`, colapsando
+    # TODA la clave a "nan". Eso haría que todas las filas con cantidad/dosis vacía
+    # compartieran la misma clave y se fusionaran (pérdida de tratamientos). Por eso
+    # convertimos cada componente a cadena de forma segura (NaN → "").
+    def _num_key(series):
+        s = pd.to_numeric(series, errors="coerce")
+        return s.map(lambda x: "" if pd.isna(x) else str(round(float(x), 4)))
+
+    def _txt_key(series):
+        return series.fillna("").astype(str).str.strip()
+
     out["_clave_fallback"] = (
-        out["Fecha"].astype(str).str.strip() + "|" +
-        out["Campos"].astype(str).str.strip() + "|" +
-        out["Producto"].astype(str).str.strip() + "|" +
-        out["Superficie tratada ha"].round(4).astype(str) + "|" +
-        out["Cantidad"].round(4).astype(str) + "|" +
-        out["Dosis"].round(4).astype(str)
+        _txt_key(out["Fecha"]) + "|" +
+        _txt_key(out["Campos"]) + "|" +
+        _txt_key(out["Producto"]) + "|" +
+        _num_key(out["Superficie tratada ha"]) + "|" +
+        _num_key(out["Cantidad"]) + "|" +
+        _num_key(out["Dosis"])
     )
 
     # ID "real" = tiene contenido y NO es un id sintético (los sintéticos
@@ -2855,8 +2867,25 @@ def normalize_activities_df(df):
         "FB:" + out["_clave_fallback"].astype(str),
     )
 
-    # Deduplicación dura: nunca puede haber dos filas con la misma clave.
+    # Deduplicación dura por clave de importación (ID exacto o FB exacto).
     out = out.drop_duplicates(subset=["_clave_importacion"], keep="first")
+
+    # Deduplicación por CONTENIDO. Dos filas que describen el MISMO tratamiento
+    # (misma fecha, campo, producto, superficie, cantidad y dosis) son la misma
+    # aplicación aunque su ID esté en formatos distintos:
+    #   · ID numérico float vs int  → "4350677.0" y "4350677"
+    #   · ID compuesto heredado     → "3977680.0" y "3977680.0|BACTUR 2X (19856)"
+    #   · ID real frente a sintético → "4402039" y "FB:2026-06-01|Sector 1|FLINT…"
+    # Como la clave de contenido incluye el PRODUCTO, los productos distintos de
+    # una misma mezcla (p. ej. BACTUR + FLINT) NUNCA se fusionan: solo se elimina
+    # el verdadero duplicado. Se conserva la fila con ID real (no sintético).
+    _id_norm = out["ID Agroptima"].astype(str).str.strip()
+    out["_tiene_id_real"] = (_id_norm.str.len() > 0) & (~_id_norm.str.startswith("FB:"))
+    out = (
+        out.sort_values("_tiene_id_real", ascending=False, kind="stable")
+           .drop_duplicates(subset=["_clave_fallback"], keep="first")
+           .drop(columns=["_tiene_id_real"])
+    )
 
     out = out.sort_values(["Fecha", "_clave_importacion"], ascending=[False, True]).reset_index(drop=True)
     return out
