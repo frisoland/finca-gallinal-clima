@@ -12032,6 +12032,35 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             _reentry_days_left = max(0, _BACTUR_REENTRY_DAYS - _days_since_treat)
             _last_treat_str    = _last_treat_dt.strftime("%d/%m")
 
+        # ── Fechas (normalizadas) de TODAS las ventanas de esta zona ──────────
+        # Sirve para saber, ante un tratamiento, si pertenece a otra ventana que
+        # ya estaba madura (≥90 DD) ese día — en cuyo caso NO cubre ni "adelanta"
+        # esta ventana, solo cuenta para la reentrada.
+        _all_trigger_norms = []
+        for _, _tr in trigger_reads.iterrows():
+            _tn = pd.Timestamp(_tr["Fecha"]).normalize()
+            if _tn.tzinfo is not None:
+                _tn = _tn.tz_localize(None)
+            _all_trigger_norms.append(_tn)
+
+        def _dd_between(a_norm, b_norm):
+            if b_norm < a_norm:
+                return 0.0
+            return float(
+                daily_dd[(_fechas_dd_norm >= a_norm) & (_fechas_dd_norm <= b_norm)]["DD día"].sum()
+            )
+
+        def _other_window_mature_at(t_norm, current_trigger_norm):
+            """¿Había OTRA ventana de esta zona ya madura (≥ inicio de ventana DD)
+            en la fecha del tratamiento? Si sí, el tratamiento pertenece a esa otra
+            ventana (más antigua), no a la actual."""
+            for _tn in _all_trigger_norms:
+                if _tn == current_trigger_norm or _tn > t_norm:
+                    continue
+                if _dd_between(_tn, t_norm) >= dd_active_start:
+                    return True
+            return False
+
         for _, trow in trigger_reads.iterrows():
             trigger_date = trow["Fecha"]
             capturas     = int(trow["_capturas"])
@@ -12061,12 +12090,15 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             trat_fecha   = ""
             trat_dd      = ""
             trat_producto = ""
-            # Tratamiento PREVENTIVO: hecho después del trigger pero antes de que
-            # la ventana abra (< 90 DD). No "cierra" la ventana, pero NUNCA se omite:
-            # se registra para que quede reflejado en la tabla.
+            # Tratamiento PREVENTIVO genuino: hecho para ESTA ventana un poco antes
+            # de los 90 DD, cuando NINGUNA otra ventana estaba madura ese día.
             _prev_fecha   = ""
             _prev_dd      = ""
             _prev_producto = ""
+            # Tratamiento de OTRA ventana (más antigua, ya madura ese día): no cubre
+            # esta ventana, pero cuenta para la reentrada (plazo de seguridad).
+            _otra_fecha_dt = None
+            _otra_str      = ""
 
             if not campo_treats_carp.empty:
                 # Solo tratamientos posteriores al trigger de esta lectura
@@ -12083,12 +12115,20 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     )
                     dd_at_trat_val = round(dd_at_trat_val, 1)
 
-                    # ② Si el tratamiento es ANTERIOR a la ventana (< 90 DD), no la
-                    # cierra, pero lo guardamos como "preventivo" para reflejarlo.
+                    # ② Tratamiento ANTERIOR a la ventana de ESTA lectura (< 90 DD):
                     if dd_at_trat_val < _MIN_DD_FOR_TREATMENT:
-                        _prev_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
-                        _prev_dd       = dd_at_trat_val
-                        _prev_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
+                        if _other_window_mature_at(t_norm, trigger_norm):
+                            # Pertenece a otra ventana más antigua que SÍ estaba
+                            # madura ese día → no es de esta ventana. Solo se guarda
+                            # para la mención de reentrada (no se puede re-tratar).
+                            _otra_fecha_dt = t_row["fecha_dt"]
+                            _otra_str      = pd.Timestamp(t_row["fecha_dt"]).strftime("%d/%m")
+                        else:
+                            # Ninguna otra ventana estaba madura → es un adelanto
+                            # genuino para ESTA ventana. Se refleja como preventivo.
+                            _prev_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
+                            _prev_dd       = dd_at_trat_val
+                            _prev_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
                         continue
 
                     # ③ Asignar el tratamiento a esta ventana (≥ 90 DD = dentro de ventana)
@@ -12113,9 +12153,9 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             else:
                 info_extra = "—"
 
-            # ── Reflejar tratamiento PREVENTIVO (antes de ventana) ────────────
-            # Si NO hay tratamiento que cierre la ventana pero SÍ hubo uno antes
-            # de los 90 DD, lo mostramos de forma clara para que nunca se omita.
+            # ── Reflejar tratamiento PREVENTIVO genuino (adelanto en ESTA ventana) ─
+            # Solo cuando el tratamiento fue para esta ventana (ninguna otra estaba
+            # madura ese día). Nunca se omite: se muestra en azul.
             if estado_orden != 3 and _prev_fecha:
                 trat_fecha    = _prev_fecha
                 trat_dd       = _prev_dd
@@ -12131,6 +12171,14 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 else:  # estado_orden == 2 (cerrada por DD sin tratamiento en ventana)
                     estado     = "🔵 Tratado prev. — cerrada"
                     info_extra = f"Tratado {_prev_fecha} ({_prev_dd:g} DD, antes de ventana)."
+
+            # ── Mención de reentrada por tratamiento de OTRA ventana ──────────
+            # La ventana sigue abierta/en espera (el tratamiento NO era para ella),
+            # pero si el campo se trató hace poco hay que respetar el plazo de
+            # seguridad antes de poder tratar esta ventana.
+            elif estado_orden == 1 and _otra_fecha_dt is not None and _reentry_days_left > 0:
+                info_extra = (f"{info_extra} · campo tratado {_otra_str} (otra ventana) — "
+                              f"reentrada {_reentry_days_left}d")
 
             # ── Restricción de reentrada Bactur ───────────────────────────────
             # Si hay reentrada activa (último trat. hace < _BACTUR_REENTRY_DAYS):
