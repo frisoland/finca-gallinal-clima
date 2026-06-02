@@ -11988,6 +11988,12 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     # duración de la eficacia, que es de ~3 días.)
     _BACTUR_REENTRY_DAYS = 7
 
+    # ── Cobertura efectiva del Btk en DD ──────────────────────────────────────
+    # El residuo eficaz dura ~3 días; a 7-9 DD/día son ~25 DD. Un tratamiento a
+    # `trat_dd` protege la eclosión hasta `trat_dd + _BT_COVERAGE_DD`. Si la
+    # eclosión sigue activa más allá de eso, conviene un segundo pase.
+    _BT_COVERAGE_DD = 25
+
     # Normalizar fechas del calendario DD una sola vez (eficiencia)
     _fechas_dd_norm = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
     if _fechas_dd_norm.dt.tz is not None:
@@ -12161,25 +12167,40 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 info_extra = (f"{info_extra} · campo tratado {_otra_str} (otra ventana) — "
                               f"reentrada {_reentry_days_left}d")
 
-            # ── Restricción de reentrada Bactur ───────────────────────────────
-            # Si hay reentrada activa (último trat. hace < _BACTUR_REENTRY_DAYS):
-            #   · ventana activa sin tratar  → bloquear, mostrar espera
-            #   · ventana tratada aún abierta → avisar que habría que retreatar
-            #     pero no se puede todavía (Bactur solo dura ~7 días)
+            # ── Restricción de reentrada Bactur / aviso de 2º pase ─────────────
+            # Dos situaciones que requieren acción y pueden estar bloqueadas por el
+            # plazo de seguridad (reentrada):
+            #   (a) Ventana ACTIVA sin tratar (estado 0): hay que tratar ya.
+            #   (b) Ventana TRATADA pero con la eclosión aún en marcha (≥90 DD) y el
+            #       residuo del Bt YA AGOTADO (han pasado > _BT_COVERAGE_DD desde el
+            #       tratamiento): conviene un 2º pase para cubrir el resto de la
+            #       eclosión.
+            # Una ventana tratada cuya eclosión aún no ha empezado (<90 DD) o cuyo
+            # residuo sigue activo NO genera aviso: está cubierta (verde).
             _reentry_wait = 0
-            if _reentry_days_left > 0:
-                _reentry_wait = _reentry_days_left
-                if estado_orden == 0:
-                    # Ventana activa sin tratar + reentrada activa
+            _bt_agotado = (
+                estado_orden == 3
+                and dd_active_start <= dd_current <= dd_active_end
+                and trat_dd != ""
+                and (dd_current - float(trat_dd)) > _BT_COVERAGE_DD
+            )
+            if estado_orden == 0:
+                # Ventana activa sin tratar → tratar ahora (o esperar si reentrada)
+                if _reentry_days_left > 0:
+                    _reentry_wait = _reentry_days_left
                     estado     = f"⏳ Activa — esperar {_reentry_days_left}d"
                     info_extra = (f"Reentrada Bactur: esperar {_reentry_days_left}d "
                                   f"(último trat. {_last_treat_str})")
-                elif estado_orden == 3 and dd_current <= dd_active_end:
-                    # Ventana tratada, aún dentro del rango activo (< 130 DD):
-                    # habría que dar un segundo pase pero la reentrada lo bloquea
-                    estado     = f"⚠️ Tratar — reentrada: {_reentry_days_left}d"
-                    info_extra = (f"Habría que tratar · esperar {_reentry_days_left}d "
-                                  f"(trat. {_last_treat_str})")
+            elif _bt_agotado:
+                # Residuo agotado y eclosión aún activa → valorar 2º pase
+                if _reentry_days_left > 0:
+                    _reentry_wait = _reentry_days_left
+                    estado     = f"⚠️ 2º pase — esperar {_reentry_days_left}d"
+                    info_extra = (f"Residuo Bt agotado, eclosión activa · esperar "
+                                  f"{_reentry_days_left}d (trat. {_last_treat_str})")
+                else:
+                    estado     = "⚠️ Valorar 2º pase"
+                    info_extra = "Residuo Bt agotado y eclosión aún activa: valorar 2º pase"
 
             # "DD actual" muestra siempre el acumulado real desde el trigger hasta HOY.
             # El DD en el momento del tratamiento ya tiene su propia columna "DD al tratar".
@@ -12720,7 +12741,7 @@ def carpocapsa_tab(history):
         else:
             # Métricas resumen
             # "reentrada" = ventanas ⚠️ Tratar — reentrada: Xd (tratadas pero bloqueadas)
-            n_activas   = len(multi_df[multi_df["Estado"].str.contains("Activa|reentrada", na=False)])
+            n_activas   = len(multi_df[multi_df["Estado"].str.contains("Activa|reentrada|pase", na=False)])
             n_espera    = len(multi_df[multi_df["Estado"].str.contains("espera",   na=False)])
             n_cerradas  = len(multi_df[multi_df["Estado"].str.contains("Cerrada",  na=False)])
             n_tratadas  = len(multi_df[multi_df["Estado"].str.contains("Tratado",  na=False)])
@@ -12734,7 +12755,8 @@ def carpocapsa_tab(history):
             # Obtener todos los estados reales del DataFrame para el filtro dinámico
             _estados_disponibles = sorted(multi_df["Estado"].dropna().unique().tolist())
             _default_estados = [e for e in _estados_disponibles
-                                if "Activa" in e or "espera" in e or "Tratado" in e or "reentrada" in e]
+                                if "Activa" in e or "espera" in e or "Tratado" in e
+                                or "reentrada" in e or "pase" in e]
 
             # Filtro de estado
             estado_filter = st.multiselect(
@@ -12762,12 +12784,10 @@ def carpocapsa_tab(history):
                     e = str(row.get("Estado", ""))
                 except Exception:
                     e = ""
-                if "prev." in e:
-                    bg = "#d6e4f5"   # azul claro (tratado preventivo, antes de ventana)
-                elif "Tratado" in e:
-                    bg = "#d6f0da"   # verde claro
-                elif "esperar" in e or "reentrada" in e:
-                    bg = "#fff0b3"   # naranja/amarillo claro
+                if "Tratado" in e:
+                    bg = "#d6f0da"   # verde claro (tratado/cubierto)
+                elif "esperar" in e or "reentrada" in e or "pase" in e:
+                    bg = "#fff0b3"   # naranja/amarillo claro (acción pendiente/bloqueada)
                 elif "Activa" in e:
                     bg = "#ffd6d6"   # rojo claro
                 elif "Cerrada" in e:
@@ -15306,12 +15326,13 @@ def carpocapsa_sync_annotation(campo_name, windows_df):
     if matched.empty:
         return "", "none"
 
-    activas    = matched[matched["Estado"].str.contains("Activa",    na=False)]
-    # "reentrada" captura las ventanas ⚠️ Tratar — reentrada: Xd
-    tratadas   = matched[matched["Estado"].str.contains("Tratado|reentrada", na=False)]
-    en_espera  = matched[matched["Estado"].str.contains("espera",    na=False)]
+    # "Activa" sin tratar o "2º pase" (residuo agotado) → acción pendiente.
+    activas    = matched[matched["Estado"].str.contains("Activa|pase", na=False)]
+    tratadas   = matched[matched["Estado"].str.contains("Tratado", na=False)]
+    # "espera" pero NO "esperar" de un 2º pase (ya cubierto por activas)
+    en_espera  = matched[matched["Estado"].str.contains("En espera|hasta ventana", na=False)]
 
-    # ── 1. Ventana activa sin tratar ──────────────────────────────────────────
+    # ── 1. Ventana activa sin tratar / 2º pase ────────────────────────────────
     if not activas.empty:
         # Comprobar si hay restricción de reentrada Bactur
         if "_reentry_wait" in activas.columns:
