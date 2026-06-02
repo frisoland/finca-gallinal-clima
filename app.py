@@ -10252,8 +10252,22 @@ def phenology_tab(history, soil_type, hoja_threshold):
     _fsig      = f"{filt_campo}_{filt_var}_{filt_yr}".replace(" ", "_")
     editor_key = f"pheno_ed_{st.session_state.phenology_editor_version}_{_fsig}"
 
+    # Editar tablas muy grandes (miles de filas) puede agotar la memoria de
+    # Streamlit Cloud y reiniciar la app (perdiendo la sesión). Para editar con
+    # fluidez exigimos filtrar a un bloque pequeño.
+    _MAX_EDITABLE_ROWS = 200
+
     if _edit_slice.empty and (_mask.sum() == 0):
         st.info("No hay filas para este filtro. Genera la plantilla primero o ajusta los filtros.")
+    elif len(_edit_slice) > _MAX_EDITABLE_ROWS:
+        st.warning(
+            f"⚠️ La selección actual tiene **{len(_edit_slice)} filas**, demasiadas para editar "
+            f"con fluidez (editar tablas tan grandes puede ralentizar o reiniciar la app). "
+            f"Usa los filtros de arriba — **Campo + Variedad + Año** — para editar un bloque "
+            f"pequeño. Cuando termines un bloque, pulsa **💾 Guardar fenología en Supabase**."
+        )
+        st.caption("Vista de solo lectura (filtra para poder editar):")
+        st.dataframe(_edit_slice, use_container_width=True, hide_index=True)
     else:
         edited = st.data_editor(
             _edit_slice,
