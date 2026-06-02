@@ -11963,30 +11963,30 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     rows = []
     today = pd.Timestamp.today().normalize()
 
-    # ── Umbral mínimo de DD para asignar un tratamiento a una ventana ─────────
-    # Un tratamiento se considera válido para una ventana SOLO si se hizo con
-    # ≥ 90 DD desde el trigger de esa lectura, es decir, dentro del período de
-    # eclosión real (la ventana activa empieza en 90 DD).
-    #
-    # Lógica sin consumo: un mismo tratamiento puede cubrir VARIAS ventanas
-    # el mismo día siempre que cada una tenga ≥ 90 DD acumulados desde su
-    # trigger. Un tratamiento a 71 DD (pre-ventana) NO cuenta — la ventana
-    # sigue en "Activa — tratar" para avisar que hay que intervenir.
-    # Esto evita la falsa sensación de seguridad con tratamientos preventivos.
-    _MIN_DD_FOR_TREATMENT = 90
+    # ── Umbral mínimo de DD para que un tratamiento CUBRA una ventana ─────────
+    # Base biológica (fuentes: PNW Handbooks, UC IPM, MSU, estudios de persistencia
+    # del Btk):
+    #   · El Bactur (Bacillus thuringiensis) es un larvicida: solo mata a la larva
+    #     recién nacida que ingiere la bacteria ANTES de penetrar el fruto
+    #     (la penetración ocurre en < 24 h tras la eclosión).
+    #   · La eclosión de los huevos de esta lectura ocurre hacia los 90 DD.
+    #   · El residuo eficaz del Btk en hoja dura ~3 días (se degrada con UV).
+    #     A 7-9 DD/día eso equivale a ~20 DD.
+    # Por tanto, un tratamiento "cubre" la ventana si su residuo sigue activo en la
+    # eclosión: basta con tratar a partir de (90 − ~20) = 70 DD. Tratar a < 70 DD
+    # significa que el Btk ya se habrá degradado antes de la eclosión → no protege
+    # esta ventana (corresponde a una lectura anterior).
+    _MIN_DD_FOR_TREATMENT = 70
+    # Inicio de la eclosión real (para distinguir "tratado dentro de ventana" de
+    # "tratado un poco antes pero efectivo").
+    _DD_HATCH_START = dd_active_start  # normalmente 90
 
     # ── Periodo de reentrada de Bactur (días mínimos entre aplicaciones) ──────
-    # Bactur (Bacillus thuringiensis) tiene un período de reentrada de 7 días:
-    # aunque los DD indiquen "tratar ahora", si el último tratamiento fue hace
-    # menos de 7 días hay que esperar para no tratar doblado.
+    # Bactur tiene un período de reentrada de 7 días: aunque los DD indiquen
+    # "tratar ahora", si el último tratamiento fue hace menos de 7 días hay que
+    # esperar para no tratar doblado. (Esto es el plazo de seguridad, NO la
+    # duración de la eficacia, que es de ~3 días.)
     _BACTUR_REENTRY_DAYS = 7
-
-    # ── Persistencia de la protección de Bactur ───────────────────────────────
-    # El Bacillus thuringiensis se degrada con la luz UV en ~7 días. Un tratamiento
-    # solo "cubre" una ventana si su protección sigue activa cuando la ventana abre
-    # (date_90). Sirve para distinguir un adelanto genuino (la protección llega a la
-    # ventana) de un tratamiento que era para una lectura anterior (ya expiró).
-    _CARPO_PERSISTENCE_DAYS = 7
 
     # Normalizar fechas del calendario DD una sola vez (eficiencia)
     _fechas_dd_norm = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
@@ -12097,13 +12097,10 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             trat_fecha   = ""
             trat_dd      = ""
             trat_producto = ""
-            # Tratamiento PREVENTIVO genuino: hecho para ESTA ventana un poco antes
-            # de los 90 DD, cuando NINGUNA otra ventana estaba madura ese día.
-            _prev_fecha   = ""
-            _prev_dd      = ""
-            _prev_producto = ""
-            # Tratamiento de OTRA ventana (más antigua, ya madura ese día): no cubre
-            # esta ventana, pero cuenta para la reentrada (plazo de seguridad).
+            _trat_temprano = False   # tratado a 70-90 DD (efectivo pero un poco antes)
+            # Tratamiento de OTRA ventana (anterior, < 70 DD para esta lectura): el
+            # residuo del Btk ya se habrá degradado antes de la eclosión de ESTA
+            # ventana, así que no la cubre; solo cuenta para la reentrada.
             _otra_fecha_dt = None
             _otra_str      = ""
 
@@ -12122,38 +12119,21 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     )
                     dd_at_trat_val = round(dd_at_trat_val, 1)
 
-                    # ② Tratamiento ANTERIOR a la ventana de ESTA lectura (< 90 DD).
-                    # ¿La protección del Bactur (~7 días) sigue activa cuando la
-                    # ventana abre (date_90)? Si sí → adelanto genuino que cubre esta
-                    # ventana. Si no → era para una lectura anterior; solo cuenta para
-                    # la mención de reentrada.
+                    # ② Tratamiento demasiado temprano para ESTA ventana (< 70 DD):
+                    # el residuo del Btk (~3 días) se habrá degradado antes de la
+                    # eclosión (90 DD), así que NO la cubre. Pertenece a una lectura
+                    # anterior; solo se guarda para la mención de reentrada.
                     if dd_at_trat_val < _MIN_DD_FOR_TREATMENT:
-                        _t_dt = pd.Timestamp(t_row["fecha_dt"]).normalize()
-                        if _t_dt.tzinfo is not None:
-                            _t_dt = _t_dt.tz_localize(None)
-                        _reaches_window = (
-                            pd.notna(date_90)
-                            and (_t_dt + pd.Timedelta(days=_CARPO_PERSISTENCE_DAYS))
-                                >= pd.Timestamp(date_90).normalize()
-                        )
-                        if _reaches_window:
-                            # La protección llega a la apertura → cubre esta ventana
-                            _prev_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
-                            _prev_dd       = dd_at_trat_val
-                            _prev_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
-                        else:
-                            # La protección ya habrá expirado al abrir → otra ventana
-                            _otra_fecha_dt = t_row["fecha_dt"]
-                            _otra_str      = _t_dt.strftime("%d/%m")
+                        _otra_fecha_dt = t_row["fecha_dt"]
+                        _otra_str      = t_norm.strftime("%d/%m")
                         continue
 
-                    # ③ Asignar el tratamiento a esta ventana (≥ 90 DD = dentro de ventana)
-                    trat_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
-                    trat_dd       = dd_at_trat_val
-                    trat_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
-
-                    # Tratado = siempre cerrada (verde). No hay distinción entre
-                    # "ventana cubierta" y "cerrada": una vez tratado, el campo pasa a verde.
+                    # ③ Tratamiento que CUBRE esta ventana (≥ 70 DD): el Btk sigue
+                    # activo en la eclosión. Se considera tratada (verde).
+                    trat_fecha     = t_row["fecha_dt"].strftime("%d/%m/%Y")
+                    trat_dd        = dd_at_trat_val
+                    trat_producto  = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
+                    _trat_temprano = dd_at_trat_val < _DD_HATCH_START  # 70-90 DD
                     estado       = "✅ Tratado — cerrada"
                     estado_orden = 3
                     break  # un solo tratamiento por ventana
@@ -12165,34 +12145,19 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             elif estado_orden == 0:
                 info_extra = "⚠️ Tratar ahora"
             elif estado_orden == 3:
-                info_extra = f"Tratado {trat_fecha}"
+                if _trat_temprano:
+                    info_extra = f"Tratado {trat_fecha} ({trat_dd:g} DD, adelanto efectivo)"
+                else:
+                    info_extra = f"Tratado {trat_fecha}"
             else:
                 info_extra = "—"
 
-            # ── Reflejar tratamiento PREVENTIVO genuino (adelanto en ESTA ventana) ─
-            # Solo cuando el tratamiento fue para esta ventana (ninguna otra estaba
-            # madura ese día). Nunca se omite: se muestra en azul.
-            if estado_orden != 3 and _prev_fecha:
-                trat_fecha    = _prev_fecha
-                trat_dd       = _prev_dd
-                trat_producto = _prev_producto
-                if estado_orden == 1:
-                    estado     = "🔵 Tratado prev. — vigilar ventana"
-                    info_extra = (f"Tratado {_prev_fecha} ({_prev_dd:g} DD, antes de ventana). "
-                                  f"Vigilar apertura.")
-                elif estado_orden == 0:
-                    estado     = "🔵 Tratado prev. — valorar refuerzo"
-                    info_extra = (f"Tratado {_prev_fecha} ({_prev_dd:g} DD, antes de ventana). "
-                                  f"Ventana activa: valorar refuerzo.")
-                else:  # estado_orden == 2 (cerrada por DD sin tratamiento en ventana)
-                    estado     = "🔵 Tratado prev. — cerrada"
-                    info_extra = f"Tratado {_prev_fecha} ({_prev_dd:g} DD, antes de ventana)."
-
             # ── Mención de reentrada por tratamiento de OTRA ventana ──────────
-            # La ventana sigue abierta/en espera (el tratamiento NO era para ella),
-            # pero si el campo se trató hace poco hay que respetar el plazo de
-            # seguridad antes de poder tratar esta ventana.
-            elif estado_orden == 1 and _otra_fecha_dt is not None and _reentry_days_left > 0:
+            # La ventana sigue en espera (el tratamiento fue demasiado temprano para
+            # ella, < 70 DD, así que el Btk ya no protege su eclosión: corresponde a
+            # una lectura anterior). Si el campo se trató hace poco, se avisa del
+            # plazo de seguridad antes de poder tratar esta ventana.
+            if estado_orden == 1 and _otra_fecha_dt is not None and _reentry_days_left > 0:
                 info_extra = (f"{info_extra} · campo tratado {_otra_str} (otra ventana) — "
                               f"reentrada {_reentry_days_left}d")
 
