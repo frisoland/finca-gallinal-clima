@@ -11952,6 +11952,13 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     # menos de 7 días hay que esperar para no tratar doblado.
     _BACTUR_REENTRY_DAYS = 7
 
+    # ── Persistencia de la protección de Bactur ───────────────────────────────
+    # El Bacillus thuringiensis se degrada con la luz UV en ~7 días. Un tratamiento
+    # solo "cubre" una ventana si su protección sigue activa cuando la ventana abre
+    # (date_90). Sirve para distinguir un adelanto genuino (la protección llega a la
+    # ventana) de un tratamiento que era para una lectura anterior (ya expiró).
+    _CARPO_PERSISTENCE_DAYS = 7
+
     # Normalizar fechas del calendario DD una sola vez (eficiencia)
     _fechas_dd_norm = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
     if _fechas_dd_norm.dt.tz is not None:
@@ -12032,35 +12039,6 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             _reentry_days_left = max(0, _BACTUR_REENTRY_DAYS - _days_since_treat)
             _last_treat_str    = _last_treat_dt.strftime("%d/%m")
 
-        # ── Fechas (normalizadas) de TODAS las ventanas de esta zona ──────────
-        # Sirve para saber, ante un tratamiento, si pertenece a otra ventana que
-        # ya estaba madura (≥90 DD) ese día — en cuyo caso NO cubre ni "adelanta"
-        # esta ventana, solo cuenta para la reentrada.
-        _all_trigger_norms = []
-        for _, _tr in trigger_reads.iterrows():
-            _tn = pd.Timestamp(_tr["Fecha"]).normalize()
-            if _tn.tzinfo is not None:
-                _tn = _tn.tz_localize(None)
-            _all_trigger_norms.append(_tn)
-
-        def _dd_between(a_norm, b_norm):
-            if b_norm < a_norm:
-                return 0.0
-            return float(
-                daily_dd[(_fechas_dd_norm >= a_norm) & (_fechas_dd_norm <= b_norm)]["DD día"].sum()
-            )
-
-        def _other_window_mature_at(t_norm, current_trigger_norm):
-            """¿Había OTRA ventana de esta zona ya madura (≥ inicio de ventana DD)
-            en la fecha del tratamiento? Si sí, el tratamiento pertenece a esa otra
-            ventana (más antigua), no a la actual."""
-            for _tn in _all_trigger_norms:
-                if _tn == current_trigger_norm or _tn > t_norm:
-                    continue
-                if _dd_between(_tn, t_norm) >= dd_active_start:
-                    return True
-            return False
-
         for _, trow in trigger_reads.iterrows():
             trigger_date = trow["Fecha"]
             capturas     = int(trow["_capturas"])
@@ -12115,20 +12093,29 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     )
                     dd_at_trat_val = round(dd_at_trat_val, 1)
 
-                    # ② Tratamiento ANTERIOR a la ventana de ESTA lectura (< 90 DD):
+                    # ② Tratamiento ANTERIOR a la ventana de ESTA lectura (< 90 DD).
+                    # ¿La protección del Bactur (~7 días) sigue activa cuando la
+                    # ventana abre (date_90)? Si sí → adelanto genuino que cubre esta
+                    # ventana. Si no → era para una lectura anterior; solo cuenta para
+                    # la mención de reentrada.
                     if dd_at_trat_val < _MIN_DD_FOR_TREATMENT:
-                        if _other_window_mature_at(t_norm, trigger_norm):
-                            # Pertenece a otra ventana más antigua que SÍ estaba
-                            # madura ese día → no es de esta ventana. Solo se guarda
-                            # para la mención de reentrada (no se puede re-tratar).
-                            _otra_fecha_dt = t_row["fecha_dt"]
-                            _otra_str      = pd.Timestamp(t_row["fecha_dt"]).strftime("%d/%m")
-                        else:
-                            # Ninguna otra ventana estaba madura → es un adelanto
-                            # genuino para ESTA ventana. Se refleja como preventivo.
+                        _t_dt = pd.Timestamp(t_row["fecha_dt"]).normalize()
+                        if _t_dt.tzinfo is not None:
+                            _t_dt = _t_dt.tz_localize(None)
+                        _reaches_window = (
+                            pd.notna(date_90)
+                            and (_t_dt + pd.Timedelta(days=_CARPO_PERSISTENCE_DAYS))
+                                >= pd.Timestamp(date_90).normalize()
+                        )
+                        if _reaches_window:
+                            # La protección llega a la apertura → cubre esta ventana
                             _prev_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
                             _prev_dd       = dd_at_trat_val
                             _prev_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
+                        else:
+                            # La protección ya habrá expirado al abrir → otra ventana
+                            _otra_fecha_dt = t_row["fecha_dt"]
+                            _otra_str      = _t_dt.strftime("%d/%m")
                         continue
 
                     # ③ Asignar el tratamiento a esta ventana (≥ 90 DD = dentro de ventana)
