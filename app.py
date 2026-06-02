@@ -12061,6 +12061,12 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             trat_fecha   = ""
             trat_dd      = ""
             trat_producto = ""
+            # Tratamiento PREVENTIVO: hecho después del trigger pero antes de que
+            # la ventana abra (< 90 DD). No "cierra" la ventana, pero NUNCA se omite:
+            # se registra para que quede reflejado en la tabla.
+            _prev_fecha   = ""
+            _prev_dd      = ""
+            _prev_producto = ""
 
             if not campo_treats_carp.empty:
                 # Solo tratamientos posteriores al trigger de esta lectura
@@ -12077,12 +12083,15 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     )
                     dd_at_trat_val = round(dd_at_trat_val, 1)
 
-                    # ② Umbral mínimo: rechazar tratamientos en el mismo día o
-                    # muy poco después del trigger (DD = 0-39 = "preventivo").
+                    # ② Si el tratamiento es ANTERIOR a la ventana (< 90 DD), no la
+                    # cierra, pero lo guardamos como "preventivo" para reflejarlo.
                     if dd_at_trat_val < _MIN_DD_FOR_TREATMENT:
+                        _prev_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
+                        _prev_dd       = dd_at_trat_val
+                        _prev_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
                         continue
 
-                    # ③ Asignar el tratamiento a esta ventana
+                    # ③ Asignar el tratamiento a esta ventana (≥ 90 DD = dentro de ventana)
                     trat_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
                     trat_dd       = dd_at_trat_val
                     trat_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
@@ -12103,6 +12112,25 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 info_extra = f"Tratado {trat_fecha}"
             else:
                 info_extra = "—"
+
+            # ── Reflejar tratamiento PREVENTIVO (antes de ventana) ────────────
+            # Si NO hay tratamiento que cierre la ventana pero SÍ hubo uno antes
+            # de los 90 DD, lo mostramos de forma clara para que nunca se omita.
+            if estado_orden != 3 and _prev_fecha:
+                trat_fecha    = _prev_fecha
+                trat_dd       = _prev_dd
+                trat_producto = _prev_producto
+                if estado_orden == 1:
+                    estado     = "🔵 Tratado prev. — vigilar ventana"
+                    info_extra = (f"Tratado {_prev_fecha} ({_prev_dd:g} DD, antes de ventana). "
+                                  f"Vigilar apertura.")
+                elif estado_orden == 0:
+                    estado     = "🔵 Tratado prev. — valorar refuerzo"
+                    info_extra = (f"Tratado {_prev_fecha} ({_prev_dd:g} DD, antes de ventana). "
+                                  f"Ventana activa: valorar refuerzo.")
+                else:  # estado_orden == 2 (cerrada por DD sin tratamiento en ventana)
+                    estado     = "🔵 Tratado prev. — cerrada"
+                    info_extra = f"Tratado {_prev_fecha} ({_prev_dd:g} DD, antes de ventana)."
 
             # ── Restricción de reentrada Bactur ───────────────────────────────
             # Si hay reentrada activa (último trat. hace < _BACTUR_REENTRY_DAYS):
@@ -12705,7 +12733,9 @@ def carpocapsa_tab(history):
                     e = str(row.get("Estado", ""))
                 except Exception:
                     e = ""
-                if "Tratado" in e:
+                if "prev." in e:
+                    bg = "#d6e4f5"   # azul claro (tratado preventivo, antes de ventana)
+                elif "Tratado" in e:
                     bg = "#d6f0da"   # verde claro
                 elif "esperar" in e or "reentrada" in e:
                     bg = "#fff0b3"   # naranja/amarillo claro
