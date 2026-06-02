@@ -2828,21 +2828,35 @@ def normalize_activities_df(df):
     for col in numeric_cols:
         out[col] = pd.to_numeric(out[col], errors="coerce")
 
-    # Clave alternativa para casos sin ID Agroptima.
+    # Clave alternativa para casos sin ID Agroptima real.
+    # Incluye Cantidad además de Superficie/Dosis para distinguir productos
+    # distintos de la misma mezcla con misma dosis pero distinta cantidad.
     out["_clave_fallback"] = (
         out["Fecha"].astype(str).str.strip() + "|" +
         out["Campos"].astype(str).str.strip() + "|" +
         out["Producto"].astype(str).str.strip() + "|" +
         out["Superficie tratada ha"].round(4).astype(str) + "|" +
+        out["Cantidad"].round(4).astype(str) + "|" +
         out["Dosis"].round(4).astype(str)
     )
 
-    # Si hay ID, manda el ID. Si no hay ID, usa clave alternativa.
+    # ID "real" = tiene contenido y NO es un id sintético (los sintéticos
+    # empiezan por "FB:" y se generan para las filas de continuación sin ID).
+    _id_str = out["ID Agroptima"].astype(str).str.strip()
+    _is_real_id = (_id_str.str.len() > 0) & (~_id_str.str.startswith("FB:"))
+
+    # Si hay ID real, manda el ID. Si no (vacío o sintético), usa clave alternativa.
+    # Así una fila de continuación guardada con id sintético "FB:<clave>" y una
+    # versión antigua sin id (id vacío) colapsan a la MISMA _clave_importacion,
+    # evitando duplicados en pantalla y en los cálculos.
     out["_clave_importacion"] = np.where(
-        out["ID Agroptima"].astype(str).str.len() > 0,
-        "ID:" + out["ID Agroptima"].astype(str),
+        _is_real_id,
+        "ID:" + _id_str,
         "FB:" + out["_clave_fallback"].astype(str),
     )
+
+    # Deduplicación dura: nunca puede haber dos filas con la misma clave.
+    out = out.drop_duplicates(subset=["_clave_importacion"], keep="first")
 
     out = out.sort_values(["Fecha", "_clave_importacion"], ascending=[False, True]).reset_index(drop=True)
     return out
@@ -3665,10 +3679,20 @@ def activities_dataframe_for_supabase(df):
             value = pd.to_numeric(row.get(app_col, np.nan), errors="coerce")
             rec[db_col] = None if pd.isna(value) else float(value)
 
-        # Limpieza de ID. Si no hay ID, id_agroptima queda None y se conserva clave_fallback.
+        # Limpieza de ID. Si no hay ID real, generamos un ID SINTÉTICO determinista
+        # a partir de la clave_fallback ("FB:" + fecha|campos|producto|sup|cant|dosis).
+        # Así CADA producto (incluidas las filas de continuación de una mezcla) tiene
+        # un id_agroptima único y estable → el upsert por id_agroptima es idempotente
+        # y nunca se duplican filas al volver a guardar.
         id_agro = str(row.get("ID Agroptima", "") or "").strip()
-        rec["id_agroptima"] = id_agro if id_agro and id_agro.lower() not in ("nan", "none", "<na>") else None
-        rec["clave_fallback"] = str(row.get("_clave_fallback", "") or "").strip() or None
+        _clave_fb = str(row.get("_clave_fallback", "") or "").strip()
+        if id_agro and id_agro.lower() not in ("nan", "none", "<na>") and not id_agro.startswith("FB:"):
+            rec["id_agroptima"] = id_agro
+        elif _clave_fb:
+            rec["id_agroptima"] = "FB:" + _clave_fb
+        else:
+            rec["id_agroptima"] = None
+        rec["clave_fallback"] = _clave_fb or None
 
         records.append(rec)
 
