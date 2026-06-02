@@ -2659,6 +2659,53 @@ def filter_only_fitosanitario(df):
     return df[mask].reset_index(drop=True)
 
 
+def detect_field_treatment_duplicates(df):
+    """Detecta posibles duplicados de importación: un mismo CAMPO recibe el mismo
+    PRODUCTO el mismo DÍA en más de un registro distinto (p. ej. una vez como
+    aplicación combinada de varios campos y otra vez por separado, por haber
+    editado la actuación en Agroptima y reimportar).
+
+    No borra nada: solo devuelve un resumen para avisar al usuario.
+    Devuelve un DataFrame con columnas Campo, Producto, Fecha, "Aparece en",
+    "Nº registros" (vacío si no hay duplicados)."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    _campos_col = "Campos reconocidos" if "Campos reconocidos" in df.columns else (
+                  "Campos" if "Campos" in df.columns else None)
+    if _campos_col is None or "Producto" not in df.columns or "Fecha" not in df.columns:
+        return pd.DataFrame()
+
+    exp = []
+    for _, r in df.iterrows():
+        fecha = str(r.get("Fecha", "")).strip()
+        prod  = str(r.get("Producto", "")).strip()
+        campos_reg = str(r.get(_campos_col, "") or "")
+        if not fecha or not prod or prod.lower() == "nan":
+            continue
+        for campo in [c.strip() for c in campos_reg.split(",") if c.strip()]:
+            exp.append({
+                "Campo": campo, "Producto": prod, "Fecha": fecha,
+                "_registro": campos_reg.strip(),
+            })
+    if not exp:
+        return pd.DataFrame()
+
+    ex = pd.DataFrame(exp)
+    out = []
+    for (campo, prod, fecha), g in ex.groupby(["Campo", "Producto", "Fecha"]):
+        # Duplicado real solo si proviene de registros DISTINTOS (combinada vs suelta)
+        registros = sorted(g["_registro"].unique())
+        if len(registros) > 1:
+            out.append({
+                "Campo": campo, "Producto": prod, "Fecha": fecha,
+                "Aparece en": "  ·  ".join(registros),
+                "Nº registros": len(registros),
+            })
+    if not out:
+        return pd.DataFrame()
+    return pd.DataFrame(out).sort_values(["Fecha", "Campo", "Producto"]).reset_index(drop=True)
+
+
 def parse_agroptima_activities_excel(uploaded_file):
     """Lee un Excel de actividades de Agroptima y lo convierte a tabla limpia."""
     if uploaded_file is None:
@@ -3192,6 +3239,20 @@ def render_activities_summaries(activities_df):
     fechas = pd.to_datetime(visible["Fecha"], errors="coerce").dropna()
     if not fechas.empty:
         st.caption(f"Rango de fechas del histórico: {fechas.min().date()} → {fechas.max().date()}")
+
+    # ── Aviso de posibles duplicados (no destructivo) ─────────────────────────
+    _dups = detect_field_treatment_duplicates(visible)
+    if not _dups.empty:
+        _n = len(_dups)
+        st.warning(
+            f"⚠️ Detectados **{_n} posible(s) duplicado(s)**: un mismo campo recibe el "
+            f"mismo producto el mismo día en varios registros (suele pasar al editar "
+            f"una actuación en Agroptima — combinarla/separarla — y reimportar). "
+            f"No afecta a los cálculos (los pases se deduplican automáticamente), pero "
+            f"puedes corregirlo en Agroptima y reimportar si quieres dejarlo limpio."
+        )
+        with st.expander(f"Ver los {_n} posibles duplicados", expanded=False):
+            st.dataframe(_dups, use_container_width=True, hide_index=True)
 
     st.markdown("#### Histórico de actuaciones")
     st.dataframe(visible, use_container_width=True)
