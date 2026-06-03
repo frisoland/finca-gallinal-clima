@@ -14941,38 +14941,26 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         hovertemplate="%{x|%d/%m}<br>Lluvia: %{y:.1f} mm<extra></extra>",
     ))
 
-    # Relleno por zonas de gravedad SOLO bajo la curva (fuera queda blanco).
-    # Para cada banda [lo,hi] apilamos: una base constante en `lo` + el valor
-    # recortado a [lo,hi] con fill="tonexty" en el color de la banda. Así el color
-    # se queda dentro de la curva y sigue su forma; por encima de la línea, blanco.
-    _bands = [
-        (0,   25,  "rgba(44,160,44,0.45)"),    # verde   — sin/ligero
-        (25,  50,  "rgba(245,197,24,0.55)"),   # amarillo — ligero
-        (50,  100, "rgba(255,127,14,0.55)"),   # naranja  — moderado
-        (100, 160, "rgba(214,39,40,0.55)"),    # rojo     — grave
+    # Zonas de gravedad de fondo (verde / amarillo / naranja / rojo)
+    _zones = [
+        (0,   25,  "rgba(44,160,44,0.10)"),    # verde   — sin/ligero
+        (25,  50,  "rgba(245,197,24,0.14)"),   # amarillo — ligero
+        (50,  100, "rgba(255,127,14,0.14)"),   # naranja  — moderado
+        (100, 160, "rgba(214,39,40,0.14)"),    # rojo     — grave
     ]
-    for _lo, _hi, _col in _bands:
-        _clip = [min(max(float(v), _lo), _hi) for v in values]
-        # Base de la banda (invisible)
-        fig.add_trace(go.Scatter(
-            x=dates, y=[_lo] * len(dates), mode="lines",
-            line=dict(width=0, shape="spline", smoothing=0.9),
-            hoverinfo="skip", showlegend=False,
-        ))
-        # Relleno hasta la curva recortada a la banda
-        fig.add_trace(go.Scatter(
-            x=dates, y=_clip, mode="lines",
-            line=dict(width=0, shape="spline", smoothing=0.9),
-            fill="tonexty", fillcolor=_col,
-            hoverinfo="skip", showlegend=False,
-        ))
+    for _lo, _hi, _col in _zones:
+        fig.add_hrect(y0=_lo, y1=_hi, fillcolor=_col, line_width=0, layer="below")
 
-    # Curva principal por encima (línea oscura, sin relleno).
+    # Curva de infección: línea suavizada (spline) rellena hasta cero. El relleno
+    # deja ver las zonas de color del fondo → el área se "colorea" según la gravedad
+    # que alcanza la curva. La línea se colorea según el pico del periodo.
+    _peak_col = _dec_bar_color(max(values) if values else 0)
     fig.add_trace(go.Scatter(
         x=dates, y=values,
         name=disease_name,
         mode="lines",
-        line=dict(shape="spline", smoothing=0.9, color="#444444", width=2.4),
+        line=dict(shape="spline", smoothing=0.9, color=_peak_col, width=2.6),
+        fill="tozeroy", fillcolor="rgba(120,120,120,0.10)",
         customdata=list(zip(
             risk_df["T_med"].fillna("?").tolist(),
             risk_df["HR_med"].fillna("?").tolist(),
