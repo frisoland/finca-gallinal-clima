@@ -16283,7 +16283,7 @@ def render_decisiones_panel():
     p1, p2, p3 = st.columns([1, 1, 2])
     with p1:
         days_back = st.number_input(
-            "Días de histórico", min_value=15, max_value=90, value=45, step=5, key="dec_days_back",
+            "Días de histórico", min_value=15, max_value=90, value=30, step=5, key="dec_days_back",
             help="Cuántos días pasados incluir en las gráficas",
         )
     with p2:
