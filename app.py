@@ -15805,16 +15805,48 @@ def build_daily_report_text(history_df, traps_df, activities_df,
                 f"ráfaga máx: {_n(_m.get('gust_max'))}"
             )
             lines.append(f"  ☀️ Radiación acum.: {_n(_m.get('radiation_sum'))} MJ/m²")
-            _sc = _m.get('scab_events_ge1', 0)
-            _mo = _m.get('monilia_events_ge1', 0)
+            _sc = int(_m.get('scab_events_ge1', 0))
+            _mo = int(_m.get('monilia_events_ge1', 0))
+            _max_scab = float(_m.get('max_scab_ratio', 0) or 0)
+            _max_mon  = float(_m.get('max_monilia_ratio', 0) or 0)
             lines.append(
-                f"  🍄 Moteado: ratio máx {_n(_m.get('max_scab_ratio'), 2)} "
-                f"· {int(_sc)} evento(s) de infección"
+                f"  🍄 Moteado: ratio máx {_n(_max_scab, 2)} "
+                f"· {_sc} evento(s) de infección"
             )
             lines.append(
-                f"  🍑 Monilia: ratio máx {_n(_m.get('max_monilia_ratio'), 2)} "
-                f"· {int(_mo)} evento(s)"
+                f"  🍑 Monilia: ratio máx {_n(_max_mon, 2)} "
+                f"· {_mo} evento(s)"
             )
+
+            # Oídio: se calcula aparte (favorece cálido y seco, no hoja mojada).
+            _oidio_vals = []
+            try:
+                _ho = history_df.copy()
+                _ho["fecha_hora"] = pd.to_datetime(_ho["fecha_hora"], errors="coerce")
+                _ho = _ho.dropna(subset=["fecha_hora"])
+                _ho = _ho[(_ho["fecha_hora"].dt.date >= _ini) & (_ho["fecha_hora"].dt.date <= _fin)]
+                for _dd, _gg in _ho.groupby(_ho["fecha_hora"].dt.date):
+                    _tm = pd.to_numeric(_gg["temp_media"], errors="coerce").mean()
+                    _hm = pd.to_numeric(_gg["hr_media"],   errors="coerce").mean()
+                    _ll = pd.to_numeric(_gg["lluvia_mm"],  errors="coerce").sum()
+                    _oidio_vals.append(_dec_oidio_value(_tm, _hm, _ll))
+            except Exception:
+                _oidio_vals = []
+            _oidio_max  = max(_oidio_vals) if _oidio_vals else 0.0
+            _oidio_days = sum(1 for v in _oidio_vals if v >= 50)
+            lines.append(
+                f"  🌬️ Oídio: favorabilidad máx {_n(_oidio_max, 0)}/100 "
+                f"· {_oidio_days} día(s) favorable(s)"
+            )
+
+            # ── Interpretación global del riesgo sanitario de la semana ───────
+            if _sc > 0 or _mo > 0:
+                _interp = "🔴 Semana con evento(s) de infección — revisar cobertura fungicida."
+            elif _max_scab >= 0.75 or _max_mon >= 0.75 or _oidio_max >= 60:
+                _interp = "🟡 Riesgo sanitario moderado — conviene vigilar la evolución."
+            else:
+                _interp = "🟢 Semana de bajo riesgo sanitario."
+            lines.append(f"  <b>{_interp}</b>")
     except Exception:
         pass  # el resumen semanal nunca debe romper el informe diario
 
