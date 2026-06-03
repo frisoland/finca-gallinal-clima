@@ -14816,24 +14816,85 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
     """
     DataFrame diario con valores de riesgo para Moteado, Monilia, Oídio y DD Carpocapsa.
     Cubre los últimos `days_back` días reales + todos los días de predicción.
+
+    MODELO POR EVENTOS (coherente con el item Sanidad): el moteado y la monilia se
+    calculan a partir de EVENTOS CONTINUOS de hoja mojada (detect_leaf_wetness_events)
+    y su ratio frente al umbral de Mills, NO de la suma diaria de horas húmedas (que
+    sobreestimaba y pintaba casi todos los días como "grave"). Cada evento se asigna
+    al día en que TERMINA (cuando se completa la infección).
     """
     today = pd.Timestamp.now().normalize()
     start = today - pd.Timedelta(days=int(days_back))
-    rows = []
 
-    def _process_group(fecha, g, es_pred):
+    # 1. Combinar histórico (real) + previsión (futuro) en un único horario.
+    frames = []
+    if history_df is not None and not history_df.empty:
+        h = history_df.copy()
+        h["fecha_hora"] = pd.to_datetime(h["fecha_hora"])
+        h = h[(h["fecha_hora"] >= start) & (h["fecha_hora"] < today)].copy()
+        if not h.empty:
+            h["_es_pred"] = False
+            frames.append(h)
+    if forecast_df is not None and not forecast_df.empty:
+        f = forecast_df.copy()
+        f["fecha_hora"] = pd.to_datetime(f["fecha_hora"])
+        f = f[f["fecha_hora"] >= today].copy()
+        if not f.empty:
+            # La previsión no tiene sensor de hoja: estimamos hoja mojada horaria de
+            # forma conservadora (lluvia o HR≥92, como antes), para no inflar el futuro.
+            if "humectacion_hoja" not in f.columns:
+                f["humectacion_hoja"] = np.nan
+            _hr = pd.to_numeric(f.get("hr_media"), errors="coerce")
+            _ll = pd.to_numeric(f.get("lluvia_mm"), errors="coerce").fillna(0)
+            _wet_est = ((_hr >= 92) | (_ll > 0.1))
+            _sin_sensor = pd.to_numeric(f["humectacion_hoja"], errors="coerce").isna()
+            f.loc[_sin_sensor, "humectacion_hoja"] = np.where(_wet_est[_sin_sensor], 60.0, 0.0)
+            f["_es_pred"] = True
+            frames.append(f)
+
+    if not frames:
+        return pd.DataFrame()
+
+    allh = pd.concat(frames, ignore_index=True).sort_values("fecha_hora")
+    for _col in ("temp_media", "temp_min", "temp_max", "hr_media", "lluvia_mm", "humectacion_hoja"):
+        if _col not in allh.columns:
+            allh[_col] = np.nan
+
+    # 2. Detectar eventos de hoja mojada sobre TODO el horario (igual que Sanidad)
+    #    y mapear cada evento al día en que termina → máximo ratio de ese día.
+    mills_by_day, monilia_by_day = {}, {}
+    try:
+        events = detect_leaf_wetness_events(allh)
+    except Exception:
+        events = pd.DataFrame()
+    if events is not None and not events.empty:
+        for _, ev in events.iterrows():
+            fin = pd.to_datetime(ev.get("Fin"), errors="coerce")
+            if pd.isna(fin):
+                continue
+            d = fin.normalize()
+            rm = ev.get("Ratio moteado", np.nan)
+            ro = ev.get("Ratio monilia", np.nan)
+            if pd.notna(rm):
+                mills_by_day[d] = max(mills_by_day.get(d, 0.0), float(rm) * 100.0)
+            if pd.notna(ro):
+                monilia_by_day[d] = max(monilia_by_day.get(d, 0.0), float(ro) * 100.0)
+
+    # 3. Construir filas diarias con agregados meteo + valores de enfermedad por evento.
+    allh["_fecha"] = allh["fecha_hora"].dt.date
+    rows = []
+    for fecha, g in allh.groupby("_fecha"):
+        d = pd.Timestamp(fecha)
+        es_pred  = bool(g["_es_pred"].any()) if "_es_pred" in g.columns else False
         temp_med = pd.to_numeric(g["temp_media"], errors="coerce").mean()
-        temp_min = pd.to_numeric(g.get("temp_min", pd.Series(dtype=float)), errors="coerce").min()
-        temp_max = pd.to_numeric(g.get("temp_max", pd.Series(dtype=float)), errors="coerce").max()
+        temp_min = pd.to_numeric(g["temp_min"],   errors="coerce").min()
+        temp_max = pd.to_numeric(g["temp_max"],   errors="coerce").max()
         hr_med   = pd.to_numeric(g["hr_media"],   errors="coerce").mean()
         lluvia   = pd.to_numeric(g["lluvia_mm"],  errors="coerce").sum()
-        horas_hum = int(pd.to_numeric(g["humectacion_hoja"], errors="coerce").fillna(0).gt(0).sum())
-        # Estimación si no hay sensor de hoja
-        if horas_hum == 0 and (lluvia > 0.5 or (pd.notna(hr_med) and hr_med > 92)):
-            horas_hum = min(int(lluvia * 1.5), 8) + (2 if pd.notna(hr_med) and hr_med > 92 else 0)
+        horas_hum = int((pd.to_numeric(g["humectacion_hoja"], errors="coerce").fillna(0) > 0).sum())
         dd_dia = max(0.0, min(float(temp_med) if pd.notna(temp_med) else 0.0, float(upper_temp)) - base_temp) if pd.notna(temp_med) else 0.0
-        return {
-            "Fecha":          pd.Timestamp(fecha),
+        rows.append({
+            "Fecha":          d,
             "T_min":          round(float(temp_min), 1) if pd.notna(temp_min) else None,
             "T_max":          round(float(temp_max), 1) if pd.notna(temp_max) else None,
             "T_med":          round(float(temp_med), 1) if pd.notna(temp_med) else None,
@@ -14841,30 +14902,11 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
             "Lluvia":         round(float(lluvia), 1)   if pd.notna(lluvia)   else 0.0,
             "Horas_mojadura": horas_hum,
             "Es_prediccion":  es_pred,
-            "Mills_valor":    _dec_mills_value(temp_med, horas_hum),
-            "Monilia_valor":  _dec_monilia_value(temp_med, hr_med, lluvia, horas_hum),
+            "Mills_valor":    round(min(mills_by_day.get(d, 0.0), 150.0), 1),
+            "Monilia_valor":  round(min(monilia_by_day.get(d, 0.0), 100.0), 1),
             "Oidio_valor":    _dec_oidio_value(temp_med, hr_med, lluvia),
             "DD_dia":         round(dd_dia, 1),
-        }
-
-    # Histórico
-    if history_df is not None and not history_df.empty:
-        h = history_df.copy()
-        h["fecha_hora"] = pd.to_datetime(h["fecha_hora"])
-        h = h[h["fecha_hora"] >= start].copy()
-        h["_fecha"] = h["fecha_hora"].dt.date
-        for fecha, g in h.groupby("_fecha"):
-            if pd.Timestamp(fecha) >= today:
-                continue
-            rows.append(_process_group(fecha, g, False))
-
-    # Predicción
-    if forecast_df is not None and not forecast_df.empty:
-        f = forecast_df.copy()
-        f["fecha_hora"] = pd.to_datetime(f["fecha_hora"])
-        f["_fecha"] = f["fecha_hora"].dt.date
-        for fecha, g in f.groupby("_fecha"):
-            rows.append(_process_group(fecha, g, True))
+        })
 
     if not rows:
         return pd.DataFrame()
@@ -14888,9 +14930,6 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
     lluvia = risk_df["Lluvia"].fillna(0).tolist()
     es_pred = risk_df["Es_prediccion"].tolist()
 
-    bar_colors = [_dec_bar_color(v) for v in values]
-    bar_opacity = [0.95 if not p else 0.60 for p in es_pred]
-
     fig = go.Figure()
 
     # Precipitación (fondo, eje secundario)
@@ -14902,12 +14941,26 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         hovertemplate="%{x|%d/%m}<br>Lluvia: %{y:.1f} mm<extra></extra>",
     ))
 
-    # Barras de infección
-    fig.add_trace(go.Bar(
+    # Zonas de gravedad de fondo (verde / amarillo / naranja / rojo)
+    _zones = [
+        (0,   25,  "rgba(44,160,44,0.10)"),    # verde   — sin/ligero
+        (25,  50,  "rgba(245,197,24,0.14)"),   # amarillo — ligero
+        (50,  100, "rgba(255,127,14,0.14)"),   # naranja  — moderado
+        (100, 160, "rgba(214,39,40,0.14)"),    # rojo     — grave
+    ]
+    for _lo, _hi, _col in _zones:
+        fig.add_hrect(y0=_lo, y1=_hi, fillcolor=_col, line_width=0, layer="below")
+
+    # Curva de infección: línea suavizada (spline) rellena hasta cero.
+    # El relleno deja ver las zonas de color del fondo → el área "se colorea" según
+    # la gravedad que alcanza la curva en cada punto. La línea se colorea según el pico.
+    _peak_col = _dec_bar_color(max(values) if values else 0)
+    fig.add_trace(go.Scatter(
         x=dates, y=values,
         name=disease_name,
-        marker_color=bar_colors,
-        marker_opacity=bar_opacity,
+        mode="lines",
+        line=dict(shape="spline", smoothing=0.9, color=_peak_col, width=2.6),
+        fill="tozeroy", fillcolor="rgba(120,120,120,0.10)",
         customdata=list(zip(
             risk_df["T_med"].fillna("?").tolist(),
             risk_df["HR_med"].fillna("?").tolist(),
@@ -14922,12 +14975,12 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         ),
     ))
 
-    # Líneas de umbral
-    fig.add_hline(y=100, line_dash="dash", line_color="red",     line_width=1, opacity=0.6,
+    # Etiquetas de umbral a la derecha
+    fig.add_hline(y=100, line_dash="dash", line_color="rgba(214,39,40,0.5)", line_width=1,
                   annotation_text="Grave", annotation_position="right")
-    fig.add_hline(y=50,  line_dash="dash", line_color="orange",  line_width=1, opacity=0.6,
+    fig.add_hline(y=50,  line_dash="dash", line_color="rgba(255,127,14,0.5)", line_width=1,
                   annotation_text="Moderado", annotation_position="right")
-    fig.add_hline(y=25,  line_dash="dot",  line_color="#ccbb00", line_width=1, opacity=0.5,
+    fig.add_hline(y=25,  line_dash="dot",  line_color="rgba(204,187,0,0.5)", line_width=1,
                   annotation_text="Ligero", annotation_position="right")
 
     # Zona predicción
