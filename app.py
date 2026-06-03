@@ -15775,6 +15775,49 @@ def build_daily_report_text(history_df, traps_df, activities_df,
     else:
         lines.append("  ℹ️ Sin datos suficientes para el panel de decisión.")
 
+    # ── 3. Resumen climático de los últimos 7 días ────────────────────────────
+    try:
+        _hoy = pd.Timestamp.today().normalize()
+        _ini = (_hoy - pd.Timedelta(days=6)).date()
+        _fin = _hoy.date()
+        _m, _txt, _acts7, _prio = build_weekly_executive_report(
+            history_df, activities_df, _ini, _fin
+        )
+        if _m:
+            def _n(v, dec=1, suf=""):
+                try:
+                    return f"{float(v):.{dec}f}{suf}"
+                except Exception:
+                    return "—"
+            lines.append("")
+            lines.append(f"📊 <b>RESUMEN 7 DÍAS</b> ({_ini.strftime('%d/%m')}–{_fin.strftime('%d/%m')})")
+            lines.append(
+                f"  🌡️ Temp: media {_n(_m.get('temp_mean'))}°C "
+                f"(mín {_n(_m.get('temp_min'))} / máx {_n(_m.get('temp_max'))})"
+            )
+            lines.append(
+                f"  💧 HR media: {_n(_m.get('hr_mean'))}% · "
+                f"hoja húmeda: {int(_m.get('leaf_events', 0))} eventos"
+            )
+            lines.append(f"  🌧️ Lluvia: {_n(_m.get('rain_total'))} mm")
+            lines.append(
+                f"  💨 Viento medio: {_n(_m.get('wind_mean'))} · "
+                f"ráfaga máx: {_n(_m.get('gust_max'))}"
+            )
+            lines.append(f"  ☀️ Radiación acum.: {_n(_m.get('radiation_sum'))} MJ/m²")
+            _sc = _m.get('scab_events_ge1', 0)
+            _mo = _m.get('monilia_events_ge1', 0)
+            lines.append(
+                f"  🍄 Moteado: ratio máx {_n(_m.get('max_scab_ratio'), 2)} "
+                f"· {int(_sc)} evento(s) de infección"
+            )
+            lines.append(
+                f"  🍑 Monilia: ratio máx {_n(_m.get('max_monilia_ratio'), 2)} "
+                f"· {int(_mo)} evento(s)"
+            )
+    except Exception:
+        pass  # el resumen semanal nunca debe romper el informe diario
+
     lines.append("")
     lines.append("<i>Generado automáticamente desde la app Finca Gallinal.</i>")
     return "\n".join(lines)
