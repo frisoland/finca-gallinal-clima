@@ -12038,7 +12038,7 @@ def carpocapsa_status_from_dd(current_dd, recent_captures_per_day=0, rain_since_
 
 
 def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp=31.1,
-                                    capture_threshold=3, dd_active_start=90, dd_active_end=130,
+                                    capture_threshold=3, dd_active_start=80, dd_active_end=130,
                                     activities_df=None, campaign_year=None):
     """
     Nuevo modelo de ventanas multiples por campo.
@@ -12097,9 +12097,9 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     # significa que el Btk ya se habrá degradado antes de la eclosión → no protege
     # esta ventana (corresponde a una lectura anterior).
     _MIN_DD_FOR_TREATMENT = 70
-    # Inicio de la eclosión real (para distinguir "tratado dentro de ventana" de
-    # "tratado un poco antes pero efectivo").
-    _DD_HATCH_START = dd_active_start  # normalmente 90
+    # Referencia para distinguir "tratado dentro de ventana" de "tratado un poco
+    # antes pero efectivo". Coincide con la apertura de la ventana de aviso (80 DD).
+    _DD_HATCH_START = dd_active_start
 
     # ── Periodo de reentrada de Bactur (días mínimos entre aplicaciones) ──────
     # Bactur tiene un período de reentrada de 7 días: aunque los DD indiquen
@@ -12824,13 +12824,16 @@ def carpocapsa_tab(history):
                 "Umbral de capturas (≥ N abre ventana)",
                 min_value=1, max_value=50, value=3, step=1,
                 key="carp_capture_threshold",
-                help="Número mínimo de capturas totales en una lectura para abrir una ventana de 90 DD."
+                help="Número mínimo de capturas totales en una lectura para abrir una ventana de tratamiento."
             )
         with col_thresh2:
             dd_active_start = st.number_input(
                 "DD inicio ventana activa",
-                min_value=50, max_value=150, value=90, step=5,
+                min_value=50, max_value=150, value=80, step=5,
                 key="carp_dd_start",
+                help="A 80 DD se abre el aviso de tratar: da margen para repartir los "
+                     "tratamientos por campos antes de la eclosión real (~90 DD). El Bt "
+                     "aplicado a 80 DD sigue activo en la eclosión.",
             )
         with col_thresh3:
             dd_active_end = st.number_input(
