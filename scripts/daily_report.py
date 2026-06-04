@@ -163,6 +163,36 @@ def refresh_sencrop_data(app, history):
             start_date = today - pd.Timedelta(days=30)
             print("  Sin histórico previo; se descargan los últimos 30 días.")
 
+        # Sencrop a veces devuelve VACÍO con rangos muy estrechos (1-2 días) aunque
+        # haya datos. La descarga manual (7 días) sí funciona. Por eso ampliamos el
+        # rango a un mínimo de 7 días: re-descarga horas que ya tenemos (se filtran
+        # luego con only_new) pero asegura una ventana lo bastante ancha.
+        _min_start = today - pd.Timedelta(days=7)
+        if start_date > _min_start:
+            print(f"  Ampliando rango: {start_date} → {_min_start} (mín. 7 días para fiabilidad).")
+            start_date = _min_start
+
+        # ── Diagnóstico crudo: qué responde realmente Sencrop ─────────────────
+        try:
+            import requests as _rq
+            _ep = f"{app.SENCROP_API_INFRA}/app/station/measurement-page/measurements/hourly"
+            _params = [
+                ("organisationId", "17094"),
+                ("stationId", "11653"),
+                ("startDatetime", f"{start_date}T00:00:00.000+02:00"),
+                ("endDatetime",   f"{today}T23:59:59.999+02:00"),
+                ("measures", "temperature"),
+                ("enableFilling", "true"),
+            ]
+            _rr = _rq.get(_ep, headers={"Authorization": f"Bearer {token}",
+                          "Accept": "application/json"}, params=_params, timeout=60)
+            _txt = _rr.text or ""
+            _has_ts = '"timeseries"' in _txt
+            print(f"  [diag] HTTP {_rr.status_code} · {len(_txt)} bytes · "
+                  f"timeseries={'sí' if _has_ts else 'no'} · inicio: {_txt[:160]!r}")
+        except Exception as _de:
+            print(f"  [diag] error en petición de diagnóstico: {_de}")
+
         print(f"  Descargando Sencrop {start_date} → {today}…")
         # El user_id no se usa en el endpoint de medidas (usa organisationId/stationId).
         # Reintentos: Sencrop a veces tiene blips transitorios (la API responde vacío
