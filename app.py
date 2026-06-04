@@ -5830,6 +5830,11 @@ def sencrop_get_statistics(token, user_id, device_id, start_date, end_date, meas
 
     start_ts    = pd.Timestamp(start_date)
     end_ts      = pd.Timestamp(end_date)
+    # Sencrop devuelve VACÍO si se le pide un rango muy estrecho (1-2 días) de fechas
+    # recientes, aunque haya datos. Por eso pedimos a la API un rango de al menos
+    # 7 días (req_start_ts) y luego recortamos la salida al rango solicitado
+    # (start_ts/end_ts). Esto hace fiable tanto la descarga manual como la automática.
+    req_start_ts = min(start_ts, end_ts - pd.Timedelta(days=6))
     chunk_size  = 30
     date_map    = {}
     current_end = end_ts
@@ -5850,8 +5855,8 @@ def sencrop_get_statistics(token, user_id, device_id, start_date, end_date, meas
         "windSpeed":        "viento_rafaga",
     }
 
-    while current_end >= start_ts:
-        days_chunk  = min(chunk_size, (current_end - start_ts).days + 1)
+    while current_end >= req_start_ts:
+        days_chunk  = min(chunk_size, (current_end - req_start_ts).days + 1)
         chunk_start = current_end - pd.Timedelta(days=days_chunk - 1)
         tz_offset   = "+02:00"
 
