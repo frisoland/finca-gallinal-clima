@@ -13288,9 +13288,11 @@ if "autoload_supabase_done" not in st.session_state:
 if not st.session_state.autoload_supabase_done and supabase_is_configured():
     st.session_state.autoload_supabase_done = True
 
-    # Histórico climático (snapshot)
+    # Histórico climático (snapshot). use_cache=False: al abrir una sesión nueva
+    # forzamos la descarga del snapshot MÁS RECIENTE de Supabase (sin caché), para
+    # que "abrir la app = ver lo último que guardó el informe de la mañana".
     if st.session_state.history_df.empty:
-        _hist_df, _ = load_climate_snapshot_from_supabase(use_cache=True)
+        _hist_df, _ = load_climate_snapshot_from_supabase(use_cache=False)
         if _hist_df is not None and not _hist_df.empty:
             st.session_state.history_df = _hist_df
 

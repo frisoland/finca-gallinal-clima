@@ -164,12 +164,26 @@ def refresh_sencrop_data(app, history):
             print("  Sin histórico previo; se descargan los últimos 30 días.")
 
         print(f"  Descargando Sencrop {start_date} → {today}…")
-        # El user_id no se usa en el endpoint de medidas (usa organisationId/stationId)
-        df_new, errs = app.sencrop_download_all_sensors(token, "", start_date, today)
+        # El user_id no se usa en el endpoint de medidas (usa organisationId/stationId).
+        # Reintentos: Sencrop a veces tiene blips transitorios (la API responde vacío
+        # o lenta unos segundos). Reintentamos hasta 4 veces antes de rendirnos.
+        import time as _time
+        df_new, errs = None, None
+        for _intento in range(1, 5):
+            df_new, errs = app.sencrop_download_all_sensors(token, "", start_date, today)
+            if df_new is not None and not df_new.empty:
+                if _intento > 1:
+                    print(f"  Descarga OK en el intento {_intento}.")
+                break
+            print(f"  Intento {_intento}/4 sin datos (errs={errs}). "
+                  f"{'Reintentando en 15 s…' if _intento < 4 else 'Sin más reintentos.'}")
+            if _intento < 4:
+                _time.sleep(15)
         if errs:
             print(f"  Avisos/errores Sencrop: {errs}")
         if df_new is None or df_new.empty:
-            print("  No se descargaron datos nuevos.")
+            print("  No se descargaron datos nuevos tras 4 intentos (posible caída de "
+                  "Sencrop). Se conserva el histórico; mañana recuperará lo que falte.")
             return history
 
         # Fusionar solo las horas que no teníamos
