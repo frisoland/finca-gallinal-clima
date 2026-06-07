@@ -109,6 +109,20 @@ st.markdown(
         .js-plotly-plot, .js-plotly-plot * {
             touch-action: pan-y !important;
         }
+        /* ── Móvil: el glitch de los encabezados de color viene del "pegado arriba"
+           (sticky top) en webkit. Se quita SOLO en móvil, manteniendo la columna
+           fija (sticky left). En PC (≥768px) todo sigue igual. ── */
+        @media (max-width: 767px) {
+            /* Encabezados normales (solo pegados arriba) → estáticos: no glitchean */
+            th[style*="top:0"]:not([style*="left:0"]) {
+                position: static !important;
+            }
+            /* Esquina (pegada arriba Y a la izquierda) → se quita solo el "arriba",
+               se mantiene el "izquierda" para que acompañe a la 1ª columna fija */
+            th[style*="top:0"][style*="left:0"] {
+                top: auto !important;
+            }
+        }
     </style>
     """,
     unsafe_allow_html=True,
