@@ -121,12 +121,15 @@ try:
             [data-testid="stMain"] {{
                 background-color: transparent !important;
             }}
-            /* Margen izquierdo en el contenedor principal para evitar que los
-               selectboxes y desplegables queden pegados al borde del sidebar.
-               Así el área de activación del sidebar (izquierda) no interfiere
-               con los controles interactivos de la página. */
-            [data-testid="stMain"] .block-container {{
-                padding-left: 5.5rem !important;
+            /* Margen izquierdo SOLO en pantallas anchas (PC): evita que el menú
+               lateral se despliegue solo al pasar el ratón cerca del borde y que
+               los controles queden pegados al sidebar. En móvil NO se aplica
+               (el menú se abre con el botón ☰, no al pasar el dedo), así se
+               aprovecha el ancho completo de la pantalla. */
+            @media (min-width: 768px) {{
+                [data-testid="stMain"] .block-container {{
+                    padding-left: 5.5rem !important;
+                }}
             }}
             /* Logo difuminado como marca de agua fija */
             [data-testid="stAppViewContainer"]::before {{
