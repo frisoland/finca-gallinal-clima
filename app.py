@@ -113,13 +113,11 @@ st.markdown(
            (sticky top) en webkit. Se quita SOLO en móvil, manteniendo la columna
            fija (sticky left). En PC (≥768px) todo sigue igual. ── */
         @media (max-width: 767px) {
-            /* Encabezados normales (solo pegados arriba) → estáticos: no glitchean */
-            th[style*="top:0"]:not([style*="left:0"]) {
-                position: static !important;
-            }
-            /* Esquina (pegada arriba Y a la izquierda) → se quita solo el "arriba",
-               se mantiene el "izquierda" para que acompañe a la 1ª columna fija */
-            th[style*="top:0"][style*="left:0"] {
+            /* Se quita SOLO el "pegado arriba" (top) de los encabezados, manteniendo
+               position:sticky para conservar su z-index (así no se pintan encima las
+               celdas fijas de la 1ª columna). La esquina conserva su left:0 y sigue
+               acompañando horizontalmente a la columna fija. */
+            th[style*="top:0"] {
                 top: auto !important;
             }
         }
