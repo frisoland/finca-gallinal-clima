@@ -109,16 +109,6 @@ st.markdown(
         .js-plotly-plot, .js-plotly-plot * {
             touch-action: pan-y !important;
         }
-        /* ── Móvil: en webkit, position:sticky en celdas de tabla glitchea (los
-           encabezados de color pierden el fondo de forma intermitente). En
-           pantallas pequeñas las dejamos estáticas: la tabla se desplaza con
-           normalidad y los encabezados se ven SIEMPRE bien. En PC (≥768px) se
-           mantiene la 1ª columna fija y los encabezados sticky. ── */
-        @media (max-width: 767px) {
-            th[style*="sticky"], td[style*="sticky"] {
-                position: static !important;
-            }
-        }
     </style>
     """,
     unsafe_allow_html=True,
