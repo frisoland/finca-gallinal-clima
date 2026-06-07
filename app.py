@@ -110,20 +110,24 @@ st.markdown(
             touch-action: pan-y !important;
         }
         /* ── Móvil: el glitch del fondo de los encabezados en webkit ocurre con
-           position:sticky dentro de un contenedor con scroll táctil. Un elemento
-           sticky a veces NO repinta su fondo. Solución fiable: en móvil los
-           encabezados normales pasan a position:static (celda normal → siempre
-           pinta su fondo). La esquina y la 1ª columna SIGUEN fijas (sticky left)
-           para mantener la orientación horizontal. En PC (≥768px) todo igual. ── */
+           position:sticky dentro de un contenedor con scroll táctil. Se ataca por
+           CLASE (no por el texto del style inline, que Streamlit reformatea y rompía
+           el selector). En móvil:
+             • encabezados normales → position:static (celda normal → SIEMPRE pinta
+               su fondo, sin bug de sticky).
+             • esquina → sticky solo horizontal (left) para acompañar a la 1ª columna.
+           La tabla usa además border-collapse:separate, que es la cura documentada
+           del bug de repintado de celdas sticky en webkit. En PC (≥768px) los
+           encabezados siguen pegados arriba con normalidad. ── */
         @media (max-width: 767px) {
-            /* Encabezados normales (solo pegados arriba) → estáticos: pintan bien */
-            th[style*="top:0"]:not([style*="left:0"]) {
+            table.fg-fixedcol thead th.fg-th {
                 position: static !important;
             }
-            /* Esquina (arriba + izquierda) → se quita solo el "arriba"; conserva
-               left:0 para seguir acompañando a la 1ª columna fija */
-            th[style*="top:0"][style*="left:0"] {
+            table.fg-fixedcol thead th.fg-th-corner {
+                position: sticky !important;
                 top: auto !important;
+                left: 0 !important;
+                z-index: 4 !important;
             }
         }
     </style>
@@ -435,7 +439,10 @@ _st_components.html(
           }
           fgToggleSidebar(!isOpen);
         });
-        mobileNav.appendChild(menuBtn);
+        /* Se coloca el botón ☰ a la IZQUIERDA del todo, lejos de la esquina
+           inferior-derecha donde Streamlit Cloud pone su insignia (que se
+           solapaba con el botón si iba al final). */
+        mobileNav.insertBefore(menuBtn, mobileNav.firstChild);
 
         doc.body.appendChild(mobileNav);
 
@@ -16175,11 +16182,13 @@ def render_decisiones_panel():
                       "font-weight:600;font-size:13px;white-space:nowrap;"
                       "border-right:2px solid #1a2e1e;")
 
-        # Cabecera
+        # Cabecera — clases fg-th / fg-th-corner para fijado robusto en móvil
         _hdr_cells = ""
         for _i, _c in enumerate(_display_cols):
-            _style = _TH_CORNER if _i == 0 else _TH_BASE
-            _hdr_cells += f'<th style="{_style}">{_c}</th>'
+            if _i == 0:
+                _hdr_cells += f'<th class="fg-th-corner" style="{_TH_CORNER}">{_c}</th>'
+            else:
+                _hdr_cells += f'<th class="fg-th" style="{_TH_BASE}">{_c}</th>'
 
         # Colores para la columna de sincronización carpocapsa
         _COMBO_STYLES = {
@@ -16238,7 +16247,7 @@ def render_decisiones_panel():
         st.markdown(
             f'<div style="overflow-x:auto;overflow-y:auto;max-height:420px;'
             f'border-radius:8px;border:1px solid #ccc;margin-bottom:1.5rem;">'
-            f'<table style="border-collapse:collapse;min-width:100%;">'
+            f'<table class="fg-fixedcol" style="border-collapse:separate;border-spacing:0;min-width:100%;">'
             f'<thead><tr>{_hdr_cells}</tr></thead>'
             f'<tbody>{_tbody}</tbody>'
             f'</table></div>',
@@ -16372,11 +16381,14 @@ def render_decisiones_panel():
             "Plazo seg. días", "Estado plazo",
         ]
 
-        # Cabecera
+        # Cabecera — clases fg-th / fg-th-corner para que el CSS móvil pueda
+        # fijarlas por clase (robusto ante el reformateo de inline-styles)
         _pt_hdr = ""
         for _i, _c in enumerate(_pt_display_cols):
-            _s = _PT_TH_CORNER if _i == 0 else _PT_TH_BASE
-            _pt_hdr += f'<th style="{_s}">{_c}</th>'
+            if _i == 0:
+                _pt_hdr += f'<th class="fg-th-corner" style="{_PT_TH_CORNER}">{_c}</th>'
+            else:
+                _pt_hdr += f'<th class="fg-th" style="{_PT_TH_BASE}">{_c}</th>'
 
         # Filas
         _pt_tbody = ""
@@ -16433,7 +16445,7 @@ def render_decisiones_panel():
         st.markdown(
             f'<div style="overflow-x:auto;overflow-y:auto;max-height:450px;'
             f'border-radius:8px;border:1px solid #ccc;margin-bottom:1rem;">'
-            f'<table style="border-collapse:collapse;min-width:100%;">'
+            f'<table class="fg-fixedcol" style="border-collapse:separate;border-spacing:0;min-width:100%;">'
             f'<thead><tr>{_pt_hdr}</tr></thead>'
             f'<tbody>{_pt_tbody}</tbody>'
             f'</table></div>',
