@@ -100,6 +100,15 @@ st.markdown(
             color: #999 !important;
             font-style: italic !important;
         }
+        /* ── Móvil: dejar que el scroll vertical de la página pase por encima de
+           las gráficas en vez de que la gráfica capture el gesto (pan/zoom). En
+           ratón no afecta (touch-action solo aplica a entrada táctil). ── */
+        [data-testid="stPlotlyChart"],
+        [data-testid="stPlotlyChart"] *,
+        .stPlotlyChart, .stPlotlyChart *,
+        .js-plotly-plot, .js-plotly-plot * {
+            touch-action: pan-y !important;
+        }
     </style>
     """,
     unsafe_allow_html=True,
