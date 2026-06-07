@@ -371,7 +371,7 @@ _st_components.html(
           'border-radius:20px 20px 0 0;' +
           'box-shadow:0 -4px 20px rgba(0,0,0,0.45);' +
           'display:flex;align-items:stretch;z-index:2147483646;' +
-          'padding-right:150px;';
+          'padding-right:90px;';
 
         var mnItems = [
           {ic:'🔎', lb:'Análisis',  tx:'🔎 Análisis'},
@@ -409,6 +409,34 @@ _st_components.html(
           mobileNav.appendChild(btn);
           mnBtns.push(btn);
         });
+
+        /* ── Botón ☰ Menú: abre/cierra la barra lateral (controles + navegación)
+           de forma fiable con un toque. Sustituye al gesto de swipe, que chocaba
+           con el "atrás" de Chrome Android y sacaba al usuario de la app. ── */
+        var menuBtn = doc.createElement('button');
+        menuBtn.id = 'fg-mobile-menu-btn';
+        menuBtn.style.cssText =
+          'flex:1;display:flex;flex-direction:column;align-items:center;' +
+          'justify-content:center;gap:2px;border:none;background:transparent;' +
+          'cursor:pointer;font-size:0.58rem;color:rgba(255,255,255,0.55);padding:4px 0;' +
+          'border-radius:12px;' +
+          '-webkit-tap-highlight-color:transparent;transition:all 0.15s;';
+        menuBtn.innerHTML =
+          '<span style="font-size:1.35rem;line-height:1">☰</span>' +
+          '<span>Menú</span>';
+        menuBtn.addEventListener('click', function () {
+          /* Detectar si la barra lateral está abierta y alternar */
+          var sb = doc.querySelector('section[data-testid="stSidebar"]');
+          var isOpen = false;
+          if (sb) {
+            var aria = sb.getAttribute('aria-expanded');
+            if (aria !== null) { isOpen = (aria === 'true'); }
+            else { isOpen = sb.getBoundingClientRect().width > 50; }
+          }
+          fgToggleSidebar(!isOpen);
+        });
+        mobileNav.appendChild(menuBtn);
+
         doc.body.appendChild(mobileNav);
 
         /* Actualizar estado activo de la barra móvil */
@@ -515,23 +543,14 @@ _st_components.html(
         };
         doc.addEventListener('click', doc._fgClickHandler);
 
-        /* ── Móvil: swipe desde el borde izquierdo ── */
-        if (doc._fgTouchStartHandler) win.removeEventListener('touchstart', doc._fgTouchStartHandler);
-        if (doc._fgTouchMoveHandler)  win.removeEventListener('touchmove',  doc._fgTouchMoveHandler);
-        if (doc._fgTouchEndHandler)   win.removeEventListener('touchend',   doc._fgTouchEndHandler);
+        /* ── Móvil: el swipe desde el borde izquierdo se ELIMINA. En Chrome Android
+           el deslizar desde el borde es el gesto "atrás" del navegador, que sacaba
+           al usuario de la app. La barra lateral se abre/cierra con el botón ☰ de
+           la barra inferior. Aquí solo se limpian handlers de renders anteriores. ── */
+        if (doc._fgTouchStartHandler) { win.removeEventListener('touchstart', doc._fgTouchStartHandler); doc._fgTouchStartHandler = null; }
+        if (doc._fgTouchMoveHandler)  { win.removeEventListener('touchmove',  doc._fgTouchMoveHandler);  doc._fgTouchMoveHandler  = null; }
+        if (doc._fgTouchEndHandler)   { win.removeEventListener('touchend',   doc._fgTouchEndHandler);   doc._fgTouchEndHandler   = null; }
         doc._fgTouchX0 = null;
-        doc._fgTouchStartHandler = function (e) {
-          doc._fgTouchX0 = e.touches[0].clientX < 30 ? e.touches[0].clientX : null;
-        };
-        doc._fgTouchMoveHandler = function (e) {
-          if (doc._fgTouchX0 !== null && e.touches[0].clientX - doc._fgTouchX0 > 30) {
-            fgExpandSidebar(); doc._fgTouchX0 = null;
-          }
-        };
-        doc._fgTouchEndHandler = function () { doc._fgTouchX0 = null; };
-        win.addEventListener('touchstart', doc._fgTouchStartHandler, { passive: true });
-        win.addEventListener('touchmove',  doc._fgTouchMoveHandler,  { passive: true });
-        win.addEventListener('touchend',   doc._fgTouchEndHandler,   { passive: true });
 
       } catch (e) {
         console.warn('fg-fab error:', e);
