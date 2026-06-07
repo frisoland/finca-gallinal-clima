@@ -168,25 +168,30 @@ def refresh_sencrop_data(app, history):
 
         print(f"  Descargando Sencrop {start_date} → {today}…")
         # El user_id no se usa en el endpoint de medidas (usa organisationId/stationId).
-        # Reintentos: Sencrop a veces tiene blips transitorios (la API responde vacío
-        # o lenta unos segundos). Reintentamos hasta 4 veces antes de rendirnos.
+        # Sencrop suele estar INESTABLE a primera hora de la mañana (responde vacío
+        # unos minutos). Reintentamos con esperas crecientes hasta ~7 min para
+        # aguantar esas caídas. Las respuestas vacías son rápidas, así que esto cabe
+        # de sobra en el timeout del job (10 min) salvo caída muy larga.
         import time as _time
+        _delays = [20, 30, 45, 60, 90]  # 5 esperas → 6 intentos (~4 min máx)
+        _total = len(_delays) + 1
         df_new, errs = None, None
-        for _intento in range(1, 5):
+        for _intento in range(1, _total + 1):
             df_new, errs = app.sencrop_download_all_sensors(token, "", start_date, today)
             if df_new is not None and not df_new.empty:
                 if _intento > 1:
                     print(f"  Descarga OK en el intento {_intento}.")
                 break
-            print(f"  Intento {_intento}/4 sin datos (errs={errs}). "
-                  f"{'Reintentando en 15 s…' if _intento < 4 else 'Sin más reintentos.'}")
-            if _intento < 4:
-                _time.sleep(15)
+            _wait = _delays[_intento - 1] if _intento <= len(_delays) else 0
+            print(f"  Intento {_intento}/{_total} sin datos (errs={errs}). "
+                  f"{('Reintentando en ' + str(_wait) + ' s…') if _wait else 'Sin más reintentos.'}")
+            if _wait:
+                _time.sleep(_wait)
         if errs:
             print(f"  Avisos/errores Sencrop: {errs}")
         if df_new is None or df_new.empty:
-            print("  No se descargaron datos nuevos tras 4 intentos (posible caída de "
-                  "Sencrop). Se conserva el histórico; mañana recuperará lo que falte.")
+            print(f"  No se descargaron datos nuevos tras {_total} intentos (Sencrop "
+                  "caído un buen rato). Se conserva el histórico; mañana recuperará lo que falte.")
             return history
 
         # Fusionar solo las horas que no teníamos
