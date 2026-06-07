@@ -15050,13 +15050,16 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         margin=dict(l=0, r=60, t=10, b=30),
         barmode="overlay",
         showlegend=True,
+        # Sin arrastre: que deslizar/clic-arrastrar sobre la gráfica NO la mueva
+        # (en el móvil deja pasar el scroll de la página; en PC no la desplaza).
+        dragmode=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=11),
         yaxis=dict(title="Valor de infección", range=[0, max(160, max(values)*1.1) if values else 160],
-                   gridcolor="rgba(200,200,200,0.3)"),
+                   gridcolor="rgba(200,200,200,0.3)", fixedrange=True),
         yaxis2=dict(title="Lluvia (mm)", overlaying="y", side="right",
                     range=[0, max(max(lluvia)*4, 10) if lluvia else 10],
-                    showgrid=False, tickfont_color="rgba(100,160,255,0.8)"),
-        xaxis=dict(tickformat="%d/%m", gridcolor="rgba(200,200,200,0.2)"),
+                    showgrid=False, tickfont_color="rgba(100,160,255,0.8)", fixedrange=True),
+        xaxis=dict(tickformat="%d/%m", gridcolor="rgba(200,200,200,0.2)", fixedrange=True),
         plot_bgcolor="rgba(255,255,255,1)",
         paper_bgcolor="rgba(0,0,0,0)",
         bargap=0.1,
@@ -15285,15 +15288,17 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
         margin=dict(l=0, r=110, t=30, b=30),
         barmode="overlay",
         showlegend=True,
+        dragmode=False,   # sin arrastre: deslizar sobre la gráfica no la mueve
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=11),
-        yaxis=dict(title="DD acumulados", range=[0, ymax], gridcolor="rgba(200,200,200,0.3)"),
+        yaxis=dict(title="DD acumulados", range=[0, ymax], gridcolor="rgba(200,200,200,0.3)", fixedrange=True),
         yaxis2=dict(title="DD/día", overlaying="y", side="right",
                     range=[0, max(max(dd_dia)*5, 15) if dd_dia else 15],
-                    showgrid=False, tickfont_color="rgba(255,100,50,0.8)"),
+                    showgrid=False, tickfont_color="rgba(255,100,50,0.8)", fixedrange=True),
         xaxis=dict(
             tickformat="%d/%m",
             gridcolor="rgba(200,200,200,0.2)",
             range=[_x_start, _x_end],   # ← fija el rango; evita expansión por biofix lejano
+            fixedrange=True,
         ),
         plot_bgcolor="rgba(250,250,255,1)",
         paper_bgcolor="rgba(0,0,0,0)",
@@ -16499,7 +16504,7 @@ def render_decisiones_panel():
     st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
     st.caption(f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. Zona azul = predicción Sencrop. {_treats_info}")
     fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_all, chart_h)
-    st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     st.divider()
 
@@ -16507,7 +16512,7 @@ def render_decisiones_panel():
     st.markdown("#### 🍑 Monilia · *Monilinia* spp.")
     st.caption("Umbral 50 = riesgo moderado · **100 = riesgo alto**. Requiere T>15°C + hoja mojada ≥3h o HR>85%.")
     fig_mo = _dec_disease_chart(risk_df, "Monilia_valor", "Monilia", today, treats_all, chart_h)
-    st.plotly_chart(fig_mo, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig_mo, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     st.divider()
 
@@ -16520,7 +16525,7 @@ def render_decisiones_panel():
         days_back=int(days_back),
         history_df=history_df,
     )
-    st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     st.divider()
 
@@ -16528,7 +16533,7 @@ def render_decisiones_panel():
     st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
     st.caption("Favorece condiciones cálidas y secas (T 17-25°C, HR 50-80%). La lluvia intensa frena el riesgo.")
     fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_all, chart_h)
-    st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     # ── Leyenda explicativa ───────────────────────────────────────────────────
     with st.expander("📖 Cómo interpretar estas gráficas", expanded=False):
