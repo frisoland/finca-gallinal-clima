@@ -109,15 +109,20 @@ st.markdown(
         .js-plotly-plot, .js-plotly-plot * {
             touch-action: pan-y !important;
         }
-        /* ── Móvil: el glitch de los encabezados de color viene del "pegado arriba"
-           (sticky top) en webkit. Se quita SOLO en móvil, manteniendo la columna
-           fija (sticky left). En PC (≥768px) todo sigue igual. ── */
+        /* ── Móvil: el glitch del fondo de los encabezados en webkit ocurre con
+           position:sticky dentro de un contenedor con scroll táctil. Un elemento
+           sticky a veces NO repinta su fondo. Solución fiable: en móvil los
+           encabezados normales pasan a position:static (celda normal → siempre
+           pinta su fondo). La esquina y la 1ª columna SIGUEN fijas (sticky left)
+           para mantener la orientación horizontal. En PC (≥768px) todo igual. ── */
         @media (max-width: 767px) {
-            /* Se quita SOLO el "pegado arriba" (top) de los encabezados, manteniendo
-               position:sticky para conservar su z-index (así no se pintan encima las
-               celdas fijas de la 1ª columna). La esquina conserva su left:0 y sigue
-               acompañando horizontalmente a la columna fija. */
-            th[style*="top:0"] {
+            /* Encabezados normales (solo pegados arriba) → estáticos: pintan bien */
+            th[style*="top:0"]:not([style*="left:0"]) {
+                position: static !important;
+            }
+            /* Esquina (arriba + izquierda) → se quita solo el "arriba"; conserva
+               left:0 para seguir acompañando a la 1ª columna fija */
+            th[style*="top:0"][style*="left:0"] {
                 top: auto !important;
             }
         }
@@ -16213,7 +16218,6 @@ def render_decisiones_panel():
         # Contenedor con doble scroll y altura máxima
         st.markdown(
             f'<div style="overflow-x:auto;overflow-y:auto;max-height:420px;'
-            f'-webkit-overflow-scrolling:touch;'
             f'border-radius:8px;border:1px solid #ccc;margin-bottom:1.5rem;">'
             f'<table style="border-collapse:collapse;min-width:100%;">'
             f'<thead><tr>{_hdr_cells}</tr></thead>'
@@ -16409,7 +16413,6 @@ def render_decisiones_panel():
 
         st.markdown(
             f'<div style="overflow-x:auto;overflow-y:auto;max-height:450px;'
-            f'-webkit-overflow-scrolling:touch;'
             f'border-radius:8px;border:1px solid #ccc;margin-bottom:1rem;">'
             f'<table style="border-collapse:collapse;min-width:100%;">'
             f'<thead><tr>{_pt_hdr}</tr></thead>'
