@@ -14576,7 +14576,36 @@ def gallinal_tab(history):
             key="gallinal_veceria_orden",
         )
 
-    gvals = _veceria_yearly_values(prod, metric_vec)
+    # ── Filtros de la tabla (campo / variedad / años) ─────────────────────────
+    # Útil para excluir, p.ej., los primeros años de un campo joven que aún no
+    # produce y falsearían la vecería. Por defecto: todo incluido.
+    st.markdown("**Filtrar** (por defecto: todos los campos, variedades y años):")
+    fc1, fc2, fc3 = st.columns([1, 1, 1.7])
+    with fc1:
+        _campos_v = ["(Todos)"] + sorted(prod["Campo"].unique())
+        campo_v = st.selectbox("Campo", _campos_v, key="gallinal_vec_campo")
+    with fc2:
+        if campo_v != "(Todos)":
+            _vars_v = sorted(prod[prod["Campo"] == campo_v]["Variedad_nombre"].unique())
+        else:
+            _vars_v = sorted(prod["Variedad_nombre"].unique())
+        variedad_v = st.selectbox("Variedad", ["(Todas)"] + _vars_v, key="gallinal_vec_var")
+    with fc3:
+        _años_all = sorted(int(a) for a in prod["Año"].unique())
+        años_v = st.multiselect("Años (deselecciona los que no quieras contar)",
+                                _años_all, default=_años_all, key="gallinal_vec_años")
+
+    prod_vec = prod.copy()
+    if campo_v != "(Todos)":
+        prod_vec = prod_vec[prod_vec["Campo"] == campo_v]
+    if variedad_v != "(Todas)":
+        prod_vec = prod_vec[prod_vec["Variedad_nombre"] == variedad_v]
+    if años_v:
+        prod_vec = prod_vec[prod_vec["Año"].isin(años_v)]
+    else:
+        st.caption("⚠️ No has seleccionado años: se muestran todos.")
+
+    gvals = _veceria_yearly_values(prod_vec, metric_vec)
 
     # ── Métricas por cada Campo × Variedad × Portainjerto ─────────────────────
     records = []
