@@ -14528,6 +14528,90 @@ def gallinal_tab(history):
                 f"(BBI {_fmt_es_number(round(most_vecero['bbi'],2),2)} → {_mv_n.lower()})."
             )
 
+    # ── Drill-down: detalle año por año de una combinación ────────────────────
+    if not gvals.empty:
+        st.markdown("#### 🔬 Detalle año por año de una combinación")
+        combo_map = {}
+        for _c, _v, _p in (gvals[["Campo", "Variedad_nombre", "Portainjerto_nombre"]]
+                           .drop_duplicates().itertuples(index=False, name=None)):
+            combo_map[f"{_c} · {_v} · {_p}"] = (_c, _v, _p)
+        combo_labels = sorted(combo_map.keys())
+        _default_idx = 0
+        if records:
+            try:
+                _default_idx = combo_labels.index(records[0]["label"])
+            except ValueError:
+                _default_idx = 0
+        combo_sel = st.selectbox("Combinación", combo_labels, index=_default_idx,
+                                 key="gallinal_drill")
+        _dc, _dv, _dp = combo_map[combo_sel]
+        det = gvals[(gvals["Campo"] == _dc) &
+                    (gvals["Variedad_nombre"] == _dv) &
+                    (gvals["Portainjerto_nombre"] == _dp)].sort_values("Año").copy()
+
+        if det.empty:
+            st.info("Sin datos para esa combinación.")
+        else:
+            rec = next((r for r in records if r["label"] == combo_sel), None)
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Kg/Ha medio", _fmt_es_number(round(det["kg_ha"].mean()), 0))
+            _pm = det["pct_prod"].mean()
+            d2.metric("% prod. medio",
+                      f"{_fmt_es_number(round(_pm, 1), 1)} %" if pd.notna(_pm) else "—")
+            d3.metric("BBI (vecería)",
+                      _fmt_es_number(round(rec["bbi"], 2), 2)
+                      if rec and pd.notna(rec.get("bbi")) else "—")
+            if rec and pd.notna(rec.get("iep")):
+                _il, _ = _iep_level(rec["iep"])
+                d4.metric("IEP", _fmt_es_number(round(rec["iep"]), 0), help=_il)
+            else:
+                d4.metric("IEP", "—")
+
+            # Tabla año por año (carga alta/baja según la métrica elegida)
+            med_val = det["valor"].median()
+            det["Carga"] = det["valor"].apply(
+                lambda x: ("🟢 alta" if x >= med_val else "⚪ baja") if pd.notna(x) else "—"
+            )
+            det["Kg/árbol prod."] = (det["Kg"] / det["Arboles_prod"].replace(0, np.nan)).round(1)
+            det["% prod."] = det["pct_prod"].round(1)
+            det["Kg/Ha"] = det["kg_ha"].round(0)
+            detail_df = det.set_index("Año")[
+                ["Kg", "Kg/Ha", "Num_arboles", "Arboles_prod", "% prod.",
+                 "Kg/árbol prod.", "Carga"]
+            ].rename(columns={"Num_arboles": "Árboles tot.", "Arboles_prod": "Árboles prod."})
+            render_year_table(detail_df, index_label="Año", max_height=400)
+
+            # Gráficas: Kg/Ha y % productores por año
+            det_idx = det.assign(_a=det["Año"].astype(str)).set_index("_a")
+            gc1, gc2 = st.columns(2)
+            with gc1:
+                st.bar_chart(det_idx["kg_ha"], color="#4caf7d")
+                st.caption("Kg/Ha por año")
+            with gc2:
+                st.line_chart(det_idx["pct_prod"], color="#2196f3")
+                st.caption("% árboles productores por año")
+
+            # Interpretación accionable del patrón
+            if rec and pd.notna(rec.get("bbi")) and pd.notna(rec.get("pct_std")):
+                if rec["bbi"] >= 0.20 and rec["pct_std"] < 10:
+                    st.info(
+                        "🔎 Patrón de **vecería de carga**: casi todos los árboles producen "
+                        "cada año, pero alternan cosecha abundante y floja. Manejo "
+                        "recomendado: **aclareo de fruto en los años de carga alta** para "
+                        "favorecer la floración del año siguiente."
+                    )
+                elif rec["pct_std"] >= 20:
+                    st.info(
+                        "🔎 Patrón de **participación variable**: cambia mucho cuántos "
+                        "árboles producen cada año. Conviene revisar causas (heladas en "
+                        "floración, poda, vigor desigual o fallos de cuajado)."
+                    )
+                elif rec["bbi"] < 0.20 and rec["pct_std"] < 10:
+                    st.success(
+                        "✅ Patrón **regular**: cosecha estable y participación estable. "
+                        "Es el comportamiento que buscamos."
+                    )
+
     st.markdown("---")
     st.info(
         "🔜 **Próxima fase:** el **Índice Gallinal (IG)** combinará estos dos pilares "
