@@ -14147,6 +14147,50 @@ def _kgha_target_html(value, target):
     return f'<span style="color:{color};font-weight:600;">{_fmt_es_number(round(value), 0)}</span>'
 
 
+def _iep_score(kg_ha_medio, pct_medio, objetivo, w_kgha=0.65, w_part=0.35):
+    """Índice de Excelencia Productiva (0–100). El Kg/Ha es el criterio dominante
+    (logro respecto al objetivo, tope 100) y la participación de árboles modula.
+    Refleja: 75% árboles · 19.000 Kg/Ha (IEP alto) es mejor que 90% · 12.000."""
+    if pd.isna(kg_ha_medio) or pd.isna(pct_medio) or not objetivo or objetivo <= 0:
+        return np.nan
+    logro = min(1.0, kg_ha_medio / objetivo) * 100.0
+    return w_kgha * logro + w_part * pct_medio
+
+
+def _iep_level(iep):
+    """(etiqueta, color) según el IEP (0–100)."""
+    if pd.isna(iep):
+        return ("—", "#9e9e9e")
+    if iep >= 85:
+        return ("Excelente", "#2e7d32")
+    if iep >= 70:
+        return ("Bueno", "#558b2f")
+    if iep >= 50:
+        return ("Mejorable", "#e65100")
+    return ("Bajo", "#c62828")
+
+
+def _pct_prod_color(p):
+    """Color del % de árboles productores (verde = cerca del 100%)."""
+    if pd.isna(p):
+        return "#9e9e9e"
+    if p >= 85:
+        return "#2e7d32"
+    if p >= 70:
+        return "#558b2f"
+    if p >= 50:
+        return "#e65100"
+    return "#c62828"
+
+
+def _colored_num(value, color, decimals=0, suffix=""):
+    """Número coloreado en negrita (o '—' si NaN), con formato español."""
+    if pd.isna(value):
+        return '<span style="color:#9e9e9e;">—</span>'
+    return (f'<span style="color:{color};font-weight:600;">'
+            f'{_fmt_es_number(round(value, decimals), decimals)}{suffix}</span>')
+
+
 def gallinal_tab(history):
     st.subheader("🍏 Análisis Gallinal · Fenología · Clima · Producción")
     st.caption(
@@ -14271,23 +14315,28 @@ def gallinal_tab(history):
             "El objetivo de cada campo y variedad es producir **~20.000 Kg/Ha cada "
             "año, de forma sostenida**. Eso depende de **dos pilares** que medimos "
             "juntos (no basta uno):\n\n"
-            "**1️⃣ Cosecha alta y regular (Kg/Ha).** Lo importante son los Kg/Ha "
-            "totales, no los Kg por árbol productor. *Ejemplo:* 500 árboles dando 20 "
-            "kg (y otros 500 parados) es **peor** que 1.000 árboles dando 10 kg todos. "
-            "La regularidad entre años se mide con el **Índice de Vecería (BBI)** de "
-            "Hoblyn (1936) sobre años consecutivos:\n\n"
+            "**1️⃣ Cosecha alta y regular (Kg/Ha) — el criterio que MÁS pesa.** Lo "
+            "importante son los Kg/Ha, no los Kg por árbol. *Ejemplo:* 90% de árboles "
+            "a 5 kg → 12.000 Kg/Ha es **peor** que 75% de árboles a 10 kg → 19.000 "
+            "Kg/Ha. Y aquí influye mucho el portainjerto: **a menor vigor, más árboles "
+            "por Ha**, y más fácil acercarse a los 20.000 aunque cada árbol dé menos "
+            "(lo ganas en número de árboles). La regularidad entre años se mide con el "
+            "**Índice de Vecería (BBI)** de Hoblyn (1936) sobre años consecutivos:\n\n"
             "$$BBI = \\frac{1}{n-1}\\sum \\frac{|V_n - V_{n-1}|}{V_n + V_{n-1}}$$\n\n"
-            "**0 = cosecha regular**, **1 = alternancia total**. Bandas: <0,20 regular · "
-            "0,20–0,40 leve · 0,40–0,60 moderada · ≥0,60 acentuada.\n\n"
+            "**0 = cosecha regular**, **1 = alternancia total**.\n\n"
             "**2️⃣ Participación de los árboles (% productores) alta y constante.** "
-            "Que muchos árboles produzcan **y repitan año tras año**. Medimos el % "
-            "medio de árboles productores y su **constancia** (variación entre años: "
-            "a menor variación, más árboles repiten → mejor).\n\n"
+            "Que muchos árboles produzcan **y repitan año tras año**. Cuanto más cerca "
+            "del 100% y más constante, mejor.\n\n"
+            "**🏅 Índice de Excelencia Productiva (IEP, 0–100):** combina los dos "
+            "pilares dando **más peso al Kg/Ha (65%)** que a la participación (35%). "
+            "Resume cómo de cerca está cada combinación de la excelencia (≈20.000 "
+            "Kg/Ha con casi todos los árboles produciendo). Bandas: ≥85 excelente · "
+            "70–85 bueno · 50–70 mejorable · <50 bajo.\n\n"
             "Los **puntos** del patrón muestran cada año: 🟢 año de carga (≥ mediana), "
-            "⚪ año de descarga (< mediana). El ideal: muchos puntos verdes seguidos."
+            "⚪ año de descarga (< mediana)."
         )
 
-    cobj, cmet = st.columns([1, 1.4])
+    cobj, cmet, csort = st.columns([1, 1.3, 1.1])
     with cobj:
         objetivo_kgha = st.number_input(
             "Objetivo Kg/Ha", min_value=0, value=20000, step=1000,
@@ -14300,9 +14349,15 @@ def gallinal_tab(history):
             horizontal=True,
             key="gallinal_veceria_metric",
             help="'Kg/Ha (cosecha)' es la métrica del objetivo y refleja la vecería "
-                 "real (menos árboles cargando + menos por árbol). 'Kg por árbol "
-                 "productor' aísla la intensidad por árbol, pero OJO: oculta el "
-                 "problema de que pocos árboles carguen mucho.",
+                 "real. 'Kg por árbol productor' aísla la intensidad por árbol, pero "
+                 "OJO: oculta el problema de que pocos árboles carguen mucho.",
+        )
+    with csort:
+        orden_vec = st.radio(
+            "Ordenar por",
+            ["Excelencia (IEP)", "Vecería (BBI)"],
+            horizontal=True,
+            key="gallinal_veceria_orden",
         )
 
     gvals = _veceria_yearly_values(prod, metric_vec)
@@ -14324,6 +14379,8 @@ def gallinal_tab(history):
         pct_serie = subg["pct_prod"].dropna()
         pct_medio = float(pct_serie.mean()) if not pct_serie.empty else np.nan
         pct_std = float(pct_serie.std(ddof=0)) if len(pct_serie) > 1 else np.nan
+        densidad = float((subg["Num_arboles"] / subg["Ha"].replace(0, np.nan)).mean())
+        iep = _iep_score(kg_ha_medio, pct_medio, objetivo_kgha)
         records.append({
             "label": f"{g_campo} · {g_var} · {g_porta}",
             "porta": g_porta,
@@ -14333,10 +14390,18 @@ def gallinal_tab(history):
             "kg_ha_medio": kg_ha_medio,
             "pct_medio": pct_medio,
             "pct_std": pct_std,
+            "densidad": densidad,
+            "iep": iep,
             "pattern": _veceria_pattern_html(years, vals),
         })
-    # Orden: primero lo más problemático (más vecero), para priorizar revisión
-    records.sort(key=lambda r: (-1 if pd.isna(r["bbi"]) else r["bbi"]), reverse=True)
+
+    # Orden según elección del usuario
+    if orden_vec == "Excelencia (IEP)":
+        # mejores primero (IEP alto); NaN al final
+        records.sort(key=lambda r: (-1e9 if pd.isna(r["iep"]) else r["iep"]), reverse=True)
+    else:
+        # más veceros primero (BBI alto)
+        records.sort(key=lambda r: (-1 if pd.isna(r["bbi"]) else r["bbi"]), reverse=True)
 
     if not records:
         st.info(
@@ -14347,36 +14412,42 @@ def gallinal_tab(history):
         st.markdown("#### Por campo · variedad · portainjerto")
         _headers = [
             ("Campo · Variedad · Portainjerto", "left"),
-            ("Kg/Ha medio", "right"), ("BBI", "right"), ("Regularidad", "center"),
-            ("% prod. medio", "right"), ("Constancia", "center"),
+            ("IEP", "right"), ("Kg/Ha medio", "right"), ("% prod. medio", "right"),
+            ("BBI", "right"), ("Constancia", "center"),
             ("Patrón (años →)", "left"),
         ]
         _rows = []
         for r in records:
-            nivel, fg, bg = _veceria_level(r["bbi"])
-            badge = (f'<span style="background:{bg};color:{fg};border-radius:4px;'
-                     f'padding:2px 8px;font-size:12px;font-weight:600;">{nivel}</span>')
+            _, bbi_fg, _ = _veceria_level(r["bbi"])
             cons_lbl, cfg, cbg = _constancia_label(r["pct_std"])
             cons_badge = (f'<span style="background:{cbg};color:{cfg};border-radius:4px;'
                           f'padding:2px 8px;font-size:12px;font-weight:600;">{cons_lbl}</span>')
-            bbi_txt = _fmt_es_number(round(r["bbi"], 2), 2) if pd.notna(r["bbi"]) else "—"
-            pct_txt = (f'{_fmt_es_number(round(r["pct_medio"], 1), 1)} %'
-                       if pd.notna(r["pct_medio"]) else "—")
+            iep_lbl, iep_col = _iep_level(r["iep"])
+            iep_html = (
+                f'<span title="{iep_lbl}" style="color:{iep_col};font-weight:700;'
+                f'font-size:14px;">{_fmt_es_number(round(r["iep"]),0)}</span>'
+                if pd.notna(r["iep"]) else '<span style="color:#9e9e9e;">—</span>'
+            )
             _rows.append([
                 r["label"],
+                iep_html,
                 _kgha_target_html(r["kg_ha_medio"], objetivo_kgha),
-                bbi_txt, badge, pct_txt, cons_badge, r["pattern"],
+                _colored_num(r["pct_medio"], _pct_prod_color(r["pct_medio"]), 1, " %"),
+                _colored_num(r["bbi"], bbi_fg, 2),
+                cons_badge, r["pattern"],
             ])
         _render_html_table(_headers, _rows)
-        _cap = (f"Kg/Ha medio coloreado según el objetivo ({_fmt_es_number(objetivo_kgha,0)} "
-                f"Kg/Ha): verde = lo alcanza. **BBI/Regularidad** = constancia de la cosecha. "
-                f"**% prod. medio + Constancia** = participación de los árboles. "
-                f"Ordenado de más a menos vecero.")
+        _orden_txt = "mejor IEP primero" if orden_vec == "Excelencia (IEP)" else "más vecero primero"
+        _cap = (f"**IEP** (0–100) = excelencia productiva (Kg/Ha 65% + participación 35%); "
+                f"≥85 excelente · 70–85 bueno · 50–70 mejorable · <50 bajo. **Kg/Ha medio** "
+                f"coloreado vs objetivo ({_fmt_es_number(objetivo_kgha,0)}). **% prod. medio** "
+                f"= participación. **BBI** = vecería (verde=regular). **Constancia** = "
+                f"estabilidad del % productores. Ordenado: {_orden_txt}.")
         if excluidos:
             _cap += f" {excluidos} combinación(es) sin años consecutivos suficientes no se muestran."
         st.caption(_cap)
 
-        # ── Resumen por portainjerto (los dos pilares + la hipótesis del vigor) ─
+        # ── Resumen por portainjerto (los dos pilares + densidad + vigor) ──────
         df_rec = pd.DataFrame(records)
         porta_rows = []
         for g_porta, subp in df_rec.groupby("porta"):
@@ -14386,50 +14457,57 @@ def gallinal_tab(history):
             w = valid["n_trans"].astype(float)
             bbi_mean = (np.average(valid["bbi"], weights=w) if w.sum() > 0
                         else float(valid["bbi"].mean()))
+            kg_ha_mean = float(valid["kg_ha_medio"].mean())
+            pct_mean = float(valid["pct_medio"].mean())
             porta_rows.append({
                 "porta": g_porta,
                 "n": len(valid),
                 "bbi": bbi_mean,
-                "kg_ha": float(valid["kg_ha_medio"].mean()),
-                "pct": float(valid["pct_medio"].mean()),
+                "kg_ha": kg_ha_mean,
+                "pct": pct_mean,
+                "densidad": float(valid["densidad"].mean()),
+                "iep": _iep_score(kg_ha_mean, pct_mean, objetivo_kgha),
             })
-        porta_rows.sort(key=lambda r: r["bbi"], reverse=True)
+        # mejor IEP primero (la excelencia productiva)
+        porta_rows.sort(key=lambda r: (-1e9 if pd.isna(r["iep"]) else r["iep"]), reverse=True)
 
         if porta_rows:
             st.markdown("#### Resumen por portainjerto")
-            _h2 = [("Portainjerto", "left"), ("Comb.", "right"),
-                   ("Kg/Ha medio", "right"), ("BBI medio", "right"),
-                   ("Regularidad", "center"), ("% prod. medio", "right")]
+            _h2 = [("Portainjerto", "left"), ("Comb.", "right"), ("IEP", "right"),
+                   ("Kg/Ha medio", "right"), ("% prod. medio", "right"),
+                   ("Árboles/Ha", "right"), ("BBI medio", "right")]
             _r2 = []
             for pr in porta_rows:
-                nivel, fg, bg = _veceria_level(pr["bbi"])
-                badge = (f'<span style="background:{bg};color:{fg};border-radius:4px;'
-                         f'padding:2px 8px;font-size:12px;font-weight:600;">{nivel}</span>')
+                _, bbi_fg, _ = _veceria_level(pr["bbi"])
+                iep_lbl, iep_col = _iep_level(pr["iep"])
+                iep_html = (f'<span title="{iep_lbl}" style="color:{iep_col};font-weight:700;'
+                            f'font-size:14px;">{_fmt_es_number(round(pr["iep"]),0)}</span>'
+                            if pd.notna(pr["iep"]) else '<span style="color:#9e9e9e;">—</span>')
                 _r2.append([
-                    pr["porta"], str(pr["n"]),
+                    pr["porta"], str(pr["n"]), iep_html,
                     _kgha_target_html(pr["kg_ha"], objetivo_kgha),
-                    _fmt_es_number(round(pr["bbi"], 2), 2), badge,
-                    f'{_fmt_es_number(round(pr["pct"], 1), 1)} %',
+                    _colored_num(pr["pct"], _pct_prod_color(pr["pct"]), 1, " %"),
+                    _fmt_es_number(round(pr["densidad"]), 0),
+                    _colored_num(pr["bbi"], bbi_fg, 2),
                 ])
             _render_html_table(_h2, _r2, max_height=340)
-            st.caption("Promedios por portainjerto (BBI ponderado por nº de transiciones). "
-                       "Compara los dos pilares: Kg/Ha sostenidos y participación de árboles.")
+            st.caption("Ordenado por IEP (excelencia). **Árboles/Ha** = densidad: a menor "
+                       "vigor del portainjerto, más densidad y más fácil llegar al objetivo "
+                       "con menos kg por árbol.")
 
             # ── Narrativa ──────────────────────────────────────────────────────
-            top_porta = porta_rows[0]
-            top_combo = records[0]
-            _np_n, _, _ = _veceria_level(top_porta["bbi"])
-            # mejor portainjerto = menor BBI con mejor Kg/Ha y % prod
-            best_porta = min(porta_rows, key=lambda r: r["bbi"])
+            best_porta = porta_rows[0]
+            most_vecero = max(porta_rows, key=lambda r: (-1 if pd.isna(r["bbi"]) else r["bbi"]))
+            _bp_lbl, _ = _iep_level(best_porta["iep"])
+            _mv_n, _, _ = _veceria_level(most_vecero["bbi"])
             st.markdown(
-                f"**Portainjerto más vecero:** {top_porta['porta']} "
-                f"(BBI medio {_fmt_es_number(round(top_porta['bbi'],2),2)} → {_np_n.lower()}, "
-                f"{_fmt_es_number(round(top_porta['kg_ha']),0)} Kg/Ha medio, "
-                f"{_fmt_es_number(round(top_porta['pct'],1),1)} % árboles productores). "
-                f"**Más regular:** {best_porta['porta']} "
-                f"(BBI {_fmt_es_number(round(best_porta['bbi'],2),2)}, "
+                f"**Portainjerto más cerca de la excelencia:** {best_porta['porta']} "
+                f"(IEP {_fmt_es_number(round(best_porta['iep']),0)} → {_bp_lbl.lower()}, "
                 f"{_fmt_es_number(round(best_porta['kg_ha']),0)} Kg/Ha, "
-                f"{_fmt_es_number(round(best_porta['pct'],1),1)} % productores)."
+                f"{_fmt_es_number(round(best_porta['pct'],1),1)} % productores, "
+                f"{_fmt_es_number(round(best_porta['densidad']),0)} árb/Ha). "
+                f"**Más vecero:** {most_vecero['porta']} "
+                f"(BBI {_fmt_es_number(round(most_vecero['bbi'],2),2)} → {_mv_n.lower()})."
             )
 
     st.markdown("---")
