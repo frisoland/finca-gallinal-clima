@@ -14640,15 +14640,15 @@ def gallinal_tab(history):
         for r in records:
             _, bbi_fg, _ = _veceria_level(r["bbi"])
             cons_lbl, cfg, cbg = _constancia_label(r["pct_std"])
-            _cons_title = (
-                f"% productores por año: {_fmt_es_number(round(r['pct_min'],1),1)}–"
-                f"{_fmt_es_number(round(r['pct_max'],1),1)} % (desv. "
-                f"{_fmt_es_number(round(r['pct_std'],1),1)})"
-                if pd.notna(r["pct_std"]) else "Mide la estabilidad del % de árboles productores"
+            _rango_txt = (
+                f' <span style="color:#777;font-size:11px;white-space:nowrap;">'
+                f'{_fmt_es_number(round(r["pct_min"]), 0)}–'
+                f'{_fmt_es_number(round(r["pct_max"]), 0)} %</span>'
+                if pd.notna(r["pct_std"]) and pd.notna(r.get("pct_min")) else ""
             )
-            cons_badge = (f'<span title="{_cons_title}" style="background:{cbg};color:{cfg};'
+            cons_badge = (f'<span style="background:{cbg};color:{cfg};'
                           f'border-radius:4px;padding:2px 8px;font-size:12px;'
-                          f'font-weight:600;">{cons_lbl}</span>')
+                          f'font-weight:600;">{cons_lbl}</span>{_rango_txt}')
             iep_lbl, iep_col = _iep_level(r["iep"])
             iep_html = (
                 f'<span title="{iep_lbl}" style="color:{iep_col};font-weight:700;'
@@ -14665,13 +14665,14 @@ def gallinal_tab(history):
             ])
         _render_html_table(_headers, _rows)
         _orden_txt = "mejor IEP primero" if orden_vec == "Excelencia (IEP)" else "más vecero primero"
-        _cap = (f"**IEP** (0–100) = excelencia productiva (Kg/Ha 65% + participación 35%); "
-                f"≥85 excelente · 70–85 bueno · 50–70 mejorable · <50 bajo. **Kg/Ha medio** "
-                f"coloreado vs objetivo ({_fmt_es_number(objetivo_kgha,0)}). **% prod. medio** "
-                f"= participación. **BBI** = vecería de la *cosecha* (verde=regular). "
-                f"**Constancia % prod.** = estabilidad del *% de árboles productores* entre "
-                f"años (distinto del nivel de Kg/Ha; pasa el ratón para ver el rango). "
-                f"Ordenado: {_orden_txt}.")
+        _cap = (
+            f"Columnas: **IEP** = nota global de excelencia 0–100 (Kg/Ha pesa 65 %, "
+            f"participación 35 %): ≥85 excelente · 70–85 bueno · 50–70 mejorable · <50 bajo. · "
+            f"**Kg/Ha medio**: cosecha media, en verde si llega al objetivo "
+            f"({_fmt_es_number(objetivo_kgha,0)}). · **% prod. medio**: cuántos árboles "
+            f"producen de media. · **BBI**: vecería de la cosecha (0 regular … 1 alternancia). · "
+            f"**Constancia % prod.**: si ese % se repite cada año (al lado, el rango entre años). · "
+            f"**Patrón**: 🟢 año de carga / ⚪ año de descarga. Ordenado: {_orden_txt}.")
         if excluidos:
             _cap += f" {excluidos} combinación(es) sin años consecutivos suficientes no se muestran."
         st.caption(_cap)
