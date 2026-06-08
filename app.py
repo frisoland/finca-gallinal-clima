@@ -4287,9 +4287,12 @@ def render_agroptima_panel():
                 merged, stats = merge_activities_history(existing, activities_df_new, "upsert")
                 st.session_state.activities_df = merged
                 st.session_state.last_activities_import_stats = stats
-                n_new  = stats.get("inserted", 0)
-                n_upd  = stats.get("updated", 0)
-                st.success(f"✅ {len(activities_df_new)} actividades procesadas — {n_new} nuevas, {n_upd} actualizadas.")
+                # Las claves reales que devuelve merge_activities_history son en
+                # español; antes se leían "inserted"/"updated" (inexistentes) y por
+                # eso SIEMPRE salía "0 nuevas, 0 actualizadas".
+                n_new  = stats.get("Nuevas añadidas", 0)
+                n_upd  = stats.get("Actualizadas/reemplazadas", 0)
+                st.success(f"✅ {len(activities_df_new)} actividades procesadas — {n_new} nuevas, {n_upd} ya existentes (actualizadas).")
                 # Guardado automático en Supabase (sin pasos manuales)
                 autosave_activities_to_supabase()
         except Exception as e:
