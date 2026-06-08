@@ -14119,34 +14119,38 @@ def _veceria_yearly_values(prod, metric):
 
 
 def _drill_pattern_message(bbi, pct_std):
-    """Diagnóstico accionable del patrón de una combinación, combinando vecería de
-    cosecha (BBI) y estabilidad de la participación (desv. del % productores).
-    Devuelve (tipo, mensaje). Cubre TODOS los casos."""
+    """Diagnóstico del patrón combinando vecería de cosecha (BBI) y estabilidad de
+    la participación (desv. del % productores), usando las MISMAS bandas que las
+    tablas (sin cajones de sastre que suavicen). Devuelve (tipo, mensaje)."""
     if pd.isna(bbi) or pd.isna(pct_std):
         return ("info", "ℹ️ Pocos años consecutivos para diagnosticar el patrón con fiabilidad.")
+    vec_lbl, _, _ = _veceria_level(bbi)          # Regular / Vecería leve / moderada / acentuada
+    con_lbl, _, _ = _constancia_label(pct_std)   # Muy constante / Constante / Variable / Muy variable
+    bbi_txt = _fmt_es_number(round(bbi, 2), 2)
+    vec_phrase = "cosecha regular" if bbi < 0.20 else vec_lbl.lower()
+    cabecera = (f"**{vec_phrase.capitalize()}** (BBI {bbi_txt}) · participación "
+                f"**{con_lbl.lower()}**.")
+
+    # Caso ideal: poca vecería y participación estable
     if bbi < 0.20 and pct_std < 10:
-        return ("success",
-                "✅ **Patrón regular:** cosecha (Kg/Ha) y participación estables año tras "
-                "año. Es el comportamiento que buscamos.")
-    if pct_std >= 20 and bbi >= 0.40:
-        return ("warning",
-                "🔴 **Vecería acentuada en los dos pilares:** alterna mucho la cosecha "
-                "(Kg/Ha) Y cuántos árboles producen. Manejo: **aclareo fuerte en los años "
-                "de carga alta** y revisar las causas de los años flojos (heladas en "
-                "floración, fallos de cuajado).")
+        return ("success", f"✅ {cabecera} Cosecha y participación estables: es el "
+                           f"comportamiento que buscamos.")
+
+    consejos = []
+    if bbi >= 0.40:
+        consejos.append("**aclareo de fruto en los años de carga alta** para regularizar "
+                        "la floración del año siguiente")
+    elif bbi >= 0.20:
+        consejos.append("un **aclareo ligero** en los años de más carga ayuda a regularizar")
     if pct_std >= 20:
-        return ("warning",
-                "🟠 **Participación variable:** cambia mucho cuántos árboles producen cada "
-                "año. Conviene revisar causas (heladas en floración, poda, vigor desigual "
-                "o fallos de cuajado).")
-    if bbi >= 0.20 and pct_std < 10:
-        return ("info",
-                "🔎 **Vecería de carga:** casi todos los árboles producen cada año, pero "
-                "alternan cosecha abundante y floja. Manejo: **aclareo de fruto en los años "
-                "de carga alta** para favorecer la floración del año siguiente.")
-    return ("info",
-            "🟡 **Patrón intermedio:** algo de variación en la cosecha y/o en la "
-            "participación. Vigilar la carga en los años altos y la uniformidad de floración.")
+        consejos.append("revisar por qué algunos años cargan bastantes **menos árboles** "
+                        "(heladas en floración, fallos de cuajado, vigor desigual)")
+    elif pct_std >= 10:
+        consejos.append("vigilar la **uniformidad de floración** entre árboles")
+
+    consejo_txt = "; ".join(consejos) if consejos else "seguimiento normal"
+    kind = "warning" if (bbi >= 0.60 or pct_std >= 20) else "info"
+    return (kind, f"🔎 {cabecera} Conviene: {consejo_txt}.")
 
 
 def _constancia_label(std):
@@ -14176,6 +14180,21 @@ def _kgha_target_html(value, target):
     else:
         color = "#333"
     return f'<span style="color:{color};font-weight:600;">{_fmt_es_number(round(value), 0)}</span>'
+
+
+def _nivel_cosecha(kg_ha, objetivo):
+    """Nivel ABSOLUTO de la cosecha de un año, respecto al objetivo (no on/off).
+    Responde a '¿fue buena cosecha?', no a '¿subió o bajó en el ciclo?'."""
+    if pd.isna(kg_ha) or not objetivo or objetivo <= 0:
+        return ("—", "#9e9e9e")
+    r = kg_ha / objetivo
+    if r >= 0.90:
+        return ("Alta", "#2e7d32")
+    if r >= 0.65:
+        return ("Media-alta", "#558b2f")
+    if r >= 0.40:
+        return ("Media-baja", "#e65100")
+    return ("Baja", "#c62828")
 
 
 def _iep_score(kg_ha_medio, pct_medio, objetivo, w_kgha=0.65, w_part=0.35):
@@ -14608,19 +14627,25 @@ def gallinal_tab(history):
                 else:
                     st.info(_msg)
 
-            # Tabla año por año (carga alta/baja según la métrica elegida)
-            med_val = det["valor"].median()
-            det["Carga"] = det["valor"].apply(
-                lambda x: ("🟢 alta" if x >= med_val else "⚪ baja") if pd.notna(x) else "—"
-            )
+            # Tabla año por año — Nivel cosecha = nivel ABSOLUTO vs objetivo
+            def _nivel_html(k):
+                lbl, col = _nivel_cosecha(k, objetivo_kgha)
+                return f'<span style="color:{col};font-weight:600;">{lbl}</span>'
+            det["Nivel cosecha"] = det["kg_ha"].apply(_nivel_html)
             det["Kg/árbol prod."] = (det["Kg"] / det["Arboles_prod"].replace(0, np.nan)).round(1)
             det["% prod."] = det["pct_prod"].round(1)
             det["Kg/Ha"] = det["kg_ha"].round(0)
             detail_df = det.set_index("Año")[
                 ["Kg", "Kg/Ha", "Num_arboles", "Arboles_prod", "% prod.",
-                 "Kg/árbol prod.", "Carga"]
+                 "Kg/árbol prod.", "Nivel cosecha"]
             ].rename(columns={"Num_arboles": "Árboles tot.", "Arboles_prod": "Árboles prod."})
             render_year_table(detail_df, index_label="Año", max_height=400)
+            st.caption(
+                f"**Nivel cosecha** = nivel absoluto del año vs el objetivo "
+                f"({_fmt_es_number(objetivo_kgha,0)} Kg/Ha): Alta ≥90% · Media-alta 65–90% · "
+                f"Media-baja 40–65% · Baja <40%. (Es distinto del 🟢/⚪ del patrón, que marca "
+                f"subida/bajada respecto a la mediana de la propia combinación.)"
+            )
 
             # Gráficas: Kg/Ha y % productores por año
             det_idx = det.assign(_a=det["Año"].astype(str)).set_index("_a")
