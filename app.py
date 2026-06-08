@@ -14840,11 +14840,11 @@ def gallinal_tab(history):
             st.markdown("**Umbrales:**")
             u1, u2, u3 = st.columns(3)
             chill_req = u1.slider(
-                "Requerim. frío (CP)", 30, 110, 85, key="g_chillreq",
-                help="El manzano de sidra es de ALTO frío. Estudio del NO de España "
-                     "(González-Talice et al.): 'Regona' ≈ 90 Chill Portions (modelo "
-                     "Dynamic); rango de cultivares 59–90 CP. Por defecto 85 (valor de "
-                     "sidra alto). Ajústalo a tu variedad dominante.",
+                "Requerim. frío (CP)", 30, 110, 90, key="g_chillreq",
+                help="El manzano de sidra es de ALTO frío. Estudio del NO de España: "
+                     "'Regona' ≈ 90 Chill Portions (modelo Dynamic); rango de cultivares "
+                     "59–90 CP. Por defecto 90 (referencia alta, variedad Regona). "
+                     "Ajústalo a tu variedad dominante.",
             )
             frost_thr = u2.slider("Umbral helada (°C)", -3, 3, 0, key="g_frost")
             heat_thr = u3.slider("Umbral calor (°C)", 28, 38, 32, key="g_heat")
