@@ -14035,12 +14035,18 @@ _GALLINAL_PHASES = [
 
 def _phase_window(sm, sd, em, ed, year):
     """Ventana (inicio, fin) de una fase para un año. Si el inicio (mes,día) es
-    posterior al fin, la ventana cruza el cambio de año (caso del frío invernal)."""
+    posterior al fin, la ventana cruza el cambio de año (caso del frío invernal).
+    El día se ajusta al máximo del mes (evita fechas inválidas como 31 de sep.)."""
+    import calendar as _cal
+
+    def _md(yr, mo, d):
+        return pd.Timestamp(yr, mo, min(int(d), _cal.monthrange(yr, mo)[1]))
+
     if (sm, sd) <= (em, ed):
-        start = pd.Timestamp(year, sm, sd)
+        start = _md(year, sm, sd)
     else:
-        start = pd.Timestamp(year - 1, sm, sd)
-    end = pd.Timestamp(year, em, ed) + pd.Timedelta(hours=23, minutes=59)
+        start = _md(year - 1, sm, sd)
+    end = _md(year, em, ed) + pd.Timedelta(hours=23, minutes=59)
     return start, end
 
 
@@ -14840,17 +14846,31 @@ def gallinal_tab(history):
                 "Ventanas, pesos y umbrales son **editables** abajo."
             )
 
-        with st.expander("📅 Ventanas fenológicas (editar — solo cuentan mes y día)"):
+        _MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun",
+                  "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+        with st.expander("📅 Ventanas fenológicas (editar — mes y día, sin año)"):
+            st.caption(
+                "El **Frío** va de **Nov (del año anterior) → Mar**: es normal que el mes "
+                "de inicio (Nov) sea posterior al de fin (Mar); la app entiende que la "
+                "ventana cruza el cambio de año. El resto de fases son del mismo año."
+            )
+            _hc = st.columns([2.2, 1.5, 1, 1.5, 1])
+            _hc[1].caption("Mes inicio"); _hc[2].caption("Día")
+            _hc[3].caption("Mes fin"); _hc[4].caption("Día")
             edited_phases = []
-            _refy = 2024
             for (pid, label, sm, sd, em, ed, w) in _GALLINAL_PHASES:
-                ca, cb, cc = st.columns([2, 3, 3])
-                ca.markdown(f"**{label}**")
-                _di = cb.date_input("Inicio", value=pd.Timestamp(_refy, sm, sd).date(),
-                                    key=f"gph_ini_{pid}", label_visibility="collapsed")
-                _df = cc.date_input("Fin", value=pd.Timestamp(_refy, em, ed).date(),
-                                    key=f"gph_fin_{pid}", label_visibility="collapsed")
-                edited_phases.append((pid, label, _di.month, _di.day, _df.month, _df.day, w))
+                c0, c1, c2, c3, c4 = st.columns([2.2, 1.5, 1, 1.5, 1])
+                c0.markdown(f"**{label}**")
+                _mi = c1.selectbox("mi", _MESES, index=sm - 1,
+                                   key=f"gph_mi_{pid}", label_visibility="collapsed")
+                _ddi = c2.number_input("di", 1, 31, sd,
+                                       key=f"gph_di_{pid}", label_visibility="collapsed")
+                _mf = c3.selectbox("mf", _MESES, index=em - 1,
+                                   key=f"gph_mf_{pid}", label_visibility="collapsed")
+                _ddf = c4.number_input("df", 1, 31, ed,
+                                       key=f"gph_df_{pid}", label_visibility="collapsed")
+                edited_phases.append((pid, label, _MESES.index(_mi) + 1, int(_ddi),
+                                      _MESES.index(_mf) + 1, int(_ddf), w))
 
         with st.expander("⚙️ Ajustes del modelo (pesos y umbrales)"):
             st.markdown("**Pesos de cada fase** (se normalizan al sumar):")
