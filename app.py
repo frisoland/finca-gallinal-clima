@@ -14118,6 +14118,37 @@ def _veceria_yearly_values(prod, metric):
     return g
 
 
+def _drill_pattern_message(bbi, pct_std):
+    """Diagnóstico accionable del patrón de una combinación, combinando vecería de
+    cosecha (BBI) y estabilidad de la participación (desv. del % productores).
+    Devuelve (tipo, mensaje). Cubre TODOS los casos."""
+    if pd.isna(bbi) or pd.isna(pct_std):
+        return ("info", "ℹ️ Pocos años consecutivos para diagnosticar el patrón con fiabilidad.")
+    if bbi < 0.20 and pct_std < 10:
+        return ("success",
+                "✅ **Patrón regular:** cosecha (Kg/Ha) y participación estables año tras "
+                "año. Es el comportamiento que buscamos.")
+    if pct_std >= 20 and bbi >= 0.40:
+        return ("warning",
+                "🔴 **Vecería acentuada en los dos pilares:** alterna mucho la cosecha "
+                "(Kg/Ha) Y cuántos árboles producen. Manejo: **aclareo fuerte en los años "
+                "de carga alta** y revisar las causas de los años flojos (heladas en "
+                "floración, fallos de cuajado).")
+    if pct_std >= 20:
+        return ("warning",
+                "🟠 **Participación variable:** cambia mucho cuántos árboles producen cada "
+                "año. Conviene revisar causas (heladas en floración, poda, vigor desigual "
+                "o fallos de cuajado).")
+    if bbi >= 0.20 and pct_std < 10:
+        return ("info",
+                "🔎 **Vecería de carga:** casi todos los árboles producen cada año, pero "
+                "alternan cosecha abundante y floja. Manejo: **aclareo de fruto en los años "
+                "de carga alta** para favorecer la floración del año siguiente.")
+    return ("info",
+            "🟡 **Patrón intermedio:** algo de variación en la cosecha y/o en la "
+            "participación. Vigilar la carga en los años altos y la uniformidad de floración.")
+
+
 def _constancia_label(std):
     """Constancia del % de árboles productores entre años (a menor desviación,
     más árboles repiten producción año tras año → mejor)."""
@@ -14567,6 +14598,16 @@ def gallinal_tab(history):
             else:
                 d4.metric("IEP", "—")
 
+            # Diagnóstico accionable del patrón (prominente, bajo las métricas)
+            if rec is not None:
+                _kind, _msg = _drill_pattern_message(rec.get("bbi"), rec.get("pct_std"))
+                if _kind == "success":
+                    st.success(_msg)
+                elif _kind == "warning":
+                    st.warning(_msg)
+                else:
+                    st.info(_msg)
+
             # Tabla año por año (carga alta/baja según la métrica elegida)
             med_val = det["valor"].median()
             det["Carga"] = det["valor"].apply(
@@ -14590,27 +14631,6 @@ def gallinal_tab(history):
             with gc2:
                 st.line_chart(det_idx["pct_prod"], color="#2196f3")
                 st.caption("% árboles productores por año")
-
-            # Interpretación accionable del patrón
-            if rec and pd.notna(rec.get("bbi")) and pd.notna(rec.get("pct_std")):
-                if rec["bbi"] >= 0.20 and rec["pct_std"] < 10:
-                    st.info(
-                        "🔎 Patrón de **vecería de carga**: casi todos los árboles producen "
-                        "cada año, pero alternan cosecha abundante y floja. Manejo "
-                        "recomendado: **aclareo de fruto en los años de carga alta** para "
-                        "favorecer la floración del año siguiente."
-                    )
-                elif rec["pct_std"] >= 20:
-                    st.info(
-                        "🔎 Patrón de **participación variable**: cambia mucho cuántos "
-                        "árboles producen cada año. Conviene revisar causas (heladas en "
-                        "floración, poda, vigor desigual o fallos de cuajado)."
-                    )
-                elif rec["bbi"] < 0.20 and rec["pct_std"] < 10:
-                    st.success(
-                        "✅ Patrón **regular**: cosecha estable y participación estable. "
-                        "Es el comportamiento que buscamos."
-                    )
 
     st.markdown("---")
     st.info(
