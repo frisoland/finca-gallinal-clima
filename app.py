@@ -457,7 +457,8 @@ _st_components.html(
               '📊 Dashboard':'clima','🌦️ Sencrop':'clima',
               '📈 Comparador':'clima','❄️ Frío':'clima',
               '🧾 Agroptima':'agroptima',
-              '🍎 Producción':'produccion'
+              '🍎 Producción':'produccion',
+              '🍏 Análisis Gallinal':'produccion'
             };
             var activeGroup = textToKey[activeText] || '';
             mnBtns.forEach(function(btn, idx) {
@@ -13998,6 +13999,149 @@ def produccion_tab(history):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ANÁLISIS GALLINAL · Fenología × Clima × Producción × Vecería
+# Se construye por fases. Fase 1 (actual): consulta de producción y % productores
+# por año(s) / campo / variedad, con desglose por portainjerto y variedad.
+# ═══════════════════════════════════════════════════════════════════════════════
+def _gallinal_breakdown(sel, group_col, index_label):
+    """Agrega la selección por una columna (portainjerto o variedad) y la
+    renderiza como tabla estilizada con números en español."""
+    g = sel.groupby(group_col).agg(
+        Kg=("Kg", "sum"),
+        Ha=("Ha", "sum"),
+        Arboles_tot=("Num_arboles", "sum"),
+        Arboles_prod=("Arboles_prod", "sum"),
+    )
+    g["% productores"] = (g["Arboles_prod"] / g["Arboles_tot"].replace(0, np.nan) * 100).round(1)
+    g["Kg/árbol prod."] = (g["Kg"] / g["Arboles_prod"].replace(0, np.nan)).round(1)
+    g["Kg/Ha"] = (g["Kg"] / g["Ha"].replace(0, np.nan)).round(0)
+    g = g.rename(columns={"Arboles_tot": "Árboles totales", "Arboles_prod": "Árboles prod."})
+    g = g[["Kg", "Árboles totales", "Árboles prod.", "% productores", "Kg/árbol prod.", "Kg/Ha"]]
+    g = g.sort_values("Kg", ascending=False)
+    render_year_table(g, index_label=index_label)
+
+
+def gallinal_tab(history):
+    st.subheader("🍏 Análisis Gallinal · Fenología · Clima · Producción")
+    st.caption(
+        "Cruce de la producción con la fenología, el clima y la vecería, por campo, "
+        "variedad y portainjerto. Se irá ampliando por fases (índice climático por "
+        "fases, vecería y tabla maestra). Empezamos por la consulta de producción y "
+        "el % de árboles que produjeron."
+    )
+
+    prod = st.session_state.get("produccion_df", pd.DataFrame())
+    if prod is None or prod.empty:
+        st.info(
+            "Aún no hay datos de producción cargados. Ve al item **🍎 Producción**, "
+            "importa el Excel o carga el histórico desde Supabase, y vuelve aquí."
+        )
+        return
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # FASE 1 · Consulta: año(s) · campo · variedad → Kg y % árboles productores
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("### 🔎 Consulta de producción por campo y variedad")
+
+    años_disp = sorted(prod["Año"].unique())
+    campos_disp = sorted(prod["Campo"].unique())
+
+    c1, c2, c3 = st.columns([1.3, 1, 1])
+    with c1:
+        años_sel = st.multiselect(
+            "Año(s)", años_disp,
+            default=[años_disp[-1]] if años_disp else [],
+            key="gallinal_años",
+        )
+    with c2:
+        campo_sel = st.selectbox("Campo", campos_disp, key="gallinal_campo")
+    with c3:
+        vars_campo = sorted(prod[prod["Campo"] == campo_sel]["Variedad_nombre"].unique())
+        variedad_sel = st.selectbox("Variedad", ["(Todas)"] + vars_campo, key="gallinal_variedad")
+
+    if not años_sel:
+        st.warning("Selecciona al menos un año.")
+        return
+
+    sel = prod[(prod["Campo"] == campo_sel) & (prod["Año"].isin(años_sel))].copy()
+    if variedad_sel != "(Todas)":
+        sel = sel[sel["Variedad_nombre"] == variedad_sel]
+
+    if sel.empty:
+        st.warning("No hay datos de producción para esa combinación.")
+        return
+
+    # ── Totales de la selección ───────────────────────────────────────────────
+    kg_tot = float(sel["Kg"].sum())
+    arb_tot = float(sel["Num_arboles"].sum())
+    arb_prod = float(sel["Arboles_prod"].sum())
+    pct_prod = (arb_prod / arb_tot * 100) if arb_tot > 0 else np.nan
+    kg_arbol_prod = (kg_tot / arb_prod) if arb_prod > 0 else np.nan
+
+    _var_txt = variedad_sel if variedad_sel != "(Todas)" else "todas las variedades"
+    _año_txt = f"año {años_sel[0]}" if len(años_sel) == 1 else f"{len(años_sel)} años ({min(años_sel)}–{max(años_sel)})"
+    st.markdown(f"**{campo_sel} · {_var_txt} · {_año_txt}**")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Kg producidos", _fmt_es_number(round(kg_tot), 0))
+    m2.metric("% árboles productores",
+              f"{_fmt_es_number(round(pct_prod, 1), 1)} %" if pd.notna(pct_prod) else "—")
+    m3.metric("Árboles productores",
+              f"{_fmt_es_number(int(arb_prod), 0)} / {_fmt_es_number(int(arb_tot), 0)}")
+    m4.metric("Kg/árbol productor",
+              _fmt_es_number(round(kg_arbol_prod, 1), 1) if pd.notna(kg_arbol_prod) else "—")
+
+    st.caption(
+        "El % de árboles productores es el agregado de la selección (árboles que "
+        "produjeron ÷ árboles totales). Con varios años o variedades es la media "
+        "ponderada por número de árboles."
+    )
+
+    # ── Tabla por año (agregando portainjertos / variedades) ──────────────────
+    if len(años_sel) > 1:
+        st.markdown("#### Por año")
+        por_año = sel.groupby("Año").agg(
+            Kg=("Kg", "sum"),
+            Ha=("Ha", "sum"),
+            Arboles_tot=("Num_arboles", "sum"),
+            Arboles_prod=("Arboles_prod", "sum"),
+        )
+        por_año["% productores"] = (por_año["Arboles_prod"] / por_año["Arboles_tot"].replace(0, np.nan) * 100).round(1)
+        por_año["Kg/árbol prod."] = (por_año["Kg"] / por_año["Arboles_prod"].replace(0, np.nan)).round(1)
+        por_año["Kg/Ha"] = (por_año["Kg"] / por_año["Ha"].replace(0, np.nan)).round(0)
+        por_año = por_año.rename(columns={"Arboles_tot": "Árboles totales", "Arboles_prod": "Árboles prod."})
+        render_year_table(
+            por_año[["Kg", "Árboles totales", "Árboles prod.", "% productores", "Kg/árbol prod.", "Kg/Ha"]],
+            index_label="Año",
+        )
+        st.bar_chart(por_año["Kg"].rename(index=str), color="#4caf7d")
+        st.caption(
+            "Kg por año. Los dientes de sierra (un año alto seguido de uno bajo) "
+            "anticipan la vecería, que cuantificaremos en la siguiente fase."
+        )
+
+    # ── Desglose por portainjerto ─────────────────────────────────────────────
+    st.markdown("#### Desglose por portainjerto")
+    _gallinal_breakdown(sel, "Portainjerto_nombre", "Portainjerto")
+    st.caption(
+        "Agregado de los años seleccionados. Los portainjertos más vigorosos suelen "
+        "mostrar más vecería (mayor variación de cosecha entre años)."
+    )
+
+    # ── Desglose por variedad (solo si se eligió '(Todas)') ───────────────────
+    if variedad_sel == "(Todas)" and sel["Variedad_nombre"].nunique() > 1:
+        st.markdown("#### Desglose por variedad")
+        _gallinal_breakdown(sel, "Variedad_nombre", "Variedad")
+
+    st.markdown("---")
+    st.info(
+        "🔜 **Próximas fases:** índice climático por fases fenológicas (frío, "
+        "brotación, floración, cuajado, engorde, maduración), Índice de Vecería (BBI) "
+        "por portainjerto, y el Índice Gallinal (IG) que cruzará clima ↔ producción."
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # DECISIONES · Panel de evolución de enfermedades y plagas (estilo RIMpro)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -16900,6 +17044,7 @@ if not _HEADLESS:
         "campos":        ("🌳", "Gestión", "Campos"),
         "agroptima":     ("🧾", "Gestión", "Agroptima"),
         "produccion":    ("🍎", "Gestión", "Producción"),
+        "gallinal":      ("🍏", "Gestión", "Análisis Gallinal"),
         "informe":       ("📝", "Gestión", "Informe semanal"),
         "instrucciones": ("📘", "",        "Instrucciones"),
         "configuracion": ("⚙️", "",        "Configuración"),
@@ -16934,7 +17079,7 @@ if not _HEADLESS:
     # Páginas por grupo (para auto-expandir el grupo activo)
     _CLIMA_PAGES   = {"dashboard","sencrop","analisis","comparador","frio"}
     _CULTIVO_PAGES = {"fenologia","sanidad","decisiones","carpocapsa","riego"}
-    _GESTION_PAGES = {"campos","agroptima","produccion","informe"}
+    _GESTION_PAGES = {"campos","agroptima","produccion","gallinal","informe"}
 
     _active_page = st.session_state.get("nav_page","dashboard")
     if _active_page in _CLIMA_PAGES:   st.session_state["grp_clima"]   = True
@@ -16987,6 +17132,7 @@ if not _HEADLESS:
             _nav_btn("🌳 Campos",          "campos")
             _nav_btn("🧾 Agroptima",        "agroptima")
             _nav_btn("🍎 Producción",       "produccion")
+            _nav_btn("🍏 Análisis Gallinal", "gallinal")
             _nav_btn("📝 Informe semanal",  "informe")
 
         st.divider()
@@ -17028,6 +17174,8 @@ if not _HEADLESS:
         activities_tab()
     elif _page == "produccion":
         produccion_tab(history)
+    elif _page == "gallinal":
+        gallinal_tab(history)
     elif _page == "informe":
         weekly_report_tab(history, soil_type, hoja_threshold)
     elif _page == "instrucciones":
