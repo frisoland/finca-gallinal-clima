@@ -14331,6 +14331,27 @@ def _nivel_cosecha(kg_ha, objetivo):
     return ("Baja", "#c62828")
 
 
+def _ig_diagnosis(ig, kgha, objetivo):
+    """Cruza el clima (IG) con la cosecha real para diagnosticar el año.
+    El gran objetivo: distinguir años limitados por CLIMA de años donde el clima
+    fue bueno pero la cosecha no (→ vecería/manejo). Devuelve (texto, color)."""
+    if pd.isna(ig) or pd.isna(kgha) or not objetivo or objetivo <= 0:
+        return ("—", "#9e9e9e")
+    clima_bueno = ig >= 65
+    clima_malo = ig < 50
+    cosecha_buena = kgha >= 0.65 * objetivo
+    cosecha_mala = kgha < 0.40 * objetivo
+    if clima_malo and cosecha_mala:
+        return ("Limitado por clima", "#c62828")
+    if clima_bueno and cosecha_mala:
+        return ("No fue el clima → vecería/manejo", "#e65100")
+    if clima_bueno and cosecha_buena:
+        return ("Clima y cosecha buenos", "#2e7d32")
+    if clima_malo and cosecha_buena:
+        return ("Buena cosecha pese al clima", "#558b2f")
+    return ("Intermedio", "#9e9e9e")
+
+
 def _iep_score(kg_ha_medio, pct_medio, objetivo, w_kgha=0.65, w_part=0.35):
     """Índice de Excelencia Productiva (0–100). El Kg/Ha es el criterio dominante
     (logro respecto al objetivo, tope 100) y la participación de árboles modula.
@@ -14910,11 +14931,134 @@ def gallinal_tab(history):
                         f"<span style='color:{_score_color(ic)};font-weight:700;'>"
                         f"{_fmt_es_number(round(ic),0)}/100</span>**", unsafe_allow_html=True)
 
+        # ══════════════════════════════════════════════════════════════════════
+        # FASE 4 · Índice Gallinal (IG) — clima calibrado con la producción
+        # ══════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown("### 🏅 Índice Gallinal (IG) · clima calibrado con tu producción")
+
+        with st.expander("ℹ️ Qué es el Índice Gallinal y cómo se calibra"):
+            st.markdown(
+                "El **IG** es el Índice Climático pero con los **pesos de cada fase "
+                "aprendidos de TU producción**: mide la correlación de cada fase con "
+                "tus Kg/Ha de finca y da más peso a las que de verdad explican la "
+                "cosecha. Una fase que no discrimina (como el frío, que casi siempre se "
+                "cumple) recibe peso ≈0 sola.\n\n"
+                "El **deslizador de confianza** mezcla esos pesos calibrados con tus "
+                "pesos manuales (0 % = solo tu criterio, 100 % = solo los datos).\n\n"
+                "Y el **diagnóstico** cruza clima ↔ cosecha para responder lo que "
+                "buscábamos desde el principio: *¿un año flojo fue por el clima o por "
+                "la vecería/manejo?*\n\n"
+                "⚠️ Con pocos años, las correlaciones son **indicios**, no certezas. "
+                "La vecería mete ruido; cuantos más años, más fiable."
+            )
+
+        # Producción de finca (Kg/Ha) por año
+        kgha_year = {}
+        for y in años_disp:
+            _d = prod[prod["Año"] == y]
+            _ha = _d["Ha"].sum()
+            kgha_year[y] = (_d["Kg"].sum() / _ha) if _ha > 0 else np.nan
+
+        phase_ids = [pid for (pid, *_r) in edited_phases]
+        # Correlación de cada fase con Kg/Ha de finca
+        corr = {}
+        for pid in phase_ids:
+            xs, ys = [], []
+            for y in años_disp:
+                s = detail[y][1].get(pid, np.nan)
+                k = kgha_year[y]
+                if pd.notna(s) and pd.notna(k):
+                    xs.append(s); ys.append(k)
+            if len(xs) >= 4 and np.std(xs) > 0 and np.std(ys) > 0:
+                corr[pid] = float(np.corrcoef(xs, ys)[0, 1])
+            else:
+                corr[pid] = np.nan
+        n_pairs = sum(1 for y in años_disp
+                      if pd.notna(kgha_year[y]) and pd.notna(detail[y][2]))
+
+        # Pesos manuales (de la Fase 3) y calibrados (∝ correlación positiva)
+        _msum = sum(weights[pid] for pid in phase_ids) or 1
+        manual_norm = {pid: weights[pid] / _msum for pid in phase_ids}
+        cal_raw = {pid: (max(0.0, corr[pid]) if pd.notna(corr[pid]) else 0.0) for pid in phase_ids}
+        _csum = sum(cal_raw.values())
+        cal_norm = ({pid: cal_raw[pid] / _csum for pid in phase_ids} if _csum > 0
+                    else dict(manual_norm))
+
+        conf = st.slider(
+            "Confianza en la calibración (%)  ·  0 = solo pesos manuales · 100 = solo datos",
+            0, 100, 70, key="g_ig_conf") / 100.0
+        final_w = {pid: conf * cal_norm[pid] + (1 - conf) * manual_norm[pid] for pid in phase_ids}
+
+        # Tabla de calibración
+        _ch = [("Fase", "left"), ("r con Kg/Ha", "right"), ("Peso calibrado", "right"),
+               ("Peso manual", "right"), ("Peso final", "right")]
+        _cr = []
+        for (pid, label, *_r) in edited_phases:
+            _rv = corr[pid]
+            _rhtml = (_colored_num(_rv, "#2e7d32" if (pd.notna(_rv) and _rv > 0) else "#c62828", 2)
+                      if pd.notna(_rv) else '<span style="color:#9e9e9e;">—</span>')
+            _cr.append([label, _rhtml,
+                        f'{_fmt_es_number(round(cal_norm[pid]*100),0)} %',
+                        f'{_fmt_es_number(round(manual_norm[pid]*100),0)} %',
+                        f'<b>{_fmt_es_number(round(final_w[pid]*100),0)} %</b>'])
+        _render_html_table(_ch, _cr, max_height=320)
+        if n_pairs < 4:
+            st.warning(f"⚠️ Solo {n_pairs} año(s) con clima y producción a la vez. La "
+                       f"calibración aún no es fiable; baja la confianza y manda tu criterio.")
+        else:
+            st.caption(f"Correlación (r) de cada fase con los Kg/Ha de finca sobre {n_pairs} años. "
+                       f"Peso calibrado ∝ correlación positiva. Con pocos años, tómalo como indicio.")
+
+        # IG por año + cruce clima/cosecha
+        ig_rows = []
+        for y in años_disp:
+            ps = detail[y][1]
+            _num = _den = 0.0
+            for pid in phase_ids:
+                s = ps.get(pid, np.nan)
+                if pd.notna(s):
+                    _num += final_w[pid] * s
+                    _den += final_w[pid]
+            ig = (_num / _den) if _den > 0 else np.nan
+            ig_rows.append((y, ig, kgha_year[y]))
+
+        st.markdown("#### IG y producción por año")
+        _ih = [("Año", "left"), ("IG clima", "right"), ("Kg/Ha finca", "right"),
+               ("Nivel cosecha", "center"), ("Diagnóstico", "left")]
+        _ir = []
+        for (y, ig, k) in ig_rows:
+            _nivel, _ncol = _nivel_cosecha(k, objetivo_kgha)
+            _diag, _dcol = _ig_diagnosis(ig, k, objetivo_kgha)
+            _ir.append([
+                str(int(y)),
+                _colored_num(ig, _score_color(ig), 0),
+                _kgha_target_html(k, objetivo_kgha),
+                f'<span style="color:{_ncol};font-weight:600;">{_nivel}</span>',
+                f'<span style="color:{_dcol};font-weight:600;">{_diag}</span>',
+            ])
+        _render_html_table(_ih, _ir, max_height=420)
+        st.caption("**IG clima** = índice climático con pesos calibrados. **Diagnóstico** "
+                   "cruza clima vs cosecha: separa los años limitados por CLIMA de los que "
+                   "el clima fue bueno pero la cosecha no (→ vecería/manejo).")
+
+        # Narrativa: qué fase manda en tu finca
+        if n_pairs >= 4 and _csum > 0:
+            _top = max(phase_ids, key=lambda p: cal_norm[p])
+            _topl = next(l for (pid, l, *_r) in edited_phases if pid == _top)
+            st.markdown(
+                f"**En tu finca, la fase cuyo clima más se relaciona con la cosecha es "
+                f"{_topl}** (r = {_fmt_es_number(round(corr[_top],2),2)}). "
+                "El frío, al cumplirse casi siempre, apenas explica diferencias entre años."
+            )
+
     st.markdown("---")
-    st.info(
-        "🔜 **Próxima fase (4):** el **Índice Gallinal (IG)** cruzará el Índice "
-        "Climático con tu producción (IEP) y la vecería, para separar qué parte de "
-        "cada año fue clima, portainjerto, variedad o prácticas."
+    st.success(
+        "✅ **Modelo Gallinal completo (Fases 1–4):** producción y participación → "
+        "vecería (BBI) e IEP → índice climático por fases → **Índice Gallinal** que "
+        "separa clima de vecería/manejo. Próximos pasos posibles: requerimientos de "
+        "frío/calor por variedad (datos SERIDA), fenología real por año, y recomendaciones "
+        "de aclareo automáticas."
     )
 
 
