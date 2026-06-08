@@ -13527,6 +13527,72 @@ def autosave_produccion_to_supabase():
         st.warning(f"⚠️ Error en el guardado automático de producción: {e}")
 
 
+def _fmt_es_number(value, decimals):
+    """Formato español: separador de miles '.', decimales ','. NaN/None → '—'.
+    Las cadenas (p.ej. '—', 'Buena polinización') se devuelven tal cual."""
+    if value is None:
+        return "—"
+    try:
+        if pd.isna(value):
+            return "—"
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        return value
+    try:
+        s = f"{float(value):,.{decimals}f}"
+    except (TypeError, ValueError):
+        return str(value)
+    # Intercambiar separadores al estilo español (, ↔ .)
+    return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+
+
+def _auto_decimals(series):
+    """0 decimales si todos los valores son enteros; 1 si hay parte decimal."""
+    nums = pd.to_numeric(series, errors="coerce").dropna()
+    if nums.empty:
+        return 0
+    if ((nums - nums.round(0)).abs() > 1e-9).any():
+        return 1
+    return 0
+
+
+def render_year_table(df, index_label="Año", max_height=430):
+    """Renderiza un DataFrame como tabla HTML con el mismo estilo que el resto de
+    la app: 1ª columna (el índice) FIJA, encabezados de color y números con
+    separador de miles español. Robusto en móvil (clases fg-fixedcol/fg-th)."""
+    _TH = ("background:#1a2e1e;color:white;padding:8px 12px;font-weight:600;"
+           "font-size:13px;white-space:nowrap;position:sticky;top:0;z-index:2;"
+           "text-align:right;")
+    _TH_CORNER = ("background:#1a2e1e;color:white;padding:8px 12px;font-weight:600;"
+                  "font-size:13px;white-space:nowrap;position:sticky;top:0;left:0;"
+                  "z-index:4;text-align:left;")
+    _TD0 = ("position:sticky;left:0;z-index:1;padding:7px 12px;"
+            "border-bottom:1px solid #ddd;font-weight:600;font-size:13px;"
+            "white-space:nowrap;border-right:2px solid #1a2e1e;"
+            "background:#f4f8f5;text-align:left;")
+    _TD = ("padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;"
+           "font-size:13px;text-align:right;")
+
+    _decs = {c: _auto_decimals(df[c]) for c in df.columns}
+    _hdr = f'<th class="fg-th-corner" style="{_TH_CORNER}">{index_label}</th>'
+    for _c in df.columns:
+        _hdr += f'<th class="fg-th" style="{_TH}">{_c}</th>'
+    _body = ""
+    for _idx, _row in df.iterrows():
+        _cells = f'<td style="{_TD0}">{_idx}</td>'
+        for _c in df.columns:
+            _cells += f'<td style="{_TD}">{_fmt_es_number(_row[_c], _decs[_c])}</td>'
+        _body += f"<tr>{_cells}</tr>"
+    st.markdown(
+        f'<div style="overflow-x:auto;overflow-y:auto;max-height:{max_height}px;'
+        f'border-radius:8px;border:1px solid #ccc;margin-bottom:1rem;">'
+        f'<table class="fg-fixedcol" style="border-collapse:separate;border-spacing:0;min-width:100%;">'
+        f'<thead><tr>{_hdr}</tr></thead><tbody>{_body}</tbody></table></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def produccion_tab(history):
     st.subheader("🍎 Producción · Histórico y análisis")
 
@@ -13600,7 +13666,7 @@ def produccion_tab(history):
     resumen.columns = ["Año", "Kg totales", "Ha", "Nº árboles", "Árboles prod.",
                        "Kg/Ha", "Kg/árbol prod.", "% árb. productores"]
 
-    st.dataframe(resumen.set_index("Año"), use_container_width=True)
+    render_year_table(resumen.set_index("Año"))
 
     # Gráfico kg totales por año
     fig_resumen = {
@@ -13621,10 +13687,11 @@ def produccion_tab(history):
     resumen_chart = resumen.set_index("Año")[["Kg totales", "Kg/Ha"]]
     c1, c2 = st.columns(2)
     with c1:
-        st.bar_chart(resumen.set_index("Año")["Kg totales"], color="#4caf7d")
+        # .rename(index=str): año como categoría (texto) → eje "2020", no "2,020"
+        st.bar_chart(resumen.set_index("Año")["Kg totales"].rename(index=str), color="#4caf7d")
         st.caption("Kg totales por año")
     with c2:
-        st.bar_chart(resumen.set_index("Año")["Kg/Ha"], color="#2196f3")
+        st.bar_chart(resumen.set_index("Año")["Kg/Ha"].rename(index=str), color="#2196f3")
         st.caption("Kg por hectárea por año")
 
     # ── 3. Por campo ──────────────────────────────────────────────────────────
@@ -13645,8 +13712,8 @@ def produccion_tab(history):
         pivot_campo = por_campo[por_campo["Campo"].isin(campos_sel)].pivot(
             index="Año", columns="Campo", values=metrica_campo
         )
-        st.line_chart(pivot_campo)
-        st.dataframe(pivot_campo.round(0), use_container_width=True)
+        st.line_chart(pivot_campo.rename(index=str))
+        render_year_table(pivot_campo.round(0))
 
     # ── 4. Por variedad ───────────────────────────────────────────────────────
     st.markdown("### 3. Producción por variedad")
@@ -13668,8 +13735,8 @@ def produccion_tab(history):
         pivot_var = por_var[por_var["Variedad_nombre"].isin(vars_sel)].pivot(
             index="Año", columns="Variedad_nombre", values=metrica_var
         )
-        st.line_chart(pivot_var)
-        st.dataframe(pivot_var.round(0), use_container_width=True)
+        st.line_chart(pivot_var.rename(index=str))
+        render_year_table(pivot_var.round(0))
 
     # ── 5. Por portainjerto ───────────────────────────────────────────────────
     st.markdown("### 4. Producción por portainjerto")
@@ -13685,8 +13752,8 @@ def produccion_tab(history):
 
     metrica_porta = st.radio("Métrica", ["Kg/Ha", "Kg/árbol"], horizontal=True, key="prod_metrica_porta")
     pivot_porta = por_porta.pivot(index="Año", columns="Portainjerto_nombre", values=metrica_porta)
-    st.line_chart(pivot_porta)
-    st.dataframe(pivot_porta.round(1), use_container_width=True)
+    st.line_chart(pivot_porta.rename(index=str))
+    render_year_table(pivot_porta.round(1))
 
     # ── 6. Correlación clima-producción ──────────────────────────────────────
     st.markdown("### 5. Correlación clima–producción")
@@ -13770,7 +13837,7 @@ def produccion_tab(history):
                 })
 
             corr_df = pd.DataFrame(correlacion_rows).set_index("Año")
-            st.dataframe(corr_df, use_container_width=True)
+            render_year_table(corr_df, max_height=500)
             st.caption(
                 "Frío: H. frío <7°C, 0–7,2°C y Utah CU corresponden a Nov(año-1)–Mar(año). "
                 "Polinización y lluvia: Abr–May del año de producción."
