@@ -14333,7 +14333,12 @@ def gallinal_tab(history):
             "Kg/Ha con casi todos los árboles produciendo). Bandas: ≥85 excelente · "
             "70–85 bueno · 50–70 mejorable · <50 bajo.\n\n"
             "Los **puntos** del patrón muestran cada año: 🟢 año de carga (≥ mediana), "
-            "⚪ año de descarga (< mediana)."
+            "⚪ año de descarga (< mediana).\n\n"
+            "⚠️ **No confundir BBI y Constancia:** el **BBI** mide si la *cosecha* "
+            "(Kg/Ha) sube y baja entre años; la **Constancia** mide si el *% de "
+            "árboles que producen* se mantiene estable. Son ejes distintos: un campo "
+            "puede dar muchos Kg/Ha pero con participación variable, o pocos Kg/Ha "
+            "pero con casi todos los árboles cargando cada año."
         )
 
     cobj, cmet, csort = st.columns([1, 1.3, 1.1])
@@ -14379,6 +14384,8 @@ def gallinal_tab(history):
         pct_serie = subg["pct_prod"].dropna()
         pct_medio = float(pct_serie.mean()) if not pct_serie.empty else np.nan
         pct_std = float(pct_serie.std(ddof=0)) if len(pct_serie) > 1 else np.nan
+        pct_min = float(pct_serie.min()) if not pct_serie.empty else np.nan
+        pct_max = float(pct_serie.max()) if not pct_serie.empty else np.nan
         densidad = float((subg["Num_arboles"] / subg["Ha"].replace(0, np.nan)).mean())
         iep = _iep_score(kg_ha_medio, pct_medio, objetivo_kgha)
         records.append({
@@ -14390,6 +14397,8 @@ def gallinal_tab(history):
             "kg_ha_medio": kg_ha_medio,
             "pct_medio": pct_medio,
             "pct_std": pct_std,
+            "pct_min": pct_min,
+            "pct_max": pct_max,
             "densidad": densidad,
             "iep": iep,
             "pattern": _veceria_pattern_html(years, vals),
@@ -14413,15 +14422,22 @@ def gallinal_tab(history):
         _headers = [
             ("Campo · Variedad · Portainjerto", "left"),
             ("IEP", "right"), ("Kg/Ha medio", "right"), ("% prod. medio", "right"),
-            ("BBI", "right"), ("Constancia", "center"),
+            ("BBI", "right"), ("Constancia % prod.", "center"),
             ("Patrón (años →)", "left"),
         ]
         _rows = []
         for r in records:
             _, bbi_fg, _ = _veceria_level(r["bbi"])
             cons_lbl, cfg, cbg = _constancia_label(r["pct_std"])
-            cons_badge = (f'<span style="background:{cbg};color:{cfg};border-radius:4px;'
-                          f'padding:2px 8px;font-size:12px;font-weight:600;">{cons_lbl}</span>')
+            _cons_title = (
+                f"% productores por año: {_fmt_es_number(round(r['pct_min'],1),1)}–"
+                f"{_fmt_es_number(round(r['pct_max'],1),1)} % (desv. "
+                f"{_fmt_es_number(round(r['pct_std'],1),1)})"
+                if pd.notna(r["pct_std"]) else "Mide la estabilidad del % de árboles productores"
+            )
+            cons_badge = (f'<span title="{_cons_title}" style="background:{cbg};color:{cfg};'
+                          f'border-radius:4px;padding:2px 8px;font-size:12px;'
+                          f'font-weight:600;">{cons_lbl}</span>')
             iep_lbl, iep_col = _iep_level(r["iep"])
             iep_html = (
                 f'<span title="{iep_lbl}" style="color:{iep_col};font-weight:700;'
@@ -14441,8 +14457,10 @@ def gallinal_tab(history):
         _cap = (f"**IEP** (0–100) = excelencia productiva (Kg/Ha 65% + participación 35%); "
                 f"≥85 excelente · 70–85 bueno · 50–70 mejorable · <50 bajo. **Kg/Ha medio** "
                 f"coloreado vs objetivo ({_fmt_es_number(objetivo_kgha,0)}). **% prod. medio** "
-                f"= participación. **BBI** = vecería (verde=regular). **Constancia** = "
-                f"estabilidad del % productores. Ordenado: {_orden_txt}.")
+                f"= participación. **BBI** = vecería de la *cosecha* (verde=regular). "
+                f"**Constancia % prod.** = estabilidad del *% de árboles productores* entre "
+                f"años (distinto del nivel de Kg/Ha; pasa el ratón para ver el rango). "
+                f"Ordenado: {_orden_txt}.")
         if excluidos:
             _cap += f" {excluidos} combinación(es) sin años consecutivos suficientes no se muestran."
         st.caption(_cap)
