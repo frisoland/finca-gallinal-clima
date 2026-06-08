@@ -14021,6 +14021,140 @@ def _gallinal_breakdown(sel, group_col, index_label):
     render_year_table(g, index_label=index_label)
 
 
+# ── FASE 3 · Índice Climático por fases fenológicas (finca, por año) ──────────
+# (id, etiqueta, mes_ini, día_ini, mes_fin, día_fin, peso_por_defecto)
+_GALLINAL_PHASES = [
+    ("frio",       "🥶 Frío",       11, 1,  3, 15, 20),
+    ("brotacion",  "🌱 Brotación",   3, 16, 4, 15, 10),
+    ("floracion",  "🌸 Floración",   4, 16, 5, 15, 30),
+    ("cuajado",    "🍏 Cuajado",     5, 16, 6, 15, 15),
+    ("engorde",    "☀️ Engorde",     6, 16, 8, 31, 15),
+    ("maduracion", "🍎 Maduración",  9,  1, 10, 20, 10),
+]
+
+
+def _phase_window(sm, sd, em, ed, year):
+    """Ventana (inicio, fin) de una fase para un año. Si el inicio (mes,día) es
+    posterior al fin, la ventana cruza el cambio de año (caso del frío invernal)."""
+    if (sm, sd) <= (em, ed):
+        start = pd.Timestamp(year, sm, sd)
+    else:
+        start = pd.Timestamp(year - 1, sm, sd)
+    end = pd.Timestamp(year, em, ed) + pd.Timedelta(hours=23, minutes=59)
+    return start, end
+
+
+def _phase_metrics(hist, start, end, temp_col, frost_thr=0.0, heat_thr=32.0,
+                   base_temp=10.0, pollin_lo=12.0, pollin_hi=25.0):
+    """Métricas climáticas de una ventana fenológica. None si no hay datos."""
+    sl = hist[(hist["fecha_hora"] >= start) & (hist["fecha_hora"] <= end)].copy()
+    if sl.empty:
+        return None
+    sl = sl.sort_values("fecha_hora")
+    t = pd.to_numeric(sl[temp_col], errors="coerce")
+    n_hours = int(t.notna().sum())
+    if n_hours == 0:
+        return None
+    daily = sl.set_index("fecha_hora")[temp_col]
+    dmin = pd.to_numeric(daily.resample("D").min(), errors="coerce")
+    dmax = pd.to_numeric(daily.resample("D").max(), errors="coerce")
+    dmean = pd.to_numeric(daily.resample("D").mean(), errors="coerce")
+    expected_days = max(1, (end - start).days + 1)
+    rain = (float(pd.to_numeric(sl["lluvia_mm"], errors="coerce").fillna(0).sum())
+            if "lluvia_mm" in sl.columns else np.nan)
+    fav = int(((t >= pollin_lo) & (t <= pollin_hi)).sum())
+    return {
+        "n_hours": n_hours,
+        "n_days": int(dmean.notna().sum()),
+        "coverage": dmean.notna().sum() / expected_days,
+        "mean_temp": float(t.mean()),
+        "frost_nights": int((dmin <= frost_thr).sum()),
+        "heat_days": int((dmax > heat_thr).sum()),
+        "gdd": float(np.clip(dmean - base_temp, 0, None).sum()),
+        "rain_mm": rain,
+        "pollin_frac": float(fav / n_hours) if n_hours > 0 else np.nan,
+        "chill_cp": float(np.sum(dynamic_chill_portions(t))),
+    }
+
+
+def _tri_adequacy(x, lo, peak_lo, peak_hi, hi):
+    """Idoneidad 0–100: 100 en [peak_lo, peak_hi], baja lineal hasta 0 en lo/hi."""
+    if pd.isna(x):
+        return np.nan
+    if peak_lo <= x <= peak_hi:
+        return 100.0
+    if x < peak_lo:
+        return 0.0 if x <= lo else (x - lo) / (peak_lo - lo) * 100.0
+    return 0.0 if x >= hi else (hi - x) / (hi - peak_hi) * 100.0
+
+
+def _score_phase(pid, m, p):
+    """Puntuación climática 0–100 de una fase, según sus métricas y parámetros."""
+    if m is None:
+        return np.nan
+    if pid == "frio":
+        return float(np.clip(m["chill_cp"] / p["chill_req"] * 100, 0, 100)) if p["chill_req"] > 0 else np.nan
+    if pid == "brotacion":
+        return float(np.clip(m["gdd"] / p["gdd_ref"] * 100, 0, 100)) if p["gdd_ref"] > 0 else np.nan
+    if pid == "floracion":
+        if pd.isna(m["pollin_frac"]):
+            return np.nan
+        temp_score = float(np.clip(m["pollin_frac"] / 0.5 * 100, 0, 100))
+        rain_pen = (float(np.clip((m["rain_mm"] - 40) / (150 - 40), 0, 1) * 0.4)
+                    if pd.notna(m["rain_mm"]) else 0.0)
+        frost_factor = max(0.0, 1 - 0.25 * m["frost_nights"])
+        return float(temp_score * (1 - rain_pen) * frost_factor)
+    if pid == "cuajado":
+        adq = _tri_adequacy(m["mean_temp"], 10, 16, 22, 28)
+        if pd.isna(adq):
+            return np.nan
+        frost_factor = max(0.0, 1 - 0.30 * m["frost_nights"])
+        return float(adq * frost_factor)
+    if pid == "engorde":
+        heat_pen = float(np.clip(m["heat_days"] / 20.0, 0, 1) * 0.5)
+        drought_pen = (float(np.clip((p["rain_min_engorde"] - m["rain_mm"]) / p["rain_min_engorde"], 0, 1) * 0.4)
+                       if pd.notna(m["rain_mm"]) else 0.0)
+        return float(100 * (1 - heat_pen) * (1 - drought_pen))
+    if pid == "maduracion":
+        return _tri_adequacy(m["mean_temp"], 8, 14, 20, 26)
+    return np.nan
+
+
+def _score_color(s):
+    """Color de una puntuación 0–100 (verde alto, rojo bajo)."""
+    if pd.isna(s):
+        return "#9e9e9e"
+    if s >= 80:
+        return "#2e7d32"
+    if s >= 60:
+        return "#558b2f"
+    if s >= 40:
+        return "#e65100"
+    return "#c62828"
+
+
+def _phase_clima_text(pid, m):
+    """Resumen legible del clima de una fase (las métricas que más pesan)."""
+    if m is None:
+        return "—"
+    pre = "⚠️ datos parciales · " if m.get("coverage", 1) < 0.5 else ""
+    _r = (_fmt_es_number(round(m["rain_mm"]), 0) if pd.notna(m.get("rain_mm")) else "—")
+    if pid == "frio":
+        return pre + f"{_fmt_es_number(round(m['chill_cp']), 0)} Chill Portions"
+    if pid == "brotacion":
+        return pre + f"{_fmt_es_number(round(m['gdd']), 0)} GDD"
+    if pid == "floracion":
+        return (pre + f"{m['frost_nights']} heladas · {_r} mm · "
+                f"{_fmt_es_number(round(m['pollin_frac'] * 100), 0)} % horas favorables")
+    if pid == "cuajado":
+        return pre + f"{m['frost_nights']} heladas · {_fmt_es_number(round(m['mean_temp'], 1), 1)} °C media"
+    if pid == "engorde":
+        return pre + f"{m['heat_days']} días calor · {_r} mm"
+    if pid == "maduracion":
+        return pre + f"{_fmt_es_number(round(m['mean_temp'], 1), 1)} °C media"
+    return pre + "—"
+
+
 def _render_html_table(headers, rows, max_height=480):
     """Renderiza una tabla HTML genérica con 1ª columna fija y encabezados de
     color (clases fg-fixedcol/fg-th, robustas en móvil).
@@ -14657,12 +14791,124 @@ def gallinal_tab(history):
                 st.line_chart(det_idx["pct_prod"], color="#2196f3")
                 st.caption("% árboles productores por año")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # FASE 3 · Índice Climático por fases fenológicas (finca, por año)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 🌡️ Índice Climático por fases (por año)")
+
+    temp_col_g = next((c for c in ["temp_media", "temp", "temperatura", "Temperatura", "temp_avg"]
+                       if history is not None and not history.empty and c in history.columns), None)
+    if history is None or history.empty or temp_col_g is None or "fecha_hora" not in history.columns:
+        st.info("Carga el histórico climático (con temperatura) para calcular el índice climático por año.")
+    else:
+        with st.expander("ℹ️ Cómo se calcula el Índice Climático"):
+            st.markdown(
+                "Para cada año puntúo (0–100) el clima de cada fase fenológica y las "
+                "combino en un **Índice Climático (IC)** ponderado. Es **idoneidad "
+                "climática pura** (no producción): mide si el año fue favorable. En la "
+                "Fase 4 se cruzará con tu producción/IEP/vecería para separar clima de "
+                "portainjerto/vecería/prácticas.\n\n"
+                "- 🥶 **Frío:** Chill Portions vs requerimiento.\n"
+                "- 🌱 **Brotación:** calor acumulado (GDD).\n"
+                "- 🌸 **Floración:** heladas (penaliza fuerte) + clima de polinización "
+                "(horas en 12–25 °C, lluvia).\n"
+                "- 🍏 **Cuajado:** heladas tardías + temperatura moderada.\n"
+                "- ☀️ **Engorde:** estrés por calor (días > umbral) + déficit hídrico.\n"
+                "- 🍎 **Maduración:** temperatura para azúcares.\n\n"
+                "Ventanas, pesos y umbrales son **editables** abajo."
+            )
+
+        with st.expander("📅 Ventanas fenológicas (editar — solo cuentan mes y día)"):
+            edited_phases = []
+            _refy = 2024
+            for (pid, label, sm, sd, em, ed, w) in _GALLINAL_PHASES:
+                ca, cb, cc = st.columns([2, 3, 3])
+                ca.markdown(f"**{label}**")
+                _di = cb.date_input("Inicio", value=pd.Timestamp(_refy, sm, sd).date(),
+                                    key=f"gph_ini_{pid}", label_visibility="collapsed")
+                _df = cc.date_input("Fin", value=pd.Timestamp(_refy, em, ed).date(),
+                                    key=f"gph_fin_{pid}", label_visibility="collapsed")
+                edited_phases.append((pid, label, _di.month, _di.day, _df.month, _df.day, w))
+
+        with st.expander("⚙️ Ajustes del modelo (pesos y umbrales)"):
+            st.markdown("**Pesos de cada fase** (se normalizan al sumar):")
+            weights = {}
+            wcols = st.columns(len(edited_phases))
+            for _i, (pid, label, _a, _b, _c, _d, w) in enumerate(edited_phases):
+                weights[pid] = wcols[_i].slider(label, 0, 50, int(w), key=f"gw_{pid}")
+            st.markdown("**Umbrales:**")
+            u1, u2, u3 = st.columns(3)
+            chill_req = u1.slider("Requerim. frío (CP)", 30, 90, 60, key="g_chillreq")
+            frost_thr = u2.slider("Umbral helada (°C)", -3, 3, 0, key="g_frost")
+            heat_thr = u3.slider("Umbral calor (°C)", 28, 38, 32, key="g_heat")
+
+        params = {"chill_req": float(chill_req), "gdd_ref": 120.0, "rain_min_engorde": 120.0}
+
+        # Cálculo por año (años de producción)
+        ic_rows = []
+        detail = {}
+        for y in años_disp:
+            pscores, pmetrics = {}, {}
+            for (pid, label, sm, sd, em, ed, w) in edited_phases:
+                _start, _end = _phase_window(sm, sd, em, ed, int(y))
+                m = _phase_metrics(history, _start, _end, temp_col_g,
+                                   frost_thr=float(frost_thr), heat_thr=float(heat_thr))
+                pscores[pid] = _score_phase(pid, m, params)
+                pmetrics[pid] = (m, _start, _end)
+            _num = _den = 0.0
+            for (pid, *_r) in edited_phases:
+                s = pscores[pid]
+                if pd.notna(s):
+                    _num += weights[pid] * s
+                    _den += weights[pid]
+            ic = (_num / _den) if _den > 0 else np.nan
+            ic_rows.append((y, pscores, ic))
+            detail[y] = (pmetrics, pscores, ic)
+
+        # Tabla año × fases + IC
+        _hh = ([("Año", "left")]
+               + [(label, "right") for (pid, label, *_r) in edited_phases]
+               + [("IC", "right")])
+        _rr = []
+        for (y, pscores, ic) in ic_rows:
+            _cells = [str(int(y))]
+            for (pid, label, *_r) in edited_phases:
+                s = pscores[pid]
+                _cells.append(_colored_num(s, _score_color(s), 0))
+            _cells.append(
+                f'<span style="color:{_score_color(ic)};font-weight:700;font-size:14px;">'
+                f'{_fmt_es_number(round(ic), 0)}</span>'
+                if pd.notna(ic) else '<span style="color:#9e9e9e;">—</span>'
+            )
+            _rr.append(_cells)
+        _render_html_table(_hh, _rr, max_height=420)
+        st.caption("Puntuación 0–100 por fase (verde alto, rojo bajo). **IC** = Índice "
+                   "Climático del año (media ponderada de las fases con datos).")
+
+        # Detalle climático de un año
+        st.markdown("#### Detalle climático de un año")
+        ysel = st.selectbox("Año", años_disp, index=len(años_disp) - 1, key="g_ic_year")
+        pmetrics, pscores, ic = detail[ysel]
+        _dh = [("Fase", "left"), ("Ventana", "left"), ("Clima", "left"), ("Score", "right")]
+        _dr = []
+        for (pid, label, sm, sd, em, ed, w) in edited_phases:
+            m, _start, _end = pmetrics[pid]
+            ventana = f"{_start.strftime('%d/%m/%Y')} – {_end.strftime('%d/%m/%Y')}"
+            s = pscores[pid]
+            _dr.append([label, ventana, _phase_clima_text(pid, m),
+                        _colored_num(s, _score_color(s), 0)])
+        _render_html_table(_dh, _dr, max_height=320)
+        if pd.notna(ic):
+            st.markdown(f"**Índice Climático {ysel}: "
+                        f"<span style='color:{_score_color(ic)};font-weight:700;'>"
+                        f"{_fmt_es_number(round(ic),0)}/100</span>**", unsafe_allow_html=True)
+
     st.markdown("---")
     st.info(
-        "🔜 **Próxima fase:** el **Índice Gallinal (IG)** combinará estos dos pilares "
-        "(Kg/Ha sostenidos + participación estable de árboles) con el **índice "
-        "climático por fases fenológicas** y el portainjerto, para explicar qué mueve "
-        "la producción: clima, portainjerto, variedad y nuestras prácticas."
+        "🔜 **Próxima fase (4):** el **Índice Gallinal (IG)** cruzará el Índice "
+        "Climático con tu producción (IEP) y la vecería, para separar qué parte de "
+        "cada año fue clima, portainjerto, variedad o prácticas."
     )
 
 
