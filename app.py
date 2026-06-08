@@ -13901,6 +13901,15 @@ def produccion_tab(history):
             año_mas_frio = horas_frio_series.idxmax() if not horas_frio_series.empty else "—"
             año_menos_frio = horas_frio_series.idxmin() if not horas_frio_series.empty else "—"
 
+            # Chill Portions (modelo Dynamic)
+            chill_series = pd.to_numeric(
+                corr_df["Chill Portions"].replace("—", np.nan), errors="coerce"
+            )
+            tiene_cp = chill_series.notna().any()
+            año_mas_cp = chill_series.idxmax() if tiene_cp else "—"
+            año_menos_cp = chill_series.idxmin() if tiene_cp else "—"
+            cp_mejor = chill_series.get(año_mejor, np.nan)
+
             resumen_años = []
             for año in años_disponibles:
                 row = corr_df.loc[año]
@@ -13937,12 +13946,36 @@ def produccion_tab(history):
             for linea in resumen_años:
                 st.markdown(linea)
 
+            # Línea narrativa de Chill Portions (modelo Dynamic)
+            if tiene_cp:
+                cp_mejor_txt = (
+                    f"acumuló **{cp_mejor:.1f} Chill Portions**"
+                    if pd.notna(cp_mejor) else "no tiene Chill Portions calculados"
+                )
+                chill_line = (
+                    f"**❄️ Frío Dynamic (Chill Portions):** más acumulación en "
+                    f"{año_mas_cp} ({chill_series[año_mas_cp]:.1f} CP), menos en "
+                    f"{año_menos_cp} ({chill_series[año_menos_cp]:.1f} CP). "
+                    f"La mejor campaña ({año_mejor}) {cp_mejor_txt}."
+                )
+            else:
+                chill_line = (
+                    "**❄️ Frío Dynamic (Chill Portions):** sin datos suficientes "
+                    "para calcular el modelo."
+                )
+            st.markdown(chill_line)
+
             st.markdown("---")
             st.markdown(
                 f"**🏆 Mejor campaña:** {año_mejor} · "
                 f"**Peor campaña:** {año_peor}  \n"
                 f"**Año más frío:** {año_mas_frio} ({int(horas_frio_series[año_mas_frio])} h <7°C) · "
                 f"**Año menos frío:** {año_menos_frio} ({int(horas_frio_series[año_menos_frio])} h <7°C)  \n"
+                f"**Más Chill Portions:** {año_mas_cp}"
+                + (f" ({chill_series[año_mas_cp]:.1f} CP)" if tiene_cp else "")
+                + f" · **Menos Chill Portions:** {año_menos_cp}"
+                + (f" ({chill_series[año_menos_cp]:.1f} CP)" if tiene_cp else "")
+                + "  \n"
                 f"**Mejor polinización:** {año_mejor_poliniz} · "
                 f"**Peor polinización:** {año_peor_poliniz}  \n"
                 f"**Campo con más Kg/Ha (histórico):** {campo_mejor_kgha} · "
