@@ -14099,20 +14099,52 @@ def _veceria_pattern_html(years, vals):
 
 
 def _veceria_yearly_values(prod, metric):
-    """Una fila por (Campo, Variedad, Portainjerto, Año) con la columna 'valor'
-    según la métrica elegida para el cálculo de vecería."""
+    """Una fila por (Campo, Variedad, Portainjerto, Año) con: 'kg_ha', 'pct_prod'
+    (% de árboles que produjeron) y 'valor' (la métrica base del BBI)."""
     g = prod.groupby(
         ["Campo", "Variedad_nombre", "Portainjerto_nombre", "Año"]
     ).agg(
         Kg=("Kg", "sum"),
         Ha=("Ha", "sum"),
+        Num_arboles=("Num_arboles", "sum"),
         Arboles_prod=("Arboles_prod", "sum"),
     ).reset_index()
+    g["kg_ha"] = g["Kg"] / g["Ha"].replace(0, np.nan)
+    g["pct_prod"] = g["Arboles_prod"] / g["Num_arboles"].replace(0, np.nan) * 100
     if metric == "Kg por árbol productor":
         g["valor"] = g["Kg"] / g["Arboles_prod"].replace(0, np.nan)
-    else:  # "Kg de cosecha"
-        g["valor"] = g["Kg"]
+    else:  # "Kg/Ha (cosecha)" — la unidad del objetivo
+        g["valor"] = g["kg_ha"]
     return g
+
+
+def _constancia_label(std):
+    """Constancia del % de árboles productores entre años (a menor desviación,
+    más árboles repiten producción año tras año → mejor)."""
+    if pd.isna(std):
+        return ("—", "#9e9e9e", "#f5f5f5")
+    if std < 5:
+        return ("Muy constante", "#2e7d32", "#e8f5e9")
+    if std < 10:
+        return ("Constante", "#558b2f", "#f1f8e9")
+    if std < 20:
+        return ("Variable", "#e65100", "#fff3e0")
+    return ("Muy variable", "#c62828", "#ffebee")
+
+
+def _kgha_target_html(value, target):
+    """Kg/Ha medio coloreado según cercanía al objetivo (verde ≥ objetivo)."""
+    if pd.isna(value):
+        return '<span style="color:#9e9e9e;">—</span>'
+    if target and target > 0:
+        ratio = value / target
+        color = ("#2e7d32" if ratio >= 1.0 else
+                 "#558b2f" if ratio >= 0.85 else
+                 "#f9a825" if ratio >= 0.6 else
+                 "#e65100" if ratio >= 0.4 else "#c62828")
+    else:
+        color = "#333"
+    return f'<span style="color:{color};font-weight:600;">{_fmt_es_number(round(value), 0)}</span>'
 
 
 def gallinal_tab(history):
@@ -14228,39 +14260,54 @@ def gallinal_tab(history):
         _gallinal_breakdown(sel, "Variedad_nombre", "Variedad")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # FASE 2 · Índice de Vecería (BBI) por campo / variedad / portainjerto
+    # FASE 2 · Regularidad productiva: cosecha sostenida (Kg/Ha) + participación
+    #          estable de los árboles (los dos pilares del objetivo)
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.markdown("### 📈 Vecería (alternancia de cosecha)")
+    st.markdown("### 📈 Regularidad productiva y vecería")
 
-    with st.expander("ℹ️ ¿Qué es el Índice de Vecería (BBI)?"):
+    with st.expander("ℹ️ Los dos pilares del objetivo y cómo se miden"):
         st.markdown(
-            "La **vecería** o alternancia es el ciclo de un año de mucha cosecha "
-            "(*año de carga*) seguido de uno de poca (*año de descarga*). En el "
-            "manzano de sidra está muy acentuada por los **portainjertos vigorosos**.\n\n"
-            "El **Índice de Vecería (BBI)** de Hoblyn (1936) lo cuantifica sobre años "
-            "consecutivos:\n\n"
+            "El objetivo de cada campo y variedad es producir **~20.000 Kg/Ha cada "
+            "año, de forma sostenida**. Eso depende de **dos pilares** que medimos "
+            "juntos (no basta uno):\n\n"
+            "**1️⃣ Cosecha alta y regular (Kg/Ha).** Lo importante son los Kg/Ha "
+            "totales, no los Kg por árbol productor. *Ejemplo:* 500 árboles dando 20 "
+            "kg (y otros 500 parados) es **peor** que 1.000 árboles dando 10 kg todos. "
+            "La regularidad entre años se mide con el **Índice de Vecería (BBI)** de "
+            "Hoblyn (1936) sobre años consecutivos:\n\n"
             "$$BBI = \\frac{1}{n-1}\\sum \\frac{|V_n - V_{n-1}|}{V_n + V_{n-1}}$$\n\n"
-            "Va de **0 (cosecha regular)** a **1 (alternancia total)**. Bandas "
-            "orientativas: <0,20 regular · 0,20–0,40 leve · 0,40–0,60 moderada · "
-            "≥0,60 acentuada.\n\n"
-            "Los **puntos** del patrón muestran cada año: 🟢 verde = año de carga "
-            "(≥ mediana), ⚪ gris = año de descarga (< mediana). Pasa el ratón por "
-            "encima para ver el valor."
+            "**0 = cosecha regular**, **1 = alternancia total**. Bandas: <0,20 regular · "
+            "0,20–0,40 leve · 0,40–0,60 moderada · ≥0,60 acentuada.\n\n"
+            "**2️⃣ Participación de los árboles (% productores) alta y constante.** "
+            "Que muchos árboles produzcan **y repitan año tras año**. Medimos el % "
+            "medio de árboles productores y su **constancia** (variación entre años: "
+            "a menor variación, más árboles repiten → mejor).\n\n"
+            "Los **puntos** del patrón muestran cada año: 🟢 año de carga (≥ mediana), "
+            "⚪ año de descarga (< mediana). El ideal: muchos puntos verdes seguidos."
         )
 
-    metric_vec = st.radio(
-        "Métrica base del cálculo",
-        ["Kg de cosecha", "Kg por árbol productor"],
-        horizontal=True,
-        key="gallinal_veceria_metric",
-        help="'Kg de cosecha' refleja la vecería total (menos árboles cargando + "
-             "menos por árbol). 'Kg por árbol productor' aísla la intensidad por árbol.",
-    )
+    cobj, cmet = st.columns([1, 1.4])
+    with cobj:
+        objetivo_kgha = st.number_input(
+            "Objetivo Kg/Ha", min_value=0, value=20000, step=1000,
+            key="gallinal_objetivo_kgha",
+        )
+    with cmet:
+        metric_vec = st.radio(
+            "Métrica base de la vecería",
+            ["Kg/Ha (cosecha)", "Kg por árbol productor"],
+            horizontal=True,
+            key="gallinal_veceria_metric",
+            help="'Kg/Ha (cosecha)' es la métrica del objetivo y refleja la vecería "
+                 "real (menos árboles cargando + menos por árbol). 'Kg por árbol "
+                 "productor' aísla la intensidad por árbol, pero OJO: oculta el "
+                 "problema de que pocos árboles carguen mucho.",
+        )
 
     gvals = _veceria_yearly_values(prod, metric_vec)
 
-    # ── BBI por cada Campo × Variedad × Portainjerto ──────────────────────────
+    # ── Métricas por cada Campo × Variedad × Portainjerto ─────────────────────
     records = []
     excluidos = 0
     for (g_campo, g_var, g_porta), subg in gvals.groupby(
@@ -14273,27 +14320,35 @@ def gallinal_tab(history):
         if trans < 1:
             excluidos += 1
             continue
+        kg_ha_medio = float(subg["kg_ha"].mean())
+        pct_serie = subg["pct_prod"].dropna()
+        pct_medio = float(pct_serie.mean()) if not pct_serie.empty else np.nan
+        pct_std = float(pct_serie.std(ddof=0)) if len(pct_serie) > 1 else np.nan
         records.append({
             "label": f"{g_campo} · {g_var} · {g_porta}",
             "porta": g_porta,
             "n_years": len(years),
             "n_trans": trans,
             "bbi": bbi,
+            "kg_ha_medio": kg_ha_medio,
+            "pct_medio": pct_medio,
+            "pct_std": pct_std,
             "pattern": _veceria_pattern_html(years, vals),
         })
+    # Orden: primero lo más problemático (más vecero), para priorizar revisión
     records.sort(key=lambda r: (-1 if pd.isna(r["bbi"]) else r["bbi"]), reverse=True)
 
     if not records:
         st.info(
-            "Aún no hay suficientes años CONSECUTIVOS por combinación para calcular "
-            "la vecería (hace falta al menos 2 años seguidos)."
+            "Aún no hay suficientes años CONSECUTIVOS por combinación para el análisis "
+            "(hace falta al menos 2 años seguidos)."
         )
     else:
         st.markdown("#### Por campo · variedad · portainjerto")
         _headers = [
             ("Campo · Variedad · Portainjerto", "left"),
-            ("Años", "right"), ("Transic.", "right"),
-            ("BBI", "right"), ("Nivel", "center"),
+            ("Kg/Ha medio", "right"), ("BBI", "right"), ("Regularidad", "center"),
+            ("% prod. medio", "right"), ("Constancia", "center"),
             ("Patrón (años →)", "left"),
         ]
         _rows = []
@@ -14301,17 +14356,27 @@ def gallinal_tab(history):
             nivel, fg, bg = _veceria_level(r["bbi"])
             badge = (f'<span style="background:{bg};color:{fg};border-radius:4px;'
                      f'padding:2px 8px;font-size:12px;font-weight:600;">{nivel}</span>')
+            cons_lbl, cfg, cbg = _constancia_label(r["pct_std"])
+            cons_badge = (f'<span style="background:{cbg};color:{cfg};border-radius:4px;'
+                          f'padding:2px 8px;font-size:12px;font-weight:600;">{cons_lbl}</span>')
             bbi_txt = _fmt_es_number(round(r["bbi"], 2), 2) if pd.notna(r["bbi"]) else "—"
-            _rows.append([r["label"], str(r["n_years"]), str(r["n_trans"]),
-                          bbi_txt, badge, r["pattern"]])
+            pct_txt = (f'{_fmt_es_number(round(r["pct_medio"], 1), 1)} %'
+                       if pd.notna(r["pct_medio"]) else "—")
+            _rows.append([
+                r["label"],
+                _kgha_target_html(r["kg_ha_medio"], objetivo_kgha),
+                bbi_txt, badge, pct_txt, cons_badge, r["pattern"],
+            ])
         _render_html_table(_headers, _rows)
-        _cap = ("Ordenado de más a menos vecero. Más transiciones (años consecutivos) "
-                "= índice más fiable.")
+        _cap = (f"Kg/Ha medio coloreado según el objetivo ({_fmt_es_number(objetivo_kgha,0)} "
+                f"Kg/Ha): verde = lo alcanza. **BBI/Regularidad** = constancia de la cosecha. "
+                f"**% prod. medio + Constancia** = participación de los árboles. "
+                f"Ordenado de más a menos vecero.")
         if excluidos:
             _cap += f" {excluidos} combinación(es) sin años consecutivos suficientes no se muestran."
         st.caption(_cap)
 
-        # ── Resumen por portainjerto (la hipótesis del vigor) ──────────────────
+        # ── Resumen por portainjerto (los dos pilares + la hipótesis del vigor) ─
         df_rec = pd.DataFrame(records)
         porta_rows = []
         for g_porta, subp in df_rec.groupby("porta"):
@@ -14321,40 +14386,58 @@ def gallinal_tab(history):
             w = valid["n_trans"].astype(float)
             bbi_mean = (np.average(valid["bbi"], weights=w) if w.sum() > 0
                         else float(valid["bbi"].mean()))
-            porta_rows.append({"porta": g_porta, "n": len(valid), "bbi": bbi_mean})
+            porta_rows.append({
+                "porta": g_porta,
+                "n": len(valid),
+                "bbi": bbi_mean,
+                "kg_ha": float(valid["kg_ha_medio"].mean()),
+                "pct": float(valid["pct_medio"].mean()),
+            })
         porta_rows.sort(key=lambda r: r["bbi"], reverse=True)
 
         if porta_rows:
             st.markdown("#### Resumen por portainjerto")
-            _h2 = [("Portainjerto", "left"), ("Combinaciones", "right"),
-                   ("BBI medio", "right"), ("Nivel", "center")]
+            _h2 = [("Portainjerto", "left"), ("Comb.", "right"),
+                   ("Kg/Ha medio", "right"), ("BBI medio", "right"),
+                   ("Regularidad", "center"), ("% prod. medio", "right")]
             _r2 = []
             for pr in porta_rows:
                 nivel, fg, bg = _veceria_level(pr["bbi"])
                 badge = (f'<span style="background:{bg};color:{fg};border-radius:4px;'
                          f'padding:2px 8px;font-size:12px;font-weight:600;">{nivel}</span>')
-                _r2.append([pr["porta"], str(pr["n"]),
-                            _fmt_es_number(round(pr["bbi"], 2), 2), badge])
-            _render_html_table(_h2, _r2, max_height=320)
-            st.caption("BBI medio ponderado por nº de transiciones de cada combinación.")
+                _r2.append([
+                    pr["porta"], str(pr["n"]),
+                    _kgha_target_html(pr["kg_ha"], objetivo_kgha),
+                    _fmt_es_number(round(pr["bbi"], 2), 2), badge,
+                    f'{_fmt_es_number(round(pr["pct"], 1), 1)} %',
+                ])
+            _render_html_table(_h2, _r2, max_height=340)
+            st.caption("Promedios por portainjerto (BBI ponderado por nº de transiciones). "
+                       "Compara los dos pilares: Kg/Ha sostenidos y participación de árboles.")
 
             # ── Narrativa ──────────────────────────────────────────────────────
             top_porta = porta_rows[0]
             top_combo = records[0]
             _np_n, _, _ = _veceria_level(top_porta["bbi"])
-            _nc_n, _, _ = _veceria_level(top_combo["bbi"])
+            # mejor portainjerto = menor BBI con mejor Kg/Ha y % prod
+            best_porta = min(porta_rows, key=lambda r: r["bbi"])
             st.markdown(
                 f"**Portainjerto más vecero:** {top_porta['porta']} "
-                f"(BBI medio {_fmt_es_number(round(top_porta['bbi'],2),2)} → {_np_n.lower()}). "
-                f"**Combinación más alternante:** {top_combo['label']} "
-                f"(BBI {_fmt_es_number(round(top_combo['bbi'],2),2)} → {_nc_n.lower()})."
+                f"(BBI medio {_fmt_es_number(round(top_porta['bbi'],2),2)} → {_np_n.lower()}, "
+                f"{_fmt_es_number(round(top_porta['kg_ha']),0)} Kg/Ha medio, "
+                f"{_fmt_es_number(round(top_porta['pct'],1),1)} % árboles productores). "
+                f"**Más regular:** {best_porta['porta']} "
+                f"(BBI {_fmt_es_number(round(best_porta['bbi'],2),2)}, "
+                f"{_fmt_es_number(round(best_porta['kg_ha']),0)} Kg/Ha, "
+                f"{_fmt_es_number(round(best_porta['pct'],1),1)} % productores)."
             )
 
     st.markdown("---")
     st.info(
-        "🔜 **Próximas fases:** índice climático por fases fenológicas (frío, "
-        "brotación, floración, cuajado, engorde, maduración) y el Índice Gallinal "
-        "(IG) que cruzará clima ↔ producción ↔ vecería."
+        "🔜 **Próxima fase:** el **Índice Gallinal (IG)** combinará estos dos pilares "
+        "(Kg/Ha sostenidos + participación estable de árboles) con el **índice "
+        "climático por fases fenológicas** y el portainjerto, para explicar qué mueve "
+        "la producción: clima, portainjerto, variedad y nuestras prácticas."
     )
 
 
