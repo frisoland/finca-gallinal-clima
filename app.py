@@ -13793,6 +13793,17 @@ def produccion_tab(history):
                     pd.to_numeric(frio_data.get("utah_cu_hora", pd.Series(dtype=float)), errors="coerce").sum()
                 ), 0) if "utah_cu_hora" in frio_data.columns else np.nan
 
+                # ── Chill Portions (modelo Dynamic) sobre el periodo de frío ──
+                chill_portions = np.nan
+                if not frio_data.empty:
+                    try:
+                        _frio_ord = frio_data.sort_values("fecha_hora")
+                        chill_portions = round(
+                            float(np.sum(dynamic_chill_portions(_frio_ord[temp_col]))), 1
+                        )
+                    except Exception:
+                        chill_portions = np.nan
+
                 # ── Floración Abr–May: polinización y lluvia ──────────────
                 inicio_flor = pd.Timestamp(año, 4, 1)
                 fin_flor = pd.Timestamp(año, 5, 31)
@@ -13830,6 +13841,7 @@ def produccion_tab(history):
                     "H. frío <7°C": horas_menor7,
                     "H. frío 0–7,2°C": horas_0_72,
                     "Utah CU": int(utah_total) if pd.notna(utah_total) else "—",
+                    "Chill Portions": chill_portions if pd.notna(chill_portions) else "—",
                     "Lluvia Abr–May (mm)": lluvia_abr_may if pd.notna(lluvia_abr_may) else "—",
                     "Score polinización": score_medio if pd.notna(score_medio) else "—",
                     "H. favorables poliniz.": horas_fav,
@@ -13839,7 +13851,8 @@ def produccion_tab(history):
             corr_df = pd.DataFrame(correlacion_rows).set_index("Año")
             render_year_table(corr_df, max_height=500)
             st.caption(
-                "Frío: H. frío <7°C, 0–7,2°C y Utah CU corresponden a Nov(año-1)–Mar(año). "
+                "Frío: H. frío <7°C, 0–7,2°C, Utah CU y Chill Portions (modelo Dynamic) "
+                "corresponden a Nov(año-1)–Mar(año). "
                 "Polinización y lluvia: Abr–May del año de producción."
             )
 
