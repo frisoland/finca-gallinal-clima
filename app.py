@@ -14021,6 +14021,100 @@ def _gallinal_breakdown(sel, group_col, index_label):
     render_year_table(g, index_label=index_label)
 
 
+def _render_html_table(headers, rows, max_height=480):
+    """Renderiza una tabla HTML genérica con 1ª columna fija y encabezados de
+    color (clases fg-fixedcol/fg-th, robustas en móvil).
+    headers: lista de (texto, alineación). rows: lista de listas con el HTML ya
+    formateado de cada celda."""
+    _THb = ("background:#1a2e1e;color:white;padding:8px 12px;font-weight:600;"
+            "font-size:13px;white-space:nowrap;position:sticky;top:0;z-index:2;")
+    _THc = _THb + "left:0;z-index:4;"
+    _TD0 = ("position:sticky;left:0;z-index:1;padding:7px 12px;"
+            "border-bottom:1px solid #ddd;font-weight:600;font-size:13px;"
+            "white-space:nowrap;border-right:2px solid #1a2e1e;background:#f4f8f5;")
+    _TD = "padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;font-size:13px;"
+    _hdr = ""
+    for _i, (_label, _align) in enumerate(headers):
+        _s = (_THc if _i == 0 else _THb) + f"text-align:{_align};"
+        _cls = "fg-th-corner" if _i == 0 else "fg-th"
+        _hdr += f'<th class="{_cls}" style="{_s}">{_label}</th>'
+    _body = ""
+    for _row in rows:
+        _cells = ""
+        for _i, (_label, _align) in enumerate(headers):
+            _base = _TD0 if _i == 0 else _TD
+            _cells += f'<td style="{_base}text-align:{_align};">{_row[_i]}</td>'
+        _body += f"<tr>{_cells}</tr>"
+    st.markdown(
+        f'<div style="overflow-x:auto;overflow-y:auto;max-height:{max_height}px;'
+        f'border-radius:8px;border:1px solid #ccc;margin-bottom:1rem;">'
+        f'<table class="fg-fixedcol" style="border-collapse:separate;border-spacing:0;min-width:100%;">'
+        f'<thead><tr>{_hdr}</tr></thead><tbody>{_body}</tbody></table></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _veceria_level(bbi):
+    """Devuelve (etiqueta, color_texto, color_fondo) según el BBI (0–1)."""
+    if pd.isna(bbi):
+        return ("Sin datos", "#9e9e9e", "#f5f5f5")
+    if bbi < 0.20:
+        return ("Regular", "#2e7d32", "#e8f5e9")
+    if bbi < 0.40:
+        return ("Vecería leve", "#f9a825", "#fff8e1")
+    if bbi < 0.60:
+        return ("Vecería moderada", "#e65100", "#fff3e0")
+    return ("Vecería acentuada", "#c62828", "#ffebee")
+
+
+def _compute_bbi(years, vals):
+    """Índice de vecería (Hoblyn 1936) sobre años CONSECUTIVOS.
+    BBI = media de |Vₙ−Vₙ₋₁| / (Vₙ+Vₙ₋₁). Devuelve (bbi, nº_transiciones)."""
+    num = 0.0
+    trans = 0
+    for i in range(1, len(years)):
+        if years[i] - years[i - 1] == 1:          # solo pares de años consecutivos
+            a, b = vals[i - 1], vals[i]
+            if (a + b) > 0:
+                num += abs(b - a) / (a + b)
+                trans += 1
+    return (num / trans if trans > 0 else np.nan), trans
+
+
+def _veceria_pattern_html(years, vals):
+    """Puntos coloreados por año: verde = año de carga (≥ mediana), gris = año
+    de descarga (< mediana). Visualiza la alternancia de un vistazo."""
+    if not vals:
+        return ""
+    med = float(np.median(vals))
+    dots = ""
+    for y, v in zip(years, vals):
+        col = "#2e7d32" if v >= med else "#cfd8dc"
+        dots += (
+            f'<span title="{y}: {_fmt_es_number(round(v), 0)}" '
+            f'style="display:inline-block;width:11px;height:11px;border-radius:50%;'
+            f'background:{col};margin:0 1px;"></span>'
+        )
+    return dots
+
+
+def _veceria_yearly_values(prod, metric):
+    """Una fila por (Campo, Variedad, Portainjerto, Año) con la columna 'valor'
+    según la métrica elegida para el cálculo de vecería."""
+    g = prod.groupby(
+        ["Campo", "Variedad_nombre", "Portainjerto_nombre", "Año"]
+    ).agg(
+        Kg=("Kg", "sum"),
+        Ha=("Ha", "sum"),
+        Arboles_prod=("Arboles_prod", "sum"),
+    ).reset_index()
+    if metric == "Kg por árbol productor":
+        g["valor"] = g["Kg"] / g["Arboles_prod"].replace(0, np.nan)
+    else:  # "Kg de cosecha"
+        g["valor"] = g["Kg"]
+    return g
+
+
 def gallinal_tab(history):
     st.subheader("🍏 Análisis Gallinal · Fenología · Clima · Producción")
     st.caption(
@@ -14133,11 +14227,134 @@ def gallinal_tab(history):
         st.markdown("#### Desglose por variedad")
         _gallinal_breakdown(sel, "Variedad_nombre", "Variedad")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # FASE 2 · Índice de Vecería (BBI) por campo / variedad / portainjerto
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 📈 Vecería (alternancia de cosecha)")
+
+    with st.expander("ℹ️ ¿Qué es el Índice de Vecería (BBI)?"):
+        st.markdown(
+            "La **vecería** o alternancia es el ciclo de un año de mucha cosecha "
+            "(*año de carga*) seguido de uno de poca (*año de descarga*). En el "
+            "manzano de sidra está muy acentuada por los **portainjertos vigorosos**.\n\n"
+            "El **Índice de Vecería (BBI)** de Hoblyn (1936) lo cuantifica sobre años "
+            "consecutivos:\n\n"
+            "$$BBI = \\frac{1}{n-1}\\sum \\frac{|V_n - V_{n-1}|}{V_n + V_{n-1}}$$\n\n"
+            "Va de **0 (cosecha regular)** a **1 (alternancia total)**. Bandas "
+            "orientativas: <0,20 regular · 0,20–0,40 leve · 0,40–0,60 moderada · "
+            "≥0,60 acentuada.\n\n"
+            "Los **puntos** del patrón muestran cada año: 🟢 verde = año de carga "
+            "(≥ mediana), ⚪ gris = año de descarga (< mediana). Pasa el ratón por "
+            "encima para ver el valor."
+        )
+
+    metric_vec = st.radio(
+        "Métrica base del cálculo",
+        ["Kg de cosecha", "Kg por árbol productor"],
+        horizontal=True,
+        key="gallinal_veceria_metric",
+        help="'Kg de cosecha' refleja la vecería total (menos árboles cargando + "
+             "menos por árbol). 'Kg por árbol productor' aísla la intensidad por árbol.",
+    )
+
+    gvals = _veceria_yearly_values(prod, metric_vec)
+
+    # ── BBI por cada Campo × Variedad × Portainjerto ──────────────────────────
+    records = []
+    excluidos = 0
+    for (g_campo, g_var, g_porta), subg in gvals.groupby(
+        ["Campo", "Variedad_nombre", "Portainjerto_nombre"]
+    ):
+        subg = subg.dropna(subset=["valor"]).sort_values("Año")
+        years = subg["Año"].astype(int).tolist()
+        vals = subg["valor"].astype(float).tolist()
+        bbi, trans = _compute_bbi(years, vals)
+        if trans < 1:
+            excluidos += 1
+            continue
+        records.append({
+            "label": f"{g_campo} · {g_var} · {g_porta}",
+            "porta": g_porta,
+            "n_years": len(years),
+            "n_trans": trans,
+            "bbi": bbi,
+            "pattern": _veceria_pattern_html(years, vals),
+        })
+    records.sort(key=lambda r: (-1 if pd.isna(r["bbi"]) else r["bbi"]), reverse=True)
+
+    if not records:
+        st.info(
+            "Aún no hay suficientes años CONSECUTIVOS por combinación para calcular "
+            "la vecería (hace falta al menos 2 años seguidos)."
+        )
+    else:
+        st.markdown("#### Por campo · variedad · portainjerto")
+        _headers = [
+            ("Campo · Variedad · Portainjerto", "left"),
+            ("Años", "right"), ("Transic.", "right"),
+            ("BBI", "right"), ("Nivel", "center"),
+            ("Patrón (años →)", "left"),
+        ]
+        _rows = []
+        for r in records:
+            nivel, fg, bg = _veceria_level(r["bbi"])
+            badge = (f'<span style="background:{bg};color:{fg};border-radius:4px;'
+                     f'padding:2px 8px;font-size:12px;font-weight:600;">{nivel}</span>')
+            bbi_txt = _fmt_es_number(round(r["bbi"], 2), 2) if pd.notna(r["bbi"]) else "—"
+            _rows.append([r["label"], str(r["n_years"]), str(r["n_trans"]),
+                          bbi_txt, badge, r["pattern"]])
+        _render_html_table(_headers, _rows)
+        _cap = ("Ordenado de más a menos vecero. Más transiciones (años consecutivos) "
+                "= índice más fiable.")
+        if excluidos:
+            _cap += f" {excluidos} combinación(es) sin años consecutivos suficientes no se muestran."
+        st.caption(_cap)
+
+        # ── Resumen por portainjerto (la hipótesis del vigor) ──────────────────
+        df_rec = pd.DataFrame(records)
+        porta_rows = []
+        for g_porta, subp in df_rec.groupby("porta"):
+            valid = subp.dropna(subset=["bbi"])
+            if valid.empty:
+                continue
+            w = valid["n_trans"].astype(float)
+            bbi_mean = (np.average(valid["bbi"], weights=w) if w.sum() > 0
+                        else float(valid["bbi"].mean()))
+            porta_rows.append({"porta": g_porta, "n": len(valid), "bbi": bbi_mean})
+        porta_rows.sort(key=lambda r: r["bbi"], reverse=True)
+
+        if porta_rows:
+            st.markdown("#### Resumen por portainjerto")
+            _h2 = [("Portainjerto", "left"), ("Combinaciones", "right"),
+                   ("BBI medio", "right"), ("Nivel", "center")]
+            _r2 = []
+            for pr in porta_rows:
+                nivel, fg, bg = _veceria_level(pr["bbi"])
+                badge = (f'<span style="background:{bg};color:{fg};border-radius:4px;'
+                         f'padding:2px 8px;font-size:12px;font-weight:600;">{nivel}</span>')
+                _r2.append([pr["porta"], str(pr["n"]),
+                            _fmt_es_number(round(pr["bbi"], 2), 2), badge])
+            _render_html_table(_h2, _r2, max_height=320)
+            st.caption("BBI medio ponderado por nº de transiciones de cada combinación.")
+
+            # ── Narrativa ──────────────────────────────────────────────────────
+            top_porta = porta_rows[0]
+            top_combo = records[0]
+            _np_n, _, _ = _veceria_level(top_porta["bbi"])
+            _nc_n, _, _ = _veceria_level(top_combo["bbi"])
+            st.markdown(
+                f"**Portainjerto más vecero:** {top_porta['porta']} "
+                f"(BBI medio {_fmt_es_number(round(top_porta['bbi'],2),2)} → {_np_n.lower()}). "
+                f"**Combinación más alternante:** {top_combo['label']} "
+                f"(BBI {_fmt_es_number(round(top_combo['bbi'],2),2)} → {_nc_n.lower()})."
+            )
+
     st.markdown("---")
     st.info(
         "🔜 **Próximas fases:** índice climático por fases fenológicas (frío, "
-        "brotación, floración, cuajado, engorde, maduración), Índice de Vecería (BBI) "
-        "por portainjerto, y el Índice Gallinal (IG) que cruzará clima ↔ producción."
+        "brotación, floración, cuajado, engorde, maduración) y el Índice Gallinal "
+        "(IG) que cruzará clima ↔ producción ↔ vecería."
     )
 
 
