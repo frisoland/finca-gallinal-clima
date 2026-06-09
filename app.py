@@ -14864,6 +14864,104 @@ def gallinal_tab(history):
                 st.caption("% árboles productores por año")
 
     # ══════════════════════════════════════════════════════════════════════════
+    # FASE 5 · Campo vs Campo (H2H)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### ⚔️ Campo vs Campo (H2H)")
+    st.caption("Enfrenta dos campos en los mismos años. Puedes filtrar variedades y "
+               "elegir los años que quieras, aunque no sean consecutivos.")
+
+    _campos_all = sorted(prod["Campo"].unique())
+    if len(_campos_all) < 2:
+        st.info("Hacen falta al menos 2 campos con datos para comparar.")
+    else:
+        hc1, hc2, hc3 = st.columns(3)
+        with hc1:
+            campo_a = st.selectbox("🔵 Campo A", _campos_all, index=0, key="h2h_a")
+        with hc2:
+            campo_b = st.selectbox("🔴 Campo B", _campos_all,
+                                   index=min(1, len(_campos_all) - 1), key="h2h_b")
+        with hc3:
+            _años_h_all = sorted(int(a) for a in prod["Año"].unique())
+            años_h = st.multiselect("Años (no hace falta que sean seguidos)",
+                                    _años_h_all, default=_años_h_all, key="h2h_años")
+        _vars_ab = sorted(set(prod[prod["Campo"].isin([campo_a, campo_b])]["Variedad_nombre"]))
+        vars_h = st.multiselect("Variedades (vacío = todas)", _vars_ab, default=[], key="h2h_var")
+
+        def _h2h_stats(campo):
+            d = prod[(prod["Campo"] == campo) & (prod["Año"].isin(años_h))]
+            if vars_h:
+                d = d[d["Variedad_nombre"].isin(vars_h)]
+            if d.empty:
+                return None
+            g = d.groupby("Año").agg(Kg=("Kg", "sum"), Ha=("Ha", "sum"),
+                                     Nt=("Num_arboles", "sum"), Np=("Arboles_prod", "sum"))
+            g["kg_ha"] = g["Kg"] / g["Ha"].replace(0, np.nan)
+            g["pct"] = g["Np"] / g["Nt"].replace(0, np.nan) * 100
+            kg_ha = float(g["kg_ha"].mean()); pct = float(g["pct"].mean())
+            bbi, trans = _compute_bbi([int(y) for y in g.index], g["kg_ha"].tolist())
+            return {"kg_ha": kg_ha, "pct": pct, "iep": _iep_score(kg_ha, pct, objetivo_kgha),
+                    "kg_tot": float(d["Kg"].sum()), "bbi": bbi, "trans": trans, "g": g}
+
+        if campo_a == campo_b:
+            st.warning("Elige dos campos distintos.")
+        elif not años_h:
+            st.warning("Selecciona al menos un año.")
+        else:
+            sa, sb = _h2h_stats(campo_a), _h2h_stats(campo_b)
+            if sa is None or sb is None:
+                st.warning("Algún campo no tiene datos para esa combinación de variedades/años.")
+            else:
+                _wins = {"a": 0, "b": 0}
+
+                def _cmp_row(label, va, vb, better, fmt, suf=""):
+                    if pd.isna(va) or pd.isna(vb):
+                        gan, ca, cb = "—", "#333", "#333"
+                    elif abs(va - vb) < 1e-9:
+                        gan, ca, cb = "Empate", "#333", "#333"
+                    elif (va > vb) if better == "high" else (va < vb):
+                        gan, ca, cb = f"🔵 {campo_a}", "#1565c0", "#999"; _wins.__setitem__("a", _wins["a"] + 1)
+                    else:
+                        gan, ca, cb = f"🔴 {campo_b}", "#999", "#c62828"; _wins.__setitem__("b", _wins["b"] + 1)
+                    _va = (f'<span style="color:{ca};font-weight:600;">{fmt(va)}{suf}</span>'
+                           if pd.notna(va) else "—")
+                    _vb = (f'<span style="color:{cb};font-weight:600;">{fmt(vb)}{suf}</span>'
+                           if pd.notna(vb) else "—")
+                    return [label, _va, _vb, gan]
+
+                _f0 = lambda x: _fmt_es_number(round(x), 0) if pd.notna(x) else "—"
+                _f1 = lambda x: _fmt_es_number(round(x, 1), 1) if pd.notna(x) else "—"
+                _f2 = lambda x: _fmt_es_number(round(x, 2), 2) if pd.notna(x) else "—"
+                _rows_h = [
+                    _cmp_row("Kg/Ha medio", sa["kg_ha"], sb["kg_ha"], "high", _f0),
+                    _cmp_row("% prod. medio", sa["pct"], sb["pct"], "high", _f1, " %"),
+                    _cmp_row("IEP (excelencia)", sa["iep"], sb["iep"], "high", _f0),
+                    _cmp_row("Kg totales", sa["kg_tot"], sb["kg_tot"], "high", _f0),
+                ]
+                _bbi_ok = sa["trans"] >= 1 and sb["trans"] >= 1
+                if _bbi_ok:
+                    _rows_h.append(_cmp_row("Vecería (BBI · menos = mejor)",
+                                            sa["bbi"], sb["bbi"], "low", _f2))
+                _render_html_table(
+                    [("Métrica", "left"), (f"🔵 {campo_a}", "right"),
+                     (f"🔴 {campo_b}", "right"), ("Ganador", "center")],
+                    _rows_h, max_height=320)
+                if not _bbi_ok:
+                    st.caption("La **vecería (BBI)** no se muestra: necesita ≥2 años "
+                               "consecutivos en la selección. El resto de métricas sí valen "
+                               "con años sueltos (p. ej. 2020, 2022, 2024).")
+                if _wins["a"] > _wins["b"]:
+                    st.success(f"🏆 **{campo_a}** gana el H2H ({_wins['a']}–{_wins['b']}).")
+                elif _wins["b"] > _wins["a"]:
+                    st.success(f"🏆 **{campo_b}** gana el H2H ({_wins['b']}–{_wins['a']}).")
+                else:
+                    st.info(f"🤝 Empate técnico ({_wins['a']}–{_wins['b']}).")
+                _cmp = pd.DataFrame({campo_a: sa["g"]["kg_ha"], campo_b: sb["g"]["kg_ha"]})
+                _cmp.index = _cmp.index.astype(str)
+                st.line_chart(_cmp)
+                st.caption("Kg/Ha por año de cada campo (mismos años).")
+
+    # ══════════════════════════════════════════════════════════════════════════
     # FASE 3 · Índice Climático por fases fenológicas (finca, por año)
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
