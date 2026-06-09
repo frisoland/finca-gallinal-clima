@@ -15247,6 +15247,128 @@ def gallinal_tab(history):
                 "El frío, al cumplirse casi siempre, apenas explica diferencias entre años."
             )
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # FASE 6 · Resumen histórico e interpretación (todo el histórico)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 🏆 Resumen histórico e interpretación")
+
+    def _rank_by(col):
+        g = prod.groupby(col).agg(Kg=("Kg", "sum"), Ha=("Ha", "sum"),
+                                  Nt=("Num_arboles", "sum"), Np=("Arboles_prod", "sum"))
+        g["kg_ha"] = g["Kg"] / g["Ha"].replace(0, np.nan)
+        g["pct"] = g["Np"] / g["Nt"].replace(0, np.nan) * 100
+        return g.sort_values("kg_ha", ascending=False)
+
+    _rc, _rv, _rp = _rank_by("Campo"), _rank_by("Variedad_nombre"), _rank_by("Portainjerto_nombre")
+
+    # Regularidad por campo: BBI medio de sus combinaciones (de la Fase 2)
+    _bbi_campo = {}
+    if records:
+        _dfrec = pd.DataFrame(records)
+        _dfrec["_campo"] = _dfrec["label"].str.split(" · ").str[0]
+        for _c, _sub in _dfrec.groupby("_campo"):
+            _v = _sub.dropna(subset=["bbi"])
+            if not _v.empty:
+                _w = _v["n_trans"].astype(float)
+                _bbi_campo[_c] = float(np.average(_v["bbi"], weights=_w) if _w.sum() > 0
+                                       else _v["bbi"].mean())
+
+    _cr = st.columns(2)
+    with _cr[0]:
+        st.markdown("**🥇 Más productivos** (Kg/Ha medio, todo el histórico):")
+        st.markdown(
+            f"- **Campo:** {_rc.index[0]} ({_fmt_es_number(round(_rc['kg_ha'].iloc[0]),0)} Kg/Ha)\n"
+            f"- **Variedad:** {_rv.index[0]} ({_fmt_es_number(round(_rv['kg_ha'].iloc[0]),0)} Kg/Ha)\n"
+            f"- **Portainjerto:** {_rp.index[0]} ({_fmt_es_number(round(_rp['kg_ha'].iloc[0]),0)} Kg/Ha)"
+        )
+    with _cr[1]:
+        if _bbi_campo:
+            _mreg = min(_bbi_campo, key=_bbi_campo.get)
+            _mvec = max(_bbi_campo, key=_bbi_campo.get)
+            _rl, _, _ = _veceria_level(_bbi_campo[_mreg])
+            _vl, _, _ = _veceria_level(_bbi_campo[_mvec])
+            st.markdown("**📊 Regularidad** (vecería por campo):")
+            st.markdown(
+                f"- **Más regular:** {_mreg} (BBI {_fmt_es_number(round(_bbi_campo[_mreg],2),2)} → {_rl.lower()})\n"
+                f"- **Más vecero:** {_mvec} (BBI {_fmt_es_number(round(_bbi_campo[_mvec],2),2)} → {_vl.lower()})"
+            )
+        else:
+            st.caption("Vecería por campo: hacen falta años consecutivos.")
+
+    st.markdown("#### Ranking por variedad")
+    _hv = [("Variedad", "left"), ("Kg/Ha medio", "right"),
+           ("% prod. medio", "right"), ("Kg totales", "right")]
+    _rvrows = [[_vn,
+                _kgha_target_html(_row["kg_ha"], objetivo_kgha),
+                _colored_num(_row["pct"], _pct_prod_color(_row["pct"]), 1, " %"),
+                _fmt_es_number(round(_row["Kg"]), 0)]
+               for _vn, _row in _rv.iterrows()]
+    _render_html_table(_hv, _rvrows, max_height=360)
+
+    # ── Interpretación: respuesta al frío por variedad ────────────────────────
+    st.markdown("#### ❄️ ¿Qué variedades responden al frío?")
+    _tcol_r = next((c for c in ["temp_media", "temp", "temperatura", "Temperatura"]
+                    if history is not None and not history.empty and c in history.columns), None)
+    if _tcol_r is None or history is None or history.empty:
+        st.info("Carga el histórico climático para analizar la respuesta al frío por variedad.")
+    else:
+        chill_by_year = {}
+        for _y in sorted(int(a) for a in prod["Año"].unique()):
+            _s, _e = _phase_window(CHILL_PERIOD_START_MD[0], CHILL_PERIOD_START_MD[1],
+                                   CHILL_PERIOD_END_MD[0], CHILL_PERIOD_END_MD[1], _y)
+            _m = _phase_metrics(history, _s, _e, _tcol_r)
+            chill_by_year[_y] = (_m["chill_cp"], _m["horas_frio"]) if _m else (np.nan, np.nan)
+
+        _hr = [("Variedad", "left"), ("Años", "right"), ("r(frío,Kg/Ha)", "right"),
+               ("CP mejores años", "right"), ("Horas mejores años", "right"),
+               ("Interpretación", "left")]
+        _rrows = []
+        for _vn in sorted(prod["Variedad_nombre"].unique()):
+            _dv = prod[prod["Variedad_nombre"] == _vn].groupby("Año").agg(Kg=("Kg", "sum"), Ha=("Ha", "sum"))
+            _dv["kg_ha"] = _dv["Kg"] / _dv["Ha"].replace(0, np.nan)
+            _xs, _ys, _pairs = [], [], []
+            for _y in _dv.index:
+                _cp, _hf = chill_by_year.get(int(_y), (np.nan, np.nan))
+                _kh = _dv.loc[_y, "kg_ha"]
+                if pd.notna(_cp) and pd.notna(_kh):
+                    _xs.append(_cp); _ys.append(_kh); _pairs.append((_cp, _hf, _kh))
+            if len(_xs) < 3:
+                continue
+            _r = (float(np.corrcoef(_xs, _ys)[0, 1])
+                  if np.std(_xs) > 0 and np.std(_ys) > 0 else np.nan)
+            _ps = sorted(_pairs, key=lambda p: p[2], reverse=True)
+            _ntop = max(1, len(_ps) // 3)
+            _cp_best = float(np.mean([p[0] for p in _ps[:_ntop]]))
+            _h_best = float(np.nanmean([p[1] for p in _ps[:_ntop]]))
+            if pd.isna(_r):
+                _interp, _icol = "Sin variación suficiente", "#9e9e9e"
+            elif _r >= 0.4:
+                _interp, _icol = "Mejor con inviernos fríos → exigente en frío", "#1565c0"
+            elif _r <= -0.4:
+                _interp, _icol = "Mejor con inviernos suaves → poco exigente", "#e65100"
+            else:
+                _interp, _icol = "El frío no parece limitarla", "#558b2f"
+            _rrows.append([
+                _vn, str(len(_xs)),
+                (_colored_num(_r, "#1565c0" if _r > 0 else "#c62828", 2) if pd.notna(_r) else "—"),
+                _fmt_es_number(round(_cp_best), 0),
+                _fmt_es_number(round(_h_best), 0) if pd.notna(_h_best) else "—",
+                f'<span style="color:{_icol};font-weight:600;">{_interp}</span>',
+            ])
+        if _rrows:
+            _render_html_table(_hr, _rrows, max_height=400)
+            st.caption(
+                "Correlación, por variedad, entre el **frío del invierno** y sus **Kg/Ha** "
+                "a lo largo de los años. **r>0** = produce más cuando hay más frío (exigente); "
+                "**r≈0** = el frío no la limita. **CP/Horas mejores años** = cuánto frío hubo "
+                "en sus cosechas altas → tu **requerimiento empírico** por variedad. "
+                "⚠️ Pocos años + vecería = indicios, no certezas; el frío es de finca (igual "
+                "para todas las variedades cada año)."
+            )
+        else:
+            st.info("Aún no hay suficientes años con frío + producción por variedad (mín. 3).")
+
     st.markdown("---")
     st.success(
         "✅ **Modelo Gallinal completo (Fases 1–4):** producción y participación → "
