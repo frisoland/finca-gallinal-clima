@@ -12105,15 +12105,18 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                                     capture_threshold=3, dd_active_start=80, dd_active_end=130,
                                     activities_df=None, campaign_year=None):
     """
-    Nuevo modelo de ventanas multiples por campo.
-    Cada lectura con capturas >= capture_threshold genera una ventana de DD independiente.
-    
+    Modelo de ventanas múltiples por campo (simple).
+    Cada lectura con capturas >= capture_threshold abre una ventana de DD propia.
+
     Estados:
-    - En espera: DD acumulados < dd_active_start
-    - Activa: dd_active_start <= DD <= dd_active_end  (ventana de tratamiento)
-    - Cerrada: DD > dd_active_end
-    
-    Si se pasa activities_df, cruza con tratamientos para ver si se trató en la ventana.
+    - ⏳ En espera:        DD acumulados < dd_active_start (ventana aún no activa)
+    - 🔴 Activa — tratar:  dd_active_start <= DD <= dd_active_end y SIN tratamiento dentro
+    - ✅ Tratado — cerrada: hay un tratamiento (Agroptima) cuyo DD acumulado desde el
+                            trigger cae dentro de [dd_active_start, dd_active_end] → cubierta
+    - 🔒 Cerrada por DD:   DD > dd_active_end y sin tratamiento dentro (ventana pasada)
+
+    Un mismo tratamiento puede cerrar varias ventanas (todas las que estén activas en
+    esa fecha). Sin lógica de reentrada ni de 2º pase.
     """
     if traps_df is None or traps_df.empty:
         return pd.DataFrame()
@@ -12147,36 +12150,14 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     rows = []
     today = pd.Timestamp.today().normalize()
 
-    # ── Umbral mínimo de DD para que un tratamiento CUBRA una ventana ─────────
-    # Base biológica (fuentes: PNW Handbooks, UC IPM, MSU, estudios de persistencia
-    # del Btk):
-    #   · El Bactur (Bacillus thuringiensis) es un larvicida: solo mata a la larva
-    #     recién nacida que ingiere la bacteria ANTES de penetrar el fruto
-    #     (la penetración ocurre en < 24 h tras la eclosión).
-    #   · La eclosión de los huevos de esta lectura ocurre hacia los 90 DD.
-    #   · El residuo eficaz del Btk en hoja dura ~3 días (se degrada con UV).
-    #     A 7-9 DD/día eso equivale a ~20 DD.
-    # Por tanto, un tratamiento "cubre" la ventana si su residuo sigue activo en la
-    # eclosión: basta con tratar a partir de (90 − ~20) = 70 DD. Tratar a < 70 DD
-    # significa que el Btk ya se habrá degradado antes de la eclosión → no protege
-    # esta ventana (corresponde a una lectura anterior).
-    _MIN_DD_FOR_TREATMENT = 70
-    # Referencia para distinguir "tratado dentro de ventana" de "tratado un poco
-    # antes pero efectivo". Coincide con la apertura de la ventana de aviso (80 DD).
-    _DD_HATCH_START = dd_active_start
-
-    # ── Periodo de reentrada de Bactur (días mínimos entre aplicaciones) ──────
-    # Bactur tiene un período de reentrada de 7 días: aunque los DD indiquen
-    # "tratar ahora", si el último tratamiento fue hace menos de 7 días hay que
-    # esperar para no tratar doblado. (Esto es el plazo de seguridad, NO la
-    # duración de la eficacia, que es de ~3 días.)
-    _BACTUR_REENTRY_DAYS = 7
-
-    # ── Cobertura efectiva del Btk en DD ──────────────────────────────────────
-    # El residuo eficaz dura ~3 días; a 7-9 DD/día son ~25 DD. Un tratamiento a
-    # `trat_dd` protege la eclosión hasta `trat_dd + _BT_COVERAGE_DD`. Si la
-    # eclosión sigue activa más allá de eso, conviene un segundo pase.
-    _BT_COVERAGE_DD = 25
+    # ── Modelo simple de cierre de ventana ────────────────────────────────────
+    # Una ventana se abre con una lectura ≥ umbral de capturas. Está "activa" entre
+    # dd_active_start y dd_active_end (los selectores DD inicio / DD fin). Si en
+    # Agroptima hay un tratamiento cuyo DD acumulado (desde el trigger de la lectura)
+    # cae DENTRO de ese rango [dd_active_start, dd_active_end] → el Bactur llegó al
+    # árbol durante la ventana → se da por cubierta y se CIERRA. Un mismo tratamiento
+    # puede cerrar varias ventanas (todas las activas en esa fecha). Sin reentrada
+    # ni 2º pase: si quieres más margen, ajusta DD inicio/fin en los selectores.
 
     # Normalizar fechas del calendario DD una sola vez (eficiencia)
     _fechas_dd_norm = pd.to_datetime(daily_dd["Fecha"]).dt.normalize()
@@ -12246,150 +12227,66 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     .copy()
                 )
 
-        # ── Restricción de reentrada Bactur para esta zona ────────────────────
-        # Calculada UNA VEZ por zona: fecha del último tratamiento de carpocapsa.
-        # Si fue hace menos de _BACTUR_REENTRY_DAYS, las ventanas activas no
-        # se pueden tratar todavía.
-        _reentry_days_left = 0
-        _last_treat_str    = ""
-        if not campo_treats_carp.empty:
-            _last_treat_dt     = campo_treats_carp["fecha_dt"].max().normalize()
-            _days_since_treat  = int((today - _last_treat_dt).days)
-            _reentry_days_left = max(0, _BACTUR_REENTRY_DAYS - _days_since_treat)
-            _last_treat_str    = _last_treat_dt.strftime("%d/%m")
-
         for _, trow in trigger_reads.iterrows():
             trigger_date = trow["Fecha"]
             capturas     = int(trow["_capturas"])
 
-            # ── DD acumulados desde trigger hasta hoy ─────────────────────────
+            # ── DD acumulados desde el trigger hasta hoy ──────────────────────
             trigger_norm = pd.Timestamp(trigger_date).normalize()
             if trigger_norm.tzinfo is not None:
                 trigger_norm = trigger_norm.tz_localize(None)
             dd_future  = daily_dd[_fechas_dd_norm >= trigger_norm]
             dd_current = float(dd_future["DD día"].sum()) if not dd_future.empty else 0.0
 
-            date_90,  _ = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_start)
+            date_ini, _ = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_start)
             date_end, _ = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_end)
 
-            # ── Estado base (solo por DD, antes de conocer si hay tratamiento) ─
-            if dd_current < dd_active_start:
-                estado = "⏳ En espera"
-                estado_orden = 1
-            elif dd_current <= dd_active_end:
-                estado = "🔴 Activa — tratar"
-                estado_orden = 0
-            else:
-                estado = "✅ Cerrada"
-                estado_orden = 2
-
-            # ── Buscar tratamiento para ESTA ventana ──────────────────────────
-            trat_fecha   = ""
-            trat_dd      = ""
+            # ── ¿Hay un tratamiento DENTRO del rango activo de ESTA ventana? ──
+            # Si el Bactur llegó al árbol con DD acumulados (desde el trigger) entre
+            # dd_active_start y dd_active_end, la ventana queda cubierta → cerrada.
+            trat_fecha    = ""
+            trat_dd       = ""
             trat_producto = ""
-            _trat_temprano = False   # tratado a 70-90 DD (efectivo pero un poco antes)
-            # Tratamiento de OTRA ventana (anterior, < 70 DD para esta lectura): el
-            # residuo del Btk ya se habrá degradado antes de la eclosión de ESTA
-            # ventana, así que no la cubre; solo cuenta para la reentrada.
-            _otra_fecha_dt = None
-            _otra_str      = ""
-
             if not campo_treats_carp.empty:
-                # Solo tratamientos posteriores al trigger de esta lectura
-                post = campo_treats_carp[campo_treats_carp["fecha_dt"] >= trigger_date]
-
+                post = campo_treats_carp[
+                    campo_treats_carp["fecha_dt"] >= trigger_date
+                ].sort_values("fecha_dt")
                 for _, t_row in post.iterrows():
-                    # ① Calcular DD acumulados desde el trigger hasta el tratamiento
                     t_norm = pd.Timestamp(t_row["fecha_dt"]).normalize()
                     if t_norm.tzinfo is not None:
                         t_norm = t_norm.tz_localize(None)
-                    dd_at_trat_val = float(
-                        daily_dd[(_fechas_dd_norm >= trigger_norm) & (_fechas_dd_norm <= t_norm)
-                                 ]["DD día"].sum()
-                    )
-                    dd_at_trat_val = round(dd_at_trat_val, 1)
+                    dd_at = round(float(
+                        daily_dd[(_fechas_dd_norm >= trigger_norm)
+                                 & (_fechas_dd_norm <= t_norm)]["DD día"].sum()
+                    ), 1)
+                    if dd_active_start <= dd_at <= dd_active_end:
+                        trat_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
+                        trat_dd       = dd_at
+                        trat_producto = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
+                        break   # el primer tratamiento dentro de la ventana la cierra
 
-                    # ② Tratamiento demasiado temprano para ESTA ventana (< 70 DD):
-                    # el residuo del Btk (~3 días) se habrá degradado antes de la
-                    # eclosión (90 DD), así que NO la cubre. Pertenece a una lectura
-                    # anterior; solo se guarda para la mención de reentrada.
-                    if dd_at_trat_val < _MIN_DD_FOR_TREATMENT:
-                        _otra_fecha_dt = t_row["fecha_dt"]
-                        _otra_str      = t_norm.strftime("%d/%m")
-                        continue
-
-                    # ③ Tratamiento que CUBRE esta ventana (≥ 70 DD): el Btk sigue
-                    # activo en la eclosión. Se considera tratada (verde).
-                    trat_fecha     = t_row["fecha_dt"].strftime("%d/%m/%Y")
-                    trat_dd        = dd_at_trat_val
-                    trat_producto  = str(t_row.get(_prod_col, t_row.get("producto", ""))).strip()
-                    _trat_temprano = dd_at_trat_val < _DD_HATCH_START  # 70-90 DD
-                    estado       = "✅ Tratado — cerrada"
-                    estado_orden = 3
-                    break  # un solo tratamiento por ventana
-
-            # ── Info extra ────────────────────────────────────────────────────
-            if estado_orden == 1 and pd.notna(date_90):
-                dias_restantes = max(0, (date_90.date() - pd.Timestamp.today().date()).days)
-                info_extra = f"{dias_restantes}d hasta ventana"
-            elif estado_orden == 0:
+            # ── Estado (tratamiento manda; si no, según DD) ───────────────────
+            if trat_fecha:
+                estado = "✅ Tratado — cerrada"
+                estado_orden = 3
+                info_extra = f"Tratado {trat_fecha} ({trat_dd:g} DD)"
+            elif dd_current < dd_active_start:
+                estado = "⏳ En espera"
+                estado_orden = 1
+                if pd.notna(date_ini):
+                    _dias = max(0, (date_ini.date() - today.date()).days)
+                    info_extra = f"{_dias}d hasta ventana"
+                else:
+                    info_extra = "—"
+            elif dd_current <= dd_active_end:
+                estado = "🔴 Activa — tratar"
+                estado_orden = 0
                 info_extra = "⚠️ Tratar ahora"
-            elif estado_orden == 3:
-                if _trat_temprano:
-                    info_extra = f"Tratado {trat_fecha} ({trat_dd:g} DD, adelanto efectivo)"
-                else:
-                    info_extra = f"Tratado {trat_fecha}"
             else:
-                info_extra = "—"
+                estado = "🔒 Cerrada por DD"
+                estado_orden = 2
+                info_extra = "Ventana pasada sin tratar"
 
-            # ── Mención de reentrada por tratamiento de OTRA ventana ──────────
-            # La ventana sigue en espera (el tratamiento fue demasiado temprano para
-            # ella, < 70 DD, así que el Btk ya no protege su eclosión: corresponde a
-            # una lectura anterior). Si el campo se trató hace poco, se avisa del
-            # plazo de seguridad antes de poder tratar esta ventana.
-            if estado_orden == 1 and _otra_fecha_dt is not None and _reentry_days_left > 0:
-                info_extra = (f"{info_extra} · campo tratado {_otra_str} (otra ventana) — "
-                              f"reentrada {_reentry_days_left}d")
-
-            # ── Restricción de reentrada Bactur / aviso de 2º pase ─────────────
-            # Dos situaciones que requieren acción y pueden estar bloqueadas por el
-            # plazo de seguridad (reentrada):
-            #   (a) Ventana ACTIVA sin tratar (estado 0): hay que tratar ya.
-            #   (b) Ventana TRATADA pero con la eclosión aún en marcha (≥90 DD) y el
-            #       residuo del Bt YA AGOTADO (han pasado > _BT_COVERAGE_DD desde el
-            #       tratamiento): conviene un 2º pase para cubrir el resto de la
-            #       eclosión.
-            # Una ventana tratada cuya eclosión aún no ha empezado (<90 DD) o cuyo
-            # residuo sigue activo NO genera aviso: está cubierta (verde).
-            _reentry_wait = 0
-            _bt_agotado = (
-                estado_orden == 3
-                and dd_active_start <= dd_current <= dd_active_end
-                and trat_dd != ""
-                and (dd_current - float(trat_dd)) > _BT_COVERAGE_DD
-            )
-            if estado_orden == 0:
-                # Ventana activa sin tratar → tratar ahora (o esperar si reentrada)
-                if _reentry_days_left > 0:
-                    _reentry_wait = _reentry_days_left
-                    estado     = f"⏳ Activa — esperar {_reentry_days_left}d"
-                    info_extra = (f"Reentrada Bactur: esperar {_reentry_days_left}d "
-                                  f"(último trat. {_last_treat_str})")
-            elif _bt_agotado:
-                # Residuo agotado y eclosión aún activa → valorar 2º pase
-                if _reentry_days_left > 0:
-                    _reentry_wait = _reentry_days_left
-                    estado     = f"⚠️ 2º pase — esperar {_reentry_days_left}d"
-                    info_extra = (f"Residuo Bt agotado, eclosión activa · esperar "
-                                  f"{_reentry_days_left}d (trat. {_last_treat_str})")
-                else:
-                    estado     = "⚠️ Valorar 2º pase"
-                    info_extra = "Residuo Bt agotado y eclosión aún activa: valorar 2º pase"
-
-            # "DD actual" muestra siempre el acumulado real desde el trigger hasta HOY.
-            # El DD en el momento del tratamiento ya tiene su propia columna "DD al tratar".
-            # Congelarlo creaba confusión: una ventana más reciente podía parecer tener
-            # más DD que una anterior ya tratada.
             dd_display = int(round(dd_current))
 
             rows.append({
@@ -12397,12 +12294,12 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 "Fecha lectura":                 trigger_date.strftime("%d/%m/%Y"),
                 "Capturas":                      capturas,
                 "DD actual":                     dd_display,
-                f"Fecha estimada {dd_active_start} DD": date_90.strftime("%d/%m/%Y") if pd.notna(date_90) else "—",
+                f"Fecha estimada {dd_active_start} DD": date_ini.strftime("%d/%m/%Y") if pd.notna(date_ini) else "—",
                 f"Fecha estimada {dd_active_end} DD":   date_end.strftime("%d/%m/%Y") if pd.notna(date_end) else "—",
                 "Estado":                        estado,
                 "Info":                          info_extra,
                 "_orden":                        estado_orden,
-                "_reentry_wait":                 _reentry_wait,
+                "_reentry_wait":                 0,
                 "Tratamiento fecha":             trat_fecha,
                 "DD al tratar":                  trat_dd,
                 "Producto":                      trat_producto,
