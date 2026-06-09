@@ -1326,17 +1326,29 @@ def winter_season_label(ts):
     return f"{year - 1}/{year}"
 
 
+# ── Periodo de acumulación de frío invernal: CRITERIO ÚNICO de toda la app ────
+# Fuente: SERIDA / Delgado, Dapena, Fernández & Luedeling (2021), estudio de la
+# sidra del NO de España (comarca de la sidra, variedades locales como 'Regona').
+# Calculan el frío (Chill Portions modelo Dynamic, Utah, horas) sobre 1 nov → 31 mar.
+# Este mismo periodo se usa en: item Frío, correlación clima-producción y la fase
+# de frío del Análisis Gallinal. Modelo de referencia: Dynamic (Chill Portions).
+CHILL_PERIOD_START_MD = (11, 1)   # (mes, día) — del año ANTERIOR al de análisis
+CHILL_PERIOD_END_MD   = (3, 31)   # (mes, día) — del año de análisis
+
+
 def winter_period_from_analysis_year(analysis_year):
     """
-    Lógica agronómica solicitada:
-    el año de análisis es el año en el que termina el invierno.
+    El año de análisis es el año en el que termina el invierno.
+    Periodo de frío = 1 nov (año-1) → 31 mar (año), criterio único de la app
+    (CHILL_PERIOD_START_MD / CHILL_PERIOD_END_MD; fuente SERIDA/Delgado 2021).
 
     Ejemplos:
     - Año 2020 = 01/11/2019 a 31/03/2020
     - Año 2025 = 01/11/2024 a 31/03/2025
     """
     y = int(analysis_year)
-    return pd.Timestamp(y - 1, 11, 1), pd.Timestamp(y, 3, 31, 23, 0)
+    return (pd.Timestamp(y - 1, CHILL_PERIOD_START_MD[0], CHILL_PERIOD_START_MD[1]),
+            pd.Timestamp(y, CHILL_PERIOD_END_MD[0], CHILL_PERIOD_END_MD[1], 23, 0))
 
 
 def winter_label_from_analysis_year(analysis_year):
@@ -13948,12 +13960,16 @@ def _gallinal_breakdown(sel, group_col, index_label):
 
 # ── FASE 3 · Índice Climático por fases fenológicas (finca, por año) ──────────
 # (id, etiqueta, mes_ini, día_ini, mes_fin, día_fin, peso_por_defecto)
+# El frío usa el CRITERIO ÚNICO de la app (CHILL_PERIOD_*_MD = 1 nov → 31 mar,
+# fuente SERIDA/Delgado 2021), igual que el item Frío. Brotación arranca el 1 abr
+# para no solaparse (en Asturias la brotación es de finales de marzo/principios de abril).
 _GALLINAL_PHASES = [
-    ("frio",       "🥶 Frío",       11, 1,  3, 15, 20),
-    ("brotacion",  "🌱 Brotación",   3, 16, 4, 15, 10),
-    ("floracion",  "🌸 Floración",   4, 16, 5, 15, 30),
-    ("cuajado",    "🍏 Cuajado",     5, 16, 6, 15, 15),
-    ("engorde",    "☀️ Engorde",     6, 16, 8, 31, 15),
+    ("frio",       "🥶 Frío",       CHILL_PERIOD_START_MD[0], CHILL_PERIOD_START_MD[1],
+                                    CHILL_PERIOD_END_MD[0],   CHILL_PERIOD_END_MD[1], 20),
+    ("brotacion",  "🌱 Brotación",   4,  1,  4, 15, 10),
+    ("floracion",  "🌸 Floración",   4, 16,  5, 15, 30),
+    ("cuajado",    "🍏 Cuajado",     5, 16,  6, 15, 15),
+    ("engorde",    "☀️ Engorde",     6, 16,  8, 31, 15),
     ("maduracion", "🍎 Maduración",  9,  1, 10, 20, 10),
 ]
 
@@ -14805,9 +14821,10 @@ def gallinal_tab(history):
                   "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
         with st.expander("📅 Ventanas fenológicas (editar — mes y día, sin año)"):
             st.caption(
-                "El **Frío** va de **Nov (del año anterior) → Mar**: es normal que el mes "
-                "de inicio (Nov) sea posterior al de fin (Mar); la app entiende que la "
-                "ventana cruza el cambio de año. El resto de fases son del mismo año."
+                "El **Frío** va de **1 Nov (año anterior) → 31 Mar** — el mismo criterio que "
+                "el item Frío y la correlación (fuente: SERIDA/Delgado 2021, sidra asturiana). "
+                "Es normal que el mes de inicio (Nov) sea posterior al de fin (Mar): la ventana "
+                "cruza el cambio de año. El resto de fases son del mismo año."
             )
             _hc = st.columns([2.2, 1.5, 1, 1.5, 1])
             _hc[1].caption("Mes inicio"); _hc[2].caption("Día")
