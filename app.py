@@ -14363,10 +14363,68 @@ def gallinal_tab(history):
     st.subheader("🍏 Análisis Gallinal · Fenología · Clima · Producción")
     st.caption(
         "Cruce de la producción con la fenología, el clima y la vecería, por campo, "
-        "variedad y portainjerto. Se irá ampliando por fases (índice climático por "
-        "fases, vecería y tabla maestra). Empezamos por la consulta de producción y "
-        "el % de árboles que produjeron."
+        "variedad y portainjerto, para entender qué mueve la cosecha."
     )
+
+    with st.expander("📖 Guía: qué es esto, qué mide cada fase y cómo leer los números"):
+        st.markdown(
+            "**¿Para qué sirve?** Cruza tu **producción** con el **clima**, el "
+            "**portainjerto** y la **variedad** para entender qué mueve la cosecha y "
+            "**separar lo que es clima de lo que es vecería o manejo**. Tiene 4 bloques:\n\n"
+            "1. **Consulta** — eliges año/campo/variedad → Kg y % de árboles que produjeron.\n"
+            "2. **Regularidad y vecería** — si la cosecha es estable o alterna.\n"
+            "3. **Índice Climático** — puntúa el clima de cada fase del año.\n"
+            "4. **Índice Gallinal** — cruza ese clima con tu producción.\n\n"
+            "---\n"
+            "**Abreviaturas (glosario):**\n"
+            "- **DD / GDD** = grados-día (calor acumulado; cada día suma los grados por "
+            "encima de 10 °C). El primo \"calor\" del frío.\n"
+            "- **CP (Chill Portions)** = porciones de frío del modelo *Dynamic* (el más "
+            "preciso). **Utah (CU)** = unidades del modelo Utah. **Horas de frío** = horas "
+            "por debajo de 7,2 °C (la métrica de Dapena/el sector).\n"
+            "- **Kg/Ha** = kilos por hectárea (objetivo ≈ 20.000). **% prod.** = % de "
+            "árboles que dieron fruta.\n"
+            "- **BBI** = Índice de Vecería (0 regular … 1 alternancia total).\n"
+            "- **IEP** = Índice de Excelencia Productiva (nota 0-100: Kg/Ha 65 % + "
+            "participación 35 %).\n"
+            "- **IC** = Índice Climático (nota 0-100 del clima del año). "
+            "**IG** = Índice Gallinal (el IC calibrado con tu producción).\n\n"
+            "---\n"
+            "**Las 6 fases del año y qué mira el clima** (cada una se puntúa 0-100, "
+            "🟢 alto = favorable):\n\n"
+            "| Fase | Ventana | Qué mide el clima | Umbral (base científica) |\n"
+            "|---|---|---|---|\n"
+            "| 🥶 Frío | 1 Nov–31 Mar | Frío acumulado para romper el reposo invernal | "
+            "Regona ≈ 90 CP (SERIDA) |\n"
+            "| 🌱 Brotación | 1–20 Abr | Calor (GDD) para brotar con vigor | calibrable "
+            "(la fase menos crítica) |\n"
+            "| 🌸 Floración | 21 Abr–21 May | Heladas + clima de polinización + lluvia | "
+            "helada daña desde **−2 °C** (10 % de pérdida a −2,2 °C); abejas vuelan ≥10–15 °C |\n"
+            "| 🍏 Cuajado | 22 May–15 Jun | Heladas tardías + temperatura | helada desde "
+            "**−2 °C**; templado mejor |\n"
+            "| ☀️ Engorde | 16 Jun–31 Ago | Golpe de calor + sequía | daño de calor a "
+            "**35 °C** (golpe de sol) |\n"
+            "| 🍎 Maduración | 1 Sep–20 Oct | Temperatura para acumular azúcares | templado "
+            "favorece azúcar/color |\n\n"
+            "El **IC** del año es la **media ponderada** de las 6 notas (los *pesos* dicen "
+            "cuánto cuenta cada fase). No tienes que saber los pesos: la Fase 4 los "
+            "**aprende de tu producción**.\n\n"
+            "---\n"
+            "**Ejemplo (datos inventados) — año «X»:**\n"
+            "- 🥶 Frío: 92 CP → **100** (cumple el requerimiento de 90).\n"
+            "- 🌱 Brotación: poco calor en abril → **55**.\n"
+            "- 🌸 Floración: 0 heladas, 60 % de horas en rango de abeja, poca lluvia → **88**.\n"
+            "- 🍏 Cuajado: temperatura ideal, sin heladas → **100**.\n"
+            "- ☀️ Engorde: ningún día >35 °C, lluvia suficiente → **98**.\n"
+            "- 🍎 Maduración: otoño templado → **100**.\n\n"
+            "Con los pesos (Floración 30, Frío 20, Cuajado/Engorde 15, Brotación/Maduración 10):\n\n"
+            "**IC = (20×100 + 10×55 + 30×88 + 15×100 + 15×98 + 10×100) ÷ 100 = 91/100** "
+            "→ un año climáticamente muy bueno. Si la cosecha hubiera sido baja, el "
+            "**diagnóstico** diría *«no fue el clima → vecería/manejo»*.\n\n"
+            "---\n"
+            "*Fuentes de los umbrales: frío — SERIDA/Delgado 2021; heladas — MSU/USU "
+            "(temperaturas críticas); polinización — AHDB; golpe de sol — UC Davis/WSU.*"
+        )
 
     prod = st.session_state.get("produccion_df", pd.DataFrame())
     if prod is None or prod.empty:
@@ -14897,8 +14955,16 @@ def gallinal_tab(history):
                                            "(o pregunta a Dapena por tu variedad).")
             st.markdown("**Otros umbrales:**")
             u2c, u3c = st.columns(2)
-            frost_thr = u2c.slider("Umbral helada (°C)", -3, 3, 0, key="g_frost")
-            heat_thr = u3c.slider("Umbral calor (°C)", 28, 38, 32, key="g_heat")
+            frost_thr = u2c.slider(
+                "Umbral helada (°C)", -5, 2, -2, key="g_frost",
+                help="El daño por helada en flor/cuajado empieza a −2 °C: 10 % de pérdida "
+                     "a −2,2 °C y 90 % a −4,4 °C (MSU/USU, temperaturas críticas del manzano). "
+                     "Por eso el defecto es −2 °C, no 0.")
+            heat_thr = u3c.slider(
+                "Umbral calor (°C)", 28, 38, 32, key="g_heat",
+                help="Estrés de calor en el fruto: daño claro de firmeza/fotosíntesis a "
+                     "35 °C; golpe de sol cuando la piel supera ~46 °C, lo que pasa con aire "
+                     "≥35 °C y sol (UC Davis/WSU). 32 °C es una precaución conservadora.")
 
         params = {"frio_metric": _frio_metric, "frio_req": float(frio_req),
                   "gdd_ref": 120.0, "rain_min_engorde": 120.0}
