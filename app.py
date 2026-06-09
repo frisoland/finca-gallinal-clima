@@ -14020,7 +14020,10 @@ def _phase_metrics(hist, start, end, temp_col, frost_thr=0.0, heat_thr=32.0,
         "gdd": float(np.clip(dmean - base_temp, 0, None).sum()),
         "rain_mm": rain,
         "pollin_frac": float(fav / n_hours) if n_hours > 0 else np.nan,
-        "chill_cp": float(np.sum(dynamic_chill_portions(t))),
+        # Tres modelos de frío (solo relevantes en la fase de frío):
+        "horas_frio": int((t <= 7.2).sum()),                 # horas de frío (Dapena/sector)
+        "utah_cu": float(t.apply(utah_weight).sum()),         # unidades Utah
+        "chill_cp": float(np.sum(dynamic_chill_portions(t))), # Chill Portions (Dynamic)
     }
 
 
@@ -14040,7 +14043,14 @@ def _score_phase(pid, m, p):
     if m is None:
         return np.nan
     if pid == "frio":
-        return float(np.clip(m["chill_cp"] / p["chill_req"] * 100, 0, 100)) if p["chill_req"] > 0 else np.nan
+        _req = p.get("frio_req", 0)
+        if not _req or _req <= 0:
+            return np.nan
+        _fm = p.get("frio_metric", "horas")
+        _val = (m["chill_cp"] if _fm == "cp"
+                else m["utah_cu"] if _fm == "utah"
+                else m["horas_frio"])
+        return float(np.clip(_val / _req * 100, 0, 100))
     if pid == "brotacion":
         return float(np.clip(m["gdd"] / p["gdd_ref"] * 100, 0, 100)) if p["gdd_ref"] > 0 else np.nan
     if pid == "floracion":
@@ -14087,7 +14097,9 @@ def _phase_clima_text(pid, m):
     pre = "⚠️ datos parciales · " if m.get("coverage", 1) < 0.5 else ""
     _r = (_fmt_es_number(round(m["rain_mm"]), 0) if pd.notna(m.get("rain_mm")) else "—")
     if pid == "frio":
-        return pre + f"{_fmt_es_number(round(m['chill_cp']), 0)} Chill Portions"
+        return pre + (f"{_fmt_es_number(round(m['horas_frio']), 0)} h frío · "
+                      f"{_fmt_es_number(round(m['utah_cu']), 0)} Utah · "
+                      f"{_fmt_es_number(round(m['chill_cp']), 0)} CP")
     if pid == "brotacion":
         return pre + f"{_fmt_es_number(round(m['gdd']), 0)} GDD"
     if pid == "floracion":
@@ -14807,7 +14819,9 @@ def gallinal_tab(history):
                 "climática pura** (no producción): mide si el año fue favorable. En la "
                 "Fase 4 se cruzará con tu producción/IEP/vecería para separar clima de "
                 "portainjerto/vecería/prácticas.\n\n"
-                "- 🥶 **Frío:** Chill Portions vs requerimiento.\n"
+                "- 🥶 **Frío:** acumulación de frío (1 Nov–31 Mar) vs requerimiento. Eliges "
+                "la métrica: **horas de frío** (la de Dapena/el sector), Utah o Chill "
+                "Portions. La app calcula las tres y muestra las tres en el detalle.\n"
                 "- 🌱 **Brotación:** calor acumulado (GDD).\n"
                 "- 🌸 **Floración:** heladas (penaliza fuerte) + clima de polinización "
                 "(horas en 12–25 °C, lluvia).\n"
@@ -14850,19 +14864,40 @@ def gallinal_tab(history):
             wcols = st.columns(len(edited_phases))
             for _i, (pid, label, _a, _b, _c, _d, w) in enumerate(edited_phases):
                 weights[pid] = wcols[_i].slider(label, 0, 50, int(w), key=f"gw_{pid}")
-            st.markdown("**Umbrales:**")
-            u1, u2, u3 = st.columns(3)
-            chill_req = u1.slider(
-                "Requerim. frío (CP)", 30, 110, 90, key="g_chillreq",
-                help="El manzano de sidra es de ALTO frío. Estudio del NO de España: "
-                     "'Regona' ≈ 90 Chill Portions (modelo Dynamic); rango de cultivares "
-                     "59–90 CP. Por defecto 90 (referencia alta, variedad Regona). "
-                     "Ajústalo a tu variedad dominante.",
+            st.markdown("**Frío** — elige la métrica (la app calcula las tres):")
+            fm1, fm2 = st.columns([1.3, 1])
+            _frio_lbl = fm1.selectbox(
+                "Métrica de frío",
+                ["Horas de frío (<7,2 °C)", "Utah (CU)", "Chill Portions"],
+                index=0, key="g_frio_metric",
+                help="Horas de frío = la métrica que usa el SERIDA/Dapena con el sector "
+                     "(la que oyes en las charlas). Utah y Chill Portions son modelos más "
+                     "elaborados. OJO: el requerimiento por variedad solo está publicado "
+                     "en Chill Portions (Regona ≈ 90 CP); en horas/Utah lo calibras tú.",
             )
-            frost_thr = u2.slider("Umbral helada (°C)", -3, 3, 0, key="g_frost")
-            heat_thr = u3.slider("Umbral calor (°C)", 28, 38, 32, key="g_heat")
+            _frio_metric = {"Horas de frío (<7,2 °C)": "horas", "Utah (CU)": "utah",
+                            "Chill Portions": "cp"}[_frio_lbl]
+            if _frio_metric == "cp":
+                frio_req = fm2.slider("Requerim. (CP)", 30, 110, 90, key="g_req_cp",
+                                      help="Regona ≈ 90 CP (SERIDA/Delgado 2021; rango 59–90).")
+            elif _frio_metric == "utah":
+                frio_req = fm2.slider("Requerim. (Utah CU)", 400, 2000, 1300, step=50,
+                                      key="g_req_utah",
+                                      help="Asturias acumula ~1.300–1.430 Utah CU por invierno "
+                                           "(SERIDA). Sin requerimiento por variedad publicado: calíbralo.")
+            else:
+                frio_req = fm2.slider("Requerim. (horas <7,2 °C)", 300, 1500, 900, step=25,
+                                      key="g_req_horas",
+                                      help="Asturias acumula ~800–1.100 h/invierno (SERIDA). "
+                                           "Sin requerimiento por variedad publicado: calíbralo "
+                                           "(o pregunta a Dapena por tu variedad).")
+            st.markdown("**Otros umbrales:**")
+            u2c, u3c = st.columns(2)
+            frost_thr = u2c.slider("Umbral helada (°C)", -3, 3, 0, key="g_frost")
+            heat_thr = u3c.slider("Umbral calor (°C)", 28, 38, 32, key="g_heat")
 
-        params = {"chill_req": float(chill_req), "gdd_ref": 120.0, "rain_min_engorde": 120.0}
+        params = {"frio_metric": _frio_metric, "frio_req": float(frio_req),
+                  "gdd_ref": 120.0, "rain_min_engorde": 120.0}
 
         # Cálculo por año (años de producción)
         ic_rows = []
