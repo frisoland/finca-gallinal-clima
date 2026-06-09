@@ -13963,12 +13963,16 @@ def _gallinal_breakdown(sel, group_col, index_label):
 # El frío usa el CRITERIO ÚNICO de la app (CHILL_PERIOD_*_MD = 1 nov → 31 mar,
 # fuente SERIDA/Delgado 2021), igual que el item Frío. Brotación arranca el 1 abr
 # para no solaparse (en Asturias la brotación es de finales de marzo/principios de abril).
+# Ventanas por defecto ajustadas por el productor (Finca Gallinal, Asturias).
+# El frío usa el CRITERIO ÚNICO de la app (CHILL_PERIOD_*_MD = 1 nov → 31 mar).
+# El resto son las fechas que el usuario fijó (persisten al reabrir la app).
+# En el futuro, la fenología real por campo/variedad/año vendrá de un CSV.
 _GALLINAL_PHASES = [
     ("frio",       "🥶 Frío",       CHILL_PERIOD_START_MD[0], CHILL_PERIOD_START_MD[1],
                                     CHILL_PERIOD_END_MD[0],   CHILL_PERIOD_END_MD[1], 20),
-    ("brotacion",  "🌱 Brotación",   4,  1,  4, 15, 10),
-    ("floracion",  "🌸 Floración",   4, 16,  5, 15, 30),
-    ("cuajado",    "🍏 Cuajado",     5, 16,  6, 15, 15),
+    ("brotacion",  "🌱 Brotación",   4,  1,  4, 20, 10),
+    ("floracion",  "🌸 Floración",   4, 21,  5, 21, 30),
+    ("cuajado",    "🍏 Cuajado",     5, 22,  6, 15, 15),
     ("engorde",    "☀️ Engorde",     6, 16,  8, 31, 15),
     ("maduracion", "🍎 Maduración",  9,  1, 10, 20, 10),
 ]
