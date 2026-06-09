@@ -12103,7 +12103,7 @@ def carpocapsa_status_from_dd(current_dd, recent_captures_per_day=0, rain_since_
 
 def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp=31.1,
                                     capture_threshold=3, dd_active_start=80, dd_active_end=130,
-                                    activities_df=None, campaign_year=None):
+                                    activities_df=None, campaign_year=None, cierre_aviso_dias=3):
     """
     Modelo de ventanas múltiples por campo (simple).
     Cada lectura con capturas >= capture_threshold abre una ventana de DD propia.
@@ -12266,6 +12266,7 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                         break   # el primer tratamiento dentro de la ventana la cierra
 
             # ── Estado (tratamiento manda; si no, según DD) ───────────────────
+            dias_cierre = None
             if trat_fecha:
                 estado = "✅ Tratado — cerrada"
                 estado_orden = 3
@@ -12279,13 +12280,25 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 else:
                     info_extra = "—"
             elif dd_current <= dd_active_end:
-                estado = "🔴 Activa — tratar"
                 estado_orden = 0
-                info_extra = "⚠️ Tratar ahora"
+                # Días que faltan para que la ventana se pase de DD fin (cierre)
+                dias_cierre = None
+                if pd.notna(date_end):
+                    dias_cierre = max(0, (date_end.date() - today.date()).days)
+                if dias_cierre is not None and dias_cierre <= cierre_aviso_dias:
+                    # PELIGRO: a punto de pasarse sin tratar (rojo)
+                    estado = f"🔴 Activa — cierra en {dias_cierre}d"
+                    info_extra = f"⚠️ ÚLTIMA OPORTUNIDAD · cierra en {dias_cierre}d sin tratar"
+                else:
+                    # Precaución: ventana abierta con margen (naranja)
+                    estado = "🟠 Activa — tratar"
+                    info_extra = ("⚠️ Tratar"
+                                  + (f" · cierra en {dias_cierre}d" if dias_cierre is not None else ""))
             else:
                 estado = "🔒 Cerrada por DD"
                 estado_orden = 2
                 info_extra = "Ventana pasada sin tratar"
+                dias_cierre = None
 
             dd_display = int(round(dd_current))
 
@@ -12300,6 +12313,7 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 "Info":                          info_extra,
                 "_orden":                        estado_orden,
                 "_reentry_wait":                 0,
+                "_dias_cierre":                  dias_cierre if dias_cierre is not None else "",
                 "Tratamiento fecha":             trat_fecha,
                 "DD al tratar":                  trat_dd,
                 "Producto":                      trat_producto,
@@ -12836,6 +12850,20 @@ def carpocapsa_tab(history):
             mc3.metric("✅ Cubiertas / tratadas",  n_tratadas)
             mc4.metric("🔒 Cerradas por DD",       n_cerradas)
 
+            # ── Aviso PARPADEANTE: ventanas a punto de cerrarse sin tratar ─────
+            _peligro = multi_df[multi_df["Estado"].astype(str).str.contains("cierra en", na=False)]
+            if not _peligro.empty:
+                _campos_pel = ", ".join(_peligro["Campo/Zona"].astype(str).unique())
+                st.markdown(
+                    "<style>@keyframes fgCarpoBlink{0%,100%{opacity:1}50%{opacity:.35}}</style>"
+                    f"<div style='background:#c62828;color:#fff;padding:10px 14px;"
+                    f"border-radius:8px;font-weight:700;margin:4px 0 12px 0;"
+                    f"animation:fgCarpoBlink 1s infinite;'>"
+                    f"⚠️ PELIGRO — {len(_peligro)} ventana(s) a punto de pasarse de DD "
+                    f"SIN tratar: {_campos_pel}. Última oportunidad de tratar.</div>",
+                    unsafe_allow_html=True,
+                )
+
             # Obtener todos los estados reales del DataFrame para el filtro dinámico
             _estados_disponibles = sorted(multi_df["Estado"].dropna().unique().tolist())
             _default_estados = [e for e in _estados_disponibles
@@ -12858,11 +12886,11 @@ def carpocapsa_tab(history):
             _display_cols = [c for c in df_show.columns if not c.startswith("_")]
 
             # ── Colores por fila según estado ──────────────────────────────────
-            # Verde   : Tratado — cerrada  (acción completada)
-            # Naranja : Reentrada / solapamiento (bloqueado por plazo de seguridad)
-            # Rojo    : Activa — tratar (ventana abierta, acción urgente)
-            # Blanco  : En espera (< 90 DD, aún no hay que actuar)
-            # Gris    : Cerrada sin tratar (fuera de ventana, sin tratamiento)
+            # Verde   : Tratado — cerrada (acción completada)
+            # Rojo    : Activa que CIERRA en ≤3d sin tratar (PELIGRO, última opción)
+            # Naranja : Activa con margen (precaución, ventana abierta)
+            # Gris    : Cerrada por DD sin tratar (se pasó)
+            # Blanco  : En espera (aún no activa)
             def _carpo_row_color(row):
                 try:
                     e = str(row.get("Estado", ""))
@@ -12870,12 +12898,12 @@ def carpocapsa_tab(history):
                     e = ""
                 if "Tratado" in e:
                     bg = "#d6f0da"   # verde claro (tratado/cubierto)
-                elif "esperar" in e or "reentrada" in e or "pase" in e:
-                    bg = "#fff0b3"   # naranja/amarillo claro (acción pendiente/bloqueada)
+                elif "cierra en" in e:
+                    bg = "#ffcccc"   # rojo claro (PELIGRO: a punto de pasarse sin tratar)
                 elif "Activa" in e:
-                    bg = "#ffd6d6"   # rojo claro
+                    bg = "#ffe0b3"   # naranja claro (precaución: ventana abierta)
                 elif "Cerrada" in e:
-                    bg = "#e8e8e8"   # gris (cerrada sin tratar)
+                    bg = "#e8e8e8"   # gris (cerrada por DD sin tratar)
                 else:
                     bg = ""          # blanco (en espera)
                 return [f"background-color: {bg}" if bg else "" for _ in row]
