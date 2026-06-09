@@ -16890,8 +16890,8 @@ def telegram_discover_chats():
 def build_daily_report_text(history_df, traps_df, activities_df,
                             forecast_df=None, persistence_days=16):
     """Construye el texto del informe diario centrado en lo urgente:
-    carpocapsa (ventanas activas / bloqueadas) + fungicidas (tratar hoy / sin cobertura).
-    Formato HTML para Telegram."""
+    carpocapsa (ventanas activas; aviso si cierran en ≤3 días sin tratar) +
+    fungicidas (tratar hoy / sin cobertura). Formato HTML para Telegram."""
     import html as _html
 
     def _esc(v):
@@ -16910,24 +16910,44 @@ def build_daily_report_text(history_df, traps_df, activities_df,
     except Exception:
         cw = pd.DataFrame()
 
+    _CIERRE_AVISO_DIAS = 3   # avisar si una ventana activa cierra en ≤ N días sin tratar
     if not cw.empty:
+        # Columna de fecha estimada de cierre (DD fin = la del número mayor)
+        _est_cols = [c for c in cw.columns
+                     if c.startswith("Fecha estimada") and c.strip().endswith("DD")]
+        def _dd_of(c):
+            _d = "".join(ch for ch in c if ch.isdigit())
+            return int(_d) if _d else 0
+        _end_col = max(_est_cols, key=_dd_of) if _est_cols else None
+        _today_n = pd.Timestamp.today().normalize()
+
         for _, r in cw.iterrows():
             e     = str(r.get("Estado", ""))
             campo = _esc(r.get("Campo/Zona", ""))
             dd    = r.get("DD actual", "")
             info  = _esc(r.get("Info", ""))
-            if "Activa" in e and "esperar" not in e:
-                carpo_red.append(f"  🔴 <b>{campo}</b> — {dd} DD · {info}")
-            elif "esperar" in e or "reentrada" in e:
-                carpo_orange.append(f"  🟠 <b>{campo}</b> — {info}")
+            if "Activa" not in e:        # solo ventanas activas SIN tratar
+                continue
+            # Días hasta el cierre (cuando los DD llegan a DD fin)
+            dias_cierre = None
+            if _end_col:
+                _de = pd.to_datetime(r.get(_end_col, ""), format="%d/%m/%Y", errors="coerce")
+                if pd.notna(_de):
+                    dias_cierre = int((_de.normalize() - _today_n).days)
+            if dias_cierre is not None and dias_cierre <= _CIERRE_AVISO_DIAS:
+                carpo_orange.append(
+                    f"  🟠 <b>{campo}</b> — CIERRA EN {max(0, dias_cierre)}d sin tratar · {dd} DD")
+            else:
+                _cola = f" · cierra en {dias_cierre}d" if dias_cierre is not None else ""
+                carpo_red.append(f"  🔴 <b>{campo}</b> — {dd} DD{_cola}")
 
     lines.append("🐛 <b>CARPOCAPSA</b>")
-    if carpo_red:
-        lines.append("<b>Tratar ahora:</b>")
-        lines.extend(carpo_red)
     if carpo_orange:
-        lines.append("<b>Bloqueado por plazo de seguridad:</b>")
+        lines.append(f"<b>⚠️ Cierran en ≤{_CIERRE_AVISO_DIAS}d SIN tratar (última oportunidad):</b>")
         lines.extend(carpo_orange)
+    if carpo_red:
+        lines.append("<b>Ventana activa — tratar:</b>")
+        lines.extend(carpo_red)
     if not carpo_red and not carpo_orange:
         lines.append("  ✅ Sin ventanas activas hoy.")
     lines.append("")
