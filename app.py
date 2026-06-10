@@ -1280,6 +1280,7 @@ def utah_weight(temp):
     return -1.0
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def dynamic_chill_portions(hour_temps):
     temps = pd.to_numeric(pd.Series(hour_temps), errors="coerce").interpolate(limit_direction="both")
     temps = temps.bfill().ffill()
@@ -12144,8 +12145,11 @@ def load_carpocapsa_snapshot_from_supabase():
     return traps, biofix, damage, "Snapshot carpocapsa cargado: " + ", ".join(parts) + "."
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def carpocapsa_daily_degree_days(history, base_temp=10.0, upper_temp=None, method="horario"):
-    """Calcula grados-día diarios para carpocapsa desde histórico climático."""
+    """Calcula grados-día diarios para carpocapsa desde histórico climático.
+    Cacheado: el resultado solo se recalcula si cambian el histórico o los parámetros
+    (se llama varias veces por render: tab Carpocapsa, ventanas, sync, Panel de hoy)."""
     columns = ["Fecha", "DD día", "Temp media ºC", "Horas con dato"]
     if history is None or history.empty or "fecha_hora" not in history.columns or "temp_media" not in history.columns:
         return pd.DataFrame(columns=columns)
@@ -13287,6 +13291,56 @@ def settings_tab():
             help="Se mantiene por compatibilidad. El módulo sanitario usa minutos reales y eventos continuos.",
         )
         st.caption("El módulo nuevo trabaja con minutos de hoja mojada por hora y eventos continuos.")
+
+    with st.expander("💾 Copia de seguridad completa", expanded=False):
+        st.caption(
+            "Descarga **todos tus datos** en un único ZIP de CSVs (clima, Agroptima, "
+            "producción, carpocapsa, fenología y catálogo). Guárdalo de vez en cuando "
+            "como respaldo, por si falla Supabase o pierdes acceso. Se genera solo al "
+            "pulsar el botón."
+        )
+        if st.button("🗜️ Generar copia de seguridad", key="gen_backup"):
+            import io as _io, zipfile as _zip
+            _sources = {
+                "clima_historico.csv":       st.session_state.get("history_df"),
+                "agroptima_actuaciones.csv": st.session_state.get("activities_df"),
+                "produccion.csv":            st.session_state.get("produccion_df"),
+                "carpocapsa_capturas.csv":   st.session_state.get("carpocapsa_traps_df"),
+                "carpocapsa_biofix.csv":     st.session_state.get("carpocapsa_biofix_df"),
+                "carpocapsa_dano.csv":       st.session_state.get("carpocapsa_damage_df"),
+                "fenologia.csv":             st.session_state.get("phenology_df"),
+            }
+            _resumen, _buf = [], _io.BytesIO()
+            with _zip.ZipFile(_buf, "w", _zip.ZIP_DEFLATED) as _z:
+                for _name, _df in _sources.items():
+                    if isinstance(_df, pd.DataFrame) and not _df.empty:
+                        _z.writestr(_name, _df.to_csv(index=False).encode("utf-8-sig"))
+                        _resumen.append(f"{_name} ({len(_df)} filas)")
+                try:
+                    _cat_df = treatment_catalog_to_dataframe(get_treatment_product_catalog())
+                    if _cat_df is not None and not _cat_df.empty:
+                        _z.writestr("catalogo_fungicidas.csv",
+                                    _cat_df.to_csv(index=False).encode("utf-8-sig"))
+                        _resumen.append(f"catalogo_fungicidas.csv ({len(_cat_df)} filas)")
+                except Exception:
+                    pass
+            _buf.seek(0)
+            st.session_state["_backup_zip"] = _buf.getvalue()
+            st.session_state["_backup_resumen"] = _resumen
+
+        if st.session_state.get("_backup_zip"):
+            _res = st.session_state.get("_backup_resumen", [])
+            if _res:
+                st.success("Copia generada. Incluye: " + " · ".join(_res))
+                st.download_button(
+                    "⬇️ Descargar copia de seguridad (ZIP)",
+                    data=st.session_state["_backup_zip"],
+                    file_name=f"backup_finca_gallinal_{pd.Timestamp.today().strftime('%Y%m%d')}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
+            else:
+                st.info("No había datos cargados para respaldar.")
 
     st.divider()
     render_treatment_catalog_manager()
