@@ -8900,6 +8900,12 @@ def detect_unknown_products_from_activities(activities_df, catalog=None):
         if recognized:
             continue
 
+        # Productos que la app YA reconoce por otra vía (insecticidas de carpocapsa
+        # como Bactur/Decis): no son fungicidas para FRAC, así que NO se listan aquí
+        # como "no reconocidos" (se gestionan en el item Carpocapsa).
+        if text_contains_any_keyword(txt, CARPOCAPSA_TREATMENT_KEYWORDS):
+            continue
+
         if "Campos reconocidos" in group.columns:
             campos = sorted(set(
                 c.strip()
@@ -9414,14 +9420,21 @@ using (true);
 
     activities_df = st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS))
 
-    with st.expander("Productos de Agroptima no reconocidos", expanded=True):
+    with st.expander("Productos de Agroptima no reconocidos (catálogo de fungicidas)", expanded=True):
+        st.caption(
+            "Esta lista es solo del **catálogo de fungicidas** (para el análisis FRAC de "
+            "resistencias). Los **insecticidas de carpocapsa** (Bactur, Decis…) NO aparecen "
+            "aquí: la app ya los reconoce en el item Carpocapsa. Si en la lista ves un "
+            "**fungicida**, añádelo arriba; los acaricidas/abonos foliares no hacen falta."
+        )
         unknown = detect_unknown_products_from_activities(activities_df, get_treatment_product_catalog())
         if activities_df is None or activities_df.empty:
-            st.info("Carga actuaciones Agroptima para detectar productos no catalogados.")
+            st.info("Carga actuaciones Agroptima para detectar fungicidas no catalogados.")
         elif unknown.empty:
-            st.success("Todos los productos de Agroptima están reconocidos por el catálogo activo.")
+            st.success("Todos los fungicidas de Agroptima están reconocidos por el catálogo activo.")
         else:
-            st.warning("Hay productos en Agroptima que todavía no están catalogados. Añádelos arriba para que la app pueda analizarlos por FRAC.")
+            st.warning("Hay productos en Agroptima sin catalogar. Si alguno es **fungicida**, "
+                       "añádelo arriba para analizarlo por FRAC.")
             st.dataframe(unknown, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar productos no reconocidos",
@@ -13228,11 +13241,13 @@ def settings_tab():
     st.subheader("Configuración")
     st.write("Configuración general de la sesión.")
 
+    _soil_keys = list(SOIL_PROFILES.keys())
     soil_type = st.selectbox(
         "Tipo de suelo",
-        options=list(SOIL_PROFILES.keys()),
-        index=2,
+        options=_soil_keys,
+        index=_soil_keys.index("Franco-arenoso") if "Franco-arenoso" in _soil_keys else 0,
         key="soil_type_v60",
+        help="Por defecto Franco-arenoso, el más predominante en la finca.",
     )
 
     with st.expander("Configuración avanzada de hoja mojada", expanded=False):
@@ -13449,7 +13464,7 @@ if not _HEADLESS:
 
 # Default settings.
 # No escribimos manualmente en claves usadas por widgets, porque Streamlit lo bloquea.
-soil_type = st.session_state.get("soil_type_v60", "Franco")
+soil_type = st.session_state.get("soil_type_v60", "Franco-arenoso")
 hoja_threshold = st.session_state.get("hoja_threshold_v60", 30)
 
 history = st.session_state.history_df.copy()
