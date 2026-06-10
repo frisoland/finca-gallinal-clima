@@ -12764,7 +12764,7 @@ def carpocapsa_tab(history):
             thresh_val = int(st.session_state.get("carp_capture_threshold", 3))
             n_campos = len(traps_campaign["Campo/Zona"].unique()) if "Campo/Zona" in traps_campaign.columns else 1
             capturas_total["Fecha_dt"] = pd.to_datetime(capturas_total["Fecha"])
-            bars = alt.Chart(capturas_total).mark_bar(color="#e05c5c").encode(
+            linea_cap = alt.Chart(capturas_total).mark_line(point=True, color="#e05c5c").encode(
                 x=alt.X("Fecha_dt:T", title="Fecha lectura", axis=alt.Axis(format="%d/%m", labelAngle=-45)),
                 y=alt.Y("Capturas machos:Q", title="Capturas totales"),
                 tooltip=[alt.Tooltip("Fecha_dt:T", title="Fecha", format="%d/%m/%Y"),
@@ -12772,7 +12772,7 @@ def carpocapsa_tab(history):
             )
             umbral_df = pd.DataFrame({"y": [thresh_val * n_campos]})
             umbral_line = alt.Chart(umbral_df).mark_rule(color="orange", strokeDash=[6,3]).encode(y="y:Q")
-            st.altair_chart((bars + umbral_line).properties(height=350, title=f"Capturas totales campaña {campaign_year}"), use_container_width=True)
+            st.altair_chart((linea_cap + umbral_line).properties(height=350, title=f"Capturas totales campaña {campaign_year}"), use_container_width=True)
             st.dataframe(capturas_total[["Fecha_str", "Capturas machos"]].rename(columns={"Fecha_str": "Fecha", "Capturas machos": "Total capturas"}), use_container_width=True, hide_index=True)
 
         with tab_campo:
