@@ -8663,6 +8663,32 @@ def default_treatment_catalog_copy():
         },
         "comentario": "QoI/estrobilurina. Comparte FRAC 11 con Signum.",
     },
+    "Traxi": {
+        "aliases": ["traxi"],
+        "materias_activas": "oxicloruro de cobre",
+        "frac": ["M1"],
+        "familia": "Cobre / multisitio (inorgánico)",
+        "eficacia": {
+            "Moteado": 55,
+            "Monilia": 40,
+            "Oídio": 25,
+        },
+        "comentario": "Cobre de contacto (oxicloruro). Multisitio, sin riesgo de "
+                      "resistencia (FRAC M1). Preventivo, típico antes de la brotación.",
+    },
+    "Procobre": {
+        "aliases": ["procobre"],
+        "materias_activas": "oxicloruro de cobre",
+        "frac": ["M1"],
+        "familia": "Cobre / multisitio (inorgánico)",
+        "eficacia": {
+            "Moteado": 55,
+            "Monilia": 40,
+            "Oídio": 25,
+        },
+        "comentario": "Cobre de contacto (oxicloruro). Multisitio, sin riesgo de "
+                      "resistencia (FRAC M1). Preventivo, típico antes de la brotación.",
+    },
 }
     return copy.deepcopy(base_catalog)
 
