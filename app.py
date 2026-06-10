@@ -6617,6 +6617,107 @@ def instructions_tab():
 
 
 
+def home_today_tab(history, soil_type, hoja_threshold):
+    """Panel de inicio: reúne lo urgente de toda la finca (carpocapsa, fungicidas,
+    clima) para saber QUÉ HACER HOY sin entrar item por item. Solo resume; el
+    detalle y las acciones están en cada item."""
+    st.subheader("🏠 Panel de hoy")
+    _hoy = pd.Timestamp.today()
+    _dias = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+    st.caption(f"Lo urgente de toda la finca de un vistazo · {_dias[_hoy.weekday()]} "
+               f"{_hoy.strftime('%d/%m/%Y')}. El detalle y las acciones, en cada item.")
+
+    traps = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
+    activities = st.session_state.get("activities_df", pd.DataFrame())
+
+    # ── Carpocapsa ────────────────────────────────────────────────────────────
+    try:
+        cw = carpocapsa_build_multi_windows(traps, history, activities_df=activities,
+                                            campaign_year=_hoy.year)
+    except Exception:
+        cw = pd.DataFrame()
+    carpo_peligro = carpo_activa = pd.DataFrame()
+    if not cw.empty and "Estado" in cw.columns:
+        _est = cw["Estado"].astype(str)
+        carpo_peligro = cw[_est.str.contains("cierra en", na=False)]
+        carpo_activa = cw[_est.str.contains("Activa", na=False)
+                          & ~_est.str.contains("cierra en", na=False)]
+
+    # ── Fungicidas ────────────────────────────────────────────────────────────
+    try:
+        _risk = build_risk_timeline(history, pd.DataFrame(), days_back=60)
+        dec = daily_treatment_decision(history, activities, _risk)
+    except Exception:
+        dec = pd.DataFrame()
+    fung_hoy = fung_pronto = pd.DataFrame()
+    if not dec.empty and "_priority" in dec.columns:
+        fung_hoy = dec[dec["_priority"] == 1]
+        fung_pronto = dec[dec["_priority"] == 2]
+
+    # ── Resumen superior ──────────────────────────────────────────────────────
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("🔴 Carpocapsa cierran ≤3d", len(carpo_peligro))
+    m2.metric("🟠 Carpocapsa activas", len(carpo_activa))
+    m3.metric("🔴 Fungicida HOY", len(fung_hoy))
+    m4.metric("🟠 Fungicida pronto", len(fung_pronto))
+
+    st.markdown("---")
+    st.markdown("### 🐛 Carpocapsa")
+    if cw.empty:
+        st.caption("Sin ventanas. Carga las capturas en el item 🐛 Carpocapsa.")
+    else:
+        if not carpo_peligro.empty:
+            st.error("🔴 **PELIGRO — cierran en ≤3 días SIN tratar (última oportunidad):** "
+                     + ", ".join(carpo_peligro["Campo/Zona"].astype(str).unique()))
+        if not carpo_activa.empty:
+            st.warning("🟠 **Ventanas activas para tratar:** "
+                       + ", ".join(carpo_activa["Campo/Zona"].astype(str).unique()))
+        if carpo_peligro.empty and carpo_activa.empty:
+            st.success("✅ Sin ventanas activas hoy.")
+
+    st.markdown("### 🍎 Fungicidas")
+    if dec.empty or "_priority" not in dec.columns:
+        st.caption("Sin datos suficientes (carga clima y actuaciones de Agroptima).")
+    else:
+        if not fung_hoy.empty:
+            st.error("🔴 **Tratar HOY (infección prevista):** "
+                     + ", ".join(fung_hoy["Campo"].astype(str)))
+        if not fung_pronto.empty:
+            st.warning("🟠 **Tratar pronto (cobertura caducada):** "
+                       + ", ".join(fung_pronto["Campo"].astype(str)))
+        if fung_hoy.empty and fung_pronto.empty:
+            st.success("✅ Todos los campos con cobertura vigente.")
+
+    st.markdown("### 🌦️ Clima (últimos 7 días)")
+    if history is None or history.empty:
+        st.caption("Sin histórico climático cargado.")
+    else:
+        _m = None
+        try:
+            _ini = (_hoy.normalize() - pd.Timedelta(days=6)).date()
+            _fin = _hoy.normalize().date()
+            _m, _txt, _a7, _p = build_weekly_executive_report(history, activities, _ini, _fin)
+        except Exception:
+            _m = None
+        if _m:
+            def _n(v, d=1, s=""):
+                try:
+                    return f"{float(v):.{d}f}{s}"
+                except Exception:
+                    return "—"
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            cc1.metric("🌡️ Temp media", _n(_m.get("temp_mean"), 1, " °C"))
+            cc2.metric("🌧️ Lluvia", _n(_m.get("rain_total"), 1, " mm"))
+            cc3.metric("🍄 Moteado (ev.≥1)", int(_m.get("scab_events_ge1", 0)))
+            cc4.metric("🟤 Monilia (ev.≥1)", int(_m.get("monilia_events_ge1", 0)))
+        else:
+            st.caption("Sin datos suficientes para el resumen de 7 días.")
+
+    st.markdown("---")
+    st.caption("Este panel **resume**; para ver el detalle y actuar, entra en el item "
+               "correspondiente (Carpocapsa, Decisiones, Sanidad…).")
+
+
 def dashboard_tab(history, soil_type, hoja_threshold):
     st.subheader("Dashboard general")
 
@@ -18143,7 +18244,7 @@ Aparece en todos los gráficos como referencia. La lluvia genera hoja mojada (ri
 if not _HEADLESS:
     # ── Navegación lateral ────────────────────────────────────────────────────────
     if "nav_page" not in st.session_state:
-        st.session_state.nav_page = "dashboard"
+        st.session_state.nav_page = "hoy"
 
     # CSS: estilo del sidebar
     st.markdown("""
@@ -18289,6 +18390,7 @@ if not _HEADLESS:
 
     # Metadatos de cada página: (icono, grupo, nombre)
     _PAGE_META: dict = {
+        "hoy":           ("🏠", "",        "Panel de hoy"),
         "dashboard":     ("📊", "Clima",   "Dashboard"),
         "sencrop":       ("🌦️", "Clima",   "Sencrop"),
         "analisis":      ("🔎", "Clima",   "Análisis"),
@@ -18310,7 +18412,7 @@ if not _HEADLESS:
 
     def _nav_btn(label: str, page_key: str) -> None:
         """Botón de navegación. Página activa → div resaltado; inactiva → botón normal."""
-        current = st.session_state.get("nav_page", "dashboard")
+        current = st.session_state.get("nav_page", "hoy")
         if current == page_key:
             st.markdown(f'<div class="nav-active-item">{label}</div>', unsafe_allow_html=True)
         else:
@@ -18339,7 +18441,7 @@ if not _HEADLESS:
     _CULTIVO_PAGES = {"fenologia","sanidad","decisiones","carpocapsa","riego"}
     _GESTION_PAGES = {"campos","agroptima","produccion","gallinal","informe"}
 
-    _active_page = st.session_state.get("nav_page","dashboard")
+    _active_page = st.session_state.get("nav_page","hoy")
     if _active_page in _CLIMA_PAGES:   st.session_state["grp_clima"]   = True
     if _active_page in _CULTIVO_PAGES: st.session_state["grp_cultivo"] = True
     if _active_page in _GESTION_PAGES: st.session_state["grp_gestion"] = True
@@ -18370,6 +18472,9 @@ if not _HEADLESS:
         except Exception:
             st.markdown("## 🌿 Finca Gallinal")
         st.caption("Plataforma agroclimática")
+        st.divider()
+
+        _nav_btn("🏠 Panel de hoy", "hoy")
         st.divider()
 
         with st.expander("🌤️  Clima", expanded=True, key="grp_clima"):
@@ -18403,10 +18508,12 @@ if not _HEADLESS:
         )
 
     # ── Contenido principal según página seleccionada ─────────────────────────────
-    _page = st.session_state.get("nav_page", "dashboard")
+    _page = st.session_state.get("nav_page", "hoy")
     _render_page_header(_page)
 
-    if _page == "dashboard":
+    if _page == "hoy":
+        home_today_tab(history, soil_type, hoja_threshold)
+    elif _page == "dashboard":
         dashboard_tab(history, soil_type, hoja_threshold)
     elif _page == "sencrop":
         import_panel()
