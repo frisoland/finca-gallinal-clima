@@ -8603,6 +8603,7 @@ TREATMENT_PRODUCT_CATALOG = {
         "materias_activas": "boscalida + piraclostrobin",
         "frac": ["7", "11"],
         "familia": "SDHI + QoI/estrobilurina",
+        "persistencia_dias": 14,
         "eficacia": {
             "Moteado": 86,
             "Monilia": 78,
@@ -8615,6 +8616,7 @@ TREATMENT_PRODUCT_CATALOG = {
         "materias_activas": "tebuconazol",
         "frac": ["3"],
         "familia": "DMI / triazol",
+        "persistencia_dias": 11,
         "eficacia": {
             "Moteado": 58,
             "Monilia": 72,
@@ -8627,6 +8629,7 @@ TREATMENT_PRODUCT_CATALOG = {
         "materias_activas": "fluopyram + tebuconazol",
         "frac": ["7", "3"],
         "familia": "SDHI + DMI/triazol",
+        "persistencia_dias": 14,
         "eficacia": {
             "Moteado": 82,
             "Monilia": 84,
@@ -8639,6 +8642,7 @@ TREATMENT_PRODUCT_CATALOG = {
         "materias_activas": "trifloxistrobin",
         "frac": ["11"],
         "familia": "QoI / estrobilurina",
+        "persistencia_dias": 12,
         "eficacia": {
             "Moteado": 74,
             "Monilia": 55,
@@ -8657,6 +8661,7 @@ def default_treatment_catalog_copy():
         "materias_activas": "boscalida + piraclostrobin",
         "frac": ["7", "11"],
         "familia": "SDHI + QoI/estrobilurina",
+        "persistencia_dias": 14,
         "eficacia": {
             "Moteado": 86,
             "Monilia": 78,
@@ -8669,6 +8674,7 @@ def default_treatment_catalog_copy():
         "materias_activas": "tebuconazol",
         "frac": ["3"],
         "familia": "DMI / triazol",
+        "persistencia_dias": 11,
         "eficacia": {
             "Moteado": 58,
             "Monilia": 72,
@@ -8681,6 +8687,7 @@ def default_treatment_catalog_copy():
         "materias_activas": "fluopyram + tebuconazol",
         "frac": ["7", "3"],
         "familia": "SDHI + DMI/triazol",
+        "persistencia_dias": 14,
         "eficacia": {
             "Moteado": 82,
             "Monilia": 84,
@@ -8693,6 +8700,7 @@ def default_treatment_catalog_copy():
         "materias_activas": "trifloxistrobin",
         "frac": ["11"],
         "familia": "QoI / estrobilurina",
+        "persistencia_dias": 12,
         "eficacia": {
             "Moteado": 74,
             "Monilia": 55,
@@ -8705,6 +8713,7 @@ def default_treatment_catalog_copy():
         "materias_activas": "oxicloruro de cobre",
         "frac": ["M1"],
         "familia": "Cobre / multisitio (inorgánico)",
+        "persistencia_dias": 7,
         "eficacia": {
             "Moteado": 55,
             "Monilia": 40,
@@ -8718,6 +8727,7 @@ def default_treatment_catalog_copy():
         "materias_activas": "oxicloruro de cobre",
         "frac": ["M1"],
         "familia": "Cobre / multisitio (inorgánico)",
+        "persistencia_dias": 7,
         "eficacia": {
             "Moteado": 55,
             "Monilia": 40,
@@ -8751,6 +8761,7 @@ def treatment_catalog_to_dataframe(catalog=None):
             "Materias activas": info.get("materias_activas", ""),
             "FRAC": "+".join([str(x) for x in info.get("frac", [])]),
             "Familia": info.get("familia", ""),
+            "Persistencia días": info.get("persistencia_dias", 12),
             "Eficacia moteado": info.get("eficacia", {}).get("Moteado", 50),
             "Eficacia monilia": info.get("eficacia", {}).get("Monilia", 50),
             "Eficacia oídio": info.get("eficacia", {}).get("Oídio", 50),
@@ -8789,6 +8800,7 @@ def dataframe_to_treatment_catalog(df):
             "materias_activas": str(row.get("Materias activas", "") or "").strip(),
             "frac": frac,
             "familia": str(row.get("Familia", "") or "").strip(),
+            "persistencia_dias": int(safe_float(row.get("Persistencia días", 12), 12)),
             "eficacia": {
                 "Moteado": safe_float(row.get("Eficacia moteado", 50), 50),
                 "Monilia": safe_float(row.get("Eficacia monilia", 50), 50),
@@ -16373,14 +16385,17 @@ def is_fungicide_activity(producto_str, trabajo_str=""):
     return False
 
 
-def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16):
+def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16, catalog=None):
     """
     Para cada campo de la finca, calcula el estado de protección FUNGICIDA y
     la acción recomendada para hoy.
     Solo tiene en cuenta aplicaciones de fungicidas (filtradas con is_fungicide_activity).
+    La persistencia de la protección es la del ÚLTIMO producto aplicado (del catálogo);
+    `persistence_days` queda como respaldo cuando ese producto no está catalogado.
     """
     today = pd.Timestamp.now().normalize()
     rows  = []
+    catalog = catalog or get_treatment_product_catalog()
 
     # Pre-process activities: solo fungicidas, con fecha válida
     acts_clean = pd.DataFrame()
@@ -16437,6 +16452,19 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
                 ]
                 last_product = " + ".join(last_products) if last_products else "Sin especificar"
 
+        # ── Persistencia efectiva = la del producto MÁS persistente de la última
+        # pasada (si caldo mixto, manda el de protección más larga). Respaldo: el
+        # valor global `persistence_days` si ningún producto está catalogado. ──
+        _persist_vals = []
+        for _pk in last_products:
+            _pv = catalog.get(_pk, {}).get("persistencia_dias")
+            try:
+                if _pv and float(_pv) > 0:
+                    _persist_vals.append(float(_pv))
+            except (TypeError, ValueError):
+                pass
+        eff_persistence = max(_persist_vals) if _persist_vals else float(persistence_days)
+
         days_since = (today - last_date).days if last_date is not None else 999
 
         # ── Lluvia y eventos desde el último tratamiento ──────────────────────
@@ -16446,7 +16474,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         max_mills_since     = 0.0
         max_monilia_since   = 0.0
 
-        ref_date = last_date if last_date is not None else today - pd.Timedelta(days=persistence_days)
+        ref_date = last_date if last_date is not None else today - pd.Timedelta(days=eff_persistence)
 
         if not history_df.empty:
             h = history_df.copy()
@@ -16480,9 +16508,9 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         # Basada en EPPO PP1/5 (Venturia), CABI compendium y guías RIMpro:
         #
         # COBERTURA CADUCADA: criterio temporal + efecto lluvia acumulada
-        #   - Más de `persistence_days` días sin fungicida, O
+        #   - Más de `eff_persistence` días sin fungicida (la del producto aplicado), O
         #   - Más de 12 días Y lluvia acumulada ≥ 35 mm (lixivia el contacto preventivo)
-        unprotected = (days_since >= persistence_days) or (days_since >= 12 and rain_since >= 35)
+        unprotected = (days_since >= eff_persistence) or (days_since >= 12 and rain_since >= 35)
 
         # PREVISIÓN DE INFECCIÓN (próximos 3 días) — el factor más urgente.
         # Si hay cobertura caducada + previsión → tratar ANTES de que llegue la lluvia.
@@ -16519,9 +16547,10 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             action   = "🟡 Planificar — sin cobertura activa"
             row_bg   = "#fff9c4"
 
-        elif fc_alert and days_since >= 10:
-            # Cobertura aún activa pero próxima a caducar + previsión de infección:
-            # la lluvia puede lavar o coincidir con fin de cobertura
+        elif fc_alert and days_since >= max(5, eff_persistence - 4):
+            # Cobertura aún activa pero próxima a caducar (a ≤4 días del fin de la
+            # persistencia del producto) + previsión de infección: la lluvia puede
+            # lavar o coincidir con el fin de cobertura
             priority = 3
             action   = "🟡 Vigilar — infección prevista"
             row_bg   = "#fff9c4"
@@ -16573,7 +16602,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             fc_monilia_max     = fc_monilia_max,
             fc_rain            = fc_rain,
             last_product       = last_product,
-            persistence_days   = persistence_days,
+            persistence_days   = eff_persistence,
             priority           = priority,
             last_date          = last_date,
         )
@@ -16583,6 +16612,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "Variedades":         variedades,
             "Último fungicida":  _last_label,
             "Días sin trat.":    (days_since if days_since < 999 else "—"),
+            "Días protección":   int(round(eff_persistence)),
             "Lluvia desde mm":   rain_since,
             "Eventos infección":  mills_events_since + monilia_events_since,
             "Previsión Mills":   int(fc_mills_max),
@@ -17837,9 +17867,11 @@ def render_decisiones_panel():
     st.markdown("### 📋 Panel de decisión diaria")
 
     _persist_days = st.slider(
-        "Días de persistencia del tratamiento (umbral de protección caducada)",
-        min_value=10, max_value=25, value=16, step=1,
-        help="Por encima de este umbral de días sin tratar, el campo se considera sin cobertura.",
+        "Días de persistencia (RESPALDO — solo para productos sin catalogar)",
+        min_value=5, max_value=25, value=16, step=1,
+        help="Ahora la persistencia es POR PRODUCTO (columna 'Días protección', tomada "
+             "del catálogo: p.ej. Flint 12, Signum 14, cobre 7). Este deslizador solo se "
+             "usa como respaldo cuando el último fungicida de un campo no está catalogado.",
         key="dec_persist_days",
     )
 
@@ -17915,7 +17947,7 @@ def render_decisiones_panel():
         # recomendaciones en bloque central, combo cuba junto a la elección.
         _display_cols = [
             "Campo", "🎯 Acción",
-            "Último fungicida", "Días sin trat.",
+            "Último fungicida", "Días sin trat.", "Días protección",
             "Lluvia desde mm", "Eventos infección", "Previsión Mills",
             "Pases campaña", "Riesgo principal",
             "1ª elección", "Alternativa", "🐛 Combo cuba",
