@@ -8603,7 +8603,6 @@ TREATMENT_PRODUCT_CATALOG = {
         "materias_activas": "boscalida + piraclostrobin",
         "frac": ["7", "11"],
         "familia": "SDHI + QoI/estrobilurina",
-        "persistencia_dias": 14,
         "eficacia": {
             "Moteado": 86,
             "Monilia": 78,
@@ -8616,7 +8615,6 @@ TREATMENT_PRODUCT_CATALOG = {
         "materias_activas": "tebuconazol",
         "frac": ["3"],
         "familia": "DMI / triazol",
-        "persistencia_dias": 11,
         "eficacia": {
             "Moteado": 58,
             "Monilia": 72,
@@ -8629,7 +8627,6 @@ TREATMENT_PRODUCT_CATALOG = {
         "materias_activas": "fluopyram + tebuconazol",
         "frac": ["7", "3"],
         "familia": "SDHI + DMI/triazol",
-        "persistencia_dias": 14,
         "eficacia": {
             "Moteado": 82,
             "Monilia": 84,
@@ -8642,7 +8639,6 @@ TREATMENT_PRODUCT_CATALOG = {
         "materias_activas": "trifloxistrobin",
         "frac": ["11"],
         "familia": "QoI / estrobilurina",
-        "persistencia_dias": 12,
         "eficacia": {
             "Moteado": 74,
             "Monilia": 55,
@@ -8661,7 +8657,6 @@ def default_treatment_catalog_copy():
         "materias_activas": "boscalida + piraclostrobin",
         "frac": ["7", "11"],
         "familia": "SDHI + QoI/estrobilurina",
-        "persistencia_dias": 14,
         "eficacia": {
             "Moteado": 86,
             "Monilia": 78,
@@ -8674,7 +8669,6 @@ def default_treatment_catalog_copy():
         "materias_activas": "tebuconazol",
         "frac": ["3"],
         "familia": "DMI / triazol",
-        "persistencia_dias": 11,
         "eficacia": {
             "Moteado": 58,
             "Monilia": 72,
@@ -8687,7 +8681,6 @@ def default_treatment_catalog_copy():
         "materias_activas": "fluopyram + tebuconazol",
         "frac": ["7", "3"],
         "familia": "SDHI + DMI/triazol",
-        "persistencia_dias": 14,
         "eficacia": {
             "Moteado": 82,
             "Monilia": 84,
@@ -8700,7 +8693,6 @@ def default_treatment_catalog_copy():
         "materias_activas": "trifloxistrobin",
         "frac": ["11"],
         "familia": "QoI / estrobilurina",
-        "persistencia_dias": 12,
         "eficacia": {
             "Moteado": 74,
             "Monilia": 55,
@@ -8713,7 +8705,6 @@ def default_treatment_catalog_copy():
         "materias_activas": "oxicloruro de cobre",
         "frac": ["M1"],
         "familia": "Cobre / multisitio (inorgánico)",
-        "persistencia_dias": 7,
         "eficacia": {
             "Moteado": 55,
             "Monilia": 40,
@@ -8727,7 +8718,6 @@ def default_treatment_catalog_copy():
         "materias_activas": "oxicloruro de cobre",
         "frac": ["M1"],
         "familia": "Cobre / multisitio (inorgánico)",
-        "persistencia_dias": 7,
         "eficacia": {
             "Moteado": 55,
             "Monilia": 40,
@@ -8761,7 +8751,6 @@ def treatment_catalog_to_dataframe(catalog=None):
             "Materias activas": info.get("materias_activas", ""),
             "FRAC": "+".join([str(x) for x in info.get("frac", [])]),
             "Familia": info.get("familia", ""),
-            "Persistencia días": info.get("persistencia_dias", 12),
             "Eficacia moteado": info.get("eficacia", {}).get("Moteado", 50),
             "Eficacia monilia": info.get("eficacia", {}).get("Monilia", 50),
             "Eficacia oídio": info.get("eficacia", {}).get("Oídio", 50),
@@ -8800,7 +8789,6 @@ def dataframe_to_treatment_catalog(df):
             "materias_activas": str(row.get("Materias activas", "") or "").strip(),
             "frac": frac,
             "familia": str(row.get("Familia", "") or "").strip(),
-            "persistencia_dias": int(safe_float(row.get("Persistencia días", 12), 12)),
             "eficacia": {
                 "Moteado": safe_float(row.get("Eficacia moteado", 50), 50),
                 "Monilia": safe_float(row.get("Eficacia monilia", 50), 50),
@@ -15708,6 +15696,7 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Objetivos": "Moteado, Oídio",
         "Tipo": "Sistémico curativo",
         "Plazo seguridad días": 7,
+        "Persistencia días": 11,
         "FRAC": "G1",
         "Familia": "Triazol (DMI)",
         "Notas": (
@@ -15722,6 +15711,7 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Objetivos": "Monilia, Moteado",
         "Tipo": "Sistémico preventivo",
         "Plazo seguridad días": 7,
+        "Persistencia días": 14,
         "FRAC": "C2+C3",
         "Familia": "SDHI + Estrobilurina",
         "Notas": (
@@ -15737,6 +15727,7 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Objetivos": "Moteado, Oídio",
         "Tipo": "Sistémico preventivo/curativo",
         "Plazo seguridad días": 14,
+        "Persistencia días": 12,
         "FRAC": "C3",
         "Familia": "Estrobilurina (QoI)",
         "Notas": (
@@ -15752,6 +15743,7 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Objetivos": "Monilia, Moteado, Oídio",
         "Tipo": "Sistémico curativo + preventivo",
         "Plazo seguridad días": 7,
+        "Persistencia días": 14,
         "FRAC": "C2+G1",
         "Familia": "SDHI + Triazol",
         "Notas": (
@@ -15805,7 +15797,7 @@ ROTATION_ALTERNATIVES = [
 ]
 
 # Inicialización session_state del catálogo — versión 2 (fuerza reseteo si hay productos obsoletos)
-_CATALOG_VERSION = "v2_2026"
+_CATALOG_VERSION = "v3_2026_persistencia"
 _VALID_PRODUCTS_2026 = {"FOLICUR 25 WG", "SIGNUM", "FLINT 50 WG", "LUNA EXPERIENCE"}
 _needs_reset = (
     "fungicide_catalog_df" not in st.session_state
@@ -16385,17 +16377,35 @@ def is_fungicide_activity(producto_str, trabajo_str=""):
     return False
 
 
-def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16, catalog=None):
+def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16):
     """
     Para cada campo de la finca, calcula el estado de protección FUNGICIDA y
     la acción recomendada para hoy.
     Solo tiene en cuenta aplicaciones de fungicidas (filtradas con is_fungicide_activity).
-    La persistencia de la protección es la del ÚLTIMO producto aplicado (del catálogo);
-    `persistence_days` queda como respaldo cuando ese producto no está catalogado.
+    La persistencia de la protección es la del ÚLTIMO producto aplicado (del catálogo
+    de fungicidas, columna 'Persistencia días'); `persistence_days` queda como respaldo
+    cuando ese producto no está catalogado.
     """
     today = pd.Timestamp.now().normalize()
     rows  = []
-    catalog = catalog or get_treatment_product_catalog()
+
+    # Mapa de persistencia por producto, desde el catálogo de fungicidas (el mismo
+    # que normaliza los productos). Base = DEFAULT_FUNGICIDE_CATALOG; si la sesión
+    # tiene la columna editada, la sobrescribe.
+    _persist_map = {
+        str(d["Producto"]).strip(): float(d["Persistencia días"])
+        for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Persistencia días")
+    }
+    _fung_df = st.session_state.get("fungicide_catalog_df")
+    if isinstance(_fung_df, pd.DataFrame) and "Persistencia días" in _fung_df.columns:
+        for _, _fr in _fung_df.iterrows():
+            try:
+                _pp = str(_fr["Producto"]).strip()
+                _pv = float(_fr["Persistencia días"])
+                if _pp and _pv > 0:
+                    _persist_map[_pp] = _pv
+            except (TypeError, ValueError, KeyError):
+                pass
 
     # Pre-process activities: solo fungicidas, con fecha válida
     acts_clean = pd.DataFrame()
@@ -16455,14 +16465,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         # ── Persistencia efectiva = la del producto MÁS persistente de la última
         # pasada (si caldo mixto, manda el de protección más larga). Respaldo: el
         # valor global `persistence_days` si ningún producto está catalogado. ──
-        _persist_vals = []
-        for _pk in last_products:
-            _pv = catalog.get(_pk, {}).get("persistencia_dias")
-            try:
-                if _pv and float(_pv) > 0:
-                    _persist_vals.append(float(_pv))
-            except (TypeError, ValueError):
-                pass
+        _persist_vals = [_persist_map[_pk] for _pk in last_products if _pk in _persist_map]
         eff_persistence = max(_persist_vals) if _persist_vals else float(persistence_days)
 
         days_since = (today - last_date).days if last_date is not None else 999
