@@ -217,6 +217,93 @@ def refresh_sencrop_data(app, history):
         return history
 
 
+def _send_telegram_document(zip_bytes, filename, caption):
+    """Envía un archivo a Telegram (sendDocument) usando el bot del informe."""
+    import requests
+    token   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return False, "Telegram no configurado"
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+    try:
+        r = requests.post(
+            url,
+            data={"chat_id": chat_id, "caption": caption[:1000]},
+            files={"document": (filename, zip_bytes, "application/zip")},
+            timeout=180,
+        )
+        if r.status_code == 200 and r.json().get("ok"):
+            return True, "enviado"
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
+    except Exception as e:
+        return False, str(e)
+
+
+def maybe_weekly_backup(app, history, activities, traps, biofix):
+    """Una vez por semana (domingo por defecto), genera el ZIP con TODOS los datos
+    y lo envía a Telegram como copia de seguridad off-site. Se puede forzar con
+    FORCE_BACKUP=1 y cambiar el día con BACKUP_WEEKDAY (0=lun … 6=dom)."""
+    import io, zipfile
+    force = os.environ.get("FORCE_BACKUP", "") == "1"
+    try:
+        backup_wd = int(os.environ.get("BACKUP_WEEKDAY", "6"))
+    except ValueError:
+        backup_wd = 6
+    today = pd.Timestamp.now()
+    if not force and today.weekday() != backup_wd:
+        return  # hoy no toca
+
+    print("─" * 60)
+    print("COPIA DE SEGURIDAD SEMANAL")
+
+    def _as_df(x):
+        if isinstance(x, pd.DataFrame):
+            return x
+        if isinstance(x, (tuple, list)) and x and isinstance(x[0], pd.DataFrame):
+            return x[0]
+        return pd.DataFrame()
+
+    produccion = fenologia = damage = pd.DataFrame()
+    try:
+        produccion = _as_df(app.load_produccion_from_supabase())
+    except Exception as e:
+        print(f"  producción falló: {e}")
+    try:
+        fenologia = _as_df(app.load_phenology_from_supabase())
+    except Exception as e:
+        print(f"  fenología falló: {e}")
+    try:
+        _t, _b, _d, _ = app.load_carpocapsa_snapshot_from_supabase()
+        if _d is not None:
+            damage = _d
+    except Exception as e:
+        print(f"  carpocapsa daño falló: {e}")
+
+    sources = {
+        "clima_historico.csv":       history,
+        "agroptima_actuaciones.csv": activities,
+        "produccion.csv":            produccion,
+        "carpocapsa_capturas.csv":   traps,
+        "carpocapsa_biofix.csv":     biofix,
+        "carpocapsa_dano.csv":       damage,
+        "fenologia.csv":             fenologia,
+    }
+    buf, incluidos = io.BytesIO(), []
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, df in sources.items():
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                z.writestr(name, df.to_csv(index=False).encode("utf-8-sig"))
+                incluidos.append(f"{name} ({len(df)})")
+    buf.seek(0)
+    if not incluidos:
+        print("  Sin datos para respaldar.")
+        return
+    fname = f"backup_finca_gallinal_{today.strftime('%Y%m%d')}.zip"
+    caption = "💾 Copia de seguridad semanal · " + " · ".join(incluidos)
+    ok, det = _send_telegram_document(buf.getvalue(), fname, caption)
+    print(f"  Backup {'ENVIADO' if ok else 'FALLÓ'}: {det}")
+
+
 def main():
     _install_streamlit_stub()
 
@@ -360,6 +447,11 @@ def main():
     ok, detalle = app.telegram_send_message(texto)
     if ok:
         print(f"✅ Informe enviado: {detalle}")
+        # Copia de seguridad semanal (domingos) a Telegram, tras el informe.
+        try:
+            maybe_weekly_backup(app, history, activities, traps, biofix)
+        except Exception as _e:
+            print(f"  (backup semanal falló: {_e})")
         return 0
     print(f"❌ Error al enviar: {detalle}", file=sys.stderr)
     return 2
