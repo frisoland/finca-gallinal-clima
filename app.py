@@ -6680,17 +6680,19 @@ def home_today_tab(history, soil_type, hoja_threshold):
         dec = daily_treatment_decision(history, activities, _risk, persistence_days=_persist)
     except Exception:
         dec = pd.DataFrame()
-    fung_hoy = fung_pronto = pd.DataFrame()
+    fung_hoy = fung_pronto = fung_vigilar = pd.DataFrame()
     if not dec.empty and "_priority" in dec.columns:
-        fung_hoy = dec[dec["_priority"] == 1]
-        fung_pronto = dec[dec["_priority"] == 2]
+        fung_hoy = dec[dec["_priority"] == 1]      # tratar hoy (infección prevista + sin cobertura)
+        fung_pronto = dec[dec["_priority"] == 2]   # tratar pronto (exposición acumulada + sin cobertura)
+        fung_vigilar = dec[dec["_priority"] == 3]  # vigilar (cubierto hoy pero infección prevista)
 
     # ── Resumen superior ──────────────────────────────────────────────────────
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("🔴 Carpocapsa cierran ≤3d", len(carpo_peligro))
-    m2.metric("🟠 Carpocapsa activas", len(carpo_activa))
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("🔴 Carpo. ≤3d", len(carpo_peligro))
+    m2.metric("🟠 Carpo. activas", len(carpo_activa))
     m3.metric("🔴 Fungicida HOY", len(fung_hoy))
     m4.metric("🟠 Fungicida pronto", len(fung_pronto))
+    m5.metric("🟡 Fungicida vigilar", len(fung_vigilar))
 
     st.markdown("---")
     st.markdown("### 🐛 Carpocapsa")
@@ -6716,8 +6718,12 @@ def home_today_tab(history, soil_type, hoja_threshold):
         if not fung_pronto.empty:
             st.warning("🟠 **Tratar pronto (cobertura caducada):** "
                        + ", ".join(fung_pronto["Campo"].astype(str)))
-        if fung_hoy.empty and fung_pronto.empty:
-            st.success("✅ Todos los campos con cobertura vigente.")
+        if not fung_vigilar.empty:
+            st.info("🟡 **Vigilar (cubiertos hoy, pero con infección prevista — la "
+                    "cobertura terminará pronto):** "
+                    + ", ".join(fung_vigilar["Campo"].astype(str)))
+        if fung_hoy.empty and fung_pronto.empty and fung_vigilar.empty:
+            st.success("✅ Todos los campos con cobertura vigente y sin infección prevista.")
 
     st.markdown("### 🌦️ Clima (últimos 7 días)")
     if history is None or history.empty:
