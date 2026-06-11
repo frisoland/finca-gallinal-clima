@@ -523,11 +523,17 @@ _st_components.html(
             }, 250);
           } else {
             if (doc._fgHoverTimer) { clearTimeout(doc._fgHoverTimer); doc._fgHoverTimer = null; }
-            if (doc._fgHoverOpened && x > 290) {
+            /* Cerrar SOLO cuando el ratón sale claramente del menú: se usa el borde
+               derecho REAL del sidebar + un margen, en vez de un x fijo (290) que
+               caía dentro del propio menú y lo hacía hipersensible al mover el ratón
+               hacia los items de la mitad derecha. */
+            var _sb = doc.querySelector('section[data-testid="stSidebar"]');
+            var _closeX = (_sb ? _sb.getBoundingClientRect().right : 300) + 60;
+            if (doc._fgHoverOpened && x > _closeX) {
               if (!doc._fgCloseTimer) doc._fgCloseTimer = setTimeout(function () {
                 fgCollapseSidebar(); doc._fgCloseTimer = null;
-              }, 900);
-            } else if (x <= 290 && doc._fgCloseTimer) {
+              }, 1200);
+            } else if (x <= _closeX && doc._fgCloseTimer) {
               clearTimeout(doc._fgCloseTimer); doc._fgCloseTimer = null;
             }
           }
