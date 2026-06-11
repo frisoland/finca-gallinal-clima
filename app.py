@@ -17734,6 +17734,42 @@ def render_decisiones_panel():
         "**predicción Sencrop** — para tomar decisiones de tratamiento con días de antelación."
     )
 
+    with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
+        st.markdown(
+            "**¿Qué hace?** Para cada campo cruza el **clima real + la previsión Sencrop** "
+            "con tus **tratamientos de Agroptima** y te dice si hay que **tratar fungicida** "
+            "(y con qué), con días de antelación. Mira primero los **🔴 rojos**.\n\n"
+            "**Acción (color):**\n"
+            "- 🔴 **Tratar HOY** — infección prevista + sin cobertura.\n"
+            "- 🟠 **Tratar pronto** — exposición acumulada + sin cobertura.\n"
+            "- 🟡 **Vigilar / Planificar** — sin urgencia inmediata (o cubierto pero con "
+            "infección prevista y cobertura a punto de acabar).\n"
+            "- 🟢 **OK** — protegido y sin previsión de infección.\n\n"
+            "**Columnas:**\n"
+            "- **Último fungicida** — fecha y producto de la última pasada fungicida.\n"
+            "- **Días sin trat.** — días desde ese último fungicida.\n"
+            "- **Días protección** — persistencia real del producto aplicado (Luna 14, "
+            "Folicur 11…). Si los *días sin tratar* la superan → cobertura caducada.\n"
+            "- **Lluvia desde mm** — lluvia acumulada desde el tratamiento (lava el producto).\n"
+            "- **Eventos infección** — nº de periodos de infección (moteado/monilia) "
+            "completados desde el último fungicida.\n"
+            "- **Previsión Mills** — índice de riesgo de **moteado** (modelo Mills): "
+            "**100 = evento de infección**.\n"
+            "- **Pases campaña** — aplicaciones de cada fungicida esta campaña / **máximo "
+            "legal** (registro MAPA), p. ej. *Luna 1/2*.\n"
+            "- **Riesgo principal** — enfermedad dominante prevista (moteado/monilia/oídio).\n"
+            "- **1ª elección / Alternativa** — producto recomendado según el riesgo y la "
+            "**rotación FRAC** (para no repetir modo de acción y evitar resistencias).\n"
+            "- **🐛 Combo cuba** — si conviene **combinar** el fungicida con el insecticida "
+            "de carpocapsa en la **misma cuba**: 🟠 ventana activa (tratar hoy), 🟡 ventana "
+            "próxima (valorar esperar), ✅ ya cubierta.\n\n"
+            "**Abreviaturas:** *Mills* = modelo de riesgo de moteado · *FRAC* = código del "
+            "modo de acción del fungicida (sirve para rotar) · *DD* = grados-día (carpocapsa).\n\n"
+            "El deslizador **Días de persistencia** de abajo es solo un **respaldo** para "
+            "productos que no estén en el catálogo; lo normal es que mande la persistencia "
+            "real de cada producto."
+        )
+
     # ══════════════════════════════════════════════════════════════════════════
     # INFORME A TELEGRAM
     # ══════════════════════════════════════════════════════════════════════════
