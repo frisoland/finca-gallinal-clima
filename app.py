@@ -6652,9 +6652,15 @@ def home_today_tab(history, soil_type, hoja_threshold):
     activities = st.session_state.get("activities_df", pd.DataFrame())
 
     # ── Carpocapsa ────────────────────────────────────────────────────────────
+    # Mismos umbrales que el item Carpocapsa (si el usuario los cambió) para que
+    # los dos paneles coincidan.
     try:
-        cw = carpocapsa_build_multi_windows(traps, history, activities_df=activities,
-                                            campaign_year=_hoy.year)
+        cw = carpocapsa_build_multi_windows(
+            traps, history, activities_df=activities, campaign_year=_hoy.year,
+            capture_threshold=int(st.session_state.get("carp_capture_threshold", 3)),
+            dd_active_start=int(st.session_state.get("carp_dd_start", 80)),
+            dd_active_end=int(st.session_state.get("carp_dd_end", 130)),
+        )
     except Exception:
         cw = pd.DataFrame()
     carpo_peligro = carpo_activa = pd.DataFrame()
@@ -6665,9 +6671,13 @@ def home_today_tab(history, soil_type, hoja_threshold):
                           & ~_est.str.contains("cierra en", na=False)]
 
     # ── Fungicidas ────────────────────────────────────────────────────────────
+    # Usa el MISMO pronóstico (forecast) que el item Decisiones; con forecast
+    # vacío no se detectaban las "infecciones previstas" y salía 0 (incoherente).
     try:
-        _risk = build_risk_timeline(history, pd.DataFrame(), days_back=60)
-        dec = daily_treatment_decision(history, activities, _risk)
+        _forecast = st.session_state.get("forecast_df", pd.DataFrame())
+        _persist = int(st.session_state.get("dec_persist_days", 16))
+        _risk = build_risk_timeline(history, _forecast, days_back=60)
+        dec = daily_treatment_decision(history, activities, _risk, persistence_days=_persist)
     except Exception:
         dec = pd.DataFrame()
     fung_hoy = fung_pronto = pd.DataFrame()
