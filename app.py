@@ -6392,9 +6392,23 @@ def period_selector(history):
 
 
 def get_period_data(history, soil_type, hoja_threshold):
-    period = st.session_state.applied_period
+    period = st.session_state.get("applied_period")
+    # Auto-análisis por defecto: últimos 7 días disponibles. Antes esto solo se
+    # fijaba dentro de period_selector (item Análisis), así que si entrabas a
+    # Sanidad/Riego/Decisiones sin pasar por Análisis, no había periodo. Ahora se
+    # inicializa aquí, en el punto común, para que TODOS los items funcionen al abrir.
     if period is None:
-        return None, None, None, None, None
+        if history is None or history.empty or "fecha_hora" not in history.columns:
+            return None, None, None, None, None
+        _max = history["fecha_hora"].max()
+        period = {
+            "mode": "Última semana disponible",
+            "start_ts": _max - pd.Timedelta(days=6),
+            "end_ts": _max,
+            "selected_chill_year": None,
+            "selected_season": None,
+        }
+        st.session_state.applied_period = period
 
     start_ts = period["start_ts"]
     end_ts = period["end_ts"]
