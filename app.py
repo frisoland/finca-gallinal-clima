@@ -1445,6 +1445,92 @@ def winter_season_label(ts):
 CHILL_PERIOD_START_MD = (11, 1)   # (mes, día) — del año ANTERIOR al de análisis
 CHILL_PERIOD_END_MD   = (3, 31)   # (mes, día) — del año de análisis
 
+# ── Requerimientos de frío y calor por variedad ──────────────────────────────
+# Fuentes (SERIDA, Delgado, Dapena et al. 2021), dos publicaciones:
+#   [F] FORCING de estaquillas — método fiable — "Climatic requirements during
+#       dormancy in apple trees from NW Spain" (Eur. J. Agronomy 130, 126374).
+#   [P] PLS estadístico — "Agroclimatic requirements and phenological responses…"
+#       (Scientia Horticulturae 283, 110093). El PLS INFRAESTIMA frente al forcing
+#       (~+15 CP de media en las 5 variedades con ambos valores).
+#   · Frío = Chill Portions (modelo Dynamic), periodo 1 nov → 31 mar.
+#   · Calor = Growing Degree Hours (GDH) entre fin de endodormancia y plena flor.
+# Acumulación histórica media de la zona (1978-2019): 96 CP (referencia).
+# Criterio para las variedades de la finca:
+#   · Con dato de forcing → ese valor (Regona 90, Collaos 85, Xuanina 80, De la Riega 72).
+#   · Verdialona: solo tiene PLS (59 CP) → estimación forcing-equivalente ≈ 75 CP.
+#   · Raxao: solo tiene PLS (73 CP, floración más tardía = alto frío) → se deja en
+#     el máximo conocido 90 CP (su forcing-equivalente ≈ 88, casi igual y conservador).
+#   · Sin dato en ningún estudio → 90 CP (máximo conocido, conservador).
+CHILL_HIST_AVG_CP = 96.0  # CP medios 1978-2019 (Villaviciosa, SERIDA)
+CHILL_REQ_DEFAULT_CP = 90.0  # default conservador = máx. conocido ('Regona')
+
+# Variedades cuyo CP es una ESTIMACIÓN (PLS + offset medio forcing-PLS), no un
+# valor de forcing directo. Solo sirve para señalizarlo en la interfaz.
+CHILL_REQ_ESTIMATED = {"Verdialona"}
+
+# Variedades plantadas en la Finca Gallinal (de la base de campos).
+FINCA_VARIETIES = [
+    "Regona", "Durona de Tresali", "Raxao", "Xuanina", "Collaos", "De la Riega",
+    "Verdialona", "Amariega", "Gallinal", "Raxona Dulce", "Carrió", "Madiedo",
+]
+
+# CP por variedad (None = sin dato de forcing → usar CHILL_REQ_DEFAULT_CP)
+CHILL_REQ_BY_VARIETY_CP = {
+    # — Con dato experimental (forcing) directo del estudio —
+    "Regona": 90.0,
+    "Collaos": 85.0,
+    "Xuanina": 80.0,
+    "De la Riega": 72.0,
+    # — Variedad de la finca con CP estimado (PLS + offset) —
+    "Verdialona": 75.0,
+    # — Variedades de la finca sin dato → default 90 CP (incl. Raxao, ver cabecera) —
+    "Durona de Tresali": None,
+    "Raxao": None,
+    "Amariega": None,
+    "Gallinal": None,
+    "Raxona Dulce": None,
+    "Carrió": None,
+    "Madiedo": None,
+    # — Referencias internacionales del estudio (no están en la finca) —
+    "Blanquina": 78.0,
+    "Solarina": 85.0,
+    "Limón Montés": 84.0,
+    "Perico": 83.0,
+    "Elstar": 66.0,
+    "Granny Smith": 59.0,
+}
+
+# Requerimiento de calor (GDH) por variedad, mismo estudio (None = sin dato)
+HEAT_REQ_BY_VARIETY_GDH = {
+    "Regona": 6512.0,
+    "Collaos": 10543.0,
+    "Xuanina": 9690.0,
+    "De la Riega": 11770.0,
+    "Blanquina": 8438.0,
+    "Solarina": 7897.0,
+    "Limón Montés": 11249.0,
+    "Perico": 11375.0,
+    "Elstar": 10649.0,
+    "Granny Smith": 13174.0,
+}
+
+
+def chill_requirement_cp(variety):
+    """CP requeridos por una variedad. Sin dato de forcing → default conservador
+    (90 CP, máximo conocido). Insensible a mayúsculas/espacios."""
+    if variety is None:
+        return CHILL_REQ_DEFAULT_CP
+    key = str(variety).strip()
+    val = CHILL_REQ_BY_VARIETY_CP.get(key)
+    if val is None:
+        # Búsqueda tolerante (case-insensitive) por si la variedad llega con otro formato
+        low = key.lower()
+        for k, v in CHILL_REQ_BY_VARIETY_CP.items():
+            if k.lower() == low:
+                return v if v is not None else CHILL_REQ_DEFAULT_CP
+        return CHILL_REQ_DEFAULT_CP
+    return val
+
 
 def winter_period_from_analysis_year(analysis_year):
     """
@@ -7139,6 +7225,40 @@ def cold_tab(history):
             if not chill_daily.empty:
                 chart_df = chill_daily.set_index("fecha_hora")[["horas_menor_7_acum", "utah_acum", "chill_portions_acum"]]
                 st.line_chart(chart_df)
+
+                # ── Cumplimiento de frío por variedad (Chill Portions) ────────
+                # Modelo de referencia (SERIDA): Dynamic / Chill Portions.
+                _cp_acum = float(chill_daily["chill_portions_acum"].dropna().iloc[-1]) \
+                    if chill_daily["chill_portions_acum"].notna().any() else 0.0
+                st.markdown("#### Cumplimiento de frío por variedad (Chill Portions)")
+                st.caption(
+                    f"Frío acumulado esta campaña: **{_cp_acum:.0f} CP** · media histórica de la "
+                    f"zona {int(CHILL_HIST_AVG_CP)} CP (SERIDA 1978-2019). El modelo de "
+                    "referencia es **Chill Portions (Dynamic)**: las horas de frío sobreestiman "
+                    "el declive en clima templado y conviene no fiarse solo de ellas."
+                )
+                _rows = []
+                for _v in FINCA_VARIETIES:
+                    _req = chill_requirement_cp(_v)
+                    _forcing = CHILL_REQ_BY_VARIETY_CP.get(_v) is not None and _v not in CHILL_REQ_ESTIMATED
+                    _est = _v in CHILL_REQ_ESTIMATED
+                    _mark = "" if _forcing else (" †" if _est else " *")
+                    _ok = _cp_acum >= _req
+                    _margin = _cp_acum - _req
+                    _rows.append({
+                        "Variedad": _v,
+                        "Req. (CP)": f"{_req:.0f}{_mark}",
+                        "Acumulado (CP)": f"{_cp_acum:.0f}",
+                        "Margen": f"{_margin:+.0f}",
+                        "Estado": "✅ Cumple" if _ok else "❌ No cumple",
+                    })
+                _req_df = pd.DataFrame(_rows).sort_values("Variedad").reset_index(drop=True)
+                st.dataframe(_req_df, use_container_width=True, hide_index=True)
+                st.caption(
+                    "Req. por variedad: forcing de SERIDA/Delgado 2021 (Regona 90 · Collaos 85 · "
+                    "Xuanina 80 · De la Riega 72). **†** = estimado (Verdialona 75, PLS+offset). "
+                    "**\\*** = sin dato → máximo conocido (90 CP)."
+                )
 
             st.download_button(
                 "Descargar frío invernal",
@@ -15416,8 +15536,34 @@ def gallinal_tab(history):
             _frio_metric = {"Horas de frío (<7,2 °C)": "horas", "Utah (CU)": "utah",
                             "Chill Portions": "cp"}[_frio_lbl]
             if _frio_metric == "cp":
-                frio_req = fm2.slider("Requerim. (CP)", 30, 110, 90, key="g_req_cp",
-                                      help="Regona ≈ 90 CP (SERIDA/Delgado 2021; rango 59–90).")
+                # Requerimiento por variedad (CP de forcing, SERIDA/Delgado 2021).
+                # Si hay una variedad concreta seleccionada, el slider arranca en su
+                # valor publicado; cada variedad tiene su propia clave para que el
+                # default se actualice al cambiar de variedad.
+                _cp_def = (int(round(chill_requirement_cp(variedad_sel)))
+                           if variedad_sel != "(Todas)" else int(CHILL_REQ_DEFAULT_CP))
+                _cp_forcing = (variedad_sel != "(Todas)"
+                               and CHILL_REQ_BY_VARIETY_CP.get(variedad_sel) is not None
+                               and variedad_sel not in CHILL_REQ_ESTIMATED)
+                _cp_est = variedad_sel in CHILL_REQ_ESTIMATED
+                frio_req = fm2.slider("Requerim. (CP)", 30, 110, _cp_def,
+                                      key=f"g_req_cp_{variedad_sel}",
+                                      help="Valor por variedad del estudio de forcing "
+                                           "(Regona 90 · Collaos 85 · Xuanina 80 · De la Riega 72). "
+                                           "Verdialona 75 (estimado PLS+offset). Sin dato → 90 CP.")
+                if variedad_sel != "(Todas)":
+                    if _cp_forcing:
+                        st.caption(f"📚 **{variedad_sel}: {_cp_def} CP** (forcing, SERIDA/Delgado "
+                                   f"2021). Media histórica de la zona: {int(CHILL_HIST_AVG_CP)} CP "
+                                   f"(1978-2019).")
+                    elif _cp_est:
+                        st.caption(f"📚 **{variedad_sel}: ≈{_cp_def} CP** (estimado a partir del PLS "
+                                   f"+ offset medio forcing-PLS; el estudio solo da PLS para esta "
+                                   f"variedad). Media histórica: {int(CHILL_HIST_AVG_CP)} CP.")
+                    else:
+                        st.caption(f"📚 **{variedad_sel}**: sin dato en el estudio → se usa el "
+                                   f"máximo conocido **{_cp_def} CP** (Regona). Media histórica: "
+                                   f"{int(CHILL_HIST_AVG_CP)} CP.")
             elif _frio_metric == "utah":
                 frio_req = fm2.slider("Requerim. (Utah CU)", 400, 2000, 1300, step=50,
                                       key="g_req_utah",
