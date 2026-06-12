@@ -1089,10 +1089,25 @@ def action_from_event_ratio(ratio, phases=None, rain_mm=0.0):
 
 
 def explain_sanitary_concepts_box():
-    with st.expander("Cómo interpretar eventos, ratio y acciones sugeridas", expanded=False):
+    with st.expander("📖 Guía: cómo leer el semáforo sanitario", expanded=False):
         st.markdown(
             """
-            **Evento de hoja mojada**  
+            **¿Qué hace este item?** Valora el **riesgo climático** de las enfermedades
+            del manzano en el periodo seleccionado y lo resume en un **semáforo**, una fila
+            por enfermedad. No es un diagnóstico de campo: mide si el **clima** ha sido
+            favorable a la infección, para decidir si observar, vigilar o tratar.
+
+            **Enfermedades que vigila:**
+            - 🍄 **Moteado** (*Venturia inaequalis*) — modelo Mills (temperatura + horas de
+            hoja mojada).
+            - 🟤 **Monilia** (*Monilia* spp.) — podredumbre de flor y fruto.
+            - ⚪ **Oídio** (*Podosphaera*) — favorecido por humedad alta sin lluvia.
+
+            **Niveles del semáforo:** 🔴 Alto · 🟠 Medio · 🟡 Bajo-medio · 🟢 Bajo
+            (seguimiento normal).
+
+            ---
+            **Evento de hoja mojada**
             Es un periodo continuado en el que la hoja permanece mojada. La app agrupa las horas húmedas seguidas y calcula su duración, temperatura media y lluvia asociada.
 
             **Ratio de moteado o monilia**  
@@ -6892,6 +6907,25 @@ def analysis_tab(history, soil_type, hoja_threshold):
 
 def cold_tab(history):
     st.subheader("Campañas de frío")
+
+    with st.expander("📖 Guía: el frío invernal y sus tres modelos"):
+        st.markdown(
+            "**¿Para qué?** El manzano necesita acumular **frío invernal** para romper el "
+            "reposo y florecer bien. Aquí se mide cuánto frío hubo cada campaña.\n\n"
+            "**Periodo:** **1 Nov (año anterior) → 31 Mar**, el criterio del SERIDA para la "
+            "sidra asturiana (el mismo que usa el Análisis Gallinal y la correlación).\n\n"
+            "**Tres modelos (de menos a más fino):**\n"
+            "- **Horas de frío (<7,2 °C)** — horas por debajo de 7,2 °C. El de toda la vida, "
+            "el que usa Dapena/el sector. Cuenta de más en climas suaves (no descuenta el calor).\n"
+            "- **Utah (CU)** — pondera por temperatura y **resta** el calor. Más realista que las horas.\n"
+            "- **Chill Portions (modelo Dynamic)** — el más preciso: el frío acumulado no se "
+            "'desacumula' con golpes de calor puntuales. Es el recomendado por la ciencia.\n\n"
+            "**Referencia de tu zona (SERIDA):** la sidra es de **alto frío** — *Regona* "
+            "necesita ≈ **90 Chill Portions**, y el huerto de Villaviciosa acumula ~88–96 CP "
+            "de media. Vais **justos** algunos años, así que el frío sí puede marcar diferencias.\n\n"
+            "**Cómo leerlo:** más frío acumulado = floración más uniforme y mejor cuajado. "
+            "Si una campaña se queda corta de frío, espera floración más irregular o tardía."
+        )
 
     if history.empty:
         st.info("Carga primero el histórico.")
@@ -12711,6 +12745,30 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
 def carpocapsa_tab(history):
     st.subheader("Carpocapsa · Cydia pomonella")
 
+    with st.expander("📖 Guía: cómo funcionan las ventanas de tratamiento"):
+        st.markdown(
+            "**¿Para qué?** Seguir el vuelo de la carpocapsa con las **capturas de las "
+            "trampas** y los **grados-día (DD)** para saber **cuándo tratar** cada campo.\n\n"
+            "**Cómo funciona:**\n"
+            "1. Cada **lectura de trampa** que supera el **umbral de capturas** (lo fijas tú) "
+            "abre una **ventana** de tratamiento. Como las lecturas son semanales, un campo "
+            "puede tener **varias ventanas** a la vez.\n"
+            "2. La ventana está **activa** entre **DD inicio** y **DD fin** (selectores; por "
+            "defecto 80–130 DD), que es cuando la larva está naciendo y es vulnerable al Bt.\n"
+            "3. Si en Agroptima hay un **tratamiento** cuyo DD cae dentro de ese rango → la "
+            "ventana se da por **cubierta**.\n\n"
+            "**Estados (colores):**\n"
+            "- ⏳ **En espera** — la ventana aún no es activa (faltan DD).\n"
+            "- 🟠 **Activa — tratar** — abierta, con margen. *Precaución.*\n"
+            "- 🔴 **Activa — cierra en Xd** — a punto de pasarse SIN tratar. *Peligro, última "
+            "oportunidad* (sale también un aviso parpadeante arriba).\n"
+            "- ✅ **Tratado — cerrada** — cubierta por un tratamiento dentro de su rango.\n"
+            "- 🔒 **Cerrada por DD** — se pasó de DD fin sin tratar (se escapó).\n\n"
+            "**Abreviatura:** *DD* = grados-día (calor acumulado; mide el desarrollo del "
+            "insecto). *Biofix* = inicio del vuelo. Si tratas un poco antes de DD inicio y "
+            "quieres que cuente, baja el selector **DD inicio**."
+        )
+
     st.info(
         "Módulo inicial para seguimiento de carpocapsa en manzano: capturas, biofix, grados-día y ventanas de eclosión. "
         "Está pensado para validar el flujo antes de guardar datos en Supabase."
@@ -16946,12 +17004,14 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
 
     fig = go.Figure()
 
-    # DD diarios (fondo)
-    dd_colors = ["rgba(255,100,50,0.55)" if p else "rgba(255,100,50,0.80)" for p in es_pred]
-    fig.add_trace(go.Bar(
+    # DD diarios (fondo) — línea (coherente con el item Carpocapsa, antes barras)
+    fig.add_trace(go.Scatter(
         x=dates, y=dd_dia,
         name="DD diarios",
-        marker_color=dd_colors,
+        mode="lines",
+        line=dict(color="rgba(255,100,50,0.75)", width=1.5),
+        fill="tozeroy",
+        fillcolor="rgba(255,100,50,0.10)",
         yaxis="y2",
         hovertemplate="%{x|%d/%m}<br>DD día: %{y:.1f}<extra></extra>",
     ))
