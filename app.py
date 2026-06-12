@@ -24,6 +24,40 @@ st.set_page_config(
     layout="wide",
 )
 
+# ── Detección de vista móvil ─────────────────────────────────────────────────
+# La vista móvil es una interfaz simplificada y ESTABLE (navegación con botones
+# reales, sin el JavaScript frágil de la barra inferior / hover del sidebar que
+# en el móvil chocaba con el navegador y "echaba fuera" al usuario).
+# Se activa con el parámetro de URL ?movil=1 :
+#   · Un JS ligero lo añade automáticamente en pantallas pequeñas (<768px).
+#   · El usuario puede guardar ese enlace como marcador en el móvil.
+#   · Un botón "Versión completa / móvil" permite alternar manualmente.
+def _query_param(name: str):
+    try:
+        val = st.query_params.get(name)
+    except Exception:
+        try:
+            val = st.experimental_get_query_params().get(name, [None])[0]
+        except Exception:
+            val = None
+    return val
+
+def _set_query_param(name: str, value):
+    try:
+        if value is None:
+            if name in st.query_params:
+                del st.query_params[name]
+        else:
+            st.query_params[name] = value
+    except Exception:
+        pass
+
+# Toggle manual: si el usuario pulsó "versión completa/móvil", manda sobre el ancho.
+if "force_mobile" in st.session_state:
+    IS_MOBILE = bool(st.session_state["force_mobile"])
+else:
+    IS_MOBILE = (str(_query_param("movil") or "") == "1")
+
 
 # ── CSS: colapsar el wrapper del iframe a cero real ──────────────────────────
 # _st_components.html(height=0) crea un iframe con height=0, pero el div
@@ -186,27 +220,31 @@ try:
 except Exception:
     pass
 
-# ── Botón flotante "volver arriba" ──────────────────────────────────────────
-# Estrategia: el script dentro del iframe inyecta el botón DIRECTAMENTE
-# en document.body del padre (window.parent.document.body.appendChild).
-# Así position:fixed es relativo al viewport real, no al iframe,
-# y el onclick corre en el contexto de la ventana padre.
-_st_components.html(
-    """
+# ── Cromo de escritorio: botón flotante "volver arriba", barra inferior móvil
+#    (legacy) y auto-open/close del sidebar por hover. ──
+# IMPORTANTE: este bloque de JavaScript SOLO se inyecta en la vista de ESCRITORIO
+# (no IS_MOBILE). En la vista móvil simplificada se omite por completo, porque
+# estos hacks (barra que pulsa botones ocultos, hover, toggle del sidebar nativo)
+# chocaban con el navegador del móvil y "echaban fuera" al usuario al navegar.
+# El bloque conserva internamente la redirección que añade ?movil=1 en pantallas
+# pequeñas: en la primera carga móvil IS_MOBILE aún es False, este bloque corre,
+# redirige a la vista móvil y a partir de ahí ya no se vuelve a inyectar.
+_DESKTOP_CHROME_JS = """
     <script>
     (function () {
       try {
         var win = window.parent;
         var doc = win.document;
 
-        /* ── En móvil, redirigir con ?embed=true para ocultar la barra
-           de herramientas de Streamlit Cloud (botón Manage app, Fork, etc.)
-           ?embed=true es un parámetro oficial y documentado de Streamlit Cloud.
-           Se ejecuta una sola vez: si el parámetro ya está, no redirige. ── */
+        /* ── En móvil, redirigir añadiendo ?movil=1 (activa la VISTA MÓVIL
+           simplificada y estable) y ?embed=true (oculta la barra de Streamlit
+           Cloud). Ambos son parámetros de URL; embed es oficial de Streamlit.
+           Se ejecuta una sola vez: si movil ya está, no redirige. ── */
         if (win.innerWidth < 768) {
           try {
             var _url = new URL(win.location.href);
-            if (!_url.searchParams.has('embed')) {
+            if (!_url.searchParams.has('movil')) {
+              _url.searchParams.set('movil', '1');
               _url.searchParams.set('embed', 'true');
               win.location.replace(_url.toString());
             }
@@ -571,9 +609,59 @@ _st_components.html(
       }
     })();
     </script>
-    """,
-    height=0,
-)
+    """
+
+if not IS_MOBILE:
+    _st_components.html(_DESKTOP_CHROME_JS, height=0)
+else:
+    # ── Vista móvil: JS mínimo y robusto. Solo oculta el cromo de Streamlit
+    #    Cloud (botón "Manage app") y añade el botón flotante "volver arriba".
+    #    Nada de barra inferior que pulsa botones ocultos ni hover del sidebar.
+    _st_components.html(
+        """
+        <script>
+        (function () {
+          try {
+            var win = window.parent, doc = win.document;
+
+            /* Botón flotante "volver arriba" */
+            var old = doc.getElementById('fg-scroll-fab');
+            if (old) old.remove();
+            var fab = doc.createElement('div');
+            fab.id = 'fg-scroll-fab';
+            fab.textContent = '↑';
+            fab.style.cssText =
+              'position:fixed;bottom:18px;right:16px;width:44px;height:44px;' +
+              'border-radius:50%;background:#1b6b35;color:#fff;font-size:22px;' +
+              'font-weight:bold;box-shadow:0 4px 14px rgba(0,0,0,.42);' +
+              'border:2px solid rgba(255,255,255,.28);cursor:pointer;display:flex;' +
+              'align-items:center;justify-content:center;z-index:9999;user-select:none;';
+            fab.addEventListener('click', function () {
+              win.scrollTo({ top: 0, behavior: 'smooth' });
+              doc.documentElement.scrollTop = 0; doc.body.scrollTop = 0;
+              ['section.main','[data-testid="stMain"]','.stMain'].forEach(function (s) {
+                var el = doc.querySelector(s); if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
+              });
+            });
+            doc.body.appendChild(fab);
+
+            /* Ocultar el botón "Manage app" de Streamlit Cloud */
+            var hideStyle = doc.getElementById('fg-hide-manage-style');
+            if (!hideStyle) {
+              hideStyle = doc.createElement('style');
+              hideStyle.id = 'fg-hide-manage-style';
+              doc.head.appendChild(hideStyle);
+            }
+            hideStyle.textContent =
+              '[data-testid="stStatusWidget"],[data-testid="stAppToolbar"],' +
+              '[data-testid="stToolbar"],[data-testid="stDeployButton"],' +
+              '[class*="StatusWidget"],[class*="stToolbar"]{display:none!important}';
+          } catch (e) { console.warn('fg-mobile-chrome error:', e); }
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 COLUMN_MAP = {
     "Irradiancia": "irradiancia",
@@ -18698,6 +18786,64 @@ if not _HEADLESS:
                 unsafe_allow_html=True,
             )
 
+    # ── Navegación de la VISTA MÓVIL (simplificada, botones reales) ───────────
+    # 5 accesos principales pensados para el campo + un desplegable "Más" con el
+    # resto. Usa el mismo st.session_state.nav_page y el mismo router que la
+    # versión de escritorio: no se duplica lógica, solo cambia la navegación.
+    _MOBILE_PRIMARY = [
+        ("🏠", "Hoy",        "hoy"),
+        ("🐛", "Carpo",      "carpocapsa"),
+        ("🎯", "Decis.",     "decisiones"),
+        ("🌦️", "Clima",      "dashboard"),
+        ("🍎", "Prod.",      "produccion"),
+    ]
+    _MOBILE_MORE = [
+        ("🍄 Sanidad", "sanidad"), ("❄️ Frío", "frio"), ("🌱 Fenología", "fenologia"),
+        ("🔎 Análisis", "analisis"), ("📈 Comparador", "comparador"), ("💧 Riego", "riego"),
+        ("🌳 Campos", "campos"), ("🧾 Agroptima", "agroptima"),
+        ("🍏 Análisis Gallinal", "gallinal"), ("📝 Informe semanal", "informe"),
+        ("📘 Instrucciones", "instrucciones"), ("⚙️ Configuración", "configuracion"),
+    ]
+
+    def _mobile_go(page_key: str) -> None:
+        st.session_state.nav_page = page_key
+        st.session_state.pop("mob_more_open", None)
+        st.rerun()
+
+    def _render_mobile_nav() -> None:
+        cur = st.session_state.get("nav_page", "hoy")
+        # Cabecera compacta + botón para saltar a la versión completa de PC.
+        h1, h2 = st.columns([3, 1])
+        with h1:
+            st.markdown(
+                "<p style='font-weight:700;font-size:1.05rem;margin:4px 0 6px 0;'>"
+                "🌿 Finca Gallinal</p>",
+                unsafe_allow_html=True,
+            )
+        with h2:
+            if st.button("💻 PC", key="mob_to_full", use_container_width=True,
+                         help="Ver la versión completa de escritorio"):
+                st.session_state["force_mobile"] = False
+                _set_query_param("movil", "0")  # 0 = escritorio explícito (evita el rebote del auto-redirect)
+                st.rerun()
+        # Barra principal: 5 accesos en una fila.
+        cols = st.columns(len(_MOBILE_PRIMARY))
+        for col, (ic, lb, key) in zip(cols, _MOBILE_PRIMARY):
+            with col:
+                if st.button(f"{ic}\n{lb}", key=f"mnav_{key}", use_container_width=True,
+                             type=("primary" if cur == key else "secondary")):
+                    _mobile_go(key)
+        # Desplegable "Más" con el resto de secciones.
+        if st.button("⋯  Más secciones", key="mob_more_btn", use_container_width=True):
+            st.session_state["mob_more_open"] = not st.session_state.get("mob_more_open", False)
+        if st.session_state.get("mob_more_open", False):
+            for lb, key in _MOBILE_MORE:
+                if st.button(lb, key=f"mmore_{key}", use_container_width=True,
+                             type=("primary" if cur == key else "secondary")):
+                    _mobile_go(key)
+        st.markdown("<hr style='margin:6px 0 10px 0;border:none;"
+                    "border-top:1px solid rgba(27,107,53,0.18);'>", unsafe_allow_html=True)
+
     # Páginas por grupo (para auto-expandir el grupo activo)
     _CLIMA_PAGES   = {"dashboard","sencrop","analisis","comparador","frio"}
     _CULTIVO_PAGES = {"fenologia","sanidad","decisiones","carpocapsa","riego"}
@@ -18708,66 +18854,74 @@ if not _HEADLESS:
     if _active_page in _CULTIVO_PAGES: st.session_state["grp_cultivo"] = True
     if _active_page in _GESTION_PAGES: st.session_state["grp_gestion"] = True
 
-    with st.sidebar:
-        # Título con logo inline (base64) en lugar del emoji 🌿
-        try:
-            import base64 as _b64, os as _os
-            if _os.path.exists("finca_gallinal_logo.jpeg"):
-                with open("finca_gallinal_logo.jpeg", "rb") as _lf:
-                    _logo_b64 = _b64.b64encode(_lf.read()).decode()
-                # Imagen 379x379px: manzana en top ~60%, texto FINCA/GALLINAL en bottom ~40%.
-                # Contenedor 70×42px recorta el texto inferior (overflow:hidden).
-                # mix-blend-mode:multiply elimina el fondo blanco fundiéndolo con el sidebar.
-                st.markdown(
-                    f'<p style="display:flex;align-items:center;gap:8px;'
-                    f'font-size:1.22rem;font-weight:700;margin:4px 0 2px 0;line-height:1;">'
-                    f'<span style="display:inline-block;width:70px;height:42px;'
-                    f'overflow:hidden;flex-shrink:0;">'
-                    f'<img src="data:image/jpeg;base64,{_logo_b64}" '
-                    f'style="width:70px;height:70px;display:block;mix-blend-mode:multiply;">'
-                    f'</span>'
-                    f'Finca Gallinal</p>',
-                    unsafe_allow_html=True,
-                )
-            else:
+    if IS_MOBILE:
+        _render_mobile_nav()
+    if not IS_MOBILE:
+        with st.sidebar:
+            # Título con logo inline (base64) en lugar del emoji 🌿
+            try:
+                import base64 as _b64, os as _os
+                if _os.path.exists("finca_gallinal_logo.jpeg"):
+                    with open("finca_gallinal_logo.jpeg", "rb") as _lf:
+                        _logo_b64 = _b64.b64encode(_lf.read()).decode()
+                    # Imagen 379x379px: manzana en top ~60%, texto FINCA/GALLINAL en bottom ~40%.
+                    # Contenedor 70×42px recorta el texto inferior (overflow:hidden).
+                    # mix-blend-mode:multiply elimina el fondo blanco fundiéndolo con el sidebar.
+                    st.markdown(
+                        f'<p style="display:flex;align-items:center;gap:8px;'
+                        f'font-size:1.22rem;font-weight:700;margin:4px 0 2px 0;line-height:1;">'
+                        f'<span style="display:inline-block;width:70px;height:42px;'
+                        f'overflow:hidden;flex-shrink:0;">'
+                        f'<img src="data:image/jpeg;base64,{_logo_b64}" '
+                        f'style="width:70px;height:70px;display:block;mix-blend-mode:multiply;">'
+                        f'</span>'
+                        f'Finca Gallinal</p>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown("## 🌿 Finca Gallinal")
+            except Exception:
                 st.markdown("## 🌿 Finca Gallinal")
-        except Exception:
-            st.markdown("## 🌿 Finca Gallinal")
-        st.caption("Plataforma agroclimática")
-        st.divider()
+            st.caption("Plataforma agroclimática")
+            st.divider()
 
-        _nav_btn("🏠 Panel de hoy", "hoy")
-        st.divider()
+            _nav_btn("🏠 Panel de hoy", "hoy")
+            st.divider()
 
-        with st.expander("🌤️  Clima", expanded=True, key="grp_clima"):
-            _nav_btn("📊 Dashboard",   "dashboard")
-            _nav_btn("🌦️ Sencrop",    "sencrop")
-            _nav_btn("🔎 Análisis",    "analisis")
-            _nav_btn("📈 Comparador",  "comparador")
-            _nav_btn("❄️ Frío",        "frio")
+            with st.expander("🌤️  Clima", expanded=True, key="grp_clima"):
+                _nav_btn("📊 Dashboard",   "dashboard")
+                _nav_btn("🌦️ Sencrop",    "sencrop")
+                _nav_btn("🔎 Análisis",    "analisis")
+                _nav_btn("📈 Comparador",  "comparador")
+                _nav_btn("❄️ Frío",        "frio")
 
-        with st.expander("🌿  Cultivo", expanded=True, key="grp_cultivo"):
-            _nav_btn("🌱 Fenología",   "fenologia")
-            _nav_btn("🍄 Sanidad",     "sanidad")
-            _nav_btn("🎯 Decisiones",  "decisiones")
-            _nav_btn("🐛 Carpocapsa",  "carpocapsa")
-            _nav_btn("💧 Riego",       "riego")
+            with st.expander("🌿  Cultivo", expanded=True, key="grp_cultivo"):
+                _nav_btn("🌱 Fenología",   "fenologia")
+                _nav_btn("🍄 Sanidad",     "sanidad")
+                _nav_btn("🎯 Decisiones",  "decisiones")
+                _nav_btn("🐛 Carpocapsa",  "carpocapsa")
+                _nav_btn("💧 Riego",       "riego")
 
-        with st.expander("📋  Gestión", expanded=True, key="grp_gestion"):
-            _nav_btn("🌳 Campos",          "campos")
-            _nav_btn("🧾 Agroptima",        "agroptima")
-            _nav_btn("🍎 Producción",       "produccion")
-            _nav_btn("🍏 Análisis Gallinal", "gallinal")
-            _nav_btn("📝 Informe semanal",  "informe")
+            with st.expander("📋  Gestión", expanded=True, key="grp_gestion"):
+                _nav_btn("🌳 Campos",          "campos")
+                _nav_btn("🧾 Agroptima",        "agroptima")
+                _nav_btn("🍎 Producción",       "produccion")
+                _nav_btn("🍏 Análisis Gallinal", "gallinal")
+                _nav_btn("📝 Informe semanal",  "informe")
 
-        st.divider()
-        _nav_btn("📘 Instrucciones",  "instrucciones")
-        _nav_btn("⚙️ Configuración",  "configuracion")
-        st.divider()
-        st.markdown(
-            '<p class="sidebar-footer">🌿 Finca Gallinal<br>Plataforma agroclimática v2</p>',
-            unsafe_allow_html=True,
-        )
+            st.divider()
+            _nav_btn("📘 Instrucciones",  "instrucciones")
+            _nav_btn("⚙️ Configuración",  "configuracion")
+            st.divider()
+            if st.button("📱 Vista móvil", key="desk_to_mobile", use_container_width=True,
+                         help="Cambiar a la interfaz móvil simplificada"):
+                st.session_state["force_mobile"] = True
+                _set_query_param("movil", "1")
+                st.rerun()
+            st.markdown(
+                '<p class="sidebar-footer">🌿 Finca Gallinal<br>Plataforma agroclimática v2</p>',
+                unsafe_allow_html=True,
+            )
 
     # ── Contenido principal según página seleccionada ─────────────────────────────
     _page = st.session_state.get("nav_page", "hoy")
