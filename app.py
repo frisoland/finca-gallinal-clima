@@ -7348,7 +7348,9 @@ def cold_tab(history):
                             "esta campaña para calcular el calor.")
                 else:
                     def _miles(_x):
-                        return f"{_x:,.0f}".replace(",", ".")
+                        # Separador de miles con ESPACIO (no punto) para que un número
+                        # entero grande como 10 543 GDH no se confunda con un decimal.
+                        return f"{_x:,.0f}".replace(",", " ")
                     st.caption(
                         f"Calor acumulado en la ventana efectiva **15 mar – 4 may** (PLS): "
                         f"**{_miles(_hinfo['total_eff_gdh'])} GDH** · cobertura "
