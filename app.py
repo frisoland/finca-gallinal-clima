@@ -1429,6 +1429,35 @@ def dynamic_chill_portions(hour_temps):
     return delta
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def growing_degree_hours(hour_temps, t_base=4.0, t_opt=25.0, t_crit=36.0):
+    """Grados-hora de crecimiento (GDH) por hora según el modelo de Anderson,
+    Richardson & Kesner (1986) — el mismo que usa el SERIDA / paquete chillR.
+    Requiere temperatura HORARIA (la que tenemos en el histórico), por lo que es
+    la forma más fiable: no hay que reconstruir horas desde máx/mín.
+
+      · T ≤ base (4 °C) o T ≥ crítica (36 °C) → 0
+      · base < T ≤ óptima (25 °C):
+            A·(1 + cos(π + π·(T−base)/(óptima−base)))
+      · óptima < T < crítica:
+            2A·(1 + cos(π/2 + (π/2)·(T−óptima)/(crítica−óptima)))
+      con A = (óptima − base)/2. Una hora a 25 °C aporta 2A = 21 GDH (máximo).
+    """
+    temps = pd.to_numeric(pd.Series(hour_temps), errors="coerce").interpolate(limit_direction="both")
+    temps = temps.bfill().ffill()
+    T = temps.to_numpy(dtype=float)
+    n = len(T)
+    if n == 0:
+        return np.array([])
+    A = (t_opt - t_base) / 2.0
+    gdh = np.zeros(n)
+    m1 = (T > t_base) & (T <= t_opt)
+    gdh[m1] = A * (1.0 + np.cos(np.pi + np.pi * (T[m1] - t_base) / (t_opt - t_base)))
+    m2 = (T > t_opt) & (T < t_crit)
+    gdh[m2] = 2.0 * A * (1.0 + np.cos(np.pi / 2.0 + (np.pi / 2.0) * (T[m2] - t_opt) / (t_crit - t_opt)))
+    return gdh
+
+
 def winter_season_label(ts):
     year = ts.year
     if ts.month >= 11:
@@ -1463,6 +1492,15 @@ CHILL_PERIOD_END_MD   = (3, 31)   # (mes, día) — del año de análisis
 #   · Sin dato en ningún estudio → 90 CP (máximo conocido, conservador).
 CHILL_HIST_AVG_CP = 96.0  # CP medios 1978-2019 (Villaviciosa, SERIDA)
 CHILL_REQ_DEFAULT_CP = 90.0  # default conservador = máx. conocido ('Regona')
+
+# Ventana efectiva de acumulación de CALOR (fase de forcing / ecodormancia).
+# PLS (SERIDA/Delgado 2021, art. 2): la floración la controla el calor entre el
+# 15 mar y el 4 may (máxima sensibilidad la 1ª quincena de abril). Acumulamos GDH
+# desde el 15 mar; para no truncar a las variedades tardías (Raxao florece a
+# mediados de mayo), la búsqueda del cumplimiento se extiende hasta el 30 jun.
+HEAT_FORCING_START_MD = (3, 15)   # inicio de la fase de calor efectiva (PLS)
+HEAT_EFFECTIVE_END_MD = (5, 4)    # fin de la ventana efectiva PLS (referencia)
+HEAT_ACCUM_END_MD     = (6, 30)   # tope de acumulación para buscar el cumplimiento
 
 # Variedades cuyo CP es una ESTIMACIÓN (PLS + offset medio forcing-PLS), no un
 # valor de forcing directo. Solo sirve para señalizarlo en la interfaz.
@@ -2083,6 +2121,48 @@ def winter_chill_summary(df, analysis_year):
 
     return season_row, daily, start, end
 
+
+def heat_forcing_summary(df, analysis_year):
+    """Acumulación de calor (GDH, modelo Anderson 1986) de la fase de forcing de la
+    primavera del año de análisis (= año de floración). Devuelve:
+      info  → dict con total GDH a fin de ventana efectiva (4 may), cobertura y col. usada
+      daily → DataFrame diario con gdh_hora y gdh_acum (desde 15 mar)
+      start, end → límites de acumulación (15 mar → 30 jun)
+    Acumula desde el 15 mar (inicio efectivo PLS) para que el cumplimiento por
+    variedad pueda buscarse como la fecha en que el GDH acumulado alcanza su
+    requerimiento de calor (HEAT_REQ_BY_VARIETY_GDH)."""
+    y = int(analysis_year)
+    start = pd.Timestamp(y, HEAT_FORCING_START_MD[0], HEAT_FORCING_START_MD[1])
+    end   = pd.Timestamp(y, HEAT_ACCUM_END_MD[0], HEAT_ACCUM_END_MD[1], 23, 0)
+    eff_end = pd.Timestamp(y, HEAT_EFFECTIVE_END_MD[0], HEAT_EFFECTIVE_END_MD[1], 23, 0)
+
+    if "fecha_hora" not in df.columns:
+        return None, pd.DataFrame(), start, end
+    tcol = next((c for c in ["temp_media", "temp", "temperatura", "Temperatura",
+                             "Temp. media ºC", "temp_avg"] if c in df.columns), None)
+    if tcol is None:
+        return None, pd.DataFrame(), start, end
+
+    data = df[(df["fecha_hora"] >= start) & (df["fecha_hora"] <= end)].copy()
+    if data.empty:
+        return None, pd.DataFrame(), start, end
+    data = data.sort_values("fecha_hora")
+    data["gdh_hora"] = growing_degree_hours(data[tcol])
+
+    daily = data.set_index("fecha_hora").resample("D").agg(
+        {"gdh_hora": "sum", tcol: "mean"}).reset_index()
+    daily["gdh_acum"] = daily["gdh_hora"].cumsum()
+
+    eff = data[data["fecha_hora"] <= eff_end]
+    total_eff_gdh = float(np.nansum(eff["gdh_hora"].to_numpy())) if not eff.empty else 0.0
+    try:
+        exp_eff = expected_hours(start, eff_end)
+        cov = round(eff[tcol].notna().sum() / exp_eff * 100, 1) if exp_eff else 0.0
+    except Exception:
+        cov = 0.0
+    info = {"total_eff_gdh": total_eff_gdh, "coverage": cov, "tcol": tcol,
+            "eff_end": eff_end}
+    return info, daily, start, end
 
 
 def chill_column_comparison(df, analysis_year):
@@ -7259,6 +7339,52 @@ def cold_tab(history):
                     "Xuanina 80 · De la Riega 72). **†** = estimado (Verdialona 75, PLS+offset). "
                     "**\\*** = sin dato → máximo conocido (90 CP)."
                 )
+
+                # ── Cumplimiento de CALOR por variedad (GDH · fase de forcing) ──
+                _hinfo, _hdaily, _hstart, _hend = heat_forcing_summary(history, selected_chill_year)
+                st.markdown("#### Cumplimiento de calor por variedad (GDH · forcing)")
+                if _hinfo is None or _hdaily.empty:
+                    st.info("No hay datos de temperatura en la primavera (desde el 15 mar) de "
+                            "esta campaña para calcular el calor.")
+                else:
+                    def _miles(_x):
+                        return f"{_x:,.0f}".replace(",", ".")
+                    st.caption(
+                        f"Calor acumulado en la ventana efectiva **15 mar – 4 may** (PLS): "
+                        f"**{_miles(_hinfo['total_eff_gdh'])} GDH** · cobertura "
+                        f"{_hinfo['coverage']:.0f}%. GDH = grados-hora de crecimiento "
+                        "(Anderson 1986: base 4 °C, óptimo 25 °C, crítico 36 °C), calculados "
+                        "hora a hora desde el histórico (lo más fiable: no se reconstruyen horas)."
+                    )
+                    _hrows = []
+                    for _v in FINCA_VARIETIES:
+                        _hr = HEAT_REQ_BY_VARIETY_GDH.get(_v)
+                        if _hr is None:
+                            continue
+                        _crossed = _hdaily[_hdaily["gdh_acum"] >= _hr]
+                        if not _crossed.empty:
+                            _estado = "✅ " + pd.Timestamp(
+                                _crossed["fecha_hora"].iloc[0]).strftime("%d/%m")
+                        else:
+                            _estado = "❌ no alcanzado"
+                        _hrows.append({
+                            "Variedad": _v,
+                            "Req. calor (GDH)": _miles(_hr),
+                            "Calor alcanzado el": _estado,
+                        })
+                    if _hrows:
+                        _hdf = pd.DataFrame(_hrows).sort_values("Variedad").reset_index(drop=True)
+                        st.dataframe(_hdf, use_container_width=True, hide_index=True)
+                        _hchart = _hdaily.set_index("fecha_hora")[["gdh_acum"]].rename(
+                            columns={"gdh_acum": "GDH acumulados (desde 15 mar)"})
+                        st.line_chart(_hchart)
+                    st.caption(
+                        "**“Calor alcanzado el”** = fecha en que el GDH acumulado (desde el 15 mar) "
+                        "iguala el requerimiento de calor de la variedad ≈ **floración prevista**. "
+                        "Solo Regona, Collaos, Xuanina y De la Riega tienen requerimiento de calor "
+                        "publicado (forcing, SERIDA/Delgado 2021). Orientativo: el requerimiento se "
+                        "midió de fin de reposo a plena flor."
+                    )
 
             st.download_button(
                 "Descargar frío invernal",
