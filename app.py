@@ -15112,7 +15112,10 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
         m = prod[(prod["Campo"] == campo) & (prod["Año"] == y)]
         if one:
             m = m[m["Variedad_nombre"] == variedad]
-        kg = float(pd.to_numeric(m["Kg"], errors="coerce").fillna(0).sum())
+        # Sin filas de producción → año en curso / sin recolectar: Kg sin datos.
+        tiene_kg = not m.empty
+        kg = float(pd.to_numeric(m["Kg"], errors="coerce").fillna(0).sum()) if tiene_kg else np.nan
+        kg_txt = (_fmt_es_number(round(kg), 0) if pd.notna(kg) else "— (sin recolectar)")
 
         season_row, _, _, _ = winter_chill_summary(history, y)
         cp_obt = (float(season_row["Chill Portions"].iloc[0])
@@ -15144,7 +15147,7 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
 
         rows.append({
             "Año": y,
-            "Kg": _fmt_es_number(round(kg), 0),
+            "Kg": kg_txt,
             "CP req.": (f"{cp_req:.0f}{cp_mark}" if one else "—"),
             "CP obt.": (f"{cp_obt:.0f}" if pd.notna(cp_obt) else "—"),
             "GDH req.": (f"{mil(gdh_req)}{gdh_mark}" if one else "—"),
@@ -15171,7 +15174,7 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
         calor_txt = (f"; calor {mil(gdh_obt)} GDH (req. {mil(gdh_req)})" if one else "")
         narr.append(
             f"**{y} · {campo} · {variedad if one else 'todas las variedades'}** — "
-            f"{_fmt_es_number(round(kg), 0)} Kg · {frio_txt}{calor_txt}{flor_txt}. "
+            f"{kg_txt} Kg · {frio_txt}{calor_txt}{flor_txt}. "
             f"Polinización {polqual.lower()}"
             + (f" (score {polscore:.0f})" if pd.notna(polscore) else "")
             + f". Lluvia brotación/floración/cuajado: {mm(rain['brotacion'])}/"
@@ -15265,15 +15268,30 @@ def gallinal_tab(history):
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("### 🔎 Consulta de producción por campo y variedad")
 
-    años_disp = sorted(prod["Año"].unique())
+    años_prod = sorted(int(a) for a in prod["Año"].unique())
+    años_disp = list(años_prod)
+    # Año en curso (aún sin producción): se añade si el histórico de clima llega a
+    # ese año, para poder anticipar la cosecha con el clima ya acumulado.
+    _cur_year = pd.Timestamp.now().year
+    if "fecha_hora" in history.columns and not history.empty:
+        try:
+            _hist_years = set(pd.to_datetime(history["fecha_hora"], errors="coerce")
+                              .dt.year.dropna().astype(int).unique())
+        except Exception:
+            _hist_years = set()
+        if _cur_year in _hist_years and _cur_year not in años_disp:
+            años_disp = sorted(set(años_disp) | {_cur_year})
+    _default_year = años_prod[-1] if años_prod else (años_disp[-1] if años_disp else None)
     campos_disp = sorted(prod["Campo"].unique())
 
     c1, c2, c3 = st.columns([1.3, 1, 1])
     with c1:
         años_sel = st.multiselect(
             "Año(s)", años_disp,
-            default=[años_disp[-1]] if años_disp else [],
+            default=[_default_year] if _default_year is not None else [],
             key="gallinal_años",
+            help="Incluye el año en curso (sin producción todavía) para anticipar la "
+                 "cosecha con el clima acumulado: mira la ficha agroclimática.",
         )
     with c2:
         campo_sel = st.selectbox("Campo", campos_disp, key="gallinal_campo")
@@ -15285,12 +15303,45 @@ def gallinal_tab(history):
         st.warning("Selecciona al menos un año.")
         return
 
+    # ── FICHA AGROCLIMÁTICA POR AÑO (frío · calor · polinización · lluvia · sanidad) ──
+    # Se renderiza ANTES de exigir producción, para que el año en curso (sin cosecha
+    # todavía) también muestre su clima y permita anticipar la cosecha.
+    with st.expander("📋 Ficha agroclimática por año (frío · calor · polinización · lluvia · sanidad)",
+                     expanded=False):
+        if variedad_sel == "(Todas)":
+            st.info("Para ver **CP y GDH requeridos por variedad** elige una variedad concreta "
+                    "arriba. Con «(Todas)» se muestran Kg, lluvia, polinización y eventos sanitarios, "
+                    "pero no los requerimientos por variedad.")
+        if _cur_year in años_sel:
+            st.info(f"**{_cur_year} es el año en curso**: aún sin cosecha (Kg = «sin recolectar»), "
+                    "pero su clima ya acumulado (frío, calor, polinización, lluvia, sanidad) sirve "
+                    "para **anticipar** cómo viene la campaña.")
+        _fdf, _fnarr = _gallinal_ficha_rows(history, prod, campo_sel, variedad_sel, años_sel)
+        st.dataframe(_fdf, use_container_width=True, hide_index=True)
+        st.caption(
+            "**CP** = Chill Portions (frío) · **GDH** = grados-hora de calor (Anderson 1986) · "
+            "**req.** = requerimiento de la variedad, **obt.** = obtenido esa campaña (frío de toda "
+            "la campaña; calor desde la salida de reposo **hasta el inicio del cuajado**) · "
+            "**Poliniz.** = score 0–100 y calidad en la ventana de floración · "
+            "**(b·f·c)** = eventos de riesgo medio/alto en brotación · floración · cuajado. "
+            "Marcas req.: **†** aproximado (Verdialona, Gallinal) · **\\*** sin dato → máx. conocido. "
+            "Ventanas de fase = las del modelo Gallinal (la fenología propia por variedad llegará después)."
+        )
+        if _fnarr:
+            st.markdown("##### 📝 Informe por año")
+            for _ln in _fnarr:
+                st.markdown("- " + _ln)
+
     sel = prod[(prod["Campo"] == campo_sel) & (prod["Año"].isin(años_sel))].copy()
     if variedad_sel != "(Todas)":
         sel = sel[sel["Variedad_nombre"] == variedad_sel]
 
     if sel.empty:
-        st.warning("No hay datos de producción para esa combinación.")
+        st.info(
+            "Sin datos de **producción** para esta combinación (p. ej. has elegido solo el "
+            "año en curso). Arriba tienes la **ficha agroclimática** para anticipar la cosecha. "
+            "Para los análisis de producción/vecería, añade algún año con cosecha."
+        )
         return
 
     # ── Totales de la selección ───────────────────────────────────────────────
@@ -15318,29 +15369,6 @@ def gallinal_tab(history):
         "produjeron ÷ árboles totales). Con varios años o variedades es la media "
         "ponderada por número de árboles."
     )
-
-    # ── FICHA AGROCLIMÁTICA POR AÑO (frío · calor · polinización · lluvia · sanidad) ──
-    with st.expander("📋 Ficha agroclimática por año (frío · calor · polinización · lluvia · sanidad)",
-                     expanded=False):
-        if variedad_sel == "(Todas)":
-            st.info("Para ver **CP y GDH requeridos por variedad** elige una variedad concreta "
-                    "arriba. Con «(Todas)» se muestran Kg, lluvia, polinización y eventos sanitarios, "
-                    "pero no los requerimientos por variedad.")
-        _fdf, _fnarr = _gallinal_ficha_rows(history, prod, campo_sel, variedad_sel, años_sel)
-        st.dataframe(_fdf, use_container_width=True, hide_index=True)
-        st.caption(
-            "**CP** = Chill Portions (frío) · **GDH** = grados-hora de calor (Anderson 1986) · "
-            "**req.** = requerimiento de la variedad, **obt.** = obtenido esa campaña (frío de toda "
-            "la campaña; calor desde la salida de reposo **hasta el inicio del cuajado**) · "
-            "**Poliniz.** = score 0–100 y calidad en la ventana de floración · "
-            "**(b·f·c)** = eventos de riesgo medio/alto en brotación · floración · cuajado. "
-            "Marcas req.: **†** aproximado (Verdialona, Gallinal) · **\\*** sin dato → máx. conocido. "
-            "Ventanas de fase = las del modelo Gallinal (la fenología propia por variedad llegará después)."
-        )
-        if _fnarr:
-            st.markdown("##### 📝 Informe por año")
-            for _ln in _fnarr:
-                st.markdown("- " + _ln)
 
     # ── Tabla por año (agregando portainjertos / variedades) ──────────────────
     if len(años_sel) > 1:
@@ -15944,7 +15972,9 @@ def gallinal_tab(history):
         params = {"frio_metric": _frio_metric, "frio_req": float(frio_req),
                   "gdd_ref": 120.0, "rain_min_engorde": 120.0}
 
-        # Cálculo por año (años de producción)
+        # Cálculo por año. Incluye el año en curso (sin producción): las fases aún no
+        # ocurridas (engorde, maduración) no tienen datos → puntúan NaN y se excluyen,
+        # de modo que su IC es PARCIAL (solo las fases ya transcurridas).
         ic_rows = []
         detail = {}
         for y in años_disp:
@@ -15982,8 +16012,12 @@ def gallinal_tab(history):
             )
             _rr.append(_cells)
         _render_html_table(_hh, _rr, max_height=420)
-        st.caption("Puntuación 0–100 por fase (verde alto, rojo bajo). **IC** = Índice "
+        _ic_cap = ("Puntuación 0–100 por fase (verde alto, rojo bajo). **IC** = Índice "
                    "Climático del año (media ponderada de las fases con datos).")
+        if _cur_year in años_disp:
+            _ic_cap += (f" ⚠️ **{_cur_year}** es el año en curso: su IC es **parcial** (solo "
+                        "las fases ya transcurridas; engorde/maduración aún sin datos).")
+        st.caption(_ic_cap)
 
         # Detalle climático de un año
         st.markdown("#### Detalle climático de un año")
