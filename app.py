@@ -15201,10 +15201,16 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
                   else np.nan)
 
         # Ventana de una fase: usa la fenología REGISTRADA (campo/variedad/año) si
-        # existe; si no, la ventana por defecto del modelo regional.
+        # existe; si no, la ventana por defecto del modelo regional. El flag marca
+        # si ESE año usó alguna fecha registrada (para la marca ✏️ en la tabla).
+        _reg_flag = {"used": False}
+
         def _win(pid):
             reg = registered_phenology_window(y, campo, variedad, pid) if one else None
-            return reg if reg else _phase_window(*win_md[pid], y)
+            if reg:
+                _reg_flag["used"] = True
+                return reg
+            return _phase_window(*win_md[pid], y)
 
         # Fin del conteo de GDH = inicio del CUAJADO registrado (si lo hay).
         gdh_end_md = None
@@ -15212,6 +15218,7 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
             _rc = registered_phenology_window(y, campo, variedad, "cuajado")
             if _rc:
                 gdh_end_md = (_rc[0].month, _rc[0].day)
+                _reg_flag["used"] = True
 
         gdh_obt = np.nan; sale = None; flor = None
         if one:
@@ -15237,7 +15244,7 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
         polscore, polqual = _ficha_pollination(history, s, e)
 
         rows.append({
-            "Año": y,
+            "Año": (f"{y} ✏️" if _reg_flag["used"] else str(y)),
             "Kg": kg_txt,
             "CP req.": (f"{cp_req:.0f}{cp_mark}" if one else "—"),
             "CP obt.": (f"{cp_obt:.0f}" if pd.notna(cp_obt) else "—"),
@@ -15264,7 +15271,8 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
                     if (one and flor is not None and pd.notna(flor)) else "")
         calor_txt = (f"; calor {mil(gdh_obt)} GDH (req. {mil(gdh_req)})" if one else "")
         narr.append(
-            f"**{y} · {campo} · {variedad if one else 'todas las variedades'}** — "
+            f"**{y}{' ✏️' if _reg_flag['used'] else ''} · {campo} · "
+            f"{variedad if one else 'todas las variedades'}** — "
             f"{kg_txt} Kg · {frio_txt}{calor_txt}{flor_txt}. "
             f"Polinización {polqual.lower()}"
             + (f" (score {polscore:.0f})" if pd.notna(polscore) else "")
@@ -15416,9 +15424,9 @@ def gallinal_tab(history):
             "**Poliniz.** = score 0–100 y calidad en la ventana de floración · "
             "**(b·f·c)** = eventos de riesgo medio/alto en brotación · floración · cuajado. "
             "Marcas req.: **†** aproximado (Verdialona, Gallinal) · **\\*** sin dato → máx. conocido. "
-            "Ventanas de fase: si has **registrado la fenología** (item Fenología) para ese "
-            "año·campo·variedad, se usan **tus fechas** (también para el fin del conteo de GDH = "
-            "inicio del cuajado); si no, las del modelo regional por defecto."
+            "Ventanas de fase: **✏️** junto al año = usa **tu fenología registrada** (item "
+            "Fenología) para ese año·campo·variedad — también para el fin del conteo de GDH "
+            "(inicio del cuajado). Sin ✏️ = ventanas del modelo regional por defecto."
         )
         if _fnarr:
             st.markdown("##### 📝 Informe por año")
