@@ -10888,6 +10888,55 @@ def phenology_phase_across_years(phenology_df, campo, variedad, fase,
     return df_out[leading + remaining]
 
 
+def _phenology_stage_svg():
+    """Diagrama horizontal de los estados fenológicos del manzano (escalas BBCH /
+    Fleckinger). Marca las 3 fases que usa la app. SVG inline (colores literales)."""
+    stages = [
+        ("🟤", "A",   ["Reposo", "invernal"],     "00",        False),
+        ("🌰", "B–C", ["Yema", "hinchada"],        "51–53",     False),
+        ("🌱", "C–D", ["Brotación", "punta verde"], "07–11",    True),
+        ("🌸", "F2",  ["Floración", "plena flor"], "60–69 · 65", True),
+        ("🟢", "G–I", ["Cuajado", ""],             "71–73",     True),
+        ("🍏", "J",   ["Engorde", ""],             "74–79",     False),
+        ("🍎", "—",   ["Maduración", ""],          "81–87",     False),
+        ("🧺", "—",   ["Cosecha", ""],             "87–89",     False),
+        ("🍂", "—",   ["Caída", "de hoja"],        "93–97",     False),
+    ]
+    pitch, w, x0, top = 116, 104, 16, 34
+    width = x0 + len(stages) * pitch
+    p = [f'<svg viewBox="0 0 {width} 232" xmlns="http://www.w3.org/2000/svg" '
+         f'style="min-width:{width}px;height:232px;font-family:sans-serif;">']
+    for i, (emo, fl, lines, bb, key) in enumerate(stages):
+        x = x0 + i * pitch
+        cx = x + w / 2
+        fill = "#eaf5ec" if key else "#f7f7f5"
+        stroke = "#1b6b35" if key else "#dddddd"
+        sw = 2 if key else 1
+        p.append(f'<rect x="{x}" y="{top}" width="{w}" height="168" rx="12" '
+                 f'fill="{fill}" stroke="{stroke}" stroke-width="{sw}"/>')
+        if key:
+            p.append(f'<rect x="{x}" y="{top-16}" width="{w}" height="18" rx="9" fill="#1b6b35"/>')
+            p.append(f'<text x="{cx}" y="{top-3}" text-anchor="middle" fill="#fff" '
+                     f'font-size="9" font-weight="700">la usa la app</text>')
+        p.append(f'<text x="{cx}" y="{top+52}" text-anchor="middle" font-size="34">{emo}</text>')
+        p.append(f'<text x="{cx}" y="{top+80}" text-anchor="middle" font-size="11" '
+                 f'fill="#1b6b35" font-weight="700">Fleckinger {fl}</text>')
+        ly = top + 102
+        for ln in lines:
+            if ln:
+                p.append(f'<text x="{cx}" y="{ly}" text-anchor="middle" font-size="12" '
+                         f'font-weight="700" fill="#222">{ln}</text>')
+            ly += 16
+        p.append(f'<text x="{cx}" y="{top+152}" text-anchor="middle" font-size="10" '
+                 f'fill="#777">BBCH {bb}</text>')
+        if i < len(stages) - 1:
+            p.append(f'<text x="{x+w+2}" y="{top+88}" text-anchor="middle" font-size="18" '
+                     f'fill="#bbb">›</text>')
+    p.append('</svg>')
+    return ('<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;padding:6px 0;">'
+            + "".join(p) + '</div>')
+
+
 def phenology_tab(history, soil_type, hoja_threshold):
     st.subheader("Fenología por campo y variedad")
     st.write(
@@ -10895,6 +10944,39 @@ def phenology_tab(history, soil_type, hoja_threshold):
         "**campo × variedad** de la finca. Permite analizar el clima específico de cada "
         "unidad y comparar cómo evoluciona la misma variedad en distintos campos o en distintos años."
     )
+
+    with st.expander("📖 Guía: cómo identificar cada fase (BBCH · Fleckinger) + diagrama"):
+        st.markdown(
+            "**¿Qué fases mueven los cálculos?** Prioriza estas tres: **Brotación, "
+            "Floración y Cuajado** — alimentan la ficha del Gallinal (lluvia, polinización, "
+            "eventos sanitarios) y el **fin del conteo de GDH** (= inicio del cuajado).\n\n"
+            "- **Reposo invernal** y **Yema hinchada**: NO entran en ningún cálculo numérico "
+            "(el frío se calcula con un periodo fijo 1 nov–31 mar, no depende de la fenología).\n"
+            "- **Engorde** y **Maduración**: pesan en el Índice Climático general.\n\n"
+            "**Cómo datar:** registra una fase cuando el estado se alcanza en **~50 %** de las "
+            "yemas/flores del bloque (igual que el SERIDA con la plena flor)."
+        )
+        st.markdown(_phenology_stage_svg(), unsafe_allow_html=True)
+        st.markdown(
+            "| Fase (app) | BBCH | Fleckinger | Cómo identificar el **inicio** en campo |\n"
+            "|---|---|---|---|\n"
+            "| Reposo invernal | 00 | A | Yema cerrada, marrón, sin actividad. |\n"
+            "| Yema hinchada | 51–53 | B–C1 | La yema se hincha y las escamas se separan; asoma tono claro/verdoso. |\n"
+            "| **Brotación** | **07–11** | **C3–D** | **«Punta verde»**: asoman los ápices verdes (BBCH 07) → «oreja de ratón» (primeras hojitas). |\n"
+            "| **Floración** | **60–69 (65)** | **F → F2 → G** | Inicio = primeras flores abiertas (60–61). Referencia: **plena flor F2/BBCH 65** (~50 % abiertas). Fin = caída de pétalos (69). |\n"
+            "| **Cuajado** | **71–73** | **G–H–I** | Caídos los pétalos, queda el **fruto cuajado** (tamaño guisante); incluye la «caída de junio». **Su inicio corta el GDH.** |\n"
+            "| Engorde (crec. fruto) | 74–79 | J | Fruto engordando claramente (≈20–40 mm en adelante). |\n"
+            "| Maduración | 81–87 | — | Cambio de **color de fondo**, semillas pardeando, baja el almidón. |\n"
+            "| Cosecha | 87–89 | — | Fruto listo para recolección (firmeza/azúcares/test de almidón). |\n"
+            "| Caída de hoja | 93–97 | — | Las hojas amarillean y caen. |\n"
+        )
+        st.caption(
+            "Escalas estándar: **BBCH** (internacional pome) y **Fleckinger** (A–J, la que usa "
+            "el SERIDA/Dapena). El estudio del SERIDA fija **plena flor = F2 = BBCH 65** y usa "
+            "**punta verde = BBCH 07** como salida del reposo (útil para contrastar la predicción "
+            "de la app). En **floración** apunta el inicio y anota la **plena flor** en "
+            "Observaciones; en **cuajado**, el inicio = pétalos caídos y frutito visible."
+        )
 
     # ── Sección 1: Carga CSV ───────────────────────────────────────────────────
     uploaded_pheno = st.file_uploader(
