@@ -2141,13 +2141,15 @@ def winter_chill_summary(df, analysis_year):
     return season_row, daily, start, end
 
 
-def _season_gdh_daily(df, analysis_year):
-    """GDH diario acumulado desde el 1 nov (año-1) hasta el INICIO DEL CUAJADO
-    (CUAJADO_START_MD del año). Devuelve DataFrame con: fecha (normalizada),
+def _season_gdh_daily(df, analysis_year, end_md=None):
+    """GDH diario acumulado desde el 1 nov (año-1) hasta el INICIO DEL CUAJADO.
+    `end_md` = (mes, día) de fin del conteo; por defecto CUAJADO_START_MD (modelo
+    regional), pero el llamador puede pasar el inicio de cuajado REGISTRADO en la
+    fenología de ese campo/variedad/año. Devuelve DataFrame: fecha (normalizada),
     gdh_dia, gdh_cum. El acumulado arranca el 1 nov; cada variedad lo usa DESDE su
-    fecha de salida de reposo (restando la base), así que el calor de pleno invierno
-    no cuenta. El conteo termina en el cuajado porque a partir de ahí el calor ya no
-    influye en la floración (todas las variedades florecen antes)."""
+    salida de reposo (restando la base), así que el calor de pleno invierno no
+    cuenta. Termina en el cuajado porque a partir de ahí el calor ya no influye en
+    la floración (todas las variedades florecen antes)."""
     if "fecha_hora" not in df.columns:
         return pd.DataFrame()
     tcol = next((c for c in ["temp_media", "temp", "temperatura", "Temperatura",
@@ -2155,8 +2157,9 @@ def _season_gdh_daily(df, analysis_year):
     if tcol is None:
         return pd.DataFrame()
     y = int(analysis_year)
+    _em = end_md if end_md else CUAJADO_START_MD
     start = pd.Timestamp(y - 1, CHILL_PERIOD_START_MD[0], CHILL_PERIOD_START_MD[1])
-    end   = pd.Timestamp(y, CUAJADO_START_MD[0], CUAJADO_START_MD[1], 23, 0)
+    end   = pd.Timestamp(y, _em[0], _em[1], 23, 0)
     data = df[(df["fecha_hora"] >= start) & (df["fecha_hora"] <= end)].copy()
     if data.empty:
         return pd.DataFrame()
@@ -2168,7 +2171,7 @@ def _season_gdh_daily(df, analysis_year):
     return daily[["fecha", "gdh_dia", "gdh_cum"]]
 
 
-def variety_bloom_predictions(df, analysis_year, today=None):
+def variety_bloom_predictions(df, analysis_year, today=None, gdh_end_md=None):
     """Modelo SECUENCIAL e independiente por variedad (como mide el SERIDA):
       1) Sale de reposo cuando se cumple SU frío (Chill Portions ≥ requerimiento).
       2) Desde esa fecha acumula SU calor (GDH) hasta cubrir su requerimiento → floración prevista.
@@ -2187,7 +2190,7 @@ def variety_bloom_predictions(df, analysis_year, today=None):
         today = pd.Timestamp(today).normalize()
 
     _, chill_daily, _, _ = winter_chill_summary(df, analysis_year)
-    gdh_daily = _season_gdh_daily(df, analysis_year)
+    gdh_daily = _season_gdh_daily(df, analysis_year, end_md=gdh_end_md)
     if chill_daily.empty or gdh_daily.empty:
         return pd.DataFrame(), {"today": today, "ok": False}
 
@@ -10558,6 +10561,48 @@ def normalize_phenology_df(df):
     return out
 
 
+# Mapa fase del modelo Gallinal → nombre de fase en el calendario fenológico editable.
+_PHENO_NAME_BY_GALLINAL = {
+    "brotacion":  "brotación",
+    "floracion":  "floración",
+    "cuajado":    "cuajado",
+    "engorde":    "crecimiento del fruto",
+    "maduracion": "maduración",
+}
+
+
+def registered_phenology_window(year, campo, variedad, pid):
+    """Ventana (inicio_ts, fin_ts) de una fase tomada de la FENOLOGÍA REGISTRADA
+    (item Fenología → phenology_df, único almacén, persistido en Supabase) para ese
+    año/campo/variedad. Devuelve None si no hay fila registrada → el llamador usa
+    entonces la ventana por defecto del modelo regional. Este resolvedor es el punto
+    ÚNICO por el que la fenología introducida a mano entra en TODOS los cálculos."""
+    name = _PHENO_NAME_BY_GALLINAL.get(pid)
+    if not name or not campo or not variedad:
+        return None
+    pheno = st.session_state.get("phenology_df", pd.DataFrame())
+    if pheno is None or getattr(pheno, "empty", True):
+        return None
+    try:
+        p = normalize_phenology_df(pheno).dropna(subset=["Inicio", "Fin"])
+        if p.empty:
+            return None
+        mask = ((p["Año"] == int(year))
+                & (p["Fase"].str.strip().str.lower() == name)
+                & (p["Campo"].str.strip().str.casefold() == str(campo).strip().casefold())
+                & (p["Variedad"].str.strip().str.casefold() == str(variedad).strip().casefold()))
+        hit = p[mask]
+        if hit.empty:
+            return None
+        s = pd.Timestamp(hit["Inicio"].iloc[0])
+        e = pd.Timestamp(hit["Fin"].iloc[0]) + pd.Timedelta(hours=23, minutes=59)
+        if pd.isna(s) or pd.isna(e):
+            return None
+        return (s, e)
+    except Exception:
+        return None
+
+
 def phenology_phase_summary(history, phenology_df, soil_type, hoja_threshold,
                              campo=None, variedad=None, selected_year=None):
     rows = []
@@ -15155,9 +15200,22 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
                   if not season_row.empty and "Chill Portions" in season_row.columns
                   else np.nan)
 
+        # Ventana de una fase: usa la fenología REGISTRADA (campo/variedad/año) si
+        # existe; si no, la ventana por defecto del modelo regional.
+        def _win(pid):
+            reg = registered_phenology_window(y, campo, variedad, pid) if one else None
+            return reg if reg else _phase_window(*win_md[pid], y)
+
+        # Fin del conteo de GDH = inicio del CUAJADO registrado (si lo hay).
+        gdh_end_md = None
+        if one:
+            _rc = registered_phenology_window(y, campo, variedad, "cuajado")
+            if _rc:
+                gdh_end_md = (_rc[0].month, _rc[0].day)
+
         gdh_obt = np.nan; sale = None; flor = None
         if one:
-            bdf, _ = variety_bloom_predictions(history, y)
+            bdf, _ = variety_bloom_predictions(history, y, gdh_end_md=gdh_end_md)
             if not bdf.empty:
                 vr = bdf[bdf["variedad"] == variedad]
                 if not vr.empty:
@@ -15167,7 +15225,7 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
 
         rain, mon, mot = {}, {}, {}
         for pid in ("brotacion", "floracion", "cuajado"):
-            s, e = _phase_window(*win_md[pid], y)
+            s, e = _win(pid)
             pm = _phase_metrics(history, s, e, tcol)
             rain[pid] = pm["rain_mm"] if (pm and pd.notna(pm.get("rain_mm"))) else np.nan
             sl = history[(history["fecha_hora"] >= s) & (history["fecha_hora"] <= e)]
@@ -15175,7 +15233,7 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
             mon[pid] = int(ev.get("Eventos monilia medio/alto", 0))
             mot[pid] = int(ev.get("Eventos moteado medio/alto", 0))
 
-        s, e = _phase_window(*win_md["floracion"], y)
+        s, e = _win("floracion")
         polscore, polqual = _ficha_pollination(history, s, e)
 
         rows.append({
@@ -15358,7 +15416,9 @@ def gallinal_tab(history):
             "**Poliniz.** = score 0–100 y calidad en la ventana de floración · "
             "**(b·f·c)** = eventos de riesgo medio/alto en brotación · floración · cuajado. "
             "Marcas req.: **†** aproximado (Verdialona, Gallinal) · **\\*** sin dato → máx. conocido. "
-            "Ventanas de fase = las del modelo Gallinal (la fenología propia por variedad llegará después)."
+            "Ventanas de fase: si has **registrado la fenología** (item Fenología) para ese "
+            "año·campo·variedad, se usan **tus fechas** (también para el fin del conteo de GDH = "
+            "inicio del cuajado); si no, las del modelo regional por defecto."
         )
         if _fnarr:
             st.markdown("##### 📝 Informe por año")
