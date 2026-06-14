@@ -10571,12 +10571,28 @@ _PHENO_NAME_BY_GALLINAL = {
 }
 
 
+def _phenology_default_window_str(year, campo, variedad, pid):
+    """(Inicio, Fin) en texto YYYY-MM-DD de la PLANTILLA por defecto para esa fase.
+    Sirve para saber si una fila registrada está sin tocar (= igual a la plantilla)."""
+    name = _PHENO_NAME_BY_GALLINAL.get(pid)
+    if not name:
+        return None
+    try:
+        for r in default_phenology_rows_for_campo_variedad_year(campo, variedad, int(year)):
+            if str(r.get("Fase", "")).strip().lower() == name:
+                return (str(r.get("Inicio", "")), str(r.get("Fin", "")))
+    except Exception:
+        pass
+    return None
+
+
 def registered_phenology_window(year, campo, variedad, pid):
-    """Ventana (inicio_ts, fin_ts) de una fase tomada de la FENOLOGÍA REGISTRADA
-    (item Fenología → phenology_df, único almacén, persistido en Supabase) para ese
-    año/campo/variedad. Devuelve None si no hay fila registrada → el llamador usa
-    entonces la ventana por defecto del modelo regional. Este resolvedor es el punto
-    ÚNICO por el que la fenología introducida a mano entra en TODOS los cálculos."""
+    """Ventana (inicio_ts, fin_ts) de una fase REGISTRADA Y PERSONALIZADA por el
+    usuario (item Fenología → phenology_df). Devuelve None si no hay fila o si las
+    fechas coinciden con la PLANTILLA por defecto (es decir, el usuario no la ha
+    editado): en ese caso el llamador usa la ventana del modelo regional. Así, una
+    fila autogenerada por «Generar plantilla» NO cuenta como fenología propia.
+    Es el punto ÚNICO por el que la fenología introducida a mano entra en los cálculos."""
     name = _PHENO_NAME_BY_GALLINAL.get(pid)
     if not name or not campo or not variedad:
         return None
@@ -10594,8 +10610,14 @@ def registered_phenology_window(year, campo, variedad, pid):
         hit = p[mask]
         if hit.empty:
             return None
-        s = pd.Timestamp(hit["Inicio"].iloc[0])
-        e = pd.Timestamp(hit["Fin"].iloc[0]) + pd.Timedelta(hours=23, minutes=59)
+        ini_str = str(hit["Inicio"].iloc[0])
+        fin_str = str(hit["Fin"].iloc[0])
+        # Sin tocar (igual que la plantilla por defecto) → no cuenta como propia.
+        _def = _phenology_default_window_str(year, campo, variedad, pid)
+        if _def is not None and (ini_str, fin_str) == _def:
+            return None
+        s = pd.Timestamp(ini_str)
+        e = pd.Timestamp(fin_str) + pd.Timedelta(hours=23, minutes=59)
         if pd.isna(s) or pd.isna(e):
             return None
         return (s, e)
