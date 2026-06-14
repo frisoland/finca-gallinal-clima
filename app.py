@@ -11045,11 +11045,10 @@ def phenology_tab(history, soil_type, hoja_threshold):
         "Formato de fecha: **YYYY-MM-DD**."
     )
 
-    # Normalizar siempre al leer: garantiza que "Campo" y "Variedad" existan
-    # aunque el session_state venga de una sesión anterior al rediseño.
-    pheno_cur = normalize_phenology_df(st.session_state.phenology_df)
-    if not pheno_cur.equals(normalize_phenology_df(st.session_state.phenology_df)):
-        st.session_state.phenology_df = pheno_cur
+    # Normalizar y dejar un índice limpio (RangeIndex) para poder mapear cada fila
+    # del editor (por posición) a su fila en el calendario maestro.
+    pheno_cur = normalize_phenology_df(st.session_state.phenology_df).reset_index(drop=True)
+    st.session_state.phenology_df = pheno_cur
 
     _ph_campos   = sorted([c for c in pheno_cur["Campo"].dropna().unique()    if str(c).strip()])
     _ph_vars     = sorted([v for v in pheno_cur["Variedad"].dropna().unique() if str(v).strip()])
@@ -11072,8 +11071,8 @@ def phenology_tab(history, soil_type, hoja_threshold):
     if filt_yr != "Todos":
         _mask &= (pheno_cur["Año"].astype(str) == str(filt_yr))
 
-    _edit_slice = pheno_cur[_mask].reset_index(drop=True)
-    _untouched  = pheno_cur[~_mask]
+    _edit_slice = pheno_cur[_mask]                  # conserva el índice maestro
+    _pos_to_idx = list(_edit_slice.index)           # posición en el editor → índice maestro
 
     # Changing the filter resets the editor (new key → fresh render)
     _fsig      = f"{filt_campo}_{filt_var}_{filt_yr}".replace(" ", "_")
@@ -11096,22 +11095,42 @@ def phenology_tab(history, soil_type, hoja_threshold):
         st.caption("Vista de solo lectura (filtra para poder editar):")
         st.dataframe(_edit_slice, use_container_width=True, hide_index=True)
     else:
-        # Tabla del editor ESTABLE entre reruns: se construye una sola vez por
-        # filtro/versión y se reutiliza. Así Streamlit no descarta la edición
-        # pendiente (causa del "revierte a la primera, se fija a la segunda").
-        # Inicio/Fin van como FECHA (datetime) para usar el selector de calendario.
-        _data_key = f"pheno_editdata_{editor_key}"
-        if _data_key not in st.session_state:
-            _slice_dt = _edit_slice.copy()
-            _slice_dt["Inicio"] = pd.to_datetime(_slice_dt["Inicio"], errors="coerce")
-            _slice_dt["Fin"]    = pd.to_datetime(_slice_dt["Fin"], errors="coerce")
-            st.session_state[_data_key] = _slice_dt
+        # Las ediciones se aplican con un CALLBACK on_change (se ejecuta ANTES de
+        # volver a dibujar): leemos el delta del editor y lo volcamos al calendario
+        # maestro. Así la edición se fija a la PRIMERA. (Volcarlo DESPUÉS del editor,
+        # como antes, causaba el "revierte a la primera, se fija a la segunda".)
+        def _apply_pheno_edits():
+            state = st.session_state.get(editor_key) or {}
+            ed = state.get("edited_rows", {})
+            if not ed:
+                return
+            master = normalize_phenology_df(st.session_state.phenology_df).reset_index(drop=True)
+            for _pos, _ch in ed.items():
+                try:
+                    _midx = _pos_to_idx[int(_pos)]
+                except (ValueError, IndexError, TypeError):
+                    continue
+                if _midx not in master.index:
+                    continue
+                for _col, _val in _ch.items():
+                    if _col in ("Inicio", "Fin"):
+                        _ts = pd.to_datetime(_val, errors="coerce")
+                        master.at[_midx, _col] = _ts.strftime("%Y-%m-%d") if pd.notna(_ts) else ""
+                    elif _col == "Observaciones":
+                        master.at[_midx, _col] = "" if _val is None else str(_val)
+            st.session_state.phenology_df = normalize_phenology_df(master).reset_index(drop=True)
 
-        edited = st.data_editor(
-            st.session_state[_data_key],
-            num_rows="dynamic",
+        # Inicio/Fin como FECHA (datetime) para el selector de calendario.
+        _slice_view = _edit_slice.reset_index(drop=True).copy()
+        _slice_view["Inicio"] = pd.to_datetime(_slice_view["Inicio"], errors="coerce")
+        _slice_view["Fin"]    = pd.to_datetime(_slice_view["Fin"], errors="coerce")
+
+        st.data_editor(
+            _slice_view,
+            num_rows="fixed",
             use_container_width=True,
             key=editor_key,
+            on_change=_apply_pheno_edits,
             disabled=["Campo", "Variedad", "Año", "Fase"],  # solo se editan fechas/obs.
             column_config={
                 "Año":    st.column_config.NumberColumn("Año", format="%d"),
@@ -11119,22 +11138,6 @@ def phenology_tab(history, soil_type, hoja_threshold):
                 "Fin":    st.column_config.DateColumn("Fin", format="YYYY-MM-DD"),
             },
         )
-        # Persistir el propio estado del editor como entrada del siguiente rerun
-        # (patrón estándar): así, al volver a un filtro ya editado, se siguen viendo
-        # tus cambios, y la edición se fija a la primera.
-        st.session_state[_data_key] = edited
-        # Volcar las ediciones al calendario completo (en memoria; el guardado en
-        # Supabase es con el botón). Las fechas vuelven a texto YYYY-MM-DD.
-        try:
-            _en = normalize_phenology_df(edited)
-            _un = (normalize_phenology_df(_untouched)
-                   if not _untouched.empty
-                   else pd.DataFrame(columns=["Campo", "Variedad", "Año", "Fase", "Inicio", "Fin", "Observaciones"]))
-            _full_new = normalize_phenology_df(pd.concat([_un, _en], ignore_index=True))
-            if not _full_new.equals(normalize_phenology_df(pheno_cur)):
-                st.session_state.phenology_df = _full_new
-        except Exception:
-            pass  # Silent fail — never lose data
 
     _pc1, _pc2 = st.columns(2)
     with _pc1:
