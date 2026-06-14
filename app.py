@@ -14910,6 +14910,39 @@ def _veceria_yearly_values(prod, metric):
     return g
 
 
+def _year_deviations(years, vals):
+    """Para una serie (años ascendentes, valores alineados) calcula, por año, la
+    desviación (%) de la producción frente a:
+      · la media de TODOS los años anteriores, y
+      · la media de los años anteriores de la MISMA PARIDAD (par↔pares, impar↔impares).
+    El primer año (y el primero de cada paridad) no tiene referencia → NaN.
+    Devuelve lista de tuplas (año, valor, desv_todos_%, desv_paridad_%)."""
+    out = []
+    for i, (y, v) in enumerate(zip(years, vals)):
+        prev_all = [vals[j] for j in range(i) if pd.notna(vals[j])]
+        prev_par = [vals[j] for j in range(i)
+                    if pd.notna(vals[j]) and (years[j] % 2 == y % 2)]
+
+        def _dev(prev):
+            if not prev or pd.isna(v):
+                return np.nan
+            base = float(np.mean(prev))
+            return (v - base) / base * 100.0 if base != 0 else np.nan
+
+        out.append((int(y), v, _dev(prev_all), _dev(prev_par)))
+    return out
+
+
+def _dev_html(x):
+    """% de desviación coloreado (verde ≥0, rojo <0; '—' si NaN)."""
+    if pd.isna(x):
+        return '<span style="color:#9e9e9e;">—</span>'
+    col = "#2e7d32" if x >= 0 else "#c62828"
+    sign = "+" if x >= 0 else ""
+    return (f'<span style="color:{col};font-weight:600;">'
+            f'{sign}{_fmt_es_number(round(x, 1), 1)} %</span>')
+
+
 def _drill_pattern_message(bbi, pct_std):
     """Diagnóstico del patrón combinando vecería de cosecha (BBI) y estabilidad de
     la participación (desv. del % productores), usando las MISMAS bandas que las
@@ -15597,6 +15630,38 @@ def gallinal_tab(history):
         if excluidos:
             _cap += f" {excluidos} combinación(es) sin años consecutivos suficientes no se muestran."
         st.caption(_cap)
+
+        # ── Desviación de cada año respecto a los años anteriores ──────────────
+        st.markdown("#### Desviación de cada año respecto a los anteriores")
+        _dev_groups = [((c, v, p), sub) for (c, v, p), sub
+                       in gvals.dropna(subset=["valor"]).groupby(
+                           ["Campo", "Variedad_nombre", "Portainjerto_nombre"])
+                       if len(sub) >= 2]
+        if not _dev_groups:
+            st.caption("Sin series con 2+ años de producción para calcular desviaciones.")
+        else:
+            _dev_labels = [f"{c} · {v} · {p}" for (c, v, p), _ in _dev_groups]
+            _sel_dev = st.selectbox("Combinación (campo · variedad · portainjerto)",
+                                    _dev_labels, key="gallinal_dev_combo")
+            _, _dsub = _dev_groups[_dev_labels.index(_sel_dev)]
+            _dsub = _dsub.sort_values("Año")
+            _dev_list = _year_deviations(_dsub["Año"].astype(int).tolist(),
+                                         _dsub["valor"].astype(float).tolist())
+            _unit = "Kg/Ha" if metric_vec == "Kg/Ha (cosecha)" else "Kg/árbol"
+            _dh = [("Año", "left"), (f"Producción ({_unit})", "right"),
+                   ("Desv. vs media anteriores", "right"),
+                   ("Desv. vs media anteriores · misma paridad", "right")]
+            _dr = [[str(y), _fmt_es_number(round(v), 0), _dev_html(da), _dev_html(dp)]
+                   for (y, v, da, dp) in _dev_list]
+            _render_html_table(_dh, _dr, max_height=420)
+            st.caption(
+                "Para cada año, desviación (%) de la producción frente a la **media de los años "
+                "anteriores** (todos), y frente a la **media de los anteriores de la misma paridad** "
+                "(pares con pares, impares con impares: compara año de carga con año de carga y de "
+                "descarga con descarga). El primer año —y el primero de cada paridad— no tiene "
+                f"referencia (—). Verde = por encima de la media; rojo = por debajo. Métrica base: "
+                f"**{_unit}**; respeta los filtros de campo/variedad/años de arriba."
+            )
 
         # ── Resumen por portainjerto (los dos pilares + densidad + vigor) ──────
         df_rec = pd.DataFrame(records)
