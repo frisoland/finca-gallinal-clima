@@ -11096,13 +11096,35 @@ def phenology_tab(history, soil_type, hoja_threshold):
         st.caption("Vista de solo lectura (filtra para poder editar):")
         st.dataframe(_edit_slice, use_container_width=True, hide_index=True)
     else:
+        # Tabla del editor ESTABLE entre reruns: se construye una sola vez por
+        # filtro/versión y se reutiliza. Así Streamlit no descarta la edición
+        # pendiente (causa del "revierte a la primera, se fija a la segunda").
+        # Inicio/Fin van como FECHA (datetime) para usar el selector de calendario.
+        _data_key = f"pheno_editdata_{editor_key}"
+        if _data_key not in st.session_state:
+            _slice_dt = _edit_slice.copy()
+            _slice_dt["Inicio"] = pd.to_datetime(_slice_dt["Inicio"], errors="coerce")
+            _slice_dt["Fin"]    = pd.to_datetime(_slice_dt["Fin"], errors="coerce")
+            st.session_state[_data_key] = _slice_dt
+
         edited = st.data_editor(
-            _edit_slice,
+            st.session_state[_data_key],
             num_rows="dynamic",
             use_container_width=True,
             key=editor_key,
+            disabled=["Campo", "Variedad", "Año", "Fase"],  # solo se editan fechas/obs.
+            column_config={
+                "Año":    st.column_config.NumberColumn("Año", format="%d"),
+                "Inicio": st.column_config.DateColumn("Inicio", format="YYYY-MM-DD"),
+                "Fin":    st.column_config.DateColumn("Fin", format="YYYY-MM-DD"),
+            },
         )
-        # Merge edited slice back into full df
+        # Persistir el propio estado del editor como entrada del siguiente rerun
+        # (patrón estándar): así, al volver a un filtro ya editado, se siguen viendo
+        # tus cambios, y la edición se fija a la primera.
+        st.session_state[_data_key] = edited
+        # Volcar las ediciones al calendario completo (en memoria; el guardado en
+        # Supabase es con el botón). Las fechas vuelven a texto YYYY-MM-DD.
         try:
             _en = normalize_phenology_df(edited)
             _un = (normalize_phenology_df(_untouched)
