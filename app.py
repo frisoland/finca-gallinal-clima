@@ -7433,12 +7433,12 @@ def cold_tab(history):
                             "Variedad": _r["variedad"],
                             "Frío req. (CP)": f"{_r['cp_req']:.0f}{_r['cp_mark']}",
                             "Sale de reposo": (pd.Timestamp(_sale).strftime("%d/%m")
-                                               if _sale is not None else "❄️ no cumple"),
+                                               if pd.notna(_sale) else "❄️ no cumple"),
                             "Calor req. (GDH)": f"{_miles(_r['gdh_req'])}{_r['gdh_mark']}",
                             "Floración prevista": (pd.Timestamp(_flor).strftime("%d/%m")
-                                                   if _flor is not None
+                                                   if pd.notna(_flor)
                                                    else ("— aún" if _r["frio_cumplido"] else "—")),
-                            f"GDH acum. ({_cut_txt})": (_miles(_ga) if _ga is not None else "—"),
+                            f"GDH acum. ({_cut_txt})": (_miles(_ga) if pd.notna(_ga) else "—"),
                         })
                     st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
                     st.caption(
