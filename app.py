@@ -1498,10 +1498,13 @@ HEAT_REQ_DEFAULT_GDH = 11770.0  # default conservador calor = máx. local ('De l
 
 # Acumulación de CALOR (fase de forcing / ecodormancia). El modelo es secuencial
 # por variedad: cada una empieza a sumar GDH desde SU salida de reposo (cuando
-# cumple su frío) y florece al cubrir su requerimiento de calor. La acumulación se
-# extiende hasta el 30 jun para no truncar a las tardías (Raxao florece a mediados
-# de mayo). Referencia PLS (SERIDA art. 2): la ventana efectiva común es 15 mar–4 may.
-HEAT_ACCUM_END_MD = (6, 30)   # tope de acumulación de GDH de la temporada
+# cumple su frío) y florece al cubrir su requerimiento de calor.
+# El conteo de GDH TERMINA al INICIO DEL CUAJADO (CUAJADO_START_MD): a partir del
+# cuajado el calor ya no influye en la floración y seguir sumando hasta el verano
+# dispararía el total. Es el mismo inicio de cuajado que la fenología del Gallinal.
+# Todas las variedades de la finca florecen antes de esa fecha (la más tardía,
+# Raxao, ~15 may). Este criterio se aplica a TODOS los items que calculan GDH.
+CUAJADO_START_MD = (5, 22)   # inicio del cuajado = fin del conteo de GDH
 
 # Variedades cuyo requerimiento es una ESTIMACIÓN (no un valor de forcing directo):
 #   · Verdialona: CP por PLS + offset.   · Gallinal: ≈ De la Riega (campo).
@@ -2139,10 +2142,12 @@ def winter_chill_summary(df, analysis_year):
 
 
 def _season_gdh_daily(df, analysis_year):
-    """GDH diario acumulado de toda la temporada [1 nov (año-1) → 30 jun (año)].
-    Devuelve DataFrame con columnas: fecha (normalizada), gdh_dia, gdh_cum.
-    El acumulado arranca el 1 nov; cada variedad lo usa DESDE su fecha de salida
-    de reposo (restando la base), así que el calor de pleno invierno no cuenta."""
+    """GDH diario acumulado desde el 1 nov (año-1) hasta el INICIO DEL CUAJADO
+    (CUAJADO_START_MD del año). Devuelve DataFrame con: fecha (normalizada),
+    gdh_dia, gdh_cum. El acumulado arranca el 1 nov; cada variedad lo usa DESDE su
+    fecha de salida de reposo (restando la base), así que el calor de pleno invierno
+    no cuenta. El conteo termina en el cuajado porque a partir de ahí el calor ya no
+    influye en la floración (todas las variedades florecen antes)."""
     if "fecha_hora" not in df.columns:
         return pd.DataFrame()
     tcol = next((c for c in ["temp_media", "temp", "temperatura", "Temperatura",
@@ -2151,7 +2156,7 @@ def _season_gdh_daily(df, analysis_year):
         return pd.DataFrame()
     y = int(analysis_year)
     start = pd.Timestamp(y - 1, CHILL_PERIOD_START_MD[0], CHILL_PERIOD_START_MD[1])
-    end   = pd.Timestamp(y, HEAT_ACCUM_END_MD[0], HEAT_ACCUM_END_MD[1], 23, 0)
+    end   = pd.Timestamp(y, CUAJADO_START_MD[0], CUAJADO_START_MD[1], 23, 0)
     data = df[(df["fecha_hora"] >= start) & (df["fecha_hora"] <= end)].copy()
     if data.empty:
         return pd.DataFrame()
@@ -7442,11 +7447,12 @@ def cold_tab(history):
                         })
                     st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
                     st.caption(
-                        f"Última columna = GDH acumulados **desde la salida de reposo hasta la fecha "
-                        f"de consulta** ({_cut_txt}; en campañas pasadas, hasta el fin de los datos). "
-                        "Si ves una variedad sin dato oficial floreciendo en campo, ese número es una "
-                        "**pista de su calor real**. — Marcas: sin marca = forcing (Regona, Collaos, "
-                        "Xuanina, De la Riega); **†** = aproximado (Verdialona 75 CP · Gallinal ≈ "
+                        f"Última columna = GDH acumulados **desde la salida de reposo** hasta la fecha "
+                        f"de consulta ({_cut_txt}). El conteo de GDH **termina en el inicio del cuajado** "
+                        "(22 may por defecto en la fenología): a partir de ahí el calor ya no influye en "
+                        "la floración. Si ves una variedad sin dato oficial floreciendo en campo, ese "
+                        "número es una **pista de su calor real**. — Marcas: sin marca = forcing (Regona, "
+                        "Collaos, Xuanina, De la Riega); **†** = aproximado (Verdialona 75 CP · Gallinal ≈ "
                         "De la Riega); **\\*** = sin dato → máximo conocido (90 CP / 11 770 GDH). "
                         "Orientativo: el calor del estudio se midió de fin de reposo a plena flor."
                     )
@@ -14660,8 +14666,8 @@ _GALLINAL_PHASES = [
     ("frio",       "🥶 Frío",       CHILL_PERIOD_START_MD[0], CHILL_PERIOD_START_MD[1],
                                     CHILL_PERIOD_END_MD[0],   CHILL_PERIOD_END_MD[1], 20),
     ("brotacion",  "🌱 Brotación",   4,  1,  4, 20, 10),
-    ("floracion",  "🌸 Floración",   4, 21,  5, 21, 30),
-    ("cuajado",    "🍏 Cuajado",     5, 22,  6, 15, 15),
+    ("floracion",  "🌸 Floración",   4, 21,  CUAJADO_START_MD[0], CUAJADO_START_MD[1] - 1, 30),
+    ("cuajado",    "🍏 Cuajado",     CUAJADO_START_MD[0], CUAJADO_START_MD[1],  6, 15, 15),
     ("engorde",    "☀️ Engorde",     6, 16,  8, 31, 15),
     ("maduracion", "🍎 Maduración",  9,  1, 10, 20, 10),
 ]
@@ -15324,8 +15330,9 @@ def gallinal_tab(history):
         st.dataframe(_fdf, use_container_width=True, hide_index=True)
         st.caption(
             "**CP** = Chill Portions (frío) · **GDH** = grados-hora de calor (Anderson 1986) · "
-            "**req.** = requerimiento de la variedad, **obt.** = obtenido esa campaña (los mismos "
-            "datos del item Frío) · **Poliniz.** = score 0–100 y calidad en la ventana de floración · "
+            "**req.** = requerimiento de la variedad, **obt.** = obtenido esa campaña (frío de toda "
+            "la campaña; calor desde la salida de reposo **hasta el inicio del cuajado**) · "
+            "**Poliniz.** = score 0–100 y calidad en la ventana de floración · "
             "**(b·f·c)** = eventos de riesgo medio/alto en brotación · floración · cuajado. "
             "Marcas req.: **†** aproximado (Verdialona, Gallinal) · **\\*** sin dato → máx. conocido. "
             "Ventanas de fase = las del modelo Gallinal (la fenología propia por variedad llegará después)."
