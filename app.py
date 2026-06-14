@@ -15048,6 +15048,137 @@ def _colored_num(value, color, decimals=0, suffix=""):
             f'{_fmt_es_number(round(value, decimals), decimals)}{suffix}</span>')
 
 
+def _ficha_temp_col(history):
+    return next((c for c in ["temp_media", "temp", "temperatura", "Temperatura",
+                             "temp_avg"] if c in history.columns), "temp_media")
+
+
+def _ficha_pollination(history, start, end):
+    """Score de polinización (0–100) y calidad para una ventana, reutilizando el
+    modelo por hora de la app (pollination_score_row vía add_risk_columns)."""
+    sl = history[(history["fecha_hora"] >= start) & (history["fecha_hora"] <= end)].copy()
+    if sl.empty:
+        return np.nan, "—"
+    if "polinizacion_score" not in sl.columns or "en_ventana_polinizacion" not in sl.columns:
+        try:
+            sl = add_risk_columns(sl)
+        except Exception:
+            return np.nan, "—"
+    # Mismo criterio que el resto de la app: promedio sobre las horas dentro de la
+    # ventana de polinización (incluye horas malas, que cuentan).
+    in_win = sl[sl["en_ventana_polinizacion"] == True]  # noqa: E712
+    if in_win.empty:
+        return np.nan, "Fuera de ventana"
+    sc = pd.to_numeric(in_win["polinizacion_score"], errors="coerce")
+    mean_score = float(sc.mean()) if sc.notna().any() else 0.0
+    total = int(len(in_win))
+    fav = int((sc >= 50).sum())
+    return mean_score, pollination_quality_from_score(mean_score, fav, total)
+
+
+def _gallinal_ficha_rows(history, prod, campo, variedad, years):
+    """Ficha agroclimática por año para un campo/variedad: Kg, frío (CP req/obt),
+    calor (GDH req/obt), polinización, lluvia y eventos sanitarios (monilia/moteado)
+    en brotación, floración y cuajado. Devuelve (DataFrame display, [narrativas]).
+
+    Ventanas de fase: las del modelo Gallinal (editables en sus ajustes). La
+    fenología propia por campo/variedad/año queda pendiente (futuro CSV)."""
+    win_md = {p[0]: (p[2], p[3], p[4], p[5]) for p in _GALLINAL_PHASES}
+    tcol = _ficha_temp_col(history)
+    one = variedad != "(Todas)"
+    cp_req = chill_requirement_cp(variedad) if one else None
+    gdh_req = heat_requirement_gdh(variedad) if one else None
+    cp_mark = ("" if not one else
+               "†" if variedad in CHILL_REQ_ESTIMATED else
+               "" if CHILL_REQ_BY_VARIETY_CP.get(variedad) is not None else "*")
+    gdh_mark = ("" if not one else
+                "†" if variedad in HEAT_REQ_ESTIMATED else
+                "" if variedad in HEAT_REQ_BY_VARIETY_GDH else "*")
+
+    def mil(v):
+        return "—" if (v is None or pd.isna(v)) else f"{v:,.0f}".replace(",", " ")
+
+    def mm(v):
+        return "—" if (v is None or pd.isna(v)) else f"{_fmt_es_number(round(v), 0)}"
+
+    rows, narr = [], []
+    for y in sorted(int(a) for a in years):
+        m = prod[(prod["Campo"] == campo) & (prod["Año"] == y)]
+        if one:
+            m = m[m["Variedad_nombre"] == variedad]
+        kg = float(pd.to_numeric(m["Kg"], errors="coerce").fillna(0).sum())
+
+        season_row, _, _, _ = winter_chill_summary(history, y)
+        cp_obt = (float(season_row["Chill Portions"].iloc[0])
+                  if not season_row.empty and "Chill Portions" in season_row.columns
+                  else np.nan)
+
+        gdh_obt = np.nan; sale = None; flor = None
+        if one:
+            bdf, _ = variety_bloom_predictions(history, y)
+            if not bdf.empty:
+                vr = bdf[bdf["variedad"] == variedad]
+                if not vr.empty:
+                    gdh_obt = vr["gdh_a_hoy"].iloc[0]
+                    sale = vr["sale_reposo"].iloc[0]
+                    flor = vr["floracion"].iloc[0]
+
+        rain, mon, mot = {}, {}, {}
+        for pid in ("brotacion", "floracion", "cuajado"):
+            s, e = _phase_window(*win_md[pid], y)
+            pm = _phase_metrics(history, s, e, tcol)
+            rain[pid] = pm["rain_mm"] if (pm and pd.notna(pm.get("rain_mm"))) else np.nan
+            sl = history[(history["fecha_hora"] >= s) & (history["fecha_hora"] <= e)]
+            ev = leaf_event_metrics(sl) if not sl.empty else {}
+            mon[pid] = int(ev.get("Eventos monilia medio/alto", 0))
+            mot[pid] = int(ev.get("Eventos moteado medio/alto", 0))
+
+        s, e = _phase_window(*win_md["floracion"], y)
+        polscore, polqual = _ficha_pollination(history, s, e)
+
+        rows.append({
+            "Año": y,
+            "Kg": _fmt_es_number(round(kg), 0),
+            "CP req.": (f"{cp_req:.0f}{cp_mark}" if one else "—"),
+            "CP obt.": (f"{cp_obt:.0f}" if pd.notna(cp_obt) else "—"),
+            "GDH req.": (f"{mil(gdh_req)}{gdh_mark}" if one else "—"),
+            "GDH obt.": mil(gdh_obt),
+            "Poliniz.": (f"{polscore:.0f} · {polqual}" if pd.notna(polscore) else "—"),
+            "Lluvia brot. (mm)": mm(rain["brotacion"]),
+            "Lluvia flor. (mm)": mm(rain["floracion"]),
+            "Lluvia cuaj. (mm)": mm(rain["cuajado"]),
+            "Monilia (b·f·c)": f"{mon['brotacion']}·{mon['floracion']}·{mon['cuajado']}",
+            "Moteado (b·f·c)": f"{mot['brotacion']}·{mot['floracion']}·{mot['cuajado']}",
+        })
+
+        # Narrativa
+        if one and pd.notna(cp_obt):
+            frio_txt = (f"frío {cp_obt:.0f} CP "
+                        + ("✅ cumple" if cp_obt >= cp_req else "❌ no cumple")
+                        + f" (req. {cp_req:.0f})")
+        elif pd.notna(cp_obt):
+            frio_txt = f"frío {cp_obt:.0f} CP"
+        else:
+            frio_txt = "frío sin datos"
+        flor_txt = (f", floración prevista {pd.Timestamp(flor).strftime('%d/%m')}"
+                    if (one and flor is not None and pd.notna(flor)) else "")
+        calor_txt = (f"; calor {mil(gdh_obt)} GDH (req. {mil(gdh_req)})" if one else "")
+        narr.append(
+            f"**{y} · {campo} · {variedad if one else 'todas las variedades'}** — "
+            f"{_fmt_es_number(round(kg), 0)} Kg · {frio_txt}{calor_txt}{flor_txt}. "
+            f"Polinización {polqual.lower()}"
+            + (f" (score {polscore:.0f})" if pd.notna(polscore) else "")
+            + f". Lluvia brotación/floración/cuajado: {mm(rain['brotacion'])}/"
+            f"{mm(rain['floracion'])}/{mm(rain['cuajado'])} mm. "
+            f"Eventos sanitarios medio/alto — monilia {mon['brotacion']+mon['floracion']+mon['cuajado']}, "
+            f"moteado {mot['brotacion']+mot['floracion']+mot['cuajado']} "
+            f"(brotación·floración·cuajado: monilia {mon['brotacion']}·{mon['floracion']}·{mon['cuajado']}, "
+            f"moteado {mot['brotacion']}·{mot['floracion']}·{mot['cuajado']})."
+        )
+
+    return pd.DataFrame(rows), narr
+
+
 def gallinal_tab(history):
     st.subheader("🍏 Análisis Gallinal · Fenología · Clima · Producción")
     st.caption(
@@ -15181,6 +15312,28 @@ def gallinal_tab(history):
         "produjeron ÷ árboles totales). Con varios años o variedades es la media "
         "ponderada por número de árboles."
     )
+
+    # ── FICHA AGROCLIMÁTICA POR AÑO (frío · calor · polinización · lluvia · sanidad) ──
+    with st.expander("📋 Ficha agroclimática por año (frío · calor · polinización · lluvia · sanidad)",
+                     expanded=False):
+        if variedad_sel == "(Todas)":
+            st.info("Para ver **CP y GDH requeridos por variedad** elige una variedad concreta "
+                    "arriba. Con «(Todas)» se muestran Kg, lluvia, polinización y eventos sanitarios, "
+                    "pero no los requerimientos por variedad.")
+        _fdf, _fnarr = _gallinal_ficha_rows(history, prod, campo_sel, variedad_sel, años_sel)
+        st.dataframe(_fdf, use_container_width=True, hide_index=True)
+        st.caption(
+            "**CP** = Chill Portions (frío) · **GDH** = grados-hora de calor (Anderson 1986) · "
+            "**req.** = requerimiento de la variedad, **obt.** = obtenido esa campaña (los mismos "
+            "datos del item Frío) · **Poliniz.** = score 0–100 y calidad en la ventana de floración · "
+            "**(b·f·c)** = eventos de riesgo medio/alto en brotación · floración · cuajado. "
+            "Marcas req.: **†** aproximado (Verdialona, Gallinal) · **\\*** sin dato → máx. conocido. "
+            "Ventanas de fase = las del modelo Gallinal (la fenología propia por variedad llegará después)."
+        )
+        if _fnarr:
+            st.markdown("##### 📝 Informe por año")
+            for _ln in _fnarr:
+                st.markdown("- " + _ln)
 
     # ── Tabla por año (agregando portainjertos / variedades) ──────────────────
     if len(años_sel) > 1:
