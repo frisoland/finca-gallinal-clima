@@ -17581,6 +17581,99 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
     return df
 
 
+# ── Hoja mojada en la PREVISIÓN (Sencrop no la trae) ─────────────────────────
+# Dos modelos seleccionables (interruptor en Decisiones):
+#   · "legacy" → método clásico/respaldo: mojada si llueve o HR≥92 (binario).
+#   · "rimpro" → estilo RIMpro: mojada si llueve, o HR≥rh_thr, o hay ROCÍO
+#     (T − punto de rocío ≤ dew_depr), con un RETARDO de secado (sigue mojada hasta
+#     dry_lag horas tras un periodo húmedo si HR≥rh_dry). Calibrable contra el
+#     sensor real del histórico (humectacion_hoja).
+LEAF_WETNESS_DEFAULTS = {"rh_thr": 90.0, "dew_depr": 1.5, "dry_lag": 2, "rh_dry": 80.0}
+
+
+def _dew_point_c(temp_c, rh_pct):
+    """Punto de rocío (°C) — fórmula de Magnus-Tetens."""
+    t = pd.to_numeric(temp_c, errors="coerce")
+    rh = pd.to_numeric(rh_pct, errors="coerce").clip(lower=1, upper=100)
+    a, b = 17.625, 243.04
+    gamma = np.log(rh / 100.0) + a * t / (b + t)
+    return b * gamma / (a - gamma)
+
+
+def estimate_leaf_wetness_minutes(df, params=None):
+    """Minutos de hoja mojada por hora (0/60) estimados sin sensor (estilo RIMpro).
+    df necesita temp_media, hr_media, lluvia_mm. Devuelve Series alineada al índice."""
+    p = {**LEAF_WETNESS_DEFAULTS, **(params or {})}
+    t  = pd.to_numeric(df.get("temp_media"), errors="coerce")
+    rh = pd.to_numeric(df.get("hr_media"),   errors="coerce")
+    ll = pd.to_numeric(df.get("lluvia_mm"),  errors="coerce").fillna(0)
+    td = _dew_point_c(t, rh)
+    base = ((ll > 0.1) | (rh >= p["rh_thr"]) | ((t - td) <= p["dew_depr"])).fillna(False).to_numpy()
+    rh_arr = rh.fillna(0).to_numpy()
+    lag_max = int(p["dry_lag"]); rh_dry = float(p["rh_dry"])
+    wet = base.copy()
+    lag = 0
+    for i in range(len(wet)):
+        if base[i]:
+            lag = lag_max
+        elif lag > 0 and rh_arr[i] >= rh_dry:
+            wet[i] = True
+            lag -= 1
+        else:
+            lag = 0
+    return pd.Series(np.where(wet, 60.0, 0.0), index=df.index)
+
+
+def _lw_model_params():
+    """(modelo, params) del estimador de hoja mojada, desde session_state."""
+    try:
+        model = st.session_state.get("lw_forecast_model", "rimpro")
+        params = st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS))
+    except Exception:
+        model, params = "rimpro", dict(LEAF_WETNESS_DEFAULTS)
+    return model, params
+
+
+def calibrate_leaf_wetness(history, sensor_min_minutes=30):
+    """Compara el estimador RIMpro con el sensor real (humectacion_hoja) del
+    histórico sobre una rejilla de parámetros. Devuelve (DataFrame, mejores_params).
+    Métrica: F1 sobre la clasificación horaria mojada/seca."""
+    need = {"temp_media", "hr_media", "lluvia_mm", "humectacion_hoja"}
+    if history is None or history.empty or not need.issubset(history.columns):
+        return pd.DataFrame(), None
+    h = history.copy()
+    h = h[pd.to_numeric(h["humectacion_hoja"], errors="coerce").notna()
+          & pd.to_numeric(h["hr_media"], errors="coerce").notna()]
+    if h.empty:
+        return pd.DataFrame(), None
+    measured = (pd.to_numeric(h["humectacion_hoja"], errors="coerce").fillna(0) >= sensor_min_minutes).to_numpy()
+    n = len(measured)
+    rows = []
+    for rh_thr in (87, 88, 90, 92):
+        for dew in (1.0, 1.5, 2.0):
+            for lag in (0, 1, 2, 3):
+                est = (estimate_leaf_wetness_minutes(
+                    h, {"rh_thr": rh_thr, "dew_depr": dew, "dry_lag": lag}) >= 30).to_numpy()
+                tp = int(np.sum(est & measured)); fp = int(np.sum(est & ~measured))
+                fn = int(np.sum(~est & measured)); tn = int(np.sum(~est & ~measured))
+                prec = tp / (tp + fp) if (tp + fp) else 0.0
+                rec  = tp / (tp + fn) if (tp + fn) else 0.0
+                f1   = (2 * prec * rec / (prec + rec)) if (prec + rec) else 0.0
+                rows.append({"HR≥": rh_thr, "Rocío ≤": dew, "Retardo h": lag,
+                             "Acierto %": round((tp + tn) / n * 100, 1),
+                             "Precisión %": round(prec * 100, 1),
+                             "Sensibilidad %": round(rec * 100, 1),
+                             "F1": round(f1, 3),
+                             "h estim.": int(est.sum()), "h medidas": int(measured.sum())})
+    res = pd.DataFrame(rows).sort_values("F1", ascending=False).reset_index(drop=True)
+    best = None
+    if not res.empty:
+        r0 = res.iloc[0]
+        best = {"rh_thr": float(r0["HR≥"]), "dew_depr": float(r0["Rocío ≤"]),
+                "dry_lag": int(r0["Retardo h"]), "rh_dry": 80.0}
+    return res, best
+
+
 def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, upper_temp=31.1):
     """
     DataFrame diario con valores de riesgo para Moteado, Monilia, Oídio y DD Carpocapsa.
@@ -17609,15 +17702,20 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
         f["fecha_hora"] = pd.to_datetime(f["fecha_hora"])
         f = f[f["fecha_hora"] >= today].copy()
         if not f.empty:
-            # La previsión no tiene sensor de hoja: estimamos hoja mojada horaria de
-            # forma conservadora (lluvia o HR≥92, como antes), para no inflar el futuro.
+            # La previsión no tiene sensor de hoja: se estima. Modelo seleccionable.
             if "humectacion_hoja" not in f.columns:
                 f["humectacion_hoja"] = np.nan
-            _hr = pd.to_numeric(f.get("hr_media"), errors="coerce")
-            _ll = pd.to_numeric(f.get("lluvia_mm"), errors="coerce").fillna(0)
-            _wet_est = ((_hr >= 92) | (_ll > 0.1))
             _sin_sensor = pd.to_numeric(f["humectacion_hoja"], errors="coerce").isna()
-            f.loc[_sin_sensor, "humectacion_hoja"] = np.where(_wet_est[_sin_sensor], 60.0, 0.0)
+            _model, _params = _lw_model_params()
+            if _model == "legacy":
+                # Respaldo clásico: mojada si llueve o HR≥92 (binario).
+                _hr = pd.to_numeric(f.get("hr_media"), errors="coerce")
+                _ll = pd.to_numeric(f.get("lluvia_mm"), errors="coerce").fillna(0)
+                _wet_min = np.where(((_hr >= 92) | (_ll > 0.1)), 60.0, 0.0)
+            else:
+                # RIMpro: lluvia / HR / rocío + retardo de secado (calibrable).
+                _wet_min = estimate_leaf_wetness_minutes(f, _params).to_numpy()
+            f.loc[_sin_sensor, "humectacion_hoja"] = np.asarray(_wet_min)[_sin_sensor.to_numpy()]
             f["_es_pred"] = True
             frames.append(f)
 
@@ -18676,6 +18774,50 @@ def render_decisiones_panel():
         "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
         "**predicción Sencrop** — para tomar decisiones de tratamiento con días de antelación."
     )
+
+    with st.expander("🍃 Modelo de hoja mojada en la previsión (afina el riesgo de moteado)"):
+        _cur_model = st.session_state.get("lw_forecast_model", "rimpro")
+        _opts = ["RIMpro (HR + rocío + secado)", "Clásico — respaldo (HR≥92 o lluvia)"]
+        _sel = st.radio("Modelo", _opts, index=(0 if _cur_model == "rimpro" else 1),
+                        key="lw_model_radio", horizontal=True,
+                        help="Sencrop no manda hoja mojada en la previsión, así que se estima. "
+                             "RIMpro usa HR, rocío (punto de rocío) y un retardo de secado; el "
+                             "clásico es el método anterior (respaldo). Cambia los avisos de moteado.")
+        st.session_state["lw_forecast_model"] = "rimpro" if _sel.startswith("RIMpro") else "legacy"
+
+        if st.session_state["lw_forecast_model"] == "rimpro":
+            _p = st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS))
+            st.caption(f"Parámetros actuales — HR ≥ **{_p['rh_thr']:.0f}%**, rocío (T−Tdew) ≤ "
+                       f"**{_p['dew_depr']:.1f}°C**, retardo de secado **{int(_p['dry_lag'])} h**. "
+                       "Calíbralos con tu sensor histórico para ajustarlos a la finca.")
+            _cc1, _cc2 = st.columns(2)
+            with _cc1:
+                if st.button("🎯 Calibrar con mi sensor de hoja", key="lw_calibrate",
+                             use_container_width=True):
+                    with st.spinner("Comparando el estimador con tu sensor histórico…"):
+                        _res, _best = calibrate_leaf_wetness(history_df)
+                    st.session_state["lw_calib_results"] = _res
+                    st.session_state["lw_calib_best"] = _best
+            _res = st.session_state.get("lw_calib_results")
+            _best = st.session_state.get("lw_calib_best")
+            if _best and _res is not None and not _res.empty:
+                with _cc2:
+                    if st.button(f"✅ Aplicar mejores (HR≥{_best['rh_thr']:.0f} · "
+                                 f"rocío≤{_best['dew_depr']:.1f} · retardo {_best['dry_lag']}h)",
+                                 key="lw_apply_best", type="primary", use_container_width=True):
+                        st.session_state["lw_params"] = _best
+                        st.success("Parámetros calibrados aplicados a la previsión.")
+                        st.rerun()
+                st.dataframe(_res.head(8), use_container_width=True, hide_index=True)
+                st.caption("Ordenado por **F1** (equilibrio entre acertar las horas mojadas reales "
+                           "y no inventarlas). **h estim./medidas** = horas mojadas estimadas vs las "
+                           "del sensor. Aplica la fila de arriba o quédate con la actual.")
+            elif _res is not None:
+                st.info("No hay datos de sensor de hoja (humectacion_hoja) suficientes en el "
+                        "histórico para calibrar. Se usan los parámetros estándar.")
+        else:
+            st.caption("Usando el modelo **clásico de respaldo** (mojada si llueve o HR≥92). "
+                       "Selecciona **RIMpro** arriba para el estimador afinado (recomendado).")
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
         st.markdown(
