@@ -400,6 +400,18 @@ def main():
           f"actuaciones: {len(activities)} · trampas: {len(traps)} · "
           f"biofix: {len(biofix)} · previsión: {len(forecast)}")
 
+    # ── Archivar la previsión de riesgo del día (para la "Fiabilidad de la
+    #    previsión"). Es idempotente: una vez por día de emisión, aunque también
+    #    se haya abierto el panel en la app. Silencioso: nunca tumba el informe. ──
+    try:
+        if forecast is not None and not forecast.empty:
+            app.archive_today_forecast(history, forecast)
+            print("Previsión de riesgo archivada para la fiabilidad del modelo.")
+        else:
+            print("Sin previsión Sencrop hoy: no se archiva (no afecta al informe).")
+    except Exception as _e:
+        print(f"  (archivado de previsión falló: {_e})")
+
     # ── DIAGNÓSTICO de cálculo (solo si REPORT_DEBUG=1) ────────────────────────
     if _DEBUG:
         print("-" * 60)
