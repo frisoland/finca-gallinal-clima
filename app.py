@@ -17602,25 +17602,27 @@ def _dew_point_c(temp_c, rh_pct):
 
 def estimate_leaf_wetness_minutes(df, params=None):
     """Minutos de hoja mojada por hora (0/60) estimados sin sensor (estilo RIMpro).
-    df necesita temp_media, hr_media, lluvia_mm. Devuelve Series alineada al índice."""
+    df necesita temp_media, hr_media, lluvia_mm. Devuelve Series alineada al índice.
+    VECTORIZADO (sin bucle por fila) para no saturar memoria al calibrar."""
     p = {**LEAF_WETNESS_DEFAULTS, **(params or {})}
     t  = pd.to_numeric(df.get("temp_media"), errors="coerce")
     rh = pd.to_numeric(df.get("hr_media"),   errors="coerce")
     ll = pd.to_numeric(df.get("lluvia_mm"),  errors="coerce").fillna(0)
     td = _dew_point_c(t, rh)
     base = ((ll > 0.1) | (rh >= p["rh_thr"]) | ((t - td) <= p["dew_depr"])).fillna(False).to_numpy()
-    rh_arr = rh.fillna(0).to_numpy()
-    lag_max = int(p["dry_lag"]); rh_dry = float(p["rh_dry"])
+    dry_ok = (rh.fillna(0) >= float(p["rh_dry"])).to_numpy()
+    # Retardo de secado: extiende la humedad hasta dry_lag horas tras un periodo
+    # húmedo, mientras la HR siga alta (dry_ok). Se hace en ≤dry_lag pasos vectorizados.
     wet = base.copy()
-    lag = 0
-    for i in range(len(wet)):
-        if base[i]:
-            lag = lag_max
-        elif lag > 0 and rh_arr[i] >= rh_dry:
-            wet[i] = True
-            lag -= 1
-        else:
-            lag = 0
+    active = base.copy()
+    for _ in range(int(p["dry_lag"])):
+        cand = np.zeros_like(wet)
+        cand[1:] = active[:-1]          # la hora siguiente a una hora húmeda activa
+        cand = cand & dry_ok & (~wet)   # solo si HR alta y no estaba ya húmeda
+        if not cand.any():
+            break
+        wet |= cand
+        active = cand                   # la frontera sigue extendiéndose un paso más
     return pd.Series(np.where(wet, 60.0, 0.0), index=df.index)
 
 
@@ -17641,11 +17643,18 @@ def calibrate_leaf_wetness(history, sensor_min_minutes=30):
     need = {"temp_media", "hr_media", "lluvia_mm", "humectacion_hoja"}
     if history is None or history.empty or not need.issubset(history.columns):
         return pd.DataFrame(), None
-    h = history.copy()
+    h = history[["temp_media", "hr_media", "lluvia_mm", "humectacion_hoja"]].copy()
     h = h[pd.to_numeric(h["humectacion_hoja"], errors="coerce").notna()
-          & pd.to_numeric(h["hr_media"], errors="coerce").notna()]
+          & pd.to_numeric(h["hr_media"], errors="coerce").notna()
+          & pd.to_numeric(h["temp_media"], errors="coerce").notna()]
     if h.empty:
         return pd.DataFrame(), None
+    # Tope de tamaño para no saturar la memoria de Streamlit Cloud (reinicia y echa
+    # fuera). Si hay muchísimas horas, se muestrea de forma uniforme.
+    _MAX_ROWS = 35000
+    if len(h) > _MAX_ROWS:
+        h = h.iloc[:: max(1, len(h) // _MAX_ROWS)].head(_MAX_ROWS)
+    h = h.reset_index(drop=True)
     measured = (pd.to_numeric(h["humectacion_hoja"], errors="coerce").fillna(0) >= sensor_min_minutes).to_numpy()
     n = len(measured)
     rows = []
@@ -18795,7 +18804,11 @@ def render_decisiones_panel():
                 if st.button("🎯 Calibrar con mi sensor de hoja", key="lw_calibrate",
                              use_container_width=True):
                     with st.spinner("Comparando el estimador con tu sensor histórico…"):
-                        _res, _best = calibrate_leaf_wetness(history_df)
+                        try:
+                            _res, _best = calibrate_leaf_wetness(history_df)
+                        except Exception as _e:
+                            _res, _best = pd.DataFrame(), None
+                            st.error(f"No se pudo calibrar: {_e}")
                     st.session_state["lw_calib_results"] = _res
                     st.session_state["lw_calib_best"] = _best
             _res = st.session_state.get("lw_calib_results")
