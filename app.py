@@ -17588,7 +17588,10 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
 #     (T − punto de rocío ≤ dew_depr), con un RETARDO de secado (sigue mojada hasta
 #     dry_lag horas tras un periodo húmedo si HR≥rh_dry). Calibrable contra el
 #     sensor real del histórico (humectacion_hoja).
-LEAF_WETNESS_DEFAULTS = {"rh_thr": 90.0, "dew_depr": 1.5, "dry_lag": 2, "rh_dry": 80.0}
+# Valores CALIBRADOS contra el sensor de la finca (mejor F1: HR≥92 · rocío≤1,5 ·
+# retardo 1 h). Son los predeterminados permanentes para que se apliquen siempre,
+# sin tener que recalibrar ni reaplicar tras un reinicio.
+LEAF_WETNESS_DEFAULTS = {"rh_thr": 92.0, "dew_depr": 1.5, "dry_lag": 1, "rh_dry": 80.0}
 
 
 def _dew_point_c(temp_c, rh_pct):
