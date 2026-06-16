@@ -17794,6 +17794,155 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
     return df
 
 
+# ── Fiabilidad de la previsión: archiva el riesgo previsto y lo compara con lo
+#    que de verdad pasó (confianza en el modelo para el triaje de parcelas). ──
+SUPABASE_FORECAST_ARCHIVE_PATH = "forecast_risk_archive.parquet"
+
+
+def upload_forecast_archive(df):
+    """Sube el archivo de previsiones (parquet) a Supabase Storage. Silencioso."""
+    if not supabase_is_configured() or df is None or df.empty:
+        return False
+    try:
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
+        buf.seek(0)
+        endpoint = climate_snapshot_storage_url(SUPABASE_FORECAST_ARCHIVE_PATH)
+        headers = supabase_headers()
+        headers["Content-Type"] = "application/octet-stream"
+        headers["x-upsert"] = "true"
+        r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _download_forecast_archive(url, key, cache_buster=0):
+    try:
+        endpoint = (f"{url.rstrip('/')}/storage/v1/object/"
+                    f"{SUPABASE_SNAPSHOT_BUCKET}/{SUPABASE_FORECAST_ARCHIVE_PATH}")
+        r = requests.get(endpoint, headers={"apikey": key, "Authorization": f"Bearer {key}"},
+                         timeout=60)
+        return r.content if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def load_forecast_archive(use_cache=True):
+    """Carga el histórico de previsiones archivadas (DataFrame) desde Supabase."""
+    if not supabase_is_configured():
+        return pd.DataFrame()
+    try:
+        url, key = get_supabase_credentials()
+        if not use_cache:
+            _download_forecast_archive.clear()
+        content = _download_forecast_archive(url, key, 0 if use_cache else int(time.time()))
+        if not content:
+            return pd.DataFrame()
+        return pd.read_parquet(io.BytesIO(content), engine="pyarrow")
+    except Exception:
+        return pd.DataFrame()
+
+
+def archive_today_forecast(history_df, forecast_df):
+    """Guarda (UNA vez al día) el riesgo PREVISTO por día, para luego compararlo con
+    lo que de verdad pase. Silencioso y a prueba de fallos: nunca rompe el panel."""
+    try:
+        if forecast_df is None or forecast_df.empty or not supabase_is_configured():
+            return
+        today = pd.Timestamp.now().normalize()
+        issue = today.strftime("%Y-%m-%d")
+        arch = load_forecast_archive()
+        if not arch.empty and "issue_date" in arch.columns and (arch["issue_date"] == issue).any():
+            return  # ya archivado hoy
+        risk = build_risk_timeline(history_df, forecast_df, days_back=0)
+        if risk.empty or "Es_prediccion" not in risk.columns:
+            return
+        fut = risk[risk["Es_prediccion"] == True]
+        if fut.empty:
+            return
+        rows = []
+        for _, r in fut.iterrows():
+            d = pd.Timestamp(r["Fecha"]).normalize()
+            rows.append({"issue_date": issue, "target_date": d.strftime("%Y-%m-%d"),
+                         "horizon": int((d - today).days),
+                         "pred_mills": float(r.get("Mills_valor", np.nan)),
+                         "pred_monilia": float(r.get("Monilia_valor", np.nan)),
+                         "pred_oidio": float(r.get("Oidio_valor", np.nan)),
+                         "pred_rain": float(r.get("Lluvia", np.nan))})
+        new = pd.DataFrame(rows)
+        out = pd.concat([arch, new], ignore_index=True) if not arch.empty else new
+        out = out.drop_duplicates(["issue_date", "target_date"], keep="last")
+        if upload_forecast_archive(out):
+            try:
+                _download_forecast_archive.clear()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def forecast_reliability(history_df, archive_df=None):
+    """Compara el riesgo PREVISTO (archivo) con el REAL (histórico, sensor) para los
+    días ya transcurridos. Devuelve (DataFrame resumen, meta) o (None, meta)."""
+    try:
+        if archive_df is None:
+            archive_df = load_forecast_archive()
+        if archive_df is None or archive_df.empty or history_df is None or history_df.empty:
+            return None, {"n": 0}
+        today = pd.Timestamp.now().normalize()
+        oldest = pd.to_datetime(archive_df.get("target_date"), errors="coerce").min()
+        days_back = 60 if pd.isna(oldest) else min(max(int((today - oldest).days) + 5, 15), 730)
+        actual = build_risk_timeline(history_df, pd.DataFrame(), days_back=days_back)
+        if actual.empty:
+            return None, {"n": 0}
+        actual = actual.copy()
+        actual["target_date"] = pd.to_datetime(actual["Fecha"]).dt.strftime("%Y-%m-%d")
+        a = actual.drop_duplicates("target_date").set_index("target_date")
+        THR, RAIN = 100.0, 1.0
+        recs = []
+        for _, r in archive_df.iterrows():
+            td = str(r.get("target_date"))
+            if td not in a.index:
+                continue
+            recs.append({
+                "horizon": int(r.get("horizon", 0)),
+                "moteado_p": float(r.get("pred_mills", 0)) >= THR,
+                "moteado_r": float(a.loc[td, "Mills_valor"]) >= THR,
+                "monilia_p": float(r.get("pred_monilia", 0)) >= THR,
+                "monilia_r": float(a.loc[td, "Monilia_valor"]) >= THR,
+                "oidio_p": float(r.get("pred_oidio", 0)) >= THR,
+                "oidio_r": float(a.loc[td, "Oidio_valor"]) >= THR,
+                "lluvia_p": float(r.get("pred_rain", 0)) >= RAIN,
+                "lluvia_r": float(a.loc[td, "Lluvia"]) >= RAIN,
+            })
+        comp = pd.DataFrame(recs)
+        if comp.empty:
+            return None, {"n": 0}
+        out_rows = []
+        for label, pc, rc in [("🍄 Moteado", "moteado_p", "moteado_r"),
+                              ("🟤 Monilia", "monilia_p", "monilia_r"),
+                              ("⚪ Oídio", "oidio_p", "oidio_r"),
+                              ("🌧️ Lluvia", "lluvia_p", "lluvia_r")]:
+            n = len(comp)
+            acc = (comp[pc] == comp[rc]).mean() * 100
+            avisos = int(comp[pc].sum())
+            prec = (comp.loc[comp[pc], rc].mean() * 100) if avisos else np.nan
+            reales = int(comp[rc].sum())
+            rec = (comp.loc[comp[rc], pc].mean() * 100) if reales else np.nan
+            out_rows.append({"Qué": label, "Días evaluados": n, "Acierto %": round(acc, 0),
+                             "Veces que avisó": avisos,
+                             "Si avisó, acertó %": (round(prec, 0) if pd.notna(prec) else "—"),
+                             "Casos reales": reales,
+                             "No se le escapó %": (round(rec, 0) if pd.notna(rec) else "—")})
+        meta = {"n": len(comp), "comp": comp,
+                "since": str(archive_df.get("issue_date", pd.Series(dtype=str)).min())}
+        return pd.DataFrame(out_rows), meta
+    except Exception:
+        return None, {"n": 0}
+
+
 def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, height=300):
     """
     Crea gráfico Plotly estilo RIMpro para una enfermedad.
@@ -18779,6 +18928,10 @@ def render_decisiones_panel():
         st.warning("⚠️ Sin datos climáticos. Carga el histórico desde Supabase o Sencrop y la predicción desde la pestaña 🌦️ Sencrop.")
         return
 
+    # Archiva (1 vez al día) la previsión de riesgo, para medir su fiabilidad con el
+    # tiempo. Silencioso: si Supabase falla, no afecta al panel.
+    archive_today_forecast(history_df, forecast_df)
+
     st.markdown(
         "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
         "**predicción Sencrop** — para tomar decisiones de tratamiento con días de antelación."
@@ -18831,6 +18984,52 @@ def render_decisiones_panel():
         else:
             st.caption("Usando el modelo **clásico de respaldo** (mojada si llueve o HR≥92). "
                        "Selecciona **RIMpro** arriba para el estimador afinado (recomendado).")
+
+    with st.expander("📡 Fiabilidad de la previsión (¿cuánto me puedo fiar del riesgo previsto?)"):
+        st.caption(
+            "Cada día se **archiva** el riesgo que la previsión anuncia para los próximos días; "
+            "cuando esos días pasan, se compara con lo que **de verdad** ocurrió (según tu sensor). "
+            "Así sabes la **confianza** del modelo para tu triaje de parcelas. Se acumula desde hoy: "
+            "con pocos días aún es orientativo."
+        )
+        if st.button("📊 Calcular fiabilidad", key="forecast_reliab_btn"):
+            with st.spinner("Comparando previsiones archivadas con lo que pasó…"):
+                _rd, _rm = forecast_reliability(history_df)
+            st.session_state["forecast_reliab_df"] = _rd
+            st.session_state["forecast_reliab_meta"] = _rm
+        _rel_df = st.session_state.get("forecast_reliab_df")
+        _rel_meta = st.session_state.get("forecast_reliab_meta", {"n": 0})
+        if _rel_df is None or (hasattr(_rel_df, "empty") and _rel_df.empty):
+            if "forecast_reliab_df" in st.session_state:
+                st.info("Aún no hay predicciones archivadas que ya hayan pasado para comparar. "
+                        "Entra al panel unos días seguidos y vuelve aquí (irá llenándose solo).")
+        else:
+            st.dataframe(_rel_df, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Comparados **{_rel_meta.get('n', 0)} días** previstos ya transcurridos. "
+                "**Acierto %** = coincidió previsto/real (haya o no evento). · **Si avisó, acertó %** "
+                "= de las veces que la previsión anunció el evento, cuántas se cumplieron (tu "
+                "*confianza* cuando te avisa). · **No se le escapó %** = de los eventos reales, "
+                "cuántos había anunciado. Umbral de evento: índice ≥ 100 (moteado/monilia/oídio) "
+                "y ≥ 1 mm (lluvia)."
+            )
+            # Fiabilidad por antelación (la confianza baja al alejarse el horizonte).
+            _comp = _rel_meta.get("comp")
+            if _comp is not None and not _comp.empty:
+                _hz_rows = []
+                for _lo, _hi, _lbl in [(1, 2, "1–2 días"), (3, 4, "3–4 días"), (5, 9, "5+ días")]:
+                    _s = _comp[(_comp["horizon"] >= _lo) & (_comp["horizon"] <= _hi)]
+                    if _s.empty:
+                        continue
+                    def _pp(pc, rc):
+                        av = int(_s[pc].sum())
+                        return (round(_s.loc[_s[pc], rc].mean() * 100, 0) if av else "—")
+                    _hz_rows.append({"Antelación": _lbl, "Días": len(_s),
+                                     "Moteado (si avisó) %": _pp("moteado_p", "moteado_r"),
+                                     "Lluvia (si avisó) %": _pp("lluvia_p", "lluvia_r")})
+                if _hz_rows:
+                    st.markdown("**Confianza por antelación** (si la previsión avisa, ¿acierta?):")
+                    st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
         st.markdown(
