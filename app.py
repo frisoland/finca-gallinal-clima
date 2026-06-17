@@ -12633,20 +12633,47 @@ def _parquet_bytes_to_df(content):
     return pd.read_parquet(io.BytesIO(content), engine="pyarrow")
 
 
+def _carpocapsa_merge_by_year(session_df, existing_df):
+    """Une por AÑO: la sesión manda en los años que contiene; los años que SOLO
+    están en Supabase se conservan. Así guardar NUNCA borra un año (a prueba de
+    pérdidas), aunque la sesión actual tenga menos años."""
+    s = session_df if isinstance(session_df, pd.DataFrame) else pd.DataFrame()
+    e = existing_df if isinstance(existing_df, pd.DataFrame) else pd.DataFrame()
+    if e.empty:
+        return s
+    if s.empty:
+        return e
+    if "Campaña" not in s.columns or "Campaña" not in e.columns:
+        return pd.concat([e, s], ignore_index=True)
+    sy = set(pd.to_numeric(s["Campaña"], errors="coerce").dropna().astype(int).tolist())
+    keep_old = e[~pd.to_numeric(e["Campaña"], errors="coerce").isin(sy)]
+    return pd.concat([keep_old, s], ignore_index=True)
+
+
 def upload_carpocapsa_snapshot_to_supabase(traps_df, biofix_df, damage_df):
-    """Guarda los tres DataFrames de carpocapsa como Parquet en Supabase Storage.
-    Siempre guarda TODOS los años presentes en sesión (acumulativo)."""
+    """Guarda capturas/biofix/daños como Parquet en Supabase Storage. Hace MERGE
+    POR AÑO con lo ya guardado: los años que la sesión no tenga NO se borran. Así
+    puedes importar un año hoy y otro otro día sin perder ninguno."""
     if not supabase_is_configured():
         return False, "Supabase no está configurado. Revisa SUPABASE_URL y SUPABASE_KEY en Secrets."
+
+    # Fusionar con lo ya guardado en Supabase (a prueba de pérdidas).
+    try:
+        _et, _eb, _ed, _ = load_carpocapsa_snapshot_from_supabase()
+    except Exception:
+        _et = _eb = _ed = None
+    traps_m  = _carpocapsa_merge_by_year(traps_df,  _et)
+    biofix_m = _carpocapsa_merge_by_year(biofix_df, _eb)
+    damage_m = _carpocapsa_merge_by_year(damage_df, _ed)
 
     headers = supabase_headers()
     headers["Content-Type"] = "application/octet-stream"
     headers["x-upsert"] = "true"
 
     files = [
-        (traps_df,  SUPABASE_CARPOCAPSA_TRAPS_FILE,  "capturas"),
-        (biofix_df, SUPABASE_CARPOCAPSA_BIOFIX_FILE, "biofix"),
-        (damage_df, SUPABASE_CARPOCAPSA_DAMAGE_FILE, "daños"),
+        (traps_m,  SUPABASE_CARPOCAPSA_TRAPS_FILE,  "capturas"),
+        (biofix_m, SUPABASE_CARPOCAPSA_BIOFIX_FILE, "biofix"),
+        (damage_m, SUPABASE_CARPOCAPSA_DAMAGE_FILE, "daños"),
     ]
 
     saved = []
@@ -12666,10 +12693,21 @@ def upload_carpocapsa_snapshot_to_supabase(traps_df, biofix_df, damage_df):
         n_years = df["Campaña"].nunique() if "Campaña" in df.columns else "?"
         saved.append(f"{label} ({len(df)} filas, {n_years} campaña/s)")
 
+    # Reflejar el conjunto fusionado en la sesión: el desplegable mostrará todos los años.
+    try:
+        if isinstance(traps_m, pd.DataFrame) and not traps_m.empty:
+            st.session_state["carpocapsa_traps_df"] = traps_m
+        if isinstance(biofix_m, pd.DataFrame) and not biofix_m.empty:
+            st.session_state["carpocapsa_biofix_df"] = biofix_m
+        if isinstance(damage_m, pd.DataFrame) and not damage_m.empty:
+            st.session_state["carpocapsa_damage_df"] = damage_m
+    except Exception:
+        pass
+
     if not saved:
         return False, "No había datos de carpocapsa para guardar."
 
-    return True, "Snapshot carpocapsa guardado: " + ", ".join(saved) + "."
+    return True, "Snapshot carpocapsa guardado (fusión por año, sin perder años): " + ", ".join(saved) + "."
 
 
 def autosave_activities_to_supabase():
@@ -13525,6 +13563,18 @@ def carpocapsa_tab(history):
                 default=_years_all[-3:] if len(_years_all) >= 2 else _years_all,
                 key="carpo_cmp_years",
             )
+            # Filtro por campo/zona: comparar el MISMO campo entre años (útil porque
+            # no todos los años tienen los mismos campos/trampas).
+            _traps_all = st.session_state.carpocapsa_traps_df
+            _zonas = []
+            if _sel_years and "Campo/Zona" in _traps_all.columns:
+                _zt = _traps_all[pd.to_numeric(_traps_all.get("Campaña"), errors="coerce")
+                                 .isin([int(y) for y in _sel_years])]
+                _zonas = sorted([z for z in _zt["Campo/Zona"].dropna().astype(str).unique() if z.strip()])
+            _zona_sel = st.selectbox(
+                "Campo/zona", ["(Todos)"] + _zonas, key="carpo_cmp_zona",
+                help="Compara el MISMO campo entre años. Los grados-día son de toda la finca "
+                     "(clima común), así que la curva de DD no cambia al filtrar por campo.")
             try:
                 import plotly.graph_objects as _go
                 _plotly_ok = True
@@ -13544,6 +13594,8 @@ def carpocapsa_tab(history):
                     tt = carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, _y).copy()
                     tt["Fecha"] = pd.to_datetime(tt["Fecha"], errors="coerce")
                     tt = tt.dropna(subset=["Fecha"])
+                    if _zona_sel != "(Todos)" and "Campo/Zona" in tt.columns:
+                        tt = tt[tt["Campo/Zona"].astype(str) == _zona_sel]
                     _ctd = (pd.to_numeric(tt["Capturas machos"], errors="coerce").fillna(0) /
                             pd.to_numeric(tt["Días desde lectura anterior"], errors="coerce").fillna(7).clip(lower=1))
                     tt = tt.assign(_ctd=_ctd)
@@ -13552,8 +13604,10 @@ def carpocapsa_tab(history):
                         fig_cap.add_trace(_go.Scatter(
                             x=_doy(dcap["Fecha"]), y=dcap["_ctd"], mode="lines+markers", name=str(_y),
                             hovertemplate="%{x|%d %b}<br>" + str(_y) + ": %{y:.2f}<extra></extra>"))
-                    # Biofix (primer activo)
+                    # Biofix (primer activo) — de la zona si está filtrada
                     bb = carpocapsa_filter_campaign(st.session_state.carpocapsa_biofix_df, _y)
+                    if _zona_sel != "(Todos)" and not bb.empty and "Campo/Zona" in bb.columns:
+                        bb = bb[bb["Campo/Zona"].astype(str) == _zona_sel]
                     bfd = pd.NaT
                     if not bb.empty and "Fecha biofix" in bb.columns:
                         _b = bb.copy()
@@ -13563,20 +13617,36 @@ def carpocapsa_tab(history):
                         _b = _b.dropna(subset=["Fecha biofix"]).sort_values("Fecha biofix")
                         if not _b.empty:
                             bfd = _b["Fecha biofix"].iloc[0]
-                    # DD acumulados desde biofix
+                    # Grados-día diarios de la campaña (clima de la finca)
                     _hy = carpocapsa_filter_history_campaign(history, _y)
-                    dd = carpocapsa_daily_degree_days(_hy, base_temp=float(base_temp),
-                                                      upper_temp=upper_value, method=method)
-                    if not dd.empty:
-                        if pd.notna(bfd):
-                            dd = dd[dd["Fecha"] >= pd.Timestamp(bfd)].copy()
-                        dd = dd.assign(_acum=dd["DD día"].cumsum())
-                        if not dd.empty:
+                    dd_full = carpocapsa_daily_degree_days(_hy, base_temp=float(base_temp),
+                                                           upper_temp=upper_value, method=method)
+                    # Curva DD acumulados desde el biofix (umbrales 90/500/1200 son desde biofix)
+                    if not dd_full.empty and pd.notna(bfd):
+                        ddb = dd_full[dd_full["Fecha"] >= pd.Timestamp(bfd)].copy()
+                        if not ddb.empty:
+                            ddb = ddb.assign(_acum=ddb["DD día"].cumsum())
                             fig_dd.add_trace(_go.Scatter(
-                                x=_doy(dd["Fecha"]), y=dd["_acum"], mode="lines", name=str(_y),
+                                x=_doy(ddb["Fecha"]), y=ddb["_acum"], mode="lines", name=str(_y),
                                 hovertemplate="%{x|%d %b}<br>" + str(_y) + ": %{y:.0f} DD<extra></extra>"))
-                    # Resumen
+                    # Primera captura y DD acumulados desde el 1 de enero hasta esa fecha
+                    _pos = tt[pd.to_numeric(tt["Capturas machos"], errors="coerce").fillna(0) > 0]
+                    first_cap = _pos["Fecha"].min() if not _pos.empty else pd.NaT
+                    dd_to_first = np.nan
+                    if pd.notna(first_cap) and not dd_full.empty:
+                        _jan1 = pd.Timestamp(int(_y), 1, 1)
+                        _seg = dd_full[(dd_full["Fecha"] >= _jan1) & (dd_full["Fecha"] <= pd.Timestamp(first_cap))]
+                        if not _seg.empty:
+                            dd_to_first = float(_seg["DD día"].sum())
+                    # Nº de trampas distintas y capturas por trampa (comparable entre años)
+                    if {"Campo/Zona", "Trampa"}.issubset(tt.columns):
+                        n_traps = int(tt[["Campo/Zona", "Trampa"]].astype(str).drop_duplicates().shape[0])
+                    elif "Trampa" in tt.columns:
+                        n_traps = int(tt["Trampa"].astype(str).nunique())
+                    else:
+                        n_traps = 0
                     total_cap = int(pd.to_numeric(tt["Capturas machos"], errors="coerce").fillna(0).sum())
+                    capt_per_trap = (total_cap / n_traps) if n_traps > 0 else np.nan
                     pico = float(dcap["_ctd"].max()) if not dcap.empty else np.nan
                     pico_f = dcap.loc[dcap["_ctd"].idxmax(), "Fecha"] if not dcap.empty else pd.NaT
                     try:
@@ -13585,6 +13655,8 @@ def carpocapsa_tab(history):
                     except Exception:
                         n_trat = 0
                     dmg = carpocapsa_filter_campaign(st.session_state.carpocapsa_damage_df, _y)
+                    if _zona_sel != "(Todos)" and not dmg.empty and "Campo/Zona" in dmg.columns:
+                        dmg = dmg[dmg["Campo/Zona"].astype(str) == _zona_sel]
                     dano = np.nan
                     if not dmg.empty:
                         rev = pd.to_numeric(dmg.get("Frutos revisados"), errors="coerce").fillna(0).sum()
@@ -13593,10 +13665,13 @@ def carpocapsa_tab(history):
                     resumen.append({
                         "Campaña": int(_y),
                         "Biofix": pd.Timestamp(bfd).strftime("%d/%m") if pd.notna(bfd) else "—",
-                        "Lecturas": len(tt),
-                        "Total capturas": total_cap,
+                        "1ª captura": pd.Timestamp(first_cap).strftime("%d/%m") if pd.notna(first_cap) else "—",
+                        "DD a 1ª captura": f"{dd_to_first:.0f}" if pd.notna(dd_to_first) else "—",
+                        "Nº trampas": n_traps if n_traps > 0 else "—",
+                        "Capturas/trampa": f"{capt_per_trap:.1f}" if pd.notna(capt_per_trap) else "—",
                         "Pico capt/tr/día": f"{pico:.2f}" if pd.notna(pico) else "—",
                         "Fecha pico": pd.Timestamp(pico_f).strftime("%d/%m") if pd.notna(pico_f) else "—",
+                        "Capt. totales": total_cap,
                         "Tratam.": n_trat,
                         "% daño": f"{dano:.1f}" if pd.notna(dano) else "—",
                     })
@@ -13615,10 +13690,14 @@ def carpocapsa_tab(history):
                 st.markdown("**Resumen por campaña**")
                 st.dataframe(pd.DataFrame(resumen), use_container_width=True, hide_index=True)
                 st.caption(
-                    "Curvas superpuestas por **día del año** (eje X = fecha sin año) para comparar "
-                    "campañas. El **DD se acumula desde el biofix** de cada año (si una campaña no "
-                    "tiene biofix, su curva de DD no se dibuja). Líneas punteadas = umbrales "
-                    "orientativos de eclosión. Usa los mismos parámetros de DD elegidos arriba."
+                    "Curvas superpuestas por **día del año** (eje X = fecha sin año). Las capturas "
+                    "se muestran **por trampa y día** (comparable aunque pongas distinto nº de "
+                    "trampas cada año). · **Capturas/trampa** = capturas totales ÷ nº de trampas de "
+                    "ese año. · **DD a 1ª captura** = grados-día acumulados **desde el 1 de enero** "
+                    "hasta la primera captura (indica cuánto calor hizo falta para el primer vuelo). "
+                    "· La **curva de DD** se acumula desde el biofix (sus umbrales 90/500/1200 son "
+                    "desde biofix); sin biofix no se dibuja. Filtra por **campo/zona** para comparar "
+                    "el mismo campo entre años."
                 )
 
     st.markdown("### 2. Capturas de trampas")
