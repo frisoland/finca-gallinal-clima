@@ -13510,6 +13510,117 @@ def carpocapsa_tab(history):
         st.warning(climate_msg)
     history_campaign = carpocapsa_filter_history_campaign(history, campaign_year) if filter_climate else history
 
+    # ── Comparador de campañas (año vs año) ───────────────────────────────────
+    with st.expander("📊 Comparar campañas (año vs año)", expanded=False):
+        _years_all = carpocapsa_available_campaigns(
+            st.session_state.carpocapsa_traps_df,
+            st.session_state.carpocapsa_biofix_df,
+            st.session_state.carpocapsa_damage_df,
+        )
+        if len(_years_all) < 1:
+            st.info("Importa al menos una campaña de capturas para comparar.")
+        else:
+            _sel_years = st.multiselect(
+                "Campañas a comparar", _years_all,
+                default=_years_all[-3:] if len(_years_all) >= 2 else _years_all,
+                key="carpo_cmp_years",
+            )
+            try:
+                import plotly.graph_objects as _go
+                _plotly_ok = True
+            except Exception:
+                _plotly_ok = False
+                st.error("Plotly no disponible (Manage app → Reboot).")
+            if _sel_years and _plotly_ok:
+                _acts = st.session_state.get("activities_df", pd.DataFrame())
+                _REF = 2000
+
+                def _doy(s):  # llevar fechas a un año común para superponerlas
+                    s = pd.to_datetime(s, errors="coerce")
+                    return s.apply(lambda d: pd.Timestamp(_REF, d.month, d.day) if pd.notna(d) else pd.NaT)
+
+                fig_cap, fig_dd, resumen = _go.Figure(), _go.Figure(), []
+                for _y in sorted(_sel_years):
+                    tt = carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, _y).copy()
+                    tt["Fecha"] = pd.to_datetime(tt["Fecha"], errors="coerce")
+                    tt = tt.dropna(subset=["Fecha"])
+                    _ctd = (pd.to_numeric(tt["Capturas machos"], errors="coerce").fillna(0) /
+                            pd.to_numeric(tt["Días desde lectura anterior"], errors="coerce").fillna(7).clip(lower=1))
+                    tt = tt.assign(_ctd=_ctd)
+                    dcap = tt.groupby("Fecha", as_index=False)["_ctd"].mean() if not tt.empty else pd.DataFrame()
+                    if not dcap.empty:
+                        fig_cap.add_trace(_go.Scatter(
+                            x=_doy(dcap["Fecha"]), y=dcap["_ctd"], mode="lines+markers", name=str(_y),
+                            hovertemplate="%{x|%d %b}<br>" + str(_y) + ": %{y:.2f}<extra></extra>"))
+                    # Biofix (primer activo)
+                    bb = carpocapsa_filter_campaign(st.session_state.carpocapsa_biofix_df, _y)
+                    bfd = pd.NaT
+                    if not bb.empty and "Fecha biofix" in bb.columns:
+                        _b = bb.copy()
+                        _b["Fecha biofix"] = pd.to_datetime(_b["Fecha biofix"], errors="coerce")
+                        if "Activo" in _b.columns:
+                            _b = _b[_b["Activo"] != False]  # noqa: E712
+                        _b = _b.dropna(subset=["Fecha biofix"]).sort_values("Fecha biofix")
+                        if not _b.empty:
+                            bfd = _b["Fecha biofix"].iloc[0]
+                    # DD acumulados desde biofix
+                    _hy = carpocapsa_filter_history_campaign(history, _y)
+                    dd = carpocapsa_daily_degree_days(_hy, base_temp=float(base_temp),
+                                                      upper_temp=upper_value, method=method)
+                    if not dd.empty:
+                        if pd.notna(bfd):
+                            dd = dd[dd["Fecha"] >= pd.Timestamp(bfd)].copy()
+                        dd = dd.assign(_acum=dd["DD día"].cumsum())
+                        if not dd.empty:
+                            fig_dd.add_trace(_go.Scatter(
+                                x=_doy(dd["Fecha"]), y=dd["_acum"], mode="lines", name=str(_y),
+                                hovertemplate="%{x|%d %b}<br>" + str(_y) + ": %{y:.0f} DD<extra></extra>"))
+                    # Resumen
+                    total_cap = int(pd.to_numeric(tt["Capturas machos"], errors="coerce").fillna(0).sum())
+                    pico = float(dcap["_ctd"].max()) if not dcap.empty else np.nan
+                    pico_f = dcap.loc[dcap["_ctd"].idxmax(), "Fecha"] if not dcap.empty else pd.NaT
+                    try:
+                        _trt = carpocapsa_treatments_from_activities(_acts, _y, history=history)
+                        n_trat = len(_trt) if _trt is not None else 0
+                    except Exception:
+                        n_trat = 0
+                    dmg = carpocapsa_filter_campaign(st.session_state.carpocapsa_damage_df, _y)
+                    dano = np.nan
+                    if not dmg.empty:
+                        rev = pd.to_numeric(dmg.get("Frutos revisados"), errors="coerce").fillna(0).sum()
+                        dan = pd.to_numeric(dmg.get("Frutos dañados"), errors="coerce").fillna(0).sum()
+                        dano = (dan / rev * 100) if rev > 0 else np.nan
+                    resumen.append({
+                        "Campaña": int(_y),
+                        "Biofix": pd.Timestamp(bfd).strftime("%d/%m") if pd.notna(bfd) else "—",
+                        "Lecturas": len(tt),
+                        "Total capturas": total_cap,
+                        "Pico capt/tr/día": f"{pico:.2f}" if pd.notna(pico) else "—",
+                        "Fecha pico": pd.Timestamp(pico_f).strftime("%d/%m") if pd.notna(pico_f) else "—",
+                        "Tratam.": n_trat,
+                        "% daño": f"{dano:.1f}" if pd.notna(dano) else "—",
+                    })
+
+                fig_cap.update_layout(title="Capturas por trampa y día", height=330,
+                                      xaxis=dict(tickformat="%d %b"), yaxis_title="capt/trampa/día",
+                                      margin=dict(l=10, r=10, t=40, b=10), legend_title="Campaña")
+                st.plotly_chart(fig_cap, use_container_width=True)
+                for _thr, _lbl in [(90, "inicio eclosión"), (500, "pico 1ª gen"), (1200, "pico 2ª gen")]:
+                    fig_dd.add_hline(y=_thr, line_dash="dot", line_color="rgba(150,150,150,0.5)",
+                                     annotation_text=f"{_thr} DD · {_lbl}", annotation_position="top left")
+                fig_dd.update_layout(title="Grados-día acumulados (desde el biofix de cada campaña)",
+                                     height=330, xaxis=dict(tickformat="%d %b"), yaxis_title="DD acumulados",
+                                     margin=dict(l=10, r=10, t=40, b=10), legend_title="Campaña")
+                st.plotly_chart(fig_dd, use_container_width=True)
+                st.markdown("**Resumen por campaña**")
+                st.dataframe(pd.DataFrame(resumen), use_container_width=True, hide_index=True)
+                st.caption(
+                    "Curvas superpuestas por **día del año** (eje X = fecha sin año) para comparar "
+                    "campañas. El **DD se acumula desde el biofix** de cada año (si una campaña no "
+                    "tiene biofix, su curva de DD no se dibuja). Líneas punteadas = umbrales "
+                    "orientativos de eclosión. Usa los mismos parámetros de DD elegidos arriba."
+                )
+
     st.markdown("### 2. Capturas de trampas")
     st.caption(f"Introduce o revisa las lecturas de la campaña {campaign_year}. El campo/zona debe coincidir con el biofix si quieres cálculo por zona.")
     traps_base = carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, campaign_year).copy()
