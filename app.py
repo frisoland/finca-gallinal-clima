@@ -13665,9 +13665,21 @@ def carpocapsa_tab(history):
                     capt_per_trap = (total_cap / n_traps) if n_traps > 0 else np.nan
                     pico = float(dcap["_ctd"].max()) if not dcap.empty else np.nan
                     pico_f = dcap.loc[dcap["_ctd"].idxmax(), "Fecha"] if not dcap.empty else pd.NaT
+                    # Tratamientos de CARPOCAPSA (excluye fungicidas/abonos puros).
+                    # Si hay campo filtrado, solo los que tocaron ESE campo. Se cuentan
+                    # FECHAS distintas de tratamiento (= nº de pases), no filas.
                     try:
                         _trt = carpocapsa_treatments_from_activities(_acts, _y, history=history)
-                        n_trat = len(_trt) if _trt is not None else 0
+                        if (_trt is not None and not _trt.empty and _zona_sel != "(Todos)"
+                                and "Campos" in _trt.columns):
+                            _z = _zona_sel.strip().lower()
+                            _base = _zona_sel.split(" - ")[0].strip().lower()
+                            _cc = _trt["Campos"].fillna("").astype(str).str.lower()
+                            _trt = _trt[_cc.str.contains(_z, regex=False) | _cc.str.contains(_base, regex=False)]
+                        if _trt is not None and not _trt.empty and "Fecha" in _trt.columns:
+                            n_trat = int(pd.to_datetime(_trt["Fecha"], errors="coerce").dt.date.nunique())
+                        else:
+                            n_trat = 0
                     except Exception:
                         n_trat = 0
                     dmg = carpocapsa_filter_campaign(st.session_state.carpocapsa_damage_df, _y)
@@ -13715,7 +13727,9 @@ def carpocapsa_tab(history):
                     "hasta la primera captura (indica cuánto calor hizo falta para el primer vuelo). "
                     "· La **curva de DD** se acumula desde el biofix (sus umbrales 90/500/1200 son "
                     "desde biofix); sin biofix no se dibuja. Filtra por **campo/zona** para comparar "
-                    "el mismo campo entre años."
+                    "el mismo campo entre años. · **Tratam.** = nº de pases de **carpocapsa** "
+                    "(excluye fungicidas/abonos puros); con un campo filtrado, solo los que tocaron "
+                    "ese campo; sin filtro, los de toda la finca."
                 )
 
     st.markdown("### 2. Capturas de trampas")
