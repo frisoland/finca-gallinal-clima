@@ -13581,13 +13581,26 @@ def carpocapsa_tab(history):
             except Exception:
                 _plotly_ok = False
                 st.error("Plotly no disponible (Manage app → Reboot).")
+            _cap_metric = st.radio(
+                "Métrica de capturas",
+                ["Media (capt/trampa/día)", "Totales por lectura (capturas/trampa)"],
+                horizontal=True, key="carpo_cmp_capmetric",
+                help="«Media» = capturas ÷ días desde la lectura anterior (capt/trampa/día). "
+                     "«Totales por lectura» = capturas de cada lectura por trampa (p. ej. 16).")
             if _sel_years and _plotly_ok:
                 _acts = st.session_state.get("activities_df", pd.DataFrame())
+                _is_mean = _cap_metric.startswith("Media")
                 _REF = 2000
 
                 def _doy(s):  # llevar fechas a un año común para superponerlas
                     s = pd.to_datetime(s, errors="coerce")
                     return s.apply(lambda d: pd.Timestamp(_REF, d.month, d.day) if pd.notna(d) else pd.NaT)
+
+                # Grados-día diarios de TODA la finca, UNA sola vez (cacheado). Antes se
+                # recalculaba por año en cada cambio, lo que saturaba memoria y echaba
+                # fuera del item; ahora se corta por año (barato).
+                _dd_all = carpocapsa_daily_degree_days(
+                    history, base_temp=float(base_temp), upper_temp=upper_value, method=method)
 
                 fig_cap, fig_dd, resumen = _go.Figure(), _go.Figure(), []
                 for _y in sorted(_sel_years):
@@ -13596,14 +13609,18 @@ def carpocapsa_tab(history):
                     tt = tt.dropna(subset=["Fecha"])
                     if _zona_sel != "(Todos)" and "Campo/Zona" in tt.columns:
                         tt = tt[tt["Campo/Zona"].astype(str) == _zona_sel]
-                    _ctd = (pd.to_numeric(tt["Capturas machos"], errors="coerce").fillna(0) /
+                    _cap_vals = pd.to_numeric(tt["Capturas machos"], errors="coerce").fillna(0)
+                    _ctd = (_cap_vals /
                             pd.to_numeric(tt["Días desde lectura anterior"], errors="coerce").fillna(7).clip(lower=1))
-                    tt = tt.assign(_ctd=_ctd)
-                    dcap = tt.groupby("Fecha", as_index=False)["_ctd"].mean() if not tt.empty else pd.DataFrame()
+                    tt = tt.assign(_ctd=_ctd, _cap=_cap_vals)
+                    dcap = (tt.groupby("Fecha", as_index=False).agg(_ctd=("_ctd", "mean"), _cap=("_cap", "mean"))
+                            if not tt.empty else pd.DataFrame())
                     if not dcap.empty:
+                        _yv = dcap["_ctd"] if _is_mean else dcap["_cap"]
+                        _htxt = ": %{y:.2f} capt/tr/día" if _is_mean else ": %{y:.1f} capt/trampa"
                         fig_cap.add_trace(_go.Scatter(
-                            x=_doy(dcap["Fecha"]), y=dcap["_ctd"], mode="lines+markers", name=str(_y),
-                            hovertemplate="%{x|%d %b}<br>" + str(_y) + ": %{y:.2f}<extra></extra>"))
+                            x=_doy(dcap["Fecha"]), y=_yv, mode="lines+markers", name=str(_y),
+                            hovertemplate="%{x|%d %b}<br>" + str(_y) + _htxt + "<extra></extra>"))
                     # Biofix (primer activo) — de la zona si está filtrada
                     bb = carpocapsa_filter_campaign(st.session_state.carpocapsa_biofix_df, _y)
                     if _zona_sel != "(Todos)" and not bb.empty and "Campo/Zona" in bb.columns:
@@ -13617,10 +13634,9 @@ def carpocapsa_tab(history):
                         _b = _b.dropna(subset=["Fecha biofix"]).sort_values("Fecha biofix")
                         if not _b.empty:
                             bfd = _b["Fecha biofix"].iloc[0]
-                    # Grados-día diarios de la campaña (clima de la finca)
-                    _hy = carpocapsa_filter_history_campaign(history, _y)
-                    dd_full = carpocapsa_daily_degree_days(_hy, base_temp=float(base_temp),
-                                                           upper_temp=upper_value, method=method)
+                    # Grados-día diarios de la campaña: cortados del cálculo único.
+                    dd_full = (_dd_all[pd.to_datetime(_dd_all["Fecha"]).dt.year == int(_y)].copy()
+                               if not _dd_all.empty else pd.DataFrame())
                     # Curva DD acumulados desde el biofix (umbrales 90/500/1200 son desde biofix)
                     if not dd_full.empty and pd.notna(bfd):
                         ddb = dd_full[dd_full["Fecha"] >= pd.Timestamp(bfd)].copy()
@@ -13676,8 +13692,10 @@ def carpocapsa_tab(history):
                         "% daño": f"{dano:.1f}" if pd.notna(dano) else "—",
                     })
 
-                fig_cap.update_layout(title="Capturas por trampa y día", height=330,
-                                      xaxis=dict(tickformat="%d %b"), yaxis_title="capt/trampa/día",
+                _cap_title = "Capturas por trampa y día (media)" if _is_mean else "Capturas por trampa (por lectura)"
+                _cap_yaxis = "capt/trampa/día" if _is_mean else "capturas/trampa"
+                fig_cap.update_layout(title=_cap_title, height=330,
+                                      xaxis=dict(tickformat="%d %b"), yaxis_title=_cap_yaxis,
                                       margin=dict(l=10, r=10, t=40, b=10), legend_title="Campaña")
                 st.plotly_chart(fig_cap, use_container_width=True)
                 for _thr, _lbl in [(90, "inicio eclosión"), (500, "pico 1ª gen"), (1200, "pico 2ª gen")]:
