@@ -18140,7 +18140,7 @@ def forecast_reliability(history_df, archive_df=None):
         actual = actual.copy()
         actual["target_date"] = pd.to_datetime(actual["Fecha"]).dt.strftime("%Y-%m-%d")
         a = actual.drop_duplicates("target_date").set_index("target_date")
-        THR, RAIN = 100.0, 1.0
+        THR, RAIN = 100.0, 0.2  # lluvia: cualquier precipitación medible (≥0,2 mm/día)
         recs = []
         for _, r in archive_df.iterrows():
             td = str(r.get("target_date"))
@@ -19297,7 +19297,7 @@ def render_decisiones_panel():
                 "previsto/real (haya o no evento). · **Si avisó, acertó %** = de las veces que avisó, "
                 "cuántas se cumplieron (tu *confianza* cuando te avisa). · **No se le escapó %** = de "
                 "los eventos reales, cuántos había anunciado. Umbral: índice ≥ 100 "
-                "(moteado/monilia/oídio) y ≥ 1 mm (lluvia)."
+                "(moteado/monilia/oídio) y ≥ 0,2 mm (lluvia, cualquier precipitación medible)."
             )
             # Fiabilidad por antelación (la confianza baja al alejarse el horizonte).
             _comp = _rel_meta.get("comp")
