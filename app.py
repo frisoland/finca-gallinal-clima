@@ -18171,7 +18171,19 @@ def forecast_reliability(history_df, archive_df=None):
             prec = (comp.loc[comp[pc], rc].mean() * 100) if avisos else np.nan
             reales = int(comp[rc].sum())
             rec = (comp.loc[comp[rc], pc].mean() * 100) if reales else np.nan
-            out_rows.append({"Qué": label, "Días evaluados": n, "Acierto %": round(acc, 0),
+            # Fiabilidad de la fila: por días evaluados y por nº de eventos observados
+            # (avisos + reales). Con pocos días o pocos eventos, los % son ruido.
+            _ev = avisos + reales
+            if n < 14:
+                _fiab = "🔴 Escasa"
+            elif _ev < 5:
+                _fiab = "🟡 Pocos eventos"
+            elif n < 30:
+                _fiab = "🟡 Media"
+            else:
+                _fiab = "🟢 Buena"
+            out_rows.append({"Qué": label, "Fiabilidad": _fiab,
+                             "Días evaluados": n, "Acierto %": round(acc, 0),
                              "Veces que avisó": avisos,
                              "Si avisó, acertó %": (round(prec, 0) if pd.notna(prec) else "—"),
                              "Casos reales": reales,
@@ -19275,11 +19287,13 @@ def render_decisiones_panel():
             st.dataframe(_rel_df, use_container_width=True, hide_index=True)
             st.caption(
                 f"Comparados **{_rel_meta.get('n', 0)} días** previstos ya transcurridos. "
-                "**Acierto %** = coincidió previsto/real (haya o no evento). · **Si avisó, acertó %** "
-                "= de las veces que la previsión anunció el evento, cuántas se cumplieron (tu "
-                "*confianza* cuando te avisa). · **No se le escapó %** = de los eventos reales, "
-                "cuántos había anunciado. Umbral de evento: índice ≥ 100 (moteado/monilia/oídio) "
-                "y ≥ 1 mm (lluvia)."
+                "**Fiabilidad** = cuánto fiarte de esa fila: 🔴 escasa (<14 días) · 🟡 media o "
+                "«pocos eventos» (suficientes días pero <5 avisos+casos para juzgar) · 🟢 buena "
+                "(30+ días con eventos). · **Acierto %** = coincidió previsto/real (haya o no "
+                "evento). · **Si avisó, acertó %** = de las veces que la previsión anunció el "
+                "evento, cuántas se cumplieron (tu *confianza* cuando te avisa). · **No se le "
+                "escapó %** = de los eventos reales, cuántos había anunciado. Umbral de evento: "
+                "índice ≥ 100 (moteado/monilia/oídio) y ≥ 1 mm (lluvia)."
             )
             # Fiabilidad por antelación (la confianza baja al alejarse el horizonte).
             _comp = _rel_meta.get("comp")
