@@ -3496,6 +3496,21 @@ CARPOCAPSA_TREATMENT_KEYWORDS = [
     # "insecticida" eliminado — demasiado genérico, capturaba cualquier spray
 ]
 
+# Añadir automáticamente TODOS los productos del catálogo de carpocapsa (nombre +
+# alias): así cualquier producto del catálogo (Bactur, Madex, Coragen, Calypso,
+# Exirel y los que se añadan en el futuro) se detecta como tratamiento de
+# carpocapsa, sin tener que tocar esta lista. Se descartan alias de <3 caracteres
+# (p. ej. "bt ") para no provocar falsos positivos con fungicidas.
+_carpo_catalog_kws = set()
+for _cp_name, _cp_info in CARPOCAPSA_PRODUCTS_CATALOG.items():
+    _carpo_catalog_kws.add(_cp_name.strip().lower())
+    for _cp_alias in _cp_info.get("aliases", []):
+        if len(str(_cp_alias).strip()) >= 3:
+            _carpo_catalog_kws.add(str(_cp_alias).strip().lower())
+CARPOCAPSA_TREATMENT_KEYWORDS = sorted(
+    {k.lower() for k in CARPOCAPSA_TREATMENT_KEYWORDS} | _carpo_catalog_kws
+)
+
 
 def text_contains_any_keyword(text, keywords):
     """Devuelve True si el texto contiene alguna de las palabras clave (insensible a mayúsculas)."""
@@ -19867,15 +19882,19 @@ def render_decisiones_panel():
         t_mask = acts["Fecha_dt"] >= risk_df["Fecha"].min()
         if t_mask.any():
             treats_all = acts[t_mask].copy()
-            # Carpocapsa: buscar en columna Producto (nombre del producto aplicado)
-            for _col in ["Producto", "Descripcion", "Comentarios", "Trabajo"]:
-                if _col in treats_all.columns:
-                    carpo_mask = treats_all[_col].fillna("").str.lower().apply(
-                        lambda x: any(kw.lower() in x for kw in CARPOCAPSA_TREATMENT_KEYWORDS)
-                    )
-                    if carpo_mask.any():
-                        treats_carpo = treats_all[carpo_mask]
-                        break
+            # Carpocapsa: combinar TODAS las columnas de producto/descr. (no parar en
+            # la primera) y buscar las palabras clave de carpocapsa (que ya incluyen
+            # todo el catálogo). Así una mezcla en cuba con un producto de carpocapsa
+            # se detecta, y un pase de solo fungicida NO.
+            _carpo_cols = [c for c in ["Productos", "Producto", "Descripcion",
+                                       "Comentarios", "Trabajo"] if c in treats_all.columns]
+            if _carpo_cols:
+                _carpo_txt = (treats_all[_carpo_cols].fillna("").astype(str)
+                              .agg(" ".join, axis=1).str.lower())
+                carpo_mask = _carpo_txt.apply(
+                    lambda x: any(kw in x for kw in CARPOCAPSA_TREATMENT_KEYWORDS))
+                if carpo_mask.any():
+                    treats_carpo = treats_all[carpo_mask]
 
     chart_h = 290
 
