@@ -18167,29 +18167,31 @@ def forecast_reliability(history_df, archive_df=None):
                               ("🟤 Monilia", "monilia_p", "monilia_r"),
                               ("⚪ Oídio", "oidio_p", "oidio_r"),
                               ("🌧️ Lluvia", "lluvia_p", "lluvia_r")]:
-            n = len(comp)
-            acc = (comp[pc] == comp[rc]).mean() * 100
-            avisos = int(comp[pc].sum())
-            prec = (comp.loc[comp[pc], rc].mean() * 100) if avisos else np.nan
-            reales = int(comp[rc].sum())
-            rec = (comp.loc[comp[rc], pc].mean() * 100) if reales else np.nan
+            avisos = int(comp[pc].sum())          # veces que la previsión anunció riesgo/lluvia
+            reales = int(comp[rc].sum())          # veces que pasó de verdad
+            tp     = int((comp[pc] & comp[rc]).sum())   # avisó Y pasó (acierto)
+            fp     = avisos - tp                  # avisó y NO pasó (falsa alarma)
+            fn     = reales - tp                  # NO avisó y SÍ pasó (se le escapó)
+            prec   = (tp / avisos * 100) if avisos else np.nan
             # Fiabilidad de la fila: por DÍAS naturales distintos verificados y por nº
             # de eventos observados (avisos + reales). Pocos días o pocos eventos → ruido.
             _ev = avisos + reales
             if _n_dias < 7:
                 _fiab = "🔴 Escasa"
             elif _ev < 5:
-                _fiab = "🟡 Pocos eventos"
+                _fiab = "🟡 Pocos datos"
             elif _n_dias < 21:
                 _fiab = "🟡 Media"
             else:
                 _fiab = "🟢 Buena"
-            out_rows.append({"Qué": label, "Fiabilidad": _fiab,
-                             "Comparaciones": n, "Acierto %": round(acc, 0),
-                             "Veces que avisó": avisos,
-                             "Si avisó, acertó %": (round(prec, 0) if pd.notna(prec) else "—"),
-                             "Casos reales": reales,
-                             "No se le escapó %": (round(rec, 0) if pd.notna(rec) else "—")})
+            out_rows.append({
+                "Qué": label,
+                "Fiabilidad": _fiab,
+                "Avisó de riesgo (veces)": avisos,
+                "De esos, acertó": (f"{tp} de {avisos} ({round(prec)}%)" if avisos else "no avisó"),
+                "Falsas alarmas (avisó, no pasó)": fp,
+                "Se le escapó (no avisó, sí pasó)": (f"{fn} de {reales}" if reales else "0"),
+            })
         meta = {"n": len(comp), "n_dias": _n_dias, "comp": comp,
                 "since": str(archive_df.get("issue_date", pd.Series(dtype=str)).min())}
         return pd.DataFrame(out_rows), meta
@@ -19288,16 +19290,19 @@ def render_decisiones_panel():
         else:
             st.dataframe(_rel_df, use_container_width=True, hide_index=True)
             st.caption(
-                f"**{_rel_meta.get('n_dias', 0)} días** naturales verificados · "
-                f"**{_rel_meta.get('n', 0)} comparaciones**. ⚠️ **Comparaciones ≠ días**: cada día "
-                "que se archiva, la previsión predice ~7 días por delante, así que un mismo día se "
-                "compara varias veces (desde varias previsiones) → se acumulan más rápido. "
-                "**Fiabilidad** (por **días** distintos): 🔴 escasa (<7) · 🟡 media (7–20) o «pocos "
-                "eventos» (<5 avisos+casos para juzgar) · 🟢 buena (21+). · **Acierto %** = coincidió "
-                "previsto/real (haya o no evento). · **Si avisó, acertó %** = de las veces que avisó, "
-                "cuántas se cumplieron (tu *confianza* cuando te avisa). · **No se le escapó %** = de "
-                "los eventos reales, cuántos había anunciado. Umbral: índice ≥ 100 "
-                "(moteado/monilia/oídio) y ≥ 0,2 mm (lluvia, cualquier precipitación medible)."
+                f"📅 **{_rel_meta.get('n_dias', 0)} días verificados** "
+                f"({_rel_meta.get('n', 0)} comparaciones). Cómo leer **cada fila**:\n\n"
+                "- **Avisó de riesgo (veces)** — cuántas veces la previsión anunció **riesgo grave** "
+                "(la línea roja, ≥100) o **lluvia**.\n"
+                "- **De esos, acertó** — de esas veces que avisó, cuántas **pasaron de verdad**. "
+                "→ *Es tu confianza: si te avisa de grave, ¿cuántas veces es real?*\n"
+                "- **Falsas alarmas (avisó, no pasó)** — anunció riesgo pero **no ocurrió** "
+                "(tu ejemplo: previsto 144 grave y el real fue 23).\n"
+                "- **Se le escapó (no avisó, sí pasó)** — **no** anunció riesgo pero **sí** ocurrió.\n\n"
+                "**Para la lluvia:** «avisó» = predijo lluvia; «falsa alarma» = predijo y no llovió; "
+                "«se le escapó» = no predijo y llovió. Cuenta como lluvia ≥ 0,2 mm.\n\n"
+                "**Fiabilidad:** 🔴 escasa (<7 días) · 🟡 media (7–20) o pocos datos · 🟢 buena (21+). "
+                "Con muestra pequeña, los números son orientativos."
             )
             # Fiabilidad por antelación (la confianza baja al alejarse el horizonte).
             _comp = _rel_meta.get("comp")
@@ -19310,11 +19315,13 @@ def render_decisiones_panel():
                     def _pp(pc, rc):
                         av = int(_s[pc].sum())
                         return (round(_s.loc[_s[pc], rc].mean() * 100, 0) if av else "—")
-                    _hz_rows.append({"Antelación": _lbl, "Días": len(_s),
-                                     "Moteado (si avisó) %": _pp("moteado_p", "moteado_r"),
-                                     "Lluvia (si avisó) %": _pp("lluvia_p", "lluvia_r")})
+                    _hz_rows.append({"Antelación": _lbl, "Comparaciones": len(_s),
+                                     "Moteado: acierto del aviso %": _pp("moteado_p", "moteado_r"),
+                                     "Lluvia: acierto del aviso %": _pp("lluvia_p", "lluvia_r")})
                 if _hz_rows:
-                    st.markdown("**Confianza por antelación** (si la previsión avisa, ¿acierta?):")
+                    st.markdown("**¿Cambia según la antelación?** — cuando avisa con X días de "
+                                "adelanto, qué % de esos avisos aciertan (normalmente, cuanto más "
+                                "lejos, menos fiable):")
                     st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
