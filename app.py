@@ -18183,6 +18183,49 @@ def forecast_reliability(history_df, archive_df=None):
         return None, {"n": 0}
 
 
+def _dec_treatment_lines_trace(go, treats_df, x_min, x_max, ymax, color="rgba(150,0,200,0.7)",
+                               name="Tratamiento"):
+    """Una sola traza scatter con TODAS las líneas verticales de tratamiento (dashed)
+    pero HOVERABLE: al pasar el ratón por una línea muestra los CAMPOS tratados ese
+    día (y el/los productos). Devuelve None si no hay tratamientos en el rango."""
+    if treats_df is None or treats_df.empty or "Fecha_dt" not in treats_df.columns:
+        return None
+    t = treats_df.copy()
+    t["Fecha_dt"] = pd.to_datetime(t["Fecha_dt"], errors="coerce")
+    t = t.dropna(subset=["Fecha_dt"])
+    t = t[(t["Fecha_dt"] >= x_min) & (t["Fecha_dt"] <= x_max)]
+    if t.empty:
+        return None
+    fcol = next((c for c in ["Campos", "Campos reconocidos", "Campo"] if c in t.columns), None)
+    pcol = next((c for c in ["Producto", "Productos"] if c in t.columns), None)
+    xs, ys, cd = [], [], []
+    for d, grp in t.groupby(t["Fecha_dt"].dt.normalize()):
+        campos = set()
+        if fcol:
+            for v in grp[fcol].dropna().astype(str):
+                for part in v.replace(";", ",").split(","):
+                    p = part.strip()
+                    if p and p.lower() not in ("nan", "none", ""):
+                        campos.add(p)
+        prods = set()
+        if pcol:
+            for v in grp[pcol].dropna().astype(str):
+                p = v.strip()
+                if p and p.lower() not in ("nan", "none", ""):
+                    prods.add(p)
+        campos_txt = ", ".join(sorted(campos)) if campos else "(campo no indicado)"
+        info = campos_txt + (f"<br><i>{', '.join(sorted(prods))}</i>" if prods else "")
+        xs += [d, d, None]
+        ys += [0, ymax, None]
+        cd += [info, info, info]
+    return go.Scatter(
+        x=xs, y=ys, mode="lines", name=name,
+        line=dict(color=color, width=1.5, dash="dash"), connectgaps=False,
+        customdata=cd,
+        hovertemplate="<b>%{x|%d/%m}</b> · tratamiento<br>Campos: %{customdata}<extra></extra>",
+    )
+
+
 def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, height=300):
     """
     Crea gráfico Plotly estilo RIMpro para una enfermedad.
@@ -18271,22 +18314,12 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         line_color="rgba(255,140,0,0.9)", line_width=2, line_dash="solid",
     )
 
-    # Tratamientos
-    if treats_df is not None and not treats_df.empty and "Fecha_dt" in treats_df.columns:
-        t_dates = pd.to_datetime(treats_df["Fecha_dt"], errors="coerce").dropna()
-        t_dates = t_dates[(t_dates >= risk_df["Fecha"].min()) & (t_dates <= risk_df["Fecha"].max())]
-        for td in t_dates:
-            fig.add_vline(
-                x=td,
-                line_color="rgba(150,0,200,0.7)", line_width=1.5, line_dash="dash",
-            )
-        # Leyenda de tratamiento
-        if not t_dates.empty:
-            fig.add_trace(go.Scatter(
-                x=[None], y=[None], mode="lines",
-                name="Tratamiento",
-                line=dict(color="rgba(150,0,200,0.7)", width=1.5, dash="dash"),
-            ))
+    # Tratamientos — líneas verticales HOVERABLES (muestran los campos tratados ese día)
+    _ymax_d = max(160, max(values) * 1.1) if values else 160
+    _tr_trace = _dec_treatment_lines_trace(
+        go, treats_df, risk_df["Fecha"].min(), risk_df["Fecha"].max(), _ymax_d)
+    if _tr_trace is not None:
+        fig.add_trace(_tr_trace)
 
     fig.update_layout(
         height=height,
@@ -18507,18 +18540,13 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                 bgcolor="rgba(255,255,255,0.75)",
             )
 
-    # Tratamientos carpocapsa
-    if treats_carpo_df is not None and not treats_carpo_df.empty and "Fecha_dt" in treats_carpo_df.columns:
-        t_dates = pd.to_datetime(treats_carpo_df["Fecha_dt"], errors="coerce").dropna()
-        if not plot_df_display.empty:
-            t_dates = t_dates[(t_dates >= plot_df_display["Fecha"].min()) &
-                              (t_dates <= plot_df_display["Fecha"].max())]
-        for td in t_dates:
-            fig.add_vline(x=td, line_color="rgba(150,0,200,0.7)", line_width=1.5, line_dash="dash")
-        if not t_dates.empty:
-            fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
-                                     name="Tratamiento carpo.",
-                                     line=dict(color="rgba(150,0,200,0.7)", width=1.5, dash="dash")))
+    # Tratamientos carpocapsa — líneas verticales HOVERABLES (campos tratados ese día)
+    if not plot_df_display.empty:
+        _tr_carpo = _dec_treatment_lines_trace(
+            go, treats_carpo_df, plot_df_display["Fecha"].min(),
+            plot_df_display["Fecha"].max(), ymax, name="Tratamiento carpo.")
+        if _tr_carpo is not None:
+            fig.add_trace(_tr_carpo)
 
     # Calcular límites explícitos del eje X para que Plotly no los amplíe
     # aunque algún add_vline/add_annotation caiga fuera de los datos
