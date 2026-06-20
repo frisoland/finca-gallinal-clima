@@ -18147,6 +18147,7 @@ def forecast_reliability(history_df, archive_df=None):
             if td not in a.index:
                 continue
             recs.append({
+                "target_date": td,
                 "horizon": int(r.get("horizon", 0)),
                 "moteado_p": float(r.get("pred_mills", 0)) >= THR,
                 "moteado_r": float(a.loc[td, "Mills_valor"]) >= THR,
@@ -18160,6 +18161,7 @@ def forecast_reliability(history_df, archive_df=None):
         comp = pd.DataFrame(recs)
         if comp.empty:
             return None, {"n": 0}
+        _n_dias = int(comp["target_date"].nunique())  # días NATURALES distintos verificados
         out_rows = []
         for label, pc, rc in [("🍄 Moteado", "moteado_p", "moteado_r"),
                               ("🟤 Monilia", "monilia_p", "monilia_r"),
@@ -18171,24 +18173,24 @@ def forecast_reliability(history_df, archive_df=None):
             prec = (comp.loc[comp[pc], rc].mean() * 100) if avisos else np.nan
             reales = int(comp[rc].sum())
             rec = (comp.loc[comp[rc], pc].mean() * 100) if reales else np.nan
-            # Fiabilidad de la fila: por días evaluados y por nº de eventos observados
-            # (avisos + reales). Con pocos días o pocos eventos, los % son ruido.
+            # Fiabilidad de la fila: por DÍAS naturales distintos verificados y por nº
+            # de eventos observados (avisos + reales). Pocos días o pocos eventos → ruido.
             _ev = avisos + reales
-            if n < 14:
+            if _n_dias < 7:
                 _fiab = "🔴 Escasa"
             elif _ev < 5:
                 _fiab = "🟡 Pocos eventos"
-            elif n < 30:
+            elif _n_dias < 21:
                 _fiab = "🟡 Media"
             else:
                 _fiab = "🟢 Buena"
             out_rows.append({"Qué": label, "Fiabilidad": _fiab,
-                             "Días evaluados": n, "Acierto %": round(acc, 0),
+                             "Comparaciones": n, "Acierto %": round(acc, 0),
                              "Veces que avisó": avisos,
                              "Si avisó, acertó %": (round(prec, 0) if pd.notna(prec) else "—"),
                              "Casos reales": reales,
                              "No se le escapó %": (round(rec, 0) if pd.notna(rec) else "—")})
-        meta = {"n": len(comp), "comp": comp,
+        meta = {"n": len(comp), "n_dias": _n_dias, "comp": comp,
                 "since": str(archive_df.get("issue_date", pd.Series(dtype=str)).min())}
         return pd.DataFrame(out_rows), meta
     except Exception:
@@ -19286,14 +19288,16 @@ def render_decisiones_panel():
         else:
             st.dataframe(_rel_df, use_container_width=True, hide_index=True)
             st.caption(
-                f"Comparados **{_rel_meta.get('n', 0)} días** previstos ya transcurridos. "
-                "**Fiabilidad** = cuánto fiarte de esa fila: 🔴 escasa (<14 días) · 🟡 media o "
-                "«pocos eventos» (suficientes días pero <5 avisos+casos para juzgar) · 🟢 buena "
-                "(30+ días con eventos). · **Acierto %** = coincidió previsto/real (haya o no "
-                "evento). · **Si avisó, acertó %** = de las veces que la previsión anunció el "
-                "evento, cuántas se cumplieron (tu *confianza* cuando te avisa). · **No se le "
-                "escapó %** = de los eventos reales, cuántos había anunciado. Umbral de evento: "
-                "índice ≥ 100 (moteado/monilia/oídio) y ≥ 1 mm (lluvia)."
+                f"**{_rel_meta.get('n_dias', 0)} días** naturales verificados · "
+                f"**{_rel_meta.get('n', 0)} comparaciones**. ⚠️ **Comparaciones ≠ días**: cada día "
+                "que se archiva, la previsión predice ~7 días por delante, así que un mismo día se "
+                "compara varias veces (desde varias previsiones) → se acumulan más rápido. "
+                "**Fiabilidad** (por **días** distintos): 🔴 escasa (<7) · 🟡 media (7–20) o «pocos "
+                "eventos» (<5 avisos+casos para juzgar) · 🟢 buena (21+). · **Acierto %** = coincidió "
+                "previsto/real (haya o no evento). · **Si avisó, acertó %** = de las veces que avisó, "
+                "cuántas se cumplieron (tu *confianza* cuando te avisa). · **No se le escapó %** = de "
+                "los eventos reales, cuántos había anunciado. Umbral: índice ≥ 100 "
+                "(moteado/monilia/oídio) y ≥ 1 mm (lluvia)."
             )
             # Fiabilidad por antelación (la confianza baja al alejarse el horizonte).
             _comp = _rel_meta.get("comp")
