@@ -18487,39 +18487,46 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                           annotation_text=label, annotation_position="right",
                           annotation_font_size=10)
 
-    # Capturas de trampas
+    # Capturas de trampas (detección flexible de columnas: la tabla real usa
+    # "Fecha" y "Capturas machos", no "Fecha_dt"/"Capturas"). Se AGREGAN por fecha
+    # en toda la finca → un círculo por lectura, con el total de capturas.
     if traps_df is not None and not traps_df.empty:
         tf = traps_df.copy()
-        if "Fecha_dt" in tf.columns and "Capturas" in tf.columns:
-            tf["Fecha_dt"] = pd.to_datetime(tf["Fecha_dt"], errors="coerce")
-            tf = tf.dropna(subset=["Fecha_dt"])
+        _dcol = next((c for c in ["Fecha_dt", "Fecha"] if c in tf.columns), None)
+        _ccol = next((c for c in ["Capturas", "Capturas machos"] if c in tf.columns), None)
+        if _dcol and _ccol:
+            tf["_fdt"] = pd.to_datetime(tf[_dcol], errors="coerce")
+            tf = tf.dropna(subset=["_fdt"])
             if not plot_df_display.empty:
-                tf = tf[(tf["Fecha_dt"] >= plot_df_display["Fecha"].min()) &
-                        (tf["Fecha_dt"] <= plot_df_display["Fecha"].max())]
+                tf = tf[(tf["_fdt"] >= plot_df_display["Fecha"].min()) &
+                        (tf["_fdt"] <= plot_df_display["Fecha"].max())]
             if not tf.empty:
-                # Interpolar DD en fecha de captura
-                dd_interp = np.interp(
-                    tf["Fecha_dt"].astype(np.int64),
-                    pd.to_datetime(dates).astype(np.int64),
-                    dd_acum,
-                )
-                fig.add_trace(go.Scatter(
-                    x=tf["Fecha_dt"].tolist(),
-                    y=dd_interp.tolist(),
-                    mode="markers+text",
-                    name="Capturas trampa",
-                    marker=dict(
-                        size=[max(8, min(c*3, 28)) for c in tf["Capturas"].fillna(0)],
-                        color="rgba(0,120,200,0.8)",
-                        symbol="circle",
-                        line=dict(color="white", width=1),
-                    ),
-                    text=tf["Capturas"].astype(int).astype(str),
-                    textposition="top center",
-                    textfont=dict(size=9, color="rgba(0,80,160,1)"),
-                    customdata=tf["Capturas"].tolist(),
-                    hovertemplate="%{x|%d/%m}<br>Capturas: %{customdata}<br>DD: %{y:.0f}<extra></extra>",
-                ))
+                tf["_cap"] = pd.to_numeric(tf[_ccol], errors="coerce").fillna(0)
+                tg = tf.groupby(tf["_fdt"].dt.normalize(), as_index=False)["_cap"].sum()
+                tg = tg[tg["_cap"] > 0]
+                if not tg.empty:
+                    dd_interp = np.interp(
+                        tg["_fdt"].astype(np.int64),
+                        pd.to_datetime(dates).astype(np.int64),
+                        dd_acum,
+                    )
+                    fig.add_trace(go.Scatter(
+                        x=tg["_fdt"].tolist(),
+                        y=dd_interp.tolist(),
+                        mode="markers+text",
+                        name="Capturas trampa",
+                        marker=dict(
+                            size=[max(8, min(c * 1.5, 30)) for c in tg["_cap"]],
+                            color="rgba(0,120,200,0.75)",
+                            symbol="circle",
+                            line=dict(color="white", width=1),
+                        ),
+                        text=tg["_cap"].astype(int).astype(str),
+                        textposition="top center",
+                        textfont=dict(size=9, color="rgba(0,80,160,1)"),
+                        customdata=tg["_cap"].tolist(),
+                        hovertemplate="%{x|%d/%m}<br>Capturas (finca): %{customdata}<br>DD: %{y:.0f}<extra></extra>",
+                    ))
 
     # Zona predicción
     pred_dates_df = plot_df_display[plot_df_display["Es_prediccion"]]["Fecha"]
@@ -20022,9 +20029,9 @@ def render_decisiones_panel():
 4. Si el período rojo ya pasó y no hubo tratamiento → evalúa un curativo en las próximas 48–72h.
 
 #### 🐛 Gráfica de Carpocapsa (DD acumulados)
-- **Línea roja** = grados-día acumulados desde el biofix (inicio de vuelo).
-- **Barras naranjas** = DD de cada día (cuánto calor útil acumuló ese día).
-- **Círculos azules** = capturas en trampa (el tamaño es proporcional al número de capturas).
+- **Línea roja** = grados-día acumulados desde el biofix (inicio de vuelo); la parte punteada es la previsión.
+- **Área naranja (DD diarios)** = DD de cada día (cuánto calor útil acumuló ese día), eje derecho.
+- **Círculos azules** = capturas en trampa de toda la finca ese día (el tamaño y el número dentro son proporcionales al total de capturas).
 - **Líneas de umbral horizontales**:
   - 80 DD = inicio 1ª generación → **primer tratamiento**
   - 150 DD = pico 1ª generación → reforzar si capturas altas
