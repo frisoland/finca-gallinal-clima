@@ -18162,19 +18162,23 @@ def forecast_reliability(history_df, archive_df=None):
         if comp.empty:
             return None, {"n": 0}
         _n_dias = int(comp["target_date"].nunique())  # días NATURALES distintos verificados
+        # Tabla principal POR DÍA: una fila por día real, usando la previsión MÁS
+        # RECIENTE de cada día (la más fiable). Así "acertó X de N días" se cuenta por
+        # días, no por comparaciones. (La tabla de antelación de abajo sí usa todas.)
+        comp_day = comp.sort_values("horizon").drop_duplicates("target_date", keep="first")
         out_rows = []
         for label, pc, rc in [("🍄 Moteado", "moteado_p", "moteado_r"),
                               ("🟤 Monilia", "monilia_p", "monilia_r"),
                               ("⚪ Oídio", "oidio_p", "oidio_r"),
                               ("🌧️ Lluvia", "lluvia_p", "lluvia_r")]:
-            avisos = int(comp[pc].sum())          # veces que la previsión anunció riesgo/lluvia
-            reales = int(comp[rc].sum())          # veces que pasó de verdad
-            tp     = int((comp[pc] & comp[rc]).sum())   # avisó Y pasó (acierto)
-            fp     = avisos - tp                  # avisó y NO pasó (falsa alarma)
-            fn     = reales - tp                  # NO avisó y SÍ pasó (se le escapó)
-            prec   = (tp / avisos * 100) if avisos else np.nan
-            # Fiabilidad de la fila: por DÍAS naturales distintos verificados y por nº
-            # de eventos observados (avisos + reales). Pocos días o pocos eventos → ruido.
+            _p = comp_day[pc]
+            _r = comp_day[rc]
+            aciertos = int((_p == _r).sum())              # días que la app predijo BIEN
+            fp = int((_p & ~_r).sum())                    # avisó y NO pasó (falsa alarma)
+            fn = int((~_p & _r).sum())                    # NO avisó y SÍ pasó (se le escapó)
+            reales = int(_r.sum())
+            avisos = int(_p.sum())
+            # Fiabilidad: por nº de días verificados + nº de eventos (avisos+reales).
             _ev = avisos + reales
             if _n_dias < 7:
                 _fiab = "🔴 Escasa"
@@ -18187,8 +18191,7 @@ def forecast_reliability(history_df, archive_df=None):
             out_rows.append({
                 "Qué": label,
                 "Fiabilidad": _fiab,
-                "Avisó de riesgo (veces)": avisos,
-                "De esos, acertó": (f"{tp} de {avisos} ({round(prec)}%)" if avisos else "no avisó"),
+                "Acertó (de los días)": f"{aciertos} de {_n_dias}",
                 "Falsas alarmas (avisó, no pasó)": fp,
                 "Se le escapó (no avisó, sí pasó)": (f"{fn} de {reales}" if reales else "0"),
             })
@@ -19297,19 +19300,19 @@ def render_decisiones_panel():
         else:
             st.dataframe(_rel_df, use_container_width=True, hide_index=True)
             st.caption(
-                f"📅 **{_rel_meta.get('n_dias', 0)} días verificados** "
-                f"({_rel_meta.get('n', 0)} comparaciones). Cómo leer **cada fila**:\n\n"
-                "- **Avisó de riesgo (veces)** — cuántas veces la previsión anunció **riesgo grave** "
-                "(la línea roja, ≥100) o **lluvia**.\n"
-                "- **De esos, acertó** — de esas veces que avisó, cuántas **pasaron de verdad**. "
-                "→ *Es tu confianza: si te avisa de grave, ¿cuántas veces es real?*\n"
-                "- **Falsas alarmas (avisó, no pasó)** — anunció riesgo pero **no ocurrió** "
-                "(tu ejemplo: previsto 144 grave y el real fue 23).\n"
-                "- **Se le escapó (no avisó, sí pasó)** — **no** anunció riesgo pero **sí** ocurrió.\n\n"
+                f"📅 **{_rel_meta.get('n_dias', 0)} días verificados** (días que ya pasaron y "
+                "sabemos qué predijo la app y qué ocurrió de verdad). Cada día usa su previsión más "
+                "reciente. Cómo leer **cada fila**:\n\n"
+                "- **Acertó (de los días)** — de esos días, en cuántos la app **predijo bien** "
+                "(dijo grave y fue grave, o dijo tranquilo y estuvo tranquilo). *Tu acierto general.*\n"
+                "- **Falsas alarmas (avisó, no pasó)** — días que anunció riesgo grave pero **no "
+                "ocurrió** (tu ejemplo: previsto 144 grave y el real fue 23).\n"
+                "- **Se le escapó (no avisó, sí pasó)** — días que **no** anunció riesgo pero **sí** "
+                "ocurrió (lo peligroso: te pilla desprevenido).\n\n"
                 "**Para la lluvia:** «avisó» = predijo lluvia; «falsa alarma» = predijo y no llovió; "
                 "«se le escapó» = no predijo y llovió. Cuenta como lluvia ≥ 0,2 mm.\n\n"
                 "**Fiabilidad:** 🔴 escasa (<7 días) · 🟡 media (7–20) o pocos datos · 🟢 buena (21+). "
-                "Con muestra pequeña, los números son orientativos."
+                "Con pocos días, orientativo."
             )
             # Fiabilidad por antelación (la confianza baja al alejarse el horizonte).
             _comp = _rel_meta.get("comp")
