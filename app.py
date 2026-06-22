@@ -19298,7 +19298,23 @@ def render_decisiones_panel():
                 st.info("Aún no hay predicciones archivadas que ya hayan pasado para comparar. "
                         "Entra al panel unos días seguidos y vuelve aquí (irá llenándose solo).")
         else:
-            st.dataframe(_rel_df, use_container_width=True, hide_index=True)
+            # Resaltar en ROJO "Se le escapó" > 0 (lo peligroso: te pilla desprevenido),
+            # para que el "X de N días" tan vistoso no despiste.
+            _esc_col = "Se le escapó (no avisó, sí pasó)"
+            def _hl_escape(v):
+                try:
+                    _n = int(str(v).strip().split(" de ")[0].split()[0])
+                except Exception:
+                    _n = 0
+                return ("background-color: rgba(220,0,0,0.16); color:#b00000; font-weight:700"
+                        if _n > 0 else "")
+            try:
+                _sty = _rel_df.style
+                _styler_fn = getattr(_sty, "map", None) or _sty.applymap
+                _sty = _styler_fn(_hl_escape, subset=[_esc_col])
+                st.dataframe(_sty, use_container_width=True, hide_index=True)
+            except Exception:
+                st.dataframe(_rel_df, use_container_width=True, hide_index=True)
             st.caption(
                 f"📅 **{_rel_meta.get('n_dias', 0)} días verificados** (días que ya pasaron y "
                 "sabemos qué predijo la app y qué ocurrió de verdad). Cada día usa su previsión más "
@@ -19308,7 +19324,8 @@ def render_decisiones_panel():
                 "- **Falsas alarmas (avisó, no pasó)** — días que anunció riesgo grave pero **no "
                 "ocurrió** (tu ejemplo: previsto 144 grave y el real fue 23).\n"
                 "- **Se le escapó (no avisó, sí pasó)** — días que **no** anunció riesgo pero **sí** "
-                "ocurrió (lo peligroso: te pilla desprevenido).\n\n"
+                "ocurrió (lo peligroso: te pilla desprevenido). **Se marca en 🔴 rojo cuando es >0**, "
+                "porque un «X de N» alto puede engañar si premia días tranquilos.\n\n"
                 "**Para la lluvia:** «avisó» = predijo lluvia; «falsa alarma» = predijo y no llovió; "
                 "«se le escapó» = no predijo y llovió. Cuenta como lluvia ≥ 0,2 mm.\n\n"
                 "**Fiabilidad:** 🔴 escasa (<7 días) · 🟡 media (7–20) o pocos datos · 🟢 buena (21+). "
