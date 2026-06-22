@@ -19318,20 +19318,26 @@ def render_decisiones_panel():
             _comp = _rel_meta.get("comp")
             if _comp is not None and not _comp.empty:
                 _hz_rows = []
+                _hz_metrics = [("🍄 Moteado", "moteado_p", "moteado_r"),
+                               ("🟤 Monilia", "monilia_p", "monilia_r"),
+                               ("⚪ Oídio", "oidio_p", "oidio_r"),
+                               ("🌧️ Lluvia", "lluvia_p", "lluvia_r")]
                 for _lo, _hi, _lbl in [(1, 2, "1–2 días"), (3, 4, "3–4 días"), (5, 9, "5+ días")]:
                     _s = _comp[(_comp["horizon"] >= _lo) & (_comp["horizon"] <= _hi)]
                     if _s.empty:
                         continue
-                    def _pp(pc, rc):
-                        av = int(_s[pc].sum())
-                        return (round(_s.loc[_s[pc], rc].mean() * 100, 0) if av else "—")
-                    _hz_rows.append({"Antelación": _lbl, "Comparaciones": len(_s),
-                                     "Moteado: acierto del aviso %": _pp("moteado_p", "moteado_r"),
-                                     "Lluvia: acierto del aviso %": _pp("lluvia_p", "lluvia_r")})
+                    _row = {"Antelación": _lbl, "Avisos comprobados": len(_s)}
+                    for _nm, _pc, _rc in _hz_metrics:
+                        _av = int(_s[_pc].sum())
+                        _row[f"{_nm}: acierto %"] = (round(_s.loc[_s[_pc], _rc].mean() * 100, 0)
+                                                     if _av else "—")
+                    _hz_rows.append(_row)
                 if _hz_rows:
                     st.markdown("**¿Cambia según la antelación?** — cuando avisa con X días de "
                                 "adelanto, qué % de esos avisos aciertan (normalmente, cuanto más "
-                                "lejos, menos fiable):")
+                                "lejos, menos fiable). *«Avisos comprobados» = nº de previsiones de "
+                                "ese plazo que ya se pueden comparar con la realidad; «—» = no avisó "
+                                "de nada a ese plazo:*")
                     st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
