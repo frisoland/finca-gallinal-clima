@@ -10125,8 +10125,8 @@ def recommend_products_for_field(field, disease, disease_level, disease_score, c
     last = last_field_treatment(acts_expanded, field, end_ts=campaign_end)
     last_product = ""
     last_date = pd.NaT
-    last_original = "Sin tratamiento registrado"
-    last_varieties = "Sin tratamiento registrado"
+    last_original = "Sin fungicida registrado"
+    last_varieties = "Sin fungicida registrado"
     if last:
         last_product = normalize_product_name_for_recommendation(last.get("Producto normalizado") or last.get("Producto"))
         last_date = pd.to_datetime(last.get("Fecha"), errors="coerce")
@@ -10238,6 +10238,19 @@ def build_field_treatment_recommendations(history_df, activities_df, period_df, 
         climate_explanation = ""
 
     acts_expanded = expand_activities_by_field_for_recommendation(activities_df)
+    # ── UNIFICAR CRITERIO CON DECISIONES ──────────────────────────────────────
+    # La presión de este panel es FÚNGICA (moteado/monilia/oídio). Solo un FUNGICIDA
+    # protege contra hongos: un insecticida de carpocapsa (Bactur, Madex, Coragen…)
+    # NO debe contar como "tratamiento reciente" ni bajar la prioridad ni bloquear
+    # fungicidas. Se filtra con el MISMO is_fungicide_activity que usa Decisiones, de
+    # modo que "último tratamiento", "días desde…" y los bloqueos se refieren al
+    # último FUNGICIDA. (Antes un Bactur reciente marcaba el campo como protegido.)
+    if acts_expanded is not None and not acts_expanded.empty:
+        _fung_mask = acts_expanded.apply(
+            lambda r: is_fungicide_activity(r.get("Producto", ""), r.get("Trabajo", "")),
+            axis=1,
+        )
+        acts_expanded = acts_expanded[_fung_mask].copy()
 
     fields_base = get_fields_base_df()
     if fields_base is not None and not fields_base.empty and "Campo" in fields_base.columns:
@@ -10279,7 +10292,7 @@ def build_field_treatment_recommendations(history_df, activities_df, period_df, 
     }
     if not out.empty:
         out["_orden"] = out["Decisión"].map(priority_order).fillna(9)
-        out["_sin_tratamiento"] = out["Último tratamiento"].astype(str).str.contains("Sin tratamiento", case=False, na=False).astype(int)
+        out["_sin_tratamiento"] = out["Último tratamiento"].astype(str).str.contains("Sin fungicida|Sin tratamiento", case=False, na=False).astype(int)
         out = out.sort_values(["_orden", "_sin_tratamiento", "Campo"], ascending=[True, False, True]).drop(columns=["_orden", "_sin_tratamiento"]).reset_index(drop=True)
     return out
 
@@ -10340,6 +10353,11 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
     c2.metric("Aplicar/valorar", int(recs["Decisión"].astype(str).str.contains("Aplicar|valorar", case=False, na=False).sum()))
     c3.metric("Sin tratamiento directo", int(recs["Decisión"].astype(str).str.contains("Observar|No tratar", case=False, na=False).sum()))
 
+    st.caption(
+        "🍃 Este panel valora la presión **fúngica** (moteado/monilia/oídio): solo cuenta como "
+        "cobertura un **fungicida**. Un insecticida de carpocapsa (Bactur, Madex…) **no** baja la "
+        "prioridad aquí — la carpocapsa se gestiona en su propio item. Criterio unificado con *Decisiones*."
+    )
     st.dataframe(
         recs[[
             "Campo",
@@ -10355,7 +10373,11 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
             "Usos campaña por producto",
             "Motivo",
             "Advertencia FRAC",
-        ]],
+        ]].rename(columns={
+            "Último tratamiento": "Último fungicida",
+            "Variedades tratadas último tratamiento": "Variedades del último fungicida",
+            "Días desde último tratamiento": "Días desde último fungicida",
+        }),
         use_container_width=True,
         hide_index=True,
     )
@@ -10366,8 +10388,8 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
             st.write(f"- Prioridad: {row.get('Prioridad de campo', '')}")
             st.write(f"- Decisión: {row['Decisión']}")
             st.write(f"- Producto recomendado: **{row['Producto recomendado']}**. Alternativa: {row['Alternativa']}")
-            st.write(f"- Último tratamiento: {row['Último tratamiento']}")
-            st.write(f"- Variedades tratadas: {row.get('Variedades tratadas último tratamiento', '')}")
+            st.write(f"- Último fungicida: {row['Último tratamiento']}")
+            st.write(f"- Variedades del último fungicida: {row.get('Variedades tratadas último tratamiento', '')}")
             st.write(f"- Motivo de recomendación: {row['Motivo']}")
             st.write(f"- FRAC: {row['Advertencia FRAC']}")
 
