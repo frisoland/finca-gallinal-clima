@@ -20025,10 +20025,22 @@ def render_decisiones_panel():
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
     st.caption(f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. Zona azul = predicción Sencrop. {_treats_info}")
-    st.caption("ℹ️ El valor se asigna al día en que **acaba** un periodo continuo de hoja mojada "
-               "(con todas sus horas juntas, aunque cruce la medianoche). Por eso un día con muchas "
-               "horas mojadas puede salir 0 si la mojada **aún no había terminado**: el valor aparece "
-               "el día que se seca. Pasa el ratón por el pico para ver el periodo exacto.")
+    st.caption(
+        "ℹ️ **¿Cómo se cuenta una infección?** El moteado necesita que la hoja esté mojada "
+        "durante un rato seguido. La app agrupa esas horas en un **«evento» de mojada**:\n\n"
+        "• **Un evento empieza** cuando la hoja se moja (lluvia, rocío o humedad muy alta) y "
+        "**no se da por terminado hasta que pasan más de 6 horas seguidas con la hoja seca.** "
+        "Ratos secos cortos (un claro a mediodía, una pausa de la lluvia) **no** lo cortan: "
+        "sigue siendo el mismo episodio.\n"
+        "• Por eso, p. ej., del **16 al 19** puede poner **«23 h mojadas»** aunque entre medias "
+        "pasen 72 horas de reloj: son las horas que la hoja estuvo **de verdad mojada** dentro de "
+        "ese episodio; el resto fueron ratos secos demasiado cortos para cerrarlo.\n"
+        "• El **valor de infección** se calcula con **todas** esas horas juntas y se apunta el día "
+        "en que el evento **acaba** (cuando la hoja por fin se seca). Por eso un día con muchas "
+        "horas mojadas puede salir **0** si la mojada **aún no había terminado**: el valor sale "
+        "el día que se seca.\n\n"
+        "👉 Pasa el ratón por un pico para ver el **periodo exacto** (inicio → fin · horas mojadas)."
+    )
     fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_all, chart_h)
     st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
