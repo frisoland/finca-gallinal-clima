@@ -20039,7 +20039,15 @@ def render_decisiones_panel():
         "en que el evento **acaba** (cuando la hoja por fin se seca). Por eso un día con muchas "
         "horas mojadas puede salir **0** si la mojada **aún no había terminado**: el valor sale "
         "el día que se seca.\n\n"
-        "👉 Pasa el ratón por un pico para ver el **periodo exacto** (inicio → fin · horas mojadas)."
+        "👉 Pasa el ratón por un pico para ver el **periodo exacto** (inicio → fin · horas mojadas).\n\n"
+        "📚 **De dónde sale (no es inventado):** la relación temperatura × horas de mojada → "
+        "infección es ciencia publicada — **Mills & Laplante 1951**, revisada por **MacHardy & "
+        "Gadoury 1989** y **Stensvand et al. 1997** (base de los avisadores de moteado, p. ej. "
+        "RIMpro). Dos piezas son *ajuste práctico calibrable*, no ley exacta: el corte de **6 h "
+        "secas** para cerrar un evento (la literatura maneja ~4–8 h) y, **en la previsión**, las "
+        "horas de mojada se **estiman** (Sencrop no trae sensor de hoja) y se calibran con tu "
+        "sensor — por eso existe el panel de **fiabilidad**. En los días pasados, la mojada es "
+        "**medida** por tu sensor."
     )
     fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_all, chart_h)
     st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
