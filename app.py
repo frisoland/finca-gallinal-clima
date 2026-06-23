@@ -10119,75 +10119,76 @@ def score_product_for_field(product, disease, counts, last_product, last_fracs, 
     return score, warnings, blocks
 
 
-def recommend_products_for_field(field, disease, disease_level, disease_score, climate_explanation, acts_expanded, campaign_start, campaign_end, min_interval_days=15):
-    """Devuelve recomendación de producto para un campo concreto."""
-    counts = field_product_use_counts(acts_expanded, field, campaign_start, campaign_end)
+def recommend_products_for_field(field, disease, disease_level, disease_score, climate_explanation, acts_expanded, campaign_start, campaign_end, min_interval_days=15, activities_df=None, catalog_df=None, risk_list=None):
+    """Devuelve recomendación de producto para un campo concreto.
+
+    El PRODUCTO recomendado y la ALTERNATIVA salen del MISMO motor científico que
+    usa Decisiones (`get_smart_recommendation`: eficacia por patógeno + rotación
+    FRAC + límite de pases + límite SDHI combinado) y con el MISMO conteo de pases
+    (`count_field_applications`), para que el criterio sanitario sea idéntico en toda
+    la app. `acts_expanded` ya viene filtrado a fungicidas por el llamador.
+    """
     last = last_field_treatment(acts_expanded, field, end_ts=campaign_end)
     last_product = ""
+    last_raw = ""
     last_date = pd.NaT
     last_original = "Sin fungicida registrado"
     last_varieties = "Sin fungicida registrado"
     if last:
+        last_raw = str(last.get("Producto", "") or "")
         last_product = normalize_product_name_for_recommendation(last.get("Producto normalizado") or last.get("Producto"))
         last_date = pd.to_datetime(last.get("Fecha"), errors="coerce")
         last_original = f"{last_date.strftime('%d/%m/%Y') if pd.notna(last_date) else ''} · {last.get('Producto', '')}"
         last_varieties = str(last.get("Variedades tratadas", "") or "").strip() or "Agroptima no especifica variedad; revisar si fue campo completo o solo algunas variedades."
 
-    last_fracs = get_treatment_product_catalog().get(last_product, {}).get("frac", [])
     today = pd.Timestamp.now().normalize()
     days_since_last = (today - pd.Timestamp(last_date).normalize()).days if pd.notna(last_date) else np.nan
 
     need = treatment_need_from_level(disease_level, disease_score)
 
-    scored = []
-    for product in get_treatment_product_catalog().keys():
-        score, warnings, blocks = score_product_for_field(
-            product,
-            disease,
-            counts,
-            last_product,
-            last_fracs,
-            days_since_last,
-            min_interval_days=min_interval_days,
-        )
-        scored.append({
-            "product": product,
-            "score": score,
-            "warnings": warnings,
-            "blocks": blocks,
-        })
-
-    scored = sorted(scored, key=lambda x: x["score"], reverse=True)
-    allowed = [s for s in scored if not s["blocks"] and s["score"] > -20]
+    # ── Motor de recomendación UNIFICADO con Decisiones ───────────────────────
+    if catalog_df is None:
+        catalog_df = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
+    _campaign_year = int(pd.Timestamp(campaign_end).year)
+    if activities_df is not None and not activities_df.empty:
+        _app_counts, _sdhi_total = count_field_applications(activities_df, field, year=_campaign_year)
+    else:
+        _app_counts, _sdhi_total = {}, 0
+    _risks = [r for r in (risk_list or [disease]) if r and str(r).strip() not in ("—", "")] or [disease]
+    smart_primary, smart_alt, smart_motivo = get_smart_recommendation(
+        _risks, catalog_df, last_product=(last_raw or last_product),
+        app_counts=_app_counts, sdhi_total=_sdhi_total,
+    )
+    _smart_ok = smart_primary not in ("—", "Revisar catálogo", "Sin catálogo", "Sin riesgo activo")
+    _alt_clean = smart_alt if smart_alt not in ("—", "") else "Sin alternativa preferente"
 
     if "No tratar" in need or "Observar" in need:
         product_choice = "No aplicar de entrada"
-        alternative = allowed[0]["product"] if allowed else "Sin alternativa clara"
+        alternative = smart_primary if _smart_ok else "Sin alternativa clara"
         reason = "El nivel climático general no justifica tratamiento directo en este campo. Revisar visualmente y actuar solo si la observación de campo lo confirma."
         frac_warning = "Sin presión de tratamiento. Mantener alternancia FRAC si finalmente se aplica."
     elif pd.notna(days_since_last) and days_since_last < min_interval_days:
         product_choice = "Esperar / revisar"
-        alternative = allowed[0]["product"] if allowed else "Sin alternativa clara"
-        reason = f"No se recomienda nuevo tratamiento automático: solo han pasado {int(days_since_last)} días desde el último tratamiento."
+        alternative = smart_primary if _smart_ok else "Sin alternativa clara"
+        reason = f"No se recomienda nuevo tratamiento automático: solo han pasado {int(days_since_last)} días desde el último fungicida."
         frac_warning = "Respetar intervalo mínimo entre tratamientos y alternar modos de acción."
-    elif allowed:
-        product_choice = allowed[0]["product"]
-        alternative = allowed[1]["product"] if len(allowed) > 1 else "Sin alternativa preferente"
-        info = get_treatment_product_catalog()[product_choice]
+    elif _smart_ok:
+        product_choice = smart_primary
+        alternative = _alt_clean
         reason = (
-            f"Mejor encaje para {disease.lower()} dentro de los productos disponibles, "
-            f"teniendo en cuenta usos por campaña, último tratamiento y alternancia FRAC."
+            f"Mejor encaje para {', '.join(_risks).lower()} según eficacia por patógeno, "
+            f"rotación FRAC y pases por campaña (mismo motor que Decisiones)."
         )
-        frac_warning = info.get("comentario", "")
-        if allowed[0]["warnings"]:
-            frac_warning += " Avisos: " + "; ".join(allowed[0]["warnings"]) + "."
+        frac_warning = smart_motivo or ""
     else:
         product_choice = "Sin producto recomendable"
         alternative = "Revisar manualmente"
         reason = "Todos los productos quedan penalizados por uso máximo, intervalo o repetición de FRAC."
         frac_warning = "Conviene revisar estrategia y alternativas de distinto modo de acción."
 
-    used_txt = "; ".join([f"{p}: {counts.get(p, 0)}" for p in get_treatment_product_catalog().keys()])
+    # Pases por campaña con el MISMO formato y conteo que Decisiones ("FLINT 1/2 · …").
+    used_txt = " · ".join([f"{_pk.split()[0]} {_app_counts.get(_pk, 0)}/{_pmax}"
+                           for _pk, _pmax in PRODUCT_MAX_APPLICATIONS.items()])
 
     if "Aplicar" in need and not last:
         field_priority = "Alta: sin tratamiento previo registrado"
@@ -10269,6 +10270,18 @@ def build_field_treatment_recommendations(history_df, activities_df, period_df, 
     # aunque los datos climáticos no lleguen tan lejos.
     campaign_end = max(pd.Timestamp(end_ts), pd.Timestamp.now().normalize())
 
+    # Catálogo de fungicidas y lista de riesgos elevados del periodo, para alimentar
+    # el MISMO motor (get_smart_recommendation) que usa Decisiones.
+    _catalog_df = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
+    _risk_list = []
+    if sem is not None and not sem.empty and {"Riesgo", "Nivel"}.issubset(sem.columns):
+        _ss = sem[~sem["Riesgo"].astype(str).str.contains("Estrés", case=False, na=False)].copy()
+        _ss["_p"] = pd.to_numeric(_ss.get("Puntuación"), errors="coerce").fillna(0)
+        _ss = _ss[_ss["Nivel"].astype(str).str.contains("Alto|Medio", case=False, na=False)]
+        _risk_list = _ss.sort_values("_p", ascending=False)["Riesgo"].astype(str).tolist()
+    if not _risk_list:
+        _risk_list = [disease]
+
     rows = []
     for field in fields:
         rows.append(recommend_products_for_field(
@@ -10281,6 +10294,9 @@ def build_field_treatment_recommendations(history_df, activities_df, period_df, 
             campaign_start,
             campaign_end,
             min_interval_days=int(min_interval_days),
+            activities_df=activities_df,
+            catalog_df=_catalog_df,
+            risk_list=_risk_list,
         ))
 
     out = pd.DataFrame(rows)
