@@ -10119,14 +10119,17 @@ def score_product_for_field(product, disease, counts, last_product, last_fracs, 
     return score, warnings, blocks
 
 
-def recommend_products_for_field(field, disease, disease_level, disease_score, climate_explanation, acts_expanded, campaign_start, campaign_end, min_interval_days=15, activities_df=None, catalog_df=None, risk_list=None):
+def recommend_products_for_field(field, disease, disease_level, disease_score, climate_explanation, acts_expanded, campaign_start, campaign_end, min_interval_days=15, activities_df=None, catalog_df=None, risk_tl=None, fc_mills_event=False, fc_monilia_event=False, persist_map=None):
     """Devuelve recomendación de producto para un campo concreto.
 
-    El PRODUCTO recomendado y la ALTERNATIVA salen del MISMO motor científico que
-    usa Decisiones (`get_smart_recommendation`: eficacia por patógeno + rotación
-    FRAC + límite de pases + límite SDHI combinado) y con el MISMO conteo de pases
-    (`count_field_applications`), para que el criterio sanitario sea idéntico en toda
-    la app. `acts_expanded` ya viene filtrado a fungicidas por el llamador.
+    Criterio sanitario UNIFICADO con Decisiones:
+    - El riesgo dominante del campo se calcula con la MISMA lógica que
+      `daily_treatment_decision` (eventos de PREVISIÓN a 3 días + exposición
+      acumulada desde el último fungicida, "sin cobertura").
+    - El PRODUCTO y la ALTERNATIVA salen del MISMO motor científico
+      (`get_smart_recommendation`) con el MISMO conteo de pases
+      (`count_field_applications`).
+    `acts_expanded` ya viene filtrado a fungicidas por el llamador.
     """
     last = last_field_treatment(acts_expanded, field, end_ts=campaign_end)
     last_product = ""
@@ -10154,7 +10157,36 @@ def recommend_products_for_field(field, disease, disease_level, disease_score, c
         _app_counts, _sdhi_total = count_field_applications(activities_df, field, year=_campaign_year)
     else:
         _app_counts, _sdhi_total = {}, 0
-    _risks = [r for r in (risk_list or [disease]) if r and str(r).strip() not in ("—", "")] or [disease]
+
+    # ── Riesgo dominante del campo: MISMA lógica que daily_treatment_decision ──
+    # Persistencia efectiva del último fungicida (para saber si está "sin cobertura").
+    _eff_persist = 16.0
+    if persist_map and last_raw:
+        _lp_up = last_raw.upper()
+        _cands = [v for k, v in persist_map.items()
+                  if k and (str(k).upper().split()[0] in _lp_up or _lp_up.split()[0] in str(k).upper())]
+        if _cands:
+            _eff_persist = max(_cands)
+    _days_since = int(days_since_last) if pd.notna(days_since_last) else 999
+    _mills_since = _monilia_since = 0
+    _rain_since = 0.0
+    if risk_tl is not None and not risk_tl.empty:
+        _ref = pd.Timestamp(last_date).normalize() if pd.notna(last_date) else (today - pd.Timedelta(days=_eff_persist))
+        _hsince = risk_tl[(~risk_tl["Es_prediccion"].astype(bool)) & (risk_tl["Fecha"] >= _ref)]
+        if not _hsince.empty:
+            _mills_since   = int((pd.to_numeric(_hsince["Mills_valor"], errors="coerce").fillna(0) >= 100).sum())
+            _monilia_since = int((pd.to_numeric(_hsince["Monilia_valor"], errors="coerce").fillna(0) >= 100).sum())
+            _rain_since    = float(pd.to_numeric(_hsince["Lluvia"], errors="coerce").fillna(0).sum())
+    _unprotected = (_days_since >= _eff_persist) or (_days_since >= 12 and _rain_since >= 35)
+    _dominant = []
+    if fc_mills_event or (_mills_since >= 2 and _unprotected):
+        _dominant.append("Moteado")
+    if fc_monilia_event or (_monilia_since >= 1 and _unprotected):
+        _dominant.append("Monilia")
+    if not _dominant and _unprotected:
+        _dominant = ["Moteado", "Monilia"]
+    _risks = _dominant if _dominant else [disease]
+
     smart_primary, smart_alt, smart_motivo = get_smart_recommendation(
         _risks, catalog_df, last_product=(last_raw or last_product),
         app_counts=_app_counts, sdhi_total=_sdhi_total,
@@ -10203,7 +10235,7 @@ def recommend_products_for_field(field, disease, disease_level, disease_score, c
 
     return {
         "Campo": field,
-        "Riesgo dominante": disease,
+        "Riesgo dominante": ", ".join(_risks) if _risks else disease,
         "Nivel riesgo": disease_level,
         "Puntuación riesgo": round(float(disease_score), 1),
         "Prioridad de campo": field_priority,
@@ -10270,17 +10302,41 @@ def build_field_treatment_recommendations(history_df, activities_df, period_df, 
     # aunque los datos climáticos no lleguen tan lejos.
     campaign_end = max(pd.Timestamp(end_ts), pd.Timestamp.now().normalize())
 
-    # Catálogo de fungicidas y lista de riesgos elevados del periodo, para alimentar
-    # el MISMO motor (get_smart_recommendation) que usa Decisiones.
+    # Catálogo de fungicidas (mismo que Decisiones).
     _catalog_df = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
-    _risk_list = []
-    if sem is not None and not sem.empty and {"Riesgo", "Nivel"}.issubset(sem.columns):
-        _ss = sem[~sem["Riesgo"].astype(str).str.contains("Estrés", case=False, na=False)].copy()
-        _ss["_p"] = pd.to_numeric(_ss.get("Puntuación"), errors="coerce").fillna(0)
-        _ss = _ss[_ss["Nivel"].astype(str).str.contains("Alto|Medio", case=False, na=False)]
-        _risk_list = _ss.sort_values("_p", ascending=False)["Riesgo"].astype(str).tolist()
-    if not _risk_list:
-        _risk_list = [disease]
+
+    # ── MISMA BASE DE RIESGO QUE DECISIONES (hoy + previsión 3 días) ──────────
+    # El usuario eligió unificar la recomendación de producto por esta vía. Se
+    # reconstruye la línea de riesgo real+previsión y los eventos de previsión, y
+    # cada campo calcula su riesgo dominante con la lógica de daily_treatment_decision.
+    _today = pd.Timestamp.now().normalize()
+    _fc_df = st.session_state.get("forecast_df", pd.DataFrame())
+    try:
+        _risk_tl = build_risk_timeline(history_df, _fc_df, days_back=120)
+    except Exception:
+        _risk_tl = pd.DataFrame()
+    _fc_mills_event = _fc_monilia_event = False
+    if _risk_tl is not None and not _risk_tl.empty:
+        _fcw = _risk_tl[_risk_tl["Es_prediccion"].astype(bool) &
+                        (_risk_tl["Fecha"] >= _today) &
+                        (_risk_tl["Fecha"] <= _today + pd.Timedelta(days=3))]
+        if not _fcw.empty:
+            _fc_mills_event   = float(pd.to_numeric(_fcw["Mills_valor"], errors="coerce").fillna(0).max()) >= 100
+            _fc_monilia_event = float(pd.to_numeric(_fcw["Monilia_valor"], errors="coerce").fillna(0).max()) >= 100
+
+    # Mapa de persistencia por producto (igual que Decisiones), para "sin cobertura".
+    _persist_map = {str(d["Producto"]).strip(): float(d["Persistencia días"])
+                    for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Persistencia días")}
+    _fcat = st.session_state.get("fungicide_catalog_df")
+    if isinstance(_fcat, pd.DataFrame) and "Persistencia días" in _fcat.columns:
+        for _, _fr in _fcat.iterrows():
+            try:
+                _pp = str(_fr["Producto"]).strip()
+                _pv = float(_fr["Persistencia días"])
+                if _pp and _pv > 0:
+                    _persist_map[_pp] = _pv
+            except (TypeError, ValueError, KeyError):
+                pass
 
     rows = []
     for field in fields:
@@ -10296,7 +10352,10 @@ def build_field_treatment_recommendations(history_df, activities_df, period_df, 
             min_interval_days=int(min_interval_days),
             activities_df=activities_df,
             catalog_df=_catalog_df,
-            risk_list=_risk_list,
+            risk_tl=_risk_tl,
+            fc_mills_event=_fc_mills_event,
+            fc_monilia_event=_fc_monilia_event,
+            persist_map=_persist_map,
         ))
 
     out = pd.DataFrame(rows)
@@ -10372,7 +10431,9 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
     st.caption(
         "🍃 Este panel valora la presión **fúngica** (moteado/monilia/oídio): solo cuenta como "
         "cobertura un **fungicida**. Un insecticida de carpocapsa (Bactur, Madex…) **no** baja la "
-        "prioridad aquí — la carpocapsa se gestiona en su propio item. Criterio unificado con *Decisiones*."
+        "prioridad aquí — la carpocapsa se gestiona en su propio item. **El producto y la alternativa "
+        "se calculan con el mismo motor y la misma base de riesgo que *Decisiones* (hoy + previsión "
+        "3 días)**, así que coinciden con ese item."
     )
     st.dataframe(
         recs[[
