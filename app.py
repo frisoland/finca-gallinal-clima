@@ -17979,6 +17979,19 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
     # 2. Detectar eventos de hoja mojada sobre TODO el horario (igual que Sanidad)
     #    y mapear cada evento al día en que termina → máximo ratio de ese día.
     mills_by_day, monilia_by_day = {}, {}
+    mills_evt_by_day, monilia_evt_by_day = {}, {}   # texto del periodo de mojada que dio el valor
+
+    def _evt_txt(ini, fin, wet_eq):
+        """Describe el periodo continuo de mojada que produjo el valor de ese día,
+        listo para concatenar en el tooltip (vacío si no hay evento)."""
+        try:
+            if pd.isna(ini) or pd.isna(fin):
+                return ""
+            _h = f" · {float(wet_eq):.0f} h mojadas" if pd.notna(wet_eq) else ""
+            return f"<br>🍃 Mojada continua: {ini:%d/%m %Hh} → {fin:%d/%m %Hh}{_h}"
+        except Exception:
+            return ""
+
     try:
         events = detect_leaf_wetness_events(allh)
     except Exception:
@@ -17989,12 +18002,20 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
             if pd.isna(fin):
                 continue
             d = fin.normalize()
+            ini = pd.to_datetime(ev.get("Inicio"), errors="coerce")
+            wet_eq = pd.to_numeric(ev.get("Horas húmedas equivalentes"), errors="coerce")
             rm = ev.get("Ratio moteado", np.nan)
             ro = ev.get("Ratio monilia", np.nan)
             if pd.notna(rm):
-                mills_by_day[d] = max(mills_by_day.get(d, 0.0), float(rm) * 100.0)
+                _v = float(rm) * 100.0
+                if _v >= mills_by_day.get(d, -1.0):       # quedarse con el evento del valor máx.
+                    mills_by_day[d] = _v
+                    mills_evt_by_day[d] = _evt_txt(ini, fin, wet_eq)
             if pd.notna(ro):
-                monilia_by_day[d] = max(monilia_by_day.get(d, 0.0), float(ro) * 100.0)
+                _v = float(ro) * 100.0
+                if _v >= monilia_by_day.get(d, -1.0):
+                    monilia_by_day[d] = _v
+                    monilia_evt_by_day[d] = _evt_txt(ini, fin, wet_eq)
 
     # 3. Construir filas diarias con agregados meteo + valores de enfermedad por evento.
     allh["_fecha"] = allh["fecha_hora"].dt.date
@@ -18019,7 +18040,9 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
             "Horas_mojadura": horas_hum,
             "Es_prediccion":  es_pred,
             "Mills_valor":    round(min(mills_by_day.get(d, 0.0), 150.0), 1),
+            "Mills_evento":   mills_evt_by_day.get(d, ""),
             "Monilia_valor":  round(min(monilia_by_day.get(d, 0.0), 100.0), 1),
+            "Monilia_evento": monilia_evt_by_day.get(d, ""),
             "Oidio_valor":    _dec_oidio_value(temp_med, hr_med, lluvia),
             "DD_dia":         round(dd_dia, 1),
         })
@@ -18292,13 +18315,18 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
             risk_df["T_med"].fillna("?").tolist(),
             risk_df["HR_med"].fillna("?").tolist(),
             risk_df["Horas_mojadura"].tolist(),
+            (risk_df[_evt_col].fillna("").tolist()
+             if (_evt_col := {"Mills_valor": "Mills_evento",
+                              "Monilia_valor": "Monilia_evento"}.get(value_col)) in risk_df.columns
+             else [""] * len(risk_df)),
         )),
         hovertemplate=(
             "<b>%{x|%d/%m/%Y}</b><br>"
             f"Valor infección: %{{y:.0f}}<br>"
             "T media: %{customdata[0]}°C<br>"
             "HR media: %{customdata[1]}%<br>"
-            "Horas mojadura: %{customdata[2]}<extra></extra>"
+            "Horas mojadura (este día): %{customdata[2]}"
+            "%{customdata[3]}<extra></extra>"
         ),
     ))
 
@@ -19997,6 +20025,10 @@ def render_decisiones_panel():
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
     st.caption(f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. Zona azul = predicción Sencrop. {_treats_info}")
+    st.caption("ℹ️ El valor se asigna al día en que **acaba** un periodo continuo de hoja mojada "
+               "(con todas sus horas juntas, aunque cruce la medianoche). Por eso un día con muchas "
+               "horas mojadas puede salir 0 si la mojada **aún no había terminado**: el valor aparece "
+               "el día que se seca. Pasa el ratón por el pico para ver el periodo exacto.")
     fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_all, chart_h)
     st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
