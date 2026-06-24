@@ -13545,47 +13545,75 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
     return out
 
 
-def carpocapsa_treatment_timing_summary(dd_treat_df, ideal_lo=120.0, ideal_hi=140.0):
-    """Resumen por campo: de los tratamientos ÚNICOS de carpocapsa, qué % cayó en la
-    ventana ideal de eclosión (ideal_lo–ideal_hi DD desde biofix), cuántos pronto
-    (<ideal_lo) y cuántos tarde (>ideal_hi). Deduplica por (campo, fecha trat.)."""
-    if dd_treat_df is None or dd_treat_df.empty:
-        return pd.DataFrame()
-    ddcol = "DD biofix→trat. (literatura)"
-    if ddcol not in dd_treat_df.columns or "Fecha tratamiento" not in dd_treat_df.columns:
-        return pd.DataFrame()
-    df = dd_treat_df.copy()
-    df = df[df["Fecha tratamiento"].astype(str) != "—"]
-    df["_dd"] = pd.to_numeric(df[ddcol], errors="coerce")
-    df = df.dropna(subset=["_dd"])
-    # Un tratamiento = (campo, fecha tratamiento): el DD biofix→trat. es único por par.
-    df = df.drop_duplicates(subset=["Campo/Zona", "Fecha tratamiento"])
-    if df.empty:
-        return pd.DataFrame()
+def carpocapsa_treatment_timing_by_field(traps_df, treatments_df, daily_dd, campaign_year,
+                                         threshold=5, ideal_lo=120.0, ideal_hi=140.0):
+    """Resumen por campo de la PUNTERÍA de TODOS los tratamientos de carpocapsa
+    (no solo los ligados a una captura): para cada tratamiento del campo calcula los
+    DD desde el biofix (literatura) del campo y lo clasifica en ventana ideal /
+    pronto / tarde. Devuelve un df con columnas de display + columnas numéricas «_…»
+    para poder sumar el total fuera de la tabla."""
+    empty = pd.DataFrame()
+    if traps_df is None or traps_df.empty or treatments_df is None or treatments_df.empty:
+        return empty
+    bf_df = carpocapsa_compute_biofix_by_field(traps_df, campaign_year, threshold)
+    if bf_df.empty:
+        return empty
+    bf_map = {str(r["Campo/Zona"]).strip(): pd.to_datetime(r["Fecha biofix"])
+              for _, r in bf_df.iterrows()}
+
+    def dd_between(a, b):
+        if daily_dd is None or daily_dd.empty or pd.isna(a) or pd.isna(b):
+            return np.nan
+        f = pd.to_datetime(daily_dd["Fecha"])
+        m = (f >= pd.Timestamp(a)) & (f <= pd.Timestamp(b))
+        s = daily_dd[m]
+        if s.empty:
+            return np.nan
+        return round(float(pd.to_numeric(s["DD día"], errors="coerce").fillna(0).sum()), 1)
+
+    tr = treatments_df.copy()
+    tr["Fecha_dt"] = pd.to_datetime(tr["Fecha"], errors="coerce")
+    tr = tr.dropna(subset=["Fecha_dt"])
+    tr = tr[tr["Fecha_dt"].dt.year == int(campaign_year)]
+    if tr.empty or "Campos" not in tr.columns:
+        return empty
+
     win_lbl = f"En ventana {int(ideal_lo)}–{int(ideal_hi)} DD"
     rows = []
-    for campo, g in df.groupby("Campo/Zona"):
-        n = len(g)
-        n_win = int(((g["_dd"] >= ideal_lo) & (g["_dd"] <= ideal_hi)).sum())
+    for campo, bdate in bf_map.items():
+        campo_base = campo.split(" - ")[0].strip() if " - " in campo else campo
+        ctr = tr[tr["Campos"].fillna("").str.contains(campo_base, case=False, na=False)]
+        dates = sorted(set(ctr["Fecha_dt"].dt.date.tolist()))
+        if not dates:
+            continue
+        nwin = npr = nta = 0
+        for d in dates:
+            if pd.Timestamp(d) < bdate.normalize():
+                dd = 0.0   # tratamiento anterior al biofix → muy pronto (pre-vuelo)
+            else:
+                dd = dd_between(bdate.date(), d)
+            if dd is None or (isinstance(dd, float) and np.isnan(dd)):
+                continue
+            if dd < ideal_lo:
+                npr += 1
+            elif dd > ideal_hi:
+                nta += 1
+            else:
+                nwin += 1
+        n = nwin + npr + nta
+        if n == 0:
+            continue
         rows.append({
             "Campo/Zona": campo,
             "Tratam.": n,
-            win_lbl: f"{n_win}/{n} ({round(n_win / n * 100)}%)",
-            f"Pronto (<{int(ideal_lo)})": int((g["_dd"] < ideal_lo).sum()),
-            f"Tarde (>{int(ideal_hi)})": int((g["_dd"] > ideal_hi).sum()),
+            win_lbl: f"{nwin}/{n} ({round(nwin / n * 100)}%)",
+            f"Pronto (<{int(ideal_lo)})": npr,
+            f"Tarde (>{int(ideal_hi)})": nta,
+            "_win": nwin, "_pronto": npr, "_tarde": nta, "_n": n,
         })
-    out = pd.DataFrame(rows).sort_values("Campo/Zona").reset_index(drop=True)
-    # Fila TOTAL (toda la finca)
-    nT = len(df)
-    nW = int(((df["_dd"] >= ideal_lo) & (df["_dd"] <= ideal_hi)).sum())
-    total = {
-        "Campo/Zona": "TOTAL finca",
-        "Tratam.": nT,
-        win_lbl: f"{nW}/{nT} ({round(nW / nT * 100)}%)",
-        f"Pronto (<{int(ideal_lo)})": int((df["_dd"] < ideal_lo).sum()),
-        f"Tarde (>{int(ideal_hi)})": int((df["_dd"] > ideal_hi).sum()),
-    }
-    return pd.concat([out, pd.DataFrame([total])], ignore_index=True)
+    if not rows:
+        return empty
+    return pd.DataFrame(rows).sort_values("Campo/Zona").reset_index(drop=True)
 
 
 def carpocapsa_tab(history):
@@ -14358,17 +14386,32 @@ def carpocapsa_tab(history):
             )
 
             # ── Resumen de puntería: % de tratamientos en la ventana ideal ────────
-            _timing = carpocapsa_treatment_timing_summary(dd_treat_df, ideal_lo=120.0, ideal_hi=140.0)
+            _timing = carpocapsa_treatment_timing_by_field(
+                traps_for_analysis,
+                carp_treatments if not carp_treatments.empty else None,
+                daily_dd_for_analysis,
+                campaign_year,
+                threshold=int(dd_threshold),
+                ideal_lo=120.0, ideal_hi=140.0,
+            )
             if _timing is not None and not _timing.empty:
                 st.markdown("**🎯 Puntería de los tratamientos vs. ventana ideal (120–140 DD)**")
-                st.dataframe(_timing, use_container_width=True, hide_index=True)
+                _disp = _timing.drop(columns=[c for c in _timing.columns if c.startswith("_")])
+                st.dataframe(_disp, use_container_width=True, hide_index=True)
+                _nW = int(_timing["_win"].sum()); _nN = int(_timing["_n"].sum())
+                _nP = int(_timing["_pronto"].sum()); _nT = int(_timing["_tarde"].sum())
+                if _nN > 0:
+                    st.markdown(
+                        f"**🌳 TOTAL finca:** {_nW}/{_nN} (**{round(_nW / _nN * 100)}%**) en ventana "
+                        f"120–140 DD · {_nP} pronto (<120) · {_nT} tarde (>140)."
+                    )
                 st.caption(
-                    "Por campo, de tus tratamientos de carpocapsa (únicos): cuántos cayeron en la "
-                    "**ventana ideal de eclosión (120–140 DD desde biofix)**, cuántos **pronto** "
-                    "(<120: el producto se puso antes de que naciera la larva — válido si mantienes "
-                    "cobertura, sobre todo con Bt) y cuántos **tarde** (>140: parte de las larvas ya "
-                    "pudieron entrar al fruto). No mide solo nº de larvas: mide si protegiste **antes** "
-                    "de que entren, que es lo que evita el daño."
+                    "Por campo, de **todos** tus tratamientos de carpocapsa de la campaña: cuántos "
+                    "cayeron en la **ventana ideal de eclosión (120–140 DD desde biofix)**, cuántos "
+                    "**pronto** (<120: producto puesto antes de que naciera la larva — válido si "
+                    "mantienes cobertura, sobre todo con Bt) y cuántos **tarde** (>140: parte de las "
+                    "larvas ya pudieron entrar al fruto). No mide nº de larvas: mide si protegiste "
+                    "**antes** de que entren, que es lo que evita el daño."
                 )
 
             # ── Botón: fijar estos biofix por campo en la tabla de biofix ─────────
