@@ -13417,6 +13417,11 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
         if high.empty:
             continue
 
+        # Biofix AUTOMÁTICO del campo = primera lectura ≥ umbral (criterio del usuario).
+        # Se usa cuando el campo no tiene biofix registrado en la tabla, en lugar de la
+        # fecha de cada lectura (que hacía que el biofix cambiara fila a fila).
+        _auto_biofix = high.iloc[0]["Fecha_dt"].date()
+
         # Tratamientos de carpocapsa solo para este campo (sin fallback a otros campos)
         campo_treats = pd.DataFrame()
         if not treat.empty and "Campos" in treat.columns:
@@ -13428,7 +13433,9 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
         for _, high_row in high.iterrows():
             high_date  = high_row["Fecha_dt"].date()
             high_capts = int(high_row["_capturas"])
-            biofix_date = biofix_map.get(campo_str) or biofix_map.get("General") or high_date
+            _bf_registered = biofix_map.get(campo_str) or biofix_map.get("General")
+            _biofix_auto = _bf_registered is None
+            biofix_date = _bf_registered if _bf_registered is not None else _auto_biofix
 
             next_treatment_date    = None
             next_treatment_product = "Sin tratamiento registrado"
@@ -13460,7 +13467,7 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
                 "Campaña":                        int(campaign_year),
                 f"Lectura ≥{threshold} capturas": high_date,
                 "Capturas":                       high_capts,
-                "Biofix":                         biofix_date.strftime("%d/%m/%Y") if hasattr(biofix_date, "strftime") else str(biofix_date),
+                "Biofix":                         (biofix_date.strftime("%d/%m/%Y") if hasattr(biofix_date, "strftime") else str(biofix_date)) + (" *" if _biofix_auto else ""),
                 "Fecha tratamiento":              next_treatment_date if next_treatment_date else "—",
                 "Días hasta trat.":               dias_hasta_trat,
                 "DD entre lectura y trat.":       dd_lectura_a_trat,
@@ -14225,6 +14232,12 @@ def carpocapsa_tab(history):
                 f"💡 'DD entre lectura y trat.' = DD acumulados desde la lectura de presión hasta el tratamiento de carpocapsa. "
                 f"Tratamientos dentro de los primeros {min_days_gap} días se consideran pre-planificados y se omiten. "
                 f"Rango esperado: 90–140 DD."
+            )
+            st.caption(
+                "🔸 **Biofix con `*`** = calculado automáticamente (primera lectura ≥ umbral de ese "
+                "campo) porque **no hay biofix registrado** para él en la tabla de biofix. Es único "
+                "por campo (no cambia entre filas). Para fijarlo a tu criterio, regístralo en la "
+                "sección de biofix."
             )
 
     st.caption("Registra muestreos posteriores a tratamiento o revisiones de foco. Objetivo orientativo: daño <1%.")
