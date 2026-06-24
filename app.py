@@ -14332,7 +14332,7 @@ def carpocapsa_tab(history):
                 else:
                     _cur = st.session_state.get("carpocapsa_biofix_df", carpocapsa_default_biofix_df())
                     st.session_state.carpocapsa_biofix_df = _carpocapsa_merge_by_year(_new_bf, _cur)
-                    _msg = f"✅ {len(_new_bf)} biofix por campo fijados para {campaign_year} (umbral ≥{int(dd_threshold)})."
+                    st.success(f"✅ {len(_new_bf)} biofix por campo fijados para {campaign_year} (umbral ≥{int(dd_threshold)}).")
                     if supabase_is_configured():
                         try:
                             ok, smsg = upload_carpocapsa_snapshot_to_supabase(
@@ -14340,11 +14340,23 @@ def carpocapsa_tab(history):
                                 st.session_state.carpocapsa_biofix_df,
                                 st.session_state.get("carpocapsa_damage_df", pd.DataFrame()),
                             )
-                            _msg += " Guardado en Supabase." if ok else f" (No se guardó en Supabase: {smsg})"
+                            if ok:
+                                st.success("💾 Guardado en Supabase (persistente).")
+                            else:
+                                st.warning(f"Guardado en la sesión, pero NO en Supabase: {smsg}")
                         except Exception as _e:
-                            _msg += f" (Aviso al guardar en Supabase: {_e})"
-                    st.success(_msg)
-                    st.rerun()
+                            st.warning(f"Guardado en la sesión, pero falló el guardado en Supabase: {_e}")
+                    else:
+                        st.info("Guardado en la sesión. ⚠️ Supabase no está configurado, así que se "
+                                "perderá si se reinicia la app. Usa el botón de guardar snapshot de "
+                                "carpocapsa para persistirlo.")
+                    # Mostrar el biofix recién fijado para que lo veas
+                    st.dataframe(
+                        _new_bf[["Campo/Zona", "Fecha biofix", "Criterio"]].assign(
+                            **{"Fecha biofix": pd.to_datetime(_new_bf["Fecha biofix"]).dt.strftime("%d/%m/%Y")}
+                        ),
+                        use_container_width=True, hide_index=True,
+                    )
             st.caption(
                 "📌 Opcional: rellena la **tabla de biofix** por campo (incluidos los que quedaron "
                 "vacíos) para que el resto de la app la use. El punto 6 funciona igual con o sin esto."
