@@ -13339,6 +13339,58 @@ def carpocapsa_build_status_table(history, traps_df, biofix_df, base_temp=10.0, 
     return pd.DataFrame(rows), daily_dd
 
 
+def _carpocapsa_sustained_biofix(ct, threshold):
+    """Biofix de un campo según LITERATURA: primera captura SOSTENIDA ≥ umbral
+    (confirmada en la lectura siguiente con ≥1 captura); si ninguna es sostenida,
+    la primera ≥ umbral. `ct` debe tener columnas 'Fecha_dt' y '_capturas'.
+    Devuelve (date | None, sustained_bool). Refs: Riedl & Croft 1976; UC IPM."""
+    ct = ct.sort_values("Fecha_dt").reset_index(drop=True)
+    ge_idx = ct.index[ct["_capturas"] >= threshold].tolist()
+    if not ge_idx:
+        return None, False
+    for idx in ge_idx:
+        if idx + 1 < len(ct):
+            nxt = pd.to_numeric(ct.loc[idx + 1, "_capturas"], errors="coerce")
+            if (nxt if pd.notna(nxt) else 0) >= 1:
+                return ct.loc[idx, "Fecha_dt"].date(), True
+        else:
+            return ct.loc[idx, "Fecha_dt"].date(), True
+    return ct.loc[ge_idx[0], "Fecha_dt"].date(), False
+
+
+def carpocapsa_compute_biofix_by_field(traps_df, campaign_year, threshold=5):
+    """Calcula el biofix por campo (literatura: 1ª captura sostenida ≥ umbral) a
+    partir de las lecturas reales y devuelve un DataFrame con las columnas estándar
+    de biofix para la campaña indicada (uno por campo con al menos una lectura ≥ umbral)."""
+    empty = pd.DataFrame(columns=CARPOCAPSA_DEFAULT_BIOFIX_COLUMNS)
+    if traps_df is None or traps_df.empty:
+        return empty
+    t = traps_df.copy()
+    t["Fecha_dt"] = pd.to_datetime(t["Fecha"], errors="coerce")
+    cap_col = next((c for c in ["Capturas machos", "Capturas/trampa/día", "Capturas"] if c in t.columns), None)
+    if cap_col is None:
+        return empty
+    t["_capturas"] = pd.to_numeric(t[cap_col], errors="coerce")
+    if "Campaña" in t.columns:
+        t = t[pd.to_numeric(t["Campaña"], errors="coerce") == int(campaign_year)]
+    t = t.dropna(subset=["Fecha_dt", "_capturas", "Campo/Zona"])
+    rows = []
+    for campo in sorted(t["Campo/Zona"].astype(str).unique()):
+        ct = t[t["Campo/Zona"].astype(str) == campo]
+        bf, sust = _carpocapsa_sustained_biofix(ct, threshold)
+        if bf is None:
+            continue
+        rows.append({
+            "Campo/Zona": campo,
+            "Fecha biofix": pd.Timestamp(bf),
+            "Criterio": f"Auto: 1ª captura sostenida ≥{threshold}" + ("" if sust else " (no sostenida)"),
+            "Activo": True,
+            "Observaciones": "Calculado de lecturas reales (literatura: Riedl/Croft 1976, UC IPM).",
+            "Campaña": int(campaign_year),
+        })
+    return pd.DataFrame(rows, columns=CARPOCAPSA_DEFAULT_BIOFIX_COLUMNS)
+
+
 def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, campaign_year, threshold=5, min_days_gap=5):
     """Para cada campo, busca cada lectura con capturas >= threshold,
     el siguiente tratamiento de carpocapsa posterior para ese mismo campo y los DD
@@ -13373,24 +13425,8 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
     if t.empty:
         return pd.DataFrame()
 
-    # ── Biofix por campo según LITERATURA (primera captura SOSTENIDA ≥ umbral) ──
-    # "Sostenida" = la captura ≥ umbral se confirma en la lectura siguiente (≥1),
-    # para no fijar el biofix en una captura suelta/aislada (Riedl & Croft 1976;
-    # UC IPM). Si ninguna es sostenida, se usa la primera ≥ umbral. Se calcula de
-    # las LECTURAS REALES de cada campo (no de la tabla de biofix, que puede estar
-    # incompleta), tal como pidió el usuario.
-    def _literature_biofix(ct):
-        ct = ct.sort_values("Fecha_dt").reset_index(drop=True)
-        ge_idx = ct.index[ct["_capturas"] >= threshold].tolist()
-        if not ge_idx:
-            return None, False
-        for idx in ge_idx:
-            if idx + 1 < len(ct):
-                if float(pd.to_numeric(ct.loc[idx + 1, "_capturas"], errors="coerce") or 0) >= 1:
-                    return ct.loc[idx, "Fecha_dt"].date(), True
-            else:
-                return ct.loc[idx, "Fecha_dt"].date(), True
-        return ct.loc[ge_idx[0], "Fecha_dt"].date(), False
+    # Biofix por campo según LITERATURA (helper común): primera captura sostenida
+    # ≥ umbral, calculado de las lecturas reales (ver _carpocapsa_sustained_biofix).
 
     # ── DD acumulados entre dos fechas (inicio inclusive, fin inclusive) ───────
     def dd_entre_fechas(start_date, end_date):
@@ -13444,7 +13480,7 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
 
         # Biofix del campo (literatura): primera captura SOSTENIDA ≥ umbral. Único
         # por campo: NO cambia entre filas.
-        bf_date, bf_sustained = _literature_biofix(campo_traps)
+        bf_date, bf_sustained = _carpocapsa_sustained_biofix(campo_traps, threshold)
         if bf_date is None:
             bf_date = high.iloc[0]["Fecha_dt"].date()
             bf_sustained = False
@@ -14275,6 +14311,43 @@ def carpocapsa_tab(history):
                 "**>360** tras el pico.\n\n"
                 "Biofix marcado **«(no sost.)»** = no hubo lectura siguiente que confirmara el vuelo "
                 "(captura única); tómalo con cautela. Fuentes: *Riedl, Croft & Howitt 1976; UC IPM; WSU*."
+            )
+
+            # ── Botón: fijar estos biofix por campo en la tabla de biofix ─────────
+            st.markdown("")
+            if st.button(
+                f"📌 Fijar estos biofix por campo en la tabla ({campaign_year})",
+                use_container_width=True, key="carpo_fix_biofix_btn",
+                help="Guarda el biofix calculado (1ª captura sostenida ≥ umbral) de cada campo en "
+                     "la tabla de biofix de esta campaña, para que TODA la app lo use (no solo este "
+                     "punto). Rellena los campos que quedaron vacíos al importar el Excel. Reemplaza "
+                     "los biofix previos SOLO de esta campaña; otros años no se tocan.",
+            ):
+                _new_bf = carpocapsa_compute_biofix_by_field(
+                    st.session_state.get("carpocapsa_traps_df", pd.DataFrame()),
+                    campaign_year, threshold=int(dd_threshold),
+                )
+                if _new_bf.empty:
+                    st.warning("No se pudo calcular ningún biofix (sin lecturas ≥ umbral en esta campaña).")
+                else:
+                    _cur = st.session_state.get("carpocapsa_biofix_df", carpocapsa_default_biofix_df())
+                    st.session_state.carpocapsa_biofix_df = _carpocapsa_merge_by_year(_new_bf, _cur)
+                    _msg = f"✅ {len(_new_bf)} biofix por campo fijados para {campaign_year} (umbral ≥{int(dd_threshold)})."
+                    if supabase_is_configured():
+                        try:
+                            ok, smsg = upload_carpocapsa_snapshot_to_supabase(
+                                st.session_state.get("carpocapsa_traps_df", pd.DataFrame()),
+                                st.session_state.carpocapsa_biofix_df,
+                                st.session_state.get("carpocapsa_damage_df", pd.DataFrame()),
+                            )
+                            _msg += " Guardado en Supabase." if ok else f" (No se guardó en Supabase: {smsg})"
+                        except Exception as _e:
+                            _msg += f" (Aviso al guardar en Supabase: {_e})"
+                    st.success(_msg)
+                    st.rerun()
+            st.caption(
+                "📌 Opcional: rellena la **tabla de biofix** por campo (incluidos los que quedaron "
+                "vacíos) para que el resto de la app la use. El punto 6 funciona igual con o sin esto."
             )
 
     st.caption("Registra muestreos posteriores a tratamiento o revisiones de foco. Objetivo orientativo: daño <1%.")
