@@ -13373,19 +13373,24 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
     if t.empty:
         return pd.DataFrame()
 
-    # ── Preparar biofix: mapa campo → fecha ───────────────────────────────────
-    biofix_map = {}
-    if biofix_df is not None and not biofix_df.empty and "Fecha biofix" in biofix_df.columns:
-        bf = biofix_df.copy()
-        if "Campaña" in bf.columns:
-            bf = bf[pd.to_numeric(bf["Campaña"], errors="coerce") == int(campaign_year)]
-        if "Activo" in bf.columns:
-            bf = bf[bf["Activo"].fillna(True).astype(bool)]
-        for _, row in bf.iterrows():
-            zona = str(row.get("Campo/Zona", "General") or "General").strip()
-            bdate = pd.to_datetime(row["Fecha biofix"], errors="coerce")
-            if pd.notna(bdate):
-                biofix_map[zona] = bdate
+    # ── Biofix por campo según LITERATURA (primera captura SOSTENIDA ≥ umbral) ──
+    # "Sostenida" = la captura ≥ umbral se confirma en la lectura siguiente (≥1),
+    # para no fijar el biofix en una captura suelta/aislada (Riedl & Croft 1976;
+    # UC IPM). Si ninguna es sostenida, se usa la primera ≥ umbral. Se calcula de
+    # las LECTURAS REALES de cada campo (no de la tabla de biofix, que puede estar
+    # incompleta), tal como pidió el usuario.
+    def _literature_biofix(ct):
+        ct = ct.sort_values("Fecha_dt").reset_index(drop=True)
+        ge_idx = ct.index[ct["_capturas"] >= threshold].tolist()
+        if not ge_idx:
+            return None, False
+        for idx in ge_idx:
+            if idx + 1 < len(ct):
+                if float(pd.to_numeric(ct.loc[idx + 1, "_capturas"], errors="coerce") or 0) >= 1:
+                    return ct.loc[idx, "Fecha_dt"].date(), True
+            else:
+                return ct.loc[idx, "Fecha_dt"].date(), True
+        return ct.loc[ge_idx[0], "Fecha_dt"].date(), False
 
     # ── DD acumulados entre dos fechas (inicio inclusive, fin inclusive) ───────
     def dd_entre_fechas(start_date, end_date):
@@ -13397,6 +13402,26 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
         if sub.empty:
             return np.nan
         return round(float(pd.to_numeric(sub["DD día"], errors="coerce").fillna(0).sum()), 1)
+
+    # ── Fase fenológica de la carpocapsa según DD desde biofix (literatura) ─────
+    # Base 10 °C / techo 31,1 °C (= 50/88 °F, modelo estándar Cydia pomonella).
+    # Referencias: Riedl/Croft/Howitt 1976; UC IPM; WSU.
+    def _carpo_stage(dd):
+        if dd is None or (isinstance(dd, float) and np.isnan(dd)):
+            return "—"
+        if dd < 50:
+            return "Pre‑puesta (<50)"
+        if dd < 100:
+            return "Inicio puesta huevos (50–100)"
+        if dd < 120:
+            return "Puesta→eclosión (100–120)"
+        if dd < 140:
+            return "✅ Inicio eclosión / entradas fruto (120–140)"
+        if dd < 250:
+            return "Eclosión en curso (140–250)"
+        if dd < 360:
+            return "Pico eclosión 1ª gen. (250–360)"
+        return "Tras pico / posible 2ª gen. (>360)"
 
     # ── Preparar tratamientos de carpocapsa ───────────────────────────────────
     treat = pd.DataFrame()
@@ -13417,10 +13442,12 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
         if high.empty:
             continue
 
-        # Biofix AUTOMÁTICO del campo = primera lectura ≥ umbral (criterio del usuario).
-        # Se usa cuando el campo no tiene biofix registrado en la tabla, en lugar de la
-        # fecha de cada lectura (que hacía que el biofix cambiara fila a fila).
-        _auto_biofix = high.iloc[0]["Fecha_dt"].date()
+        # Biofix del campo (literatura): primera captura SOSTENIDA ≥ umbral. Único
+        # por campo: NO cambia entre filas.
+        bf_date, bf_sustained = _literature_biofix(campo_traps)
+        if bf_date is None:
+            bf_date = high.iloc[0]["Fecha_dt"].date()
+            bf_sustained = False
 
         # Tratamientos de carpocapsa solo para este campo (sin fallback a otros campos)
         campo_treats = pd.DataFrame()
@@ -13433,13 +13460,11 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
         for _, high_row in high.iterrows():
             high_date  = high_row["Fecha_dt"].date()
             high_capts = int(high_row["_capturas"])
-            _bf_registered = biofix_map.get(campo_str) or biofix_map.get("General")
-            _biofix_auto = _bf_registered is None
-            biofix_date = _bf_registered if _bf_registered is not None else _auto_biofix
 
             next_treatment_date    = None
             next_treatment_product = "Sin tratamiento registrado"
             dd_lectura_a_trat      = np.nan
+            dd_biofix_a_trat       = np.nan
             dias_hasta_trat        = "—"
 
             if not campo_treats.empty:
@@ -13461,16 +13486,19 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
                         next_treatment_product = "Tratamiento carpocapsa"
                     dias_hasta_trat   = (next_treatment_date - high_date).days
                     dd_lectura_a_trat = dd_entre_fechas(high_date, next_treatment_date)
+                    dd_biofix_a_trat  = dd_entre_fechas(bf_date, next_treatment_date)
 
             rows.append({
                 "Campo/Zona":                     campo_str,
                 "Campaña":                        int(campaign_year),
                 f"Lectura ≥{threshold} capturas": high_date,
                 "Capturas":                       high_capts,
-                "Biofix":                         (biofix_date.strftime("%d/%m/%Y") if hasattr(biofix_date, "strftime") else str(biofix_date)) + (" *" if _biofix_auto else ""),
+                "Biofix":                         bf_date.strftime("%d/%m/%Y") + ("" if bf_sustained else " (no sost.)"),
                 "Fecha tratamiento":              next_treatment_date if next_treatment_date else "—",
                 "Días hasta trat.":               dias_hasta_trat,
-                "DD entre lectura y trat.":       dd_lectura_a_trat,
+                "DD lectura→trat. (tu método)":   dd_lectura_a_trat,
+                "DD biofix→trat. (literatura)":   dd_biofix_a_trat,
+                "Fase en el tratamiento (literatura)": _carpo_stage(dd_biofix_a_trat),
                 "Producto":                       next_treatment_product,
             })
 
@@ -14161,9 +14189,14 @@ def carpocapsa_tab(history):
 
     st.markdown("### 6. DD acumulados en el momento del tratamiento")
     st.caption(
-        "Para cada campo, muestra la última lectura de trampa con capturas ≥ al umbral configurado, "
-        "el siguiente tratamiento registrado en Agroptima y los grados-día acumulados desde biofix "
-        "en ese momento. Útil para evaluar si se trató a tiempo o tarde respecto a la presión real."
+        "Compara **tu método** vs. la **literatura**, campo a campo. El **biofix** se fija por campo "
+        "según la literatura (**primera captura sostenida ≥ umbral**; *Riedl & Croft 1976*, *UC IPM*) "
+        "a partir de tus lecturas reales. Para cada lectura ≥ umbral se busca el siguiente tratamiento "
+        "de carpocapsa y se muestran dos medidas de DD (base 10 °C / techo 31,1 °C):\n\n"
+        "• **DD lectura→trat. (tu método)** — DD desde el repunte de capturas hasta que trataste "
+        "(tu ventana objetivo ≈ 90–130 DD).\n"
+        "• **DD biofix→trat. (literatura)** — DD acumulados desde el biofix del campo hasta el "
+        "tratamiento, y **en qué fase biológica** caía ese día."
     )
 
     if history_campaign is None or history_campaign.empty:
@@ -14229,15 +14262,19 @@ def carpocapsa_tab(history):
                 use_container_width=True,
             )
             st.caption(
-                f"💡 'DD entre lectura y trat.' = DD acumulados desde la lectura de presión hasta el tratamiento de carpocapsa. "
-                f"Tratamientos dentro de los primeros {min_days_gap} días se consideran pre-planificados y se omiten. "
-                f"Rango esperado: 90–140 DD."
+                f"💡 **DD lectura→trat. (tu método)** = DD desde el repunte de capturas hasta el "
+                f"tratamiento (tu ventana ≈ 90–130 DD). Tratamientos dentro de los primeros "
+                f"{min_days_gap} días se consideran pre-planificados y se omiten."
             )
             st.caption(
-                "🔸 **Biofix con `*`** = calculado automáticamente (primera lectura ≥ umbral de ese "
-                "campo) porque **no hay biofix registrado** para él en la tabla de biofix. Es único "
-                "por campo (no cambia entre filas). Para fijarlo a tu criterio, regístralo en la "
-                "sección de biofix."
+                "🔬 **DD biofix→trat. (literatura)** = DD desde el biofix del campo (primera captura "
+                "**sostenida** ≥ umbral) hasta el tratamiento, y la **fase** en que caía:\n\n"
+                "• **<50** pre‑puesta · **50–100** inicio puesta de huevos · **100–120** transición · "
+                "**✅ 120–140 inicio de eclosión / primeras entradas en fruto (ventana ideal para "
+                "tratar)** · **140–250** eclosión en curso · **250–360** pico de eclosión 1ª gen. · "
+                "**>360** tras el pico.\n\n"
+                "Biofix marcado **«(no sost.)»** = no hubo lectura siguiente que confirmara el vuelo "
+                "(captura única); tómalo con cautela. Fuentes: *Riedl, Croft & Howitt 1976; UC IPM; WSU*."
             )
 
     st.caption("Registra muestreos posteriores a tratamiento o revisiones de foco. Objetivo orientativo: daño <1%.")
