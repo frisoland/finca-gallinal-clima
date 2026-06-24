@@ -13358,6 +13358,47 @@ def _carpocapsa_sustained_biofix(ct, threshold):
     return ct.loc[ge_idx[0], "Fecha_dt"].date(), False
 
 
+def carpocapsa_generation_biofixes(ct, threshold, daily_dd, min_gap_dd=450.0):
+    """Lista de biofix por GENERACIÓN de un campo (1ª, 2ª…). Un nuevo biofix se fija
+    cuando, tras un DESCENSO por debajo del umbral, las capturas vuelven a subir de
+    forma sostenida ≥ umbral Y han pasado al menos `min_gap_dd` DD desde el biofix
+    anterior — para NO confundir un vuelo prolongado/bimodal de la 1ª gen con una 2ª
+    (el 2º vuelo real aparece ~500 DD°C tras el 1º; UC IPM/WSU). `ct` necesita
+    'Fecha_dt' y '_capturas'. Devuelve lista de date (gen1, gen2, …)."""
+    ct = ct.sort_values("Fecha_dt").reset_index(drop=True)
+    n = len(ct)
+
+    def _ddb(a, b):
+        if daily_dd is None or daily_dd.empty:
+            return np.nan
+        f = pd.to_datetime(daily_dd["Fecha"])
+        s = daily_dd[(f >= pd.Timestamp(a)) & (f <= pd.Timestamp(b))]
+        return float(pd.to_numeric(s["DD día"], errors="coerce").fillna(0).sum()) if not s.empty else np.nan
+
+    def _sustained(i):
+        if i + 1 >= n:
+            return True
+        nxt = pd.to_numeric(ct.loc[i + 1, "_capturas"], errors="coerce")
+        return (nxt if pd.notna(nxt) else 0) >= 1
+
+    bios, last_bf, dipped = [], None, False
+    for i in range(n):
+        cap = pd.to_numeric(ct.loc[i, "_capturas"], errors="coerce")
+        cap = cap if pd.notna(cap) else 0
+        date = ct.loc[i, "Fecha_dt"]
+        if last_bf is None:
+            if cap >= threshold and _sustained(i):
+                last_bf = date; bios.append(date.date()); dipped = False
+        else:
+            if cap < threshold:
+                dipped = True
+            elif dipped:  # repunte ≥ umbral tras un valle
+                gap = _ddb(last_bf, date)
+                if pd.notna(gap) and gap >= min_gap_dd and _sustained(i):
+                    last_bf = date; bios.append(date.date()); dipped = False
+    return bios
+
+
 def carpocapsa_compute_biofix_by_field(traps_df, campaign_year, threshold=5):
     """Calcula el biofix por campo (literatura: 1ª captura sostenida ≥ umbral) a
     partir de las lecturas reales y devuelve un DataFrame con las columnas estándar
@@ -13546,30 +13587,34 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
 
 
 def carpocapsa_treatment_timing_by_field(traps_df, treatments_df, daily_dd, campaign_year,
-                                         threshold=5, ideal_lo=120.0, ideal_hi=140.0):
-    """Resumen por campo de la PUNTERÍA de TODOS los tratamientos de carpocapsa
-    (no solo los ligados a una captura): para cada tratamiento del campo calcula los
-    DD desde el biofix (literatura) del campo y lo clasifica en ventana ideal /
-    pronto / tarde. Devuelve un df con columnas de display + columnas numéricas «_…»
-    para poder sumar el total fuera de la tabla."""
+                                         threshold=5, ideal_lo=120.0, ideal_hi=140.0, active_hi=360.0):
+    """Resumen por campo de la PUNTERÍA de TODOS los tratamientos de carpocapsa.
+    Es CONSCIENTE DE GENERACIONES: detecta el biofix de cada generación del campo
+    (1ª, 2ª…) y mide cada tratamiento contra el biofix de SU generación. Clasifica:
+    Pronto (<ideal_lo) · ✅ Ideal (ideal_lo–ideal_hi) · Eclosión activa
+    (ideal_hi–active_hi, aún eficaz) · Tarde (>active_hi: esa generación ya pasó).
+    Devuelve un df con columnas de display + columnas numéricas «_…» para totales."""
     empty = pd.DataFrame()
     if traps_df is None or traps_df.empty or treatments_df is None or treatments_df.empty:
         return empty
-    bf_df = carpocapsa_compute_biofix_by_field(traps_df, campaign_year, threshold)
-    if bf_df.empty:
+    t = traps_df.copy()
+    t["Fecha_dt"] = pd.to_datetime(t["Fecha"], errors="coerce")
+    cap_col = next((c for c in ["Capturas machos", "Capturas/trampa/día", "Capturas"] if c in t.columns), None)
+    if cap_col is None:
         return empty
-    bf_map = {str(r["Campo/Zona"]).strip(): pd.to_datetime(r["Fecha biofix"])
-              for _, r in bf_df.iterrows()}
+    t["_capturas"] = pd.to_numeric(t[cap_col], errors="coerce")
+    if "Campaña" in t.columns:
+        t = t[pd.to_numeric(t["Campaña"], errors="coerce") == int(campaign_year)]
+    t = t.dropna(subset=["Fecha_dt", "_capturas", "Campo/Zona"])
+    if t.empty:
+        return empty
 
     def dd_between(a, b):
         if daily_dd is None or daily_dd.empty or pd.isna(a) or pd.isna(b):
             return np.nan
         f = pd.to_datetime(daily_dd["Fecha"])
-        m = (f >= pd.Timestamp(a)) & (f <= pd.Timestamp(b))
-        s = daily_dd[m]
-        if s.empty:
-            return np.nan
-        return round(float(pd.to_numeric(s["DD día"], errors="coerce").fillna(0).sum()), 1)
+        s = daily_dd[(f >= pd.Timestamp(a)) & (f <= pd.Timestamp(b))]
+        return round(float(pd.to_numeric(s["DD día"], errors="coerce").fillna(0).sum()), 1) if not s.empty else np.nan
 
     tr = treatments_df.copy()
     tr["Fecha_dt"] = pd.to_datetime(tr["Fecha"], errors="coerce")
@@ -13578,38 +13623,51 @@ def carpocapsa_treatment_timing_by_field(traps_df, treatments_df, daily_dd, camp
     if tr.empty or "Campos" not in tr.columns:
         return empty
 
-    win_lbl = f"En ventana {int(ideal_lo)}–{int(ideal_hi)} DD"
     rows = []
-    for campo, bdate in bf_map.items():
+    for campo in sorted(t["Campo/Zona"].astype(str).unique()):
+        ct = t[t["Campo/Zona"].astype(str) == campo]
+        bios = carpocapsa_generation_biofixes(ct, threshold, daily_dd)
+        if not bios:
+            continue
         campo_base = campo.split(" - ")[0].strip() if " - " in campo else campo
         ctr = tr[tr["Campos"].fillna("").str.contains(campo_base, case=False, na=False)]
         dates = sorted(set(ctr["Fecha_dt"].dt.date.tolist()))
         if not dates:
             continue
-        nwin = npr = nta = 0
+        npr = nid = nac = nta = 0
         for d in dates:
-            if pd.Timestamp(d) < bdate.normalize():
-                dd = 0.0   # tratamiento anterior al biofix → muy pronto (pre-vuelo)
-            else:
-                dd = dd_between(bdate.date(), d)
+            gbf = None
+            for b in bios:                 # biofix de la generación a la que pertenece
+                if b <= d:
+                    gbf = b
+            if gbf is None:
+                npr += 1                    # tratamiento anterior al 1er biofix → pre-vuelo
+                continue
+            dd = dd_between(gbf, d)
             if dd is None or (isinstance(dd, float) and np.isnan(dd)):
                 continue
             if dd < ideal_lo:
                 npr += 1
-            elif dd > ideal_hi:
-                nta += 1
+            elif dd <= ideal_hi:
+                nid += 1
+            elif dd <= active_hi:
+                nac += 1
             else:
-                nwin += 1
-        n = nwin + npr + nta
-        if n == 0:
+                nta += 1
+        ntot = npr + nid + nac + nta
+        if ntot == 0:
             continue
+        nefi = nid + nac
         rows.append({
             "Campo/Zona": campo,
-            "Tratam.": n,
-            win_lbl: f"{nwin}/{n} ({round(nwin / n * 100)}%)",
-            f"Pronto (<{int(ideal_lo)})": npr,
-            f"Tarde (>{int(ideal_hi)})": nta,
-            "_win": nwin, "_pronto": npr, "_tarde": nta, "_n": n,
+            "Gen.": len(bios),
+            "Tratam.": ntot,
+            "% eficaz (120–360)": f"{nefi}/{ntot} ({round(nefi / ntot * 100)}%)",
+            "Pronto (<120)": npr,
+            "✅ Ideal (120–140)": nid,
+            "Activa (140–360)": nac,
+            "Tarde (>360)": nta,
+            "_efi": nefi, "_n": ntot, "_pr": npr, "_id": nid, "_ac": nac, "_ta": nta,
         })
     if not rows:
         return empty
@@ -14395,23 +14453,27 @@ def carpocapsa_tab(history):
                 ideal_lo=120.0, ideal_hi=140.0,
             )
             if _timing is not None and not _timing.empty:
-                st.markdown("**🎯 Puntería de los tratamientos vs. ventana ideal (120–140 DD)**")
+                st.markdown("**🎯 Puntería de los tratamientos vs. eclosión (por campo y generación)**")
                 _disp = _timing.drop(columns=[c for c in _timing.columns if c.startswith("_")])
                 st.dataframe(_disp, use_container_width=True, hide_index=True)
-                _nW = int(_timing["_win"].sum()); _nN = int(_timing["_n"].sum())
-                _nP = int(_timing["_pronto"].sum()); _nT = int(_timing["_tarde"].sum())
-                if _nN > 0:
+                _efi = int(_timing["_efi"].sum()); _n = int(_timing["_n"].sum())
+                _pr = int(_timing["_pr"].sum()); _ta = int(_timing["_ta"].sum())
+                _gmax = int(_timing["Gen."].max())
+                if _n > 0:
                     st.markdown(
-                        f"**🌳 TOTAL finca:** {_nW}/{_nN} (**{round(_nW / _nN * 100)}%**) en ventana "
-                        f"120–140 DD · {_nP} pronto (<120) · {_nT} tarde (>140)."
+                        f"**🌳 TOTAL finca:** {_efi}/{_n} (**{round(_efi / _n * 100)}%**) en eclosión "
+                        f"activa (120–360 DD) · {_pr} pronto (<120) · {_ta} tarde (>360)."
+                        + (f" · 2ª generación detectada en algún campo." if _gmax >= 2 else "")
                     )
                 st.caption(
-                    "Por campo, de **todos** tus tratamientos de carpocapsa de la campaña: cuántos "
-                    "cayeron en la **ventana ideal de eclosión (120–140 DD desde biofix)**, cuántos "
-                    "**pronto** (<120: producto puesto antes de que naciera la larva — válido si "
-                    "mantienes cobertura, sobre todo con Bt) y cuántos **tarde** (>140: parte de las "
-                    "larvas ya pudieron entrar al fruto). No mide nº de larvas: mide si protegiste "
-                    "**antes** de que entren, que es lo que evita el daño."
+                    "Por campo, **todos** tus tratamientos de carpocapsa, medidos contra el biofix de "
+                    "**SU generación** (la app detecta la 2ª gen. por campo: un 2º repunte sostenido "
+                    "≥450 DD tras el 1º). Franjas: **Pronto (<120)** producto antes de nacer la larva "
+                    "(válido si mantienes cobertura, sobre todo con Bt) · **✅ Ideal (120–140)** inicio "
+                    "de eclosión · **Activa (140–360)** eclosión en curso, **aún eficaz** (clave en "
+                    "vuelos largos como GY‑Gallinal) · **Tarde (>360)** esa generación ya pasó. "
+                    "**% eficaz** = Ideal + Activa. **Gen.** = generaciones detectadas (en 2026 casi "
+                    "todos = 1: los vuelos largos son bimodales de la 1ª, no una 2ª)."
                 )
 
             # ── Botón: fijar estos biofix por campo en la tabla de biofix ─────────
