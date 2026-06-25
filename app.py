@@ -18594,23 +18594,26 @@ def forecast_reliability(history_df, archive_df=None):
             _p = comp_day[pc]
             _r = comp_day[rc]
             aciertos = int((_p == _r).sum())              # días que la app predijo BIEN
+            tp = int((_p & _r).sum())                     # evento real que SÍ avisó (pillado)
             fp = int((_p & ~_r).sum())                    # avisó y NO pasó (falsa alarma)
             fn = int((~_p & _r).sum())                    # NO avisó y SÍ pasó (se le escapó)
             reales = int(_r.sum())
             avisos = int(_p.sum())
-            # Fiabilidad: por nº de días verificados + nº de eventos (avisos+reales).
-            _ev = avisos + reales
-            if _n_dias < 7:
-                _fiab = "🔴 Escasa"
-            elif _ev < 5:
-                _fiab = "🟡 Pocos datos"
-            elif _n_dias < 21:
-                _fiab = "🟡 Media"
+            # Fiabilidad basada en LO QUE IMPORTA: ¿pilla los eventos de infección reales?
+            # Un "acierto" global alto no vale si se le escapan eventos (premia días tranquilos).
+            if reales == 0:
+                _fiab = "🟡 Sin eventos aún"
+            elif fn > 0:
+                _fiab = "🔴 Escapan eventos"
+            elif _n_dias < 7 or reales < 2:
+                _fiab = "🟡 Promete (pocos datos)"
             else:
                 _fiab = "🟢 Buena"
             out_rows.append({
                 "Qué": label,
                 "Fiabilidad": _fiab,
+                "Eventos avisados (lo que importa)": (
+                    f"{tp} de {reales} ({round(tp / reales * 100)}%)" if reales else "sin eventos aún"),
                 "Acertó (de los días)": f"{aciertos} de {_n_dias}",
                 "Falsas alarmas (avisó, no pasó)": fp,
                 "Se le escapó (no avisó, sí pasó)": (f"{fn} de {reales}" if reales else "0"),
@@ -19723,20 +19726,35 @@ def render_decisiones_panel():
                 st.info("Aún no hay predicciones archivadas que ya hayan pasado para comparar. "
                         "Entra al panel unos días seguidos y vuelve aquí (irá llenándose solo).")
         else:
-            # Resaltar en ROJO "Se le escapó" > 0 (lo peligroso: te pilla desprevenido),
-            # para que el "X de N días" tan vistoso no despiste.
+            # Resaltar lo que IMPORTA: "Eventos avisados" (verde si pilla todos, rojo si
+            # se escapa alguno) y "Se le escapó" en rojo cuando es >0.
             _esc_col = "Se le escapó (no avisó, sí pasó)"
+            _evt_col = "Eventos avisados (lo que importa)"
+            _RED = "background-color: rgba(220,0,0,0.16); color:#b00000; font-weight:700"
+            _GRN = "background-color: rgba(0,150,60,0.14); color:#0a7a35; font-weight:700"
             def _hl_escape(v):
                 try:
                     _n = int(str(v).strip().split(" de ")[0].split()[0])
                 except Exception:
                     _n = 0
-                return ("background-color: rgba(220,0,0,0.16); color:#b00000; font-weight:700"
-                        if _n > 0 else "")
+                return _RED if _n > 0 else ""
+            def _hl_eventos(v):
+                s = str(v).strip()
+                if "de" not in s:
+                    return ""   # "sin eventos aún"
+                try:
+                    _tp = int(s.split(" de ")[0])
+                    _re = int(s.split(" de ")[1].split()[0])
+                except Exception:
+                    return ""
+                if _re == 0:
+                    return ""
+                return _GRN if _tp >= _re else _RED
             try:
                 _sty = _rel_df.style
                 _styler_fn = getattr(_sty, "map", None) or _sty.applymap
                 _sty = _styler_fn(_hl_escape, subset=[_esc_col])
+                _sty = (getattr(_sty, "map", None) or _sty.applymap)(_hl_eventos, subset=[_evt_col])
                 st.dataframe(_sty, use_container_width=True, hide_index=True)
             except Exception:
                 st.dataframe(_rel_df, use_container_width=True, hide_index=True)
@@ -19744,17 +19762,22 @@ def render_decisiones_panel():
                 f"📅 **{_rel_meta.get('n_dias', 0)} días verificados** (días que ya pasaron y "
                 "sabemos qué predijo la app y qué ocurrió de verdad). Cada día usa su previsión más "
                 "reciente. Cómo leer **cada fila**:\n\n"
-                "- **Acertó (de los días)** — de esos días, en cuántos la app **predijo bien** "
-                "(dijo grave y fue grave, o dijo tranquilo y estuvo tranquilo). *Tu acierto general.*\n"
-                "- **Falsas alarmas (avisó, no pasó)** — días que anunció riesgo grave pero **no "
-                "ocurrió** (tu ejemplo: previsto 144 grave y el real fue 23).\n"
-                "- **Se le escapó (no avisó, sí pasó)** — días que **no** anunció riesgo pero **sí** "
-                "ocurrió (lo peligroso: te pilla desprevenido). **Se marca en 🔴 rojo cuando es >0**, "
-                "porque un «X de N» alto puede engañar si premia días tranquilos.\n\n"
+                "- **Eventos avisados (lo que importa)** — de los **eventos de infección reales**, "
+                "cuántos **avisó a tiempo**. *Esta es la cifra clave de un avisador: vale más no "
+                "perderse un evento que acertar días tranquilos.* 🟢 = los pilló todos · 🔴 = se "
+                "escapó alguno.\n"
+                "- **Acertó (de los días)** — de todos los días, en cuántos predijo bien. ⚠️ Engaña: "
+                "sube solo por los días tranquilos (un modelo que dijera «tranquilo» siempre también "
+                "lo tendría alto). Míralo **después** de «Eventos avisados».\n"
+                "- **Falsas alarmas (avisó, no pasó)** — anunció riesgo pero **no ocurrió** (molesto "
+                "pero seguro: tratas de más).\n"
+                "- **Se le escapó (no avisó, sí pasó)** — **no** avisó y **sí** ocurrió (🔴 lo "
+                "peligroso: te pilla sin proteger).\n\n"
                 "**Para la lluvia:** «avisó» = predijo lluvia; «falsa alarma» = predijo y no llovió; "
                 "«se le escapó» = no predijo y llovió. Cuenta como lluvia ≥ 0,2 mm.\n\n"
-                "**Fiabilidad:** 🔴 escasa (<7 días) · 🟡 media (7–20) o pocos datos · 🟢 buena (21+). "
-                "Con pocos días, orientativo."
+                "**Fiabilidad** (depende de si pilla los eventos, no del acierto global): "
+                "🔴 **escapan eventos** · 🟡 sin eventos aún / promete con pocos datos · 🟢 buena "
+                "(pilla los eventos y hay muestra suficiente)."
             )
             # Fiabilidad por antelación (la confianza baja al alejarse el horizonte).
             _comp = _rel_meta.get("comp")
