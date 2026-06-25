@@ -18625,6 +18625,62 @@ def forecast_reliability(history_df, archive_df=None):
         return None, {"n": 0}
 
 
+def forecast_reliability_daily(history_df, archive_df=None, days=30):
+    """Tabla día a día: valor de infección PREVISTO (la previsión más reciente que se
+    archivó para ese día) vs. el valor REAL que ocurrió (sensor). Para ver de un
+    vistazo, p. ej., «el 26 se previó Mills 150 y el real fue 23». Devuelve un
+    DataFrame ordenado por fecha descendente (lo más reciente arriba)."""
+    try:
+        if archive_df is None:
+            archive_df = load_forecast_archive()
+        if history_df is None or history_df.empty:
+            return pd.DataFrame()
+        actual = build_risk_timeline(history_df, pd.DataFrame(), days_back=int(days))
+        if actual is None or actual.empty:
+            return pd.DataFrame()
+        actual = actual[~actual["Es_prediccion"].astype(bool)].copy()
+        if actual.empty:
+            return pd.DataFrame()
+        actual["target_date"] = pd.to_datetime(actual["Fecha"]).dt.strftime("%Y-%m-%d")
+        a = actual.drop_duplicates("target_date").set_index("target_date")
+
+        # Previsión MÁS RECIENTE archivada para cada día (menor horizonte).
+        pred_map = {}
+        if archive_df is not None and not archive_df.empty and "target_date" in archive_df.columns:
+            ad = archive_df.copy()
+            ad["horizon"] = pd.to_numeric(ad.get("horizon"), errors="coerce").fillna(99)
+            ad = ad.sort_values("horizon").drop_duplicates("target_date", keep="first")
+            for _, r in ad.iterrows():
+                pred_map[str(r.get("target_date"))] = r
+
+        def _num(x):
+            return round(float(x)) if pd.notna(x) else None
+
+        rows = []
+        for td in sorted(a.index)[-int(days):]:
+            real = a.loc[td]
+            pr = pred_map.get(td)
+
+            def _pred(col):
+                return _num(pr.get(col)) if pr is not None else None
+
+            rows.append({
+                "Fecha": pd.to_datetime(td).strftime("%d/%m"),
+                "Moteado prev.": _pred("pred_mills"),
+                "Moteado real": _num(real.get("Mills_valor")),
+                "Monilia prev.": _pred("pred_monilia"),
+                "Monilia real": _num(real.get("Monilia_valor")),
+                "Oídio prev.": _pred("pred_oidio"),
+                "Oídio real": _num(real.get("Oidio_valor")),
+                "Lluvia prev.": _pred("pred_rain"),
+                "Lluvia real": (round(float(real.get("Lluvia")), 1) if pd.notna(real.get("Lluvia")) else None),
+            })
+        out = pd.DataFrame(rows)
+        return out.iloc[::-1].reset_index(drop=True)   # más reciente arriba
+    except Exception:
+        return pd.DataFrame()
+
+
 def _dec_treatment_lines_trace(go, treats_df, x_min, x_max, ymax, color="rgba(150,0,200,0.7)",
                                name="Tratamiento"):
     """Una sola traza scatter con TODAS las líneas verticales de tratamiento (dashed)
@@ -19805,6 +19861,42 @@ def render_decisiones_panel():
                                 "de nada a ese plazo:*")
                     st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
 
+            # ── Detalle DÍA A DÍA: valor de infección PREVISTO vs REAL ────────────
+            _daily = forecast_reliability_daily(history_df, days=30)
+            if _daily is not None and not _daily.empty:
+                st.markdown("**📋 Día a día: valor de infección previsto vs. real** — lo que la "
+                            "previsión anunció para cada día y lo que de verdad ocurrió (umbral "
+                            "grave = 100; «—» = no había previsión archivada de ese día).")
+                _dcols = list(_daily.columns)
+                _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
+                _GRN2 = "background-color: rgba(0,150,60,0.16); color:#0a7a35; font-weight:700"
+
+                def _row_style(r):
+                    styles = [""] * len(_dcols)
+                    for prevc, realc in [("Moteado prev.", "Moteado real"),
+                                         ("Monilia prev.", "Monilia real")]:
+                        try:
+                            rv = float(r.get(realc)) if r.get(realc) not in (None, "—") else None
+                            pv = float(r.get(prevc)) if r.get(prevc) not in (None, "—") else None
+                        except Exception:
+                            rv = pv = None
+                        if rv is not None and rv >= 100:   # día de EVENTO real
+                            css = _GRN2 if (pv is not None and pv >= 100) else _RED2
+                            styles[_dcols.index(realc)] = css
+                            styles[_dcols.index(prevc)] = css
+                    return styles
+                try:
+                    st.dataframe(_daily.style.apply(_row_style, axis=1),
+                                 use_container_width=True, hide_index=True)
+                except Exception:
+                    st.dataframe(_daily, use_container_width=True, hide_index=True)
+                st.caption(
+                    "🟢 = día con infección real (≥100) que la previsión **sí** anunció · "
+                    "🔴 = día con infección real que la previsión **no** vio (se le escapó). "
+                    "Tu ejemplo: si «Moteado prev.» pone 150 y «Moteado real» 23, la previsión "
+                    "exageró ese día. Lo más reciente, arriba."
+                )
+
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
         st.markdown(
             "**¿Qué hace?** Para cada campo cruza el **clima real + la previsión Sencrop** "
@@ -20376,8 +20468,8 @@ def render_decisiones_panel():
     p1, p2, p3 = st.columns([1, 1, 2])
     with p1:
         days_back = st.number_input(
-            "Días de histórico", min_value=15, max_value=90, value=30, step=5, key="dec_days_back",
-            help="Cuántos días pasados incluir en las gráficas",
+            "Días de histórico", min_value=15, max_value=120, value=60, step=5, key="dec_days_back",
+            help="Cuántos días pasados incluir en las gráficas (por defecto 60)",
         )
     with p2:
         base_temp_d  = st.number_input("Base DD carpocapsa (°C)", 0.0, 15.0, 10.0, 0.5, key="dec_base_temp")
