@@ -18653,27 +18653,30 @@ def forecast_reliability_daily(history_df, archive_df=None, days=30):
             for _, r in ad.iterrows():
                 pred_map[str(r.get("target_date"))] = r
 
-        def _num(x):
-            return round(float(x)) if pd.notna(x) else None
+        def _int(x):
+            return float(round(float(x))) if pd.notna(x) else np.nan
+
+        def _r1(x):
+            return round(float(x), 1) if pd.notna(x) else np.nan
 
         rows = []
         for td in sorted(a.index)[-int(days):]:
             real = a.loc[td]
             pr = pred_map.get(td)
 
-            def _pred(col):
-                return _num(pr.get(col)) if pr is not None else None
+            def _pi(col):   # previsto entero
+                return _int(pr.get(col)) if pr is not None else np.nan
 
             rows.append({
                 "Fecha": pd.to_datetime(td).strftime("%d/%m"),
-                "Moteado prev.": _pred("pred_mills"),
-                "Moteado real": _num(real.get("Mills_valor")),
-                "Monilia prev.": _pred("pred_monilia"),
-                "Monilia real": _num(real.get("Monilia_valor")),
-                "Oídio prev.": _pred("pred_oidio"),
-                "Oídio real": _num(real.get("Oidio_valor")),
-                "Lluvia prev.": _pred("pred_rain"),
-                "Lluvia real": (round(float(real.get("Lluvia")), 1) if pd.notna(real.get("Lluvia")) else None),
+                "Moteado prev.": _pi("pred_mills"),
+                "Moteado real": _int(real.get("Mills_valor")),
+                "Monilia prev.": _pi("pred_monilia"),
+                "Monilia real": _int(real.get("Monilia_valor")),
+                "Oídio prev.": _pi("pred_oidio"),
+                "Oídio real": _int(real.get("Oidio_valor")),
+                "Lluvia prev.": (_r1(pr.get("pred_rain")) if pr is not None else np.nan),
+                "Lluvia real": _r1(real.get("Lluvia")),
             })
         out = pd.DataFrame(rows)
         return out.iloc[::-1].reset_index(drop=True)   # más reciente arriba
@@ -19875,18 +19878,17 @@ def render_decisiones_panel():
                     styles = [""] * len(_dcols)
                     for prevc, realc in [("Moteado prev.", "Moteado real"),
                                          ("Monilia prev.", "Monilia real")]:
-                        try:
-                            rv = float(r.get(realc)) if r.get(realc) not in (None, "—") else None
-                            pv = float(r.get(prevc)) if r.get(prevc) not in (None, "—") else None
-                        except Exception:
-                            rv = pv = None
+                        rv = float(r.get(realc)) if pd.notna(r.get(realc)) else None
+                        pv = float(r.get(prevc)) if pd.notna(r.get(prevc)) else None
                         if rv is not None and rv >= 100:   # día de EVENTO real
                             css = _GRN2 if (pv is not None and pv >= 100) else _RED2
                             styles[_dcols.index(realc)] = css
                             styles[_dcols.index(prevc)] = css
                     return styles
+                _fmt = {c: ("{:.1f}" if "Lluvia" in c else "{:.0f}")
+                        for c in _dcols if c != "Fecha"}
                 try:
-                    st.dataframe(_daily.style.apply(_row_style, axis=1),
+                    st.dataframe(_daily.style.apply(_row_style, axis=1).format(_fmt, na_rep="—"),
                                  use_container_width=True, hide_index=True)
                 except Exception:
                     st.dataframe(_daily, use_container_width=True, hide_index=True)
