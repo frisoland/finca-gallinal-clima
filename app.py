@@ -13019,6 +13019,17 @@ def carpocapsa_estimated_date_for_dd(daily_dd, biofix_date, target_dd):
     return estimated, "Estimada"
 
 
+# Umbrales de generación de carpocapsa (DD °C desde biofix, base 10 / techo 31,1).
+# Set de literatura unificado (UC IPM/WSU convertido a °C; coherente con el punto 6).
+# ÚNICA fuente de verdad: úsala en CUALQUIER gráfica/etiqueta de generación.
+CARPOCAPSA_GEN_DD = [
+    (130, "1ª gen · inicio eclosión"),
+    (300, "1ª gen · pico"),
+    (580, "2ª gen · inicio"),
+    (750, "2ª gen · pico"),
+]
+
+
 def carpocapsa_status_from_dd(current_dd, recent_captures_per_day=0, rain_since_treatment=np.nan):
     if pd.isna(current_dd):
         return "Sin dato", "Sin grados-día suficientes", "Completar histórico climático o fijar biofix."
@@ -13812,13 +13823,11 @@ def carpocapsa_tab(history):
     with st.expander("Guía rápida de interpretación", expanded=False):
         st.markdown(
             """
-            - **Biofix:** primera captura/repunte claro confirmado por el técnico.
-            - **90–110 DD:** inicio operativo de eclosión. Preparar o realizar primer pase si hay presión.
-            - **110–140 DD:** cola de eclosión/refuerzo si persisten capturas o hubo lavado.
-            - **250–300 DD:** vuelo continuo; vigilar si capturas >2 machos/trampa/día.
-            - **460–540 DD:** pico de eclosión de primera generación.
-            - **~500 DD:** punto de verificación del control de primera generación.
-            - **~1200 DD:** pico orientativo de segunda generación.
+            - **Biofix:** primera captura sostenida confirmada (inicio de vuelo).
+            - **~130 DD:** inicio de eclosión 1ª gen (primeras entradas en fruto) → **primer pase**.
+            - **~300 DD:** pico de eclosión de 1ª generación → reforzar si capturas altas.
+            - **~580 DD:** inicio de 2ª generación → **segundo ciclo de tratamientos**.
+            - **~750 DD:** pico de eclosión de 2ª generación.
             """
         )
 
@@ -14018,7 +14027,7 @@ def carpocapsa_tab(history):
                                       xaxis=dict(tickformat="%d %b"), yaxis_title=_cap_yaxis,
                                       margin=dict(l=10, r=10, t=40, b=10), legend_title="Campaña")
                 st.plotly_chart(fig_cap, use_container_width=True)
-                for _thr, _lbl in [(90, "inicio eclosión"), (500, "pico 1ª gen"), (1200, "pico 2ª gen")]:
+                for _thr, _lbl in CARPOCAPSA_GEN_DD:
                     fig_dd.add_hline(y=_thr, line_dash="dot", line_color="rgba(150,150,150,0.5)",
                                      annotation_text=f"{_thr} DD · {_lbl}", annotation_position="top left")
                 fig_dd.update_layout(title="Grados-día acumulados (desde el biofix de cada campaña)",
@@ -14033,7 +14042,7 @@ def carpocapsa_tab(history):
                     "trampas cada año). · **Capturas/trampa** = capturas totales ÷ nº de trampas de "
                     "ese año. · **DD a 1ª captura** = grados-día acumulados **desde el 1 de enero** "
                     "hasta la primera captura (indica cuánto calor hizo falta para el primer vuelo). "
-                    "· La **curva de DD** se acumula desde el biofix (sus umbrales 90/500/1200 son "
+                    "· La **curva de DD** se acumula desde el biofix (umbrales 130/300/580/750 DD "
                     "desde biofix); sin biofix no se dibuja. Filtra por **campo/zona** para comparar "
                     "el mismo campo entre años. · **Tratam.** = nº de pases de **carpocapsa** "
                     "(excluye fungicidas/abonos puros); con un campo filtrado, solo los que tocaron "
@@ -18961,10 +18970,9 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     # Umbrales de tratamiento
     max_dd = max(dd_acum) if dd_acum else 400
     ymax   = max(max_dd * 1.15, 400)
-    for umbral, color, label in [(80, "#2ca02c", "1ª gen. inicio (80 DD)"),
-                                  (150, "#ff7f0e", "1ª gen. pico (150 DD)"),
-                                  (300, "#d62728", "2ª gen. inicio (300 DD)"),
-                                  (500, "#9467bd", "2ª gen. pico (500 DD)")]:
+    _gen_colors = ["#2ca02c", "#ff7f0e", "#d62728", "#9467bd"]
+    for (umbral, _lbl), color in zip(CARPOCAPSA_GEN_DD, _gen_colors):
+        label = f"{_lbl} ({umbral} DD)"
         if umbral <= ymax * 1.2:
             fig.add_hline(y=umbral, line_dash="dash", line_color=color, line_width=1, opacity=0.7,
                           annotation_text=label, annotation_position="right",
@@ -20618,10 +20626,10 @@ def render_decisiones_panel():
 - **Área naranja (DD diarios)** = DD de cada día (cuánto calor útil acumuló ese día), eje derecho.
 - **Círculos azules** = capturas en trampa de toda la finca ese día (el tamaño y el número dentro son proporcionales al total de capturas).
 - **Líneas de umbral horizontales**:
-  - 80 DD = inicio 1ª generación → **primer tratamiento**
-  - 150 DD = pico 1ª generación → reforzar si capturas altas
-  - 300 DD = inicio 2ª generación → **segundo ciclo de tratamientos**
-  - 500 DD = pico 2ª generación
+  - 130 DD = inicio eclosión 1ª generación → **primer tratamiento**
+  - 300 DD = pico 1ª generación → reforzar si capturas altas
+  - 580 DD = inicio 2ª generación → **segundo ciclo de tratamientos**
+  - 750 DD = pico 2ª generación
 
 #### 📊 Lluvia (barras azul claro, eje derecho)
 Aparece en todos los gráficos como referencia. La lluvia genera hoja mojada (riesgo moteado/monilia) pero en cambio puede frenar el oídio.
