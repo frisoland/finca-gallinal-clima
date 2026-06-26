@@ -5594,63 +5594,56 @@ def forecast_build_risk_table(forecast_df, history_df, base_temp=10.0, upper_tem
     if forecast_df is None or forecast_df.empty:
         return pd.DataFrame()
 
-    # Fusionar: últimas 72h de histórico real + predicción
-    if history_df is not None and not history_df.empty:
-        cutoff = pd.Timestamp.now() - pd.Timedelta(hours=72)
-        hist_recent = history_df[pd.to_datetime(history_df["fecha_hora"]) >= cutoff].copy()
-        combined = pd.concat([hist_recent, forecast_df], ignore_index=True)
-        combined = combined.drop_duplicates("fecha_hora", keep="last")
-        combined = combined.sort_values("fecha_hora").reset_index(drop=True)
-    else:
-        combined = forecast_df.copy()
-
-    combined["fecha_hora"] = pd.to_datetime(combined["fecha_hora"])
-    combined["_fecha"] = combined["fecha_hora"].dt.date
-
+    # UNIFICADO con la gráfica de Decisiones y el archivo de fiabilidad: el riesgo y
+    # la HOJA MOJADA salen de build_risk_timeline (modelo RIMpro, que SÍ cuenta el
+    # ROCÍO), no de una estimación cruda que lo ignoraba y daba "0 h / Sin riesgo" en
+    # días sin lluvia pero con noches húmedas. days_back=14 da margen para que la
+    # detección de eventos de mojadura sea continua en el primer día de previsión.
+    risk = build_risk_timeline(history_df, forecast_df, days_back=14,
+                               base_temp=base_temp, upper_temp=upper_temp)
+    if risk is None or risk.empty:
+        return pd.DataFrame()
+    today = pd.Timestamp.now().normalize()
+    fut = risk[pd.to_datetime(risk["Fecha"]) >= today].copy()
+    if fut.empty:
+        return pd.DataFrame()
     rows = []
-    for fecha, grupo in combined.groupby("_fecha"):
-        if pd.Timestamp(fecha) < pd.Timestamp.now().normalize():
-            continue  # Solo días futuros/hoy
-
-        temp_med  = pd.to_numeric(grupo["temp_media"],  errors="coerce").mean()
-        temp_min  = pd.to_numeric(grupo["temp_min"],    errors="coerce").min()
-        temp_max  = pd.to_numeric(grupo["temp_max"],    errors="coerce").max()
-        hr_med    = pd.to_numeric(grupo["hr_media"],    errors="coerce").mean()
-        lluvia    = pd.to_numeric(grupo["lluvia_mm"],   errors="coerce").sum()
-        horas_hum = int(pd.to_numeric(grupo["humectacion_hoja"], errors="coerce").fillna(0).gt(0).sum())
-        # Estimar horas mojadura desde lluvia + HR si no hay sensor de hoja
-        if horas_hum == 0 and (lluvia > 0 or (pd.notna(hr_med) and hr_med > 90)):
-            horas_hum_est = int(lluvia > 0) * min(int(lluvia * 1.5), 8) + (2 if pd.notna(hr_med) and hr_med > 90 else 0)
-        else:
-            horas_hum_est = horas_hum
-
-        # ── Riesgo moteado (tabla de Mills simplificada) ──────────────────────
-        # Temp media durante período húmedo + horas mojadura
-        riesgo_moteado = _mills_risk(temp_med, horas_hum_est)
-
-        # ── Riesgo monilia ────────────────────────────────────────────────────
-        # Condición: T > 15°C + HR > 85% + lluvia o humedad hoja
-        riesgo_monilia = _monilia_risk(temp_med, hr_med, lluvia, horas_hum_est)
-
-        # ── DD carpocapsa del día ─────────────────────────────────────────────
-        dd_dia = 0.0
-        if pd.notna(temp_med):
-            dd_dia = max(0.0, min(float(temp_med), float(upper_temp)) - base_temp)
-
+    for _, r in fut.iterrows():
+        tmin, tmax = r.get("T_min"), r.get("T_max")
+        es_pred = bool(r.get("Es_prediccion"))
         rows.append({
-            "Fecha":                   fecha,
-            "T. min/máx (°C)":         f"{temp_min:.1f}/{temp_max:.1f}" if pd.notna(temp_min) and pd.notna(temp_max) else "—",
-            "T. media (°C)":           round(float(temp_med), 1) if pd.notna(temp_med) else None,
-            "HR media (%)":            round(float(hr_med),   1) if pd.notna(hr_med)   else None,
-            "Lluvia prev. (mm)":       round(float(lluvia),   1) if pd.notna(lluvia)   else 0.0,
-            "Horas mojadura":          horas_hum if horas_hum > 0 else horas_hum_est,
-            "Fuente mojadura":         "sensor" if horas_hum > 0 else "estimada",
-            "Riesgo moteado":          riesgo_moteado,
-            "Riesgo monilia":          riesgo_monilia,
-            "DD carpocapsa previstos": round(dd_dia, 1),
+            "Fecha":                   pd.to_datetime(r["Fecha"]).date(),
+            "T. min/máx (°C)":         (f"{float(tmin):.1f}/{float(tmax):.1f}"
+                                        if pd.notna(tmin) and pd.notna(tmax) else "—"),
+            "T. media (°C)":           round(float(r["T_med"]), 1) if pd.notna(r.get("T_med")) else None,
+            "HR media (%)":            round(float(r["HR_med"]), 1) if pd.notna(r.get("HR_med")) else None,
+            "Lluvia prev. (mm)":       round(float(r.get("Lluvia") or 0), 1),
+            "Horas mojadura":          int(r.get("Horas_mojadura") or 0),
+            "Fuente mojadura":         "estimada" if es_pred else "sensor",
+            "Riesgo moteado":          _mills_level_from_value(r.get("Mills_valor")),
+            "Riesgo monilia":          _monilia_level_from_value(r.get("Monilia_valor")),
+            "DD carpocapsa previstos": round(float(r.get("DD_dia") or 0), 1),
         })
-
     return pd.DataFrame(rows)
+
+
+def _mills_level_from_value(v):
+    """Valor numérico de Mills (build_risk_timeline) → nivel mostrado, con los MISMOS
+    cortes que las zonas de la gráfica de Decisiones (25 ligero · 50 moderado · 100 grave)."""
+    m = float(v) if pd.notna(v) else 0.0
+    if m >= 100: return "🔴 Infección grave"
+    if m >= 50:  return "🟠 Infección moderada"
+    if m >= 25:  return "🟡 Riesgo ligero"
+    return "🟢 Sin riesgo"
+
+
+def _monilia_level_from_value(v):
+    """Valor numérico de Monilia → nivel mostrado (umbral 50 moderado · 100 alto)."""
+    m = float(v) if pd.notna(v) else 0.0
+    if m >= 100: return "🔴 Riesgo alto"
+    if m >= 50:  return "🟠 Riesgo moderado"
+    if m >= 25:  return "🟡 Riesgo ligero"
+    return "🟢 Sin riesgo"
 
 
 def _mills_risk(temp_c, horas_mojadura):
