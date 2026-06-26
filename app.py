@@ -18967,9 +18967,12 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
             hovertemplate="%{x|%d/%m}<br>DD acum (prev): %{y:.0f}<extra></extra>",
         ))
 
-    # Umbrales de tratamiento
-    max_dd = max(dd_acum) if dd_acum else 400
-    ymax   = max(max_dd * 1.15, 400)
+    # Umbrales de tratamiento. El eje llega SIEMPRE hasta el último umbral de
+    # generación (2ª gen pico) para que se vean las MISMAS 4 líneas que en la gráfica
+    # del item Carpocapsa, aunque los DD del año aún no hayan llegado ahí.
+    max_dd  = max(dd_acum) if dd_acum else 400
+    _top_gen = max(t for t, _ in CARPOCAPSA_GEN_DD)
+    ymax    = max(max_dd * 1.15, _top_gen * 1.08, 400)
     _gen_colors = ["#2ca02c", "#ff7f0e", "#d62728", "#9467bd"]
     for (umbral, _lbl), color in zip(CARPOCAPSA_GEN_DD, _gen_colors):
         label = f"{_lbl} ({umbral} DD)"
