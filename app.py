@@ -13024,9 +13024,9 @@ def carpocapsa_estimated_date_for_dd(daily_dd, biofix_date, target_dd):
 # ÚNICA fuente de verdad: úsala en CUALQUIER gráfica/etiqueta de generación.
 CARPOCAPSA_GEN_DD = [
     (130, "1ª gen · inicio eclosión"),
-    (300, "1ª gen · pico"),
-    (580, "2ª gen · inicio"),
-    (750, "2ª gen · pico"),
+    (300, "1ª gen · pico eclosión"),
+    (580, "2ª gen · inicio eclosión"),
+    (750, "2ª gen · pico eclosión"),
 ]
 
 
