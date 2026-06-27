@@ -18644,26 +18644,28 @@ def forecast_reliability(history_df, archive_df=None):
         return None, {"n": 0}
 
 
-def forecast_reliability_daily(history_df, archive_df=None, days=30):
-    """Tabla día a día: valor de infección PREVISTO (la previsión más reciente que se
-    archivó para ese día) vs. el valor REAL que ocurrió (sensor). Para ver de un
-    vistazo, p. ej., «el 26 se previó Mills 150 y el real fue 23». Devuelve un
-    DataFrame ordenado por fecha descendente (lo más reciente arriba)."""
+def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, days=30, days_fwd=7):
+    """Tabla día a día PREVISTO vs REAL. Incluye:
+      · Días FUTUROS (🔮): la previsión EN VIVO de la gráfica (real aún pendiente).
+      · Días PASADOS: lo que se PREDIJO entonces (archivo) vs lo REAL (sensor).
+    Así se ven las predicciones escritas hoy y, según llega cada día, se rellena el
+    valor real. Orden descendente (futuro arriba, luego lo más reciente)."""
     try:
         if archive_df is None:
             archive_df = load_forecast_archive()
         if history_df is None or history_df.empty:
             return pd.DataFrame()
-        actual = build_risk_timeline(history_df, pd.DataFrame(), days_back=int(days))
-        if actual is None or actual.empty:
+        today = pd.Timestamp.now().normalize()
+        _fc = forecast_df if forecast_df is not None else pd.DataFrame()
+        risk = build_risk_timeline(history_df, _fc, days_back=int(days))
+        if risk is None or risk.empty:
             return pd.DataFrame()
-        actual = actual[~actual["Es_prediccion"].astype(bool)].copy()
-        if actual.empty:
-            return pd.DataFrame()
-        actual["target_date"] = pd.to_datetime(actual["Fecha"]).dt.strftime("%Y-%m-%d")
-        a = actual.drop_duplicates("target_date").set_index("target_date")
+        risk = risk.copy()
+        risk["_d"] = pd.to_datetime(risk["Fecha"]).dt.normalize()
+        risk = risk.drop_duplicates("_d")
+        risk = risk[risk["_d"] <= today + pd.Timedelta(days=int(days_fwd))]
 
-        # Previsión MÁS RECIENTE archivada para cada día (menor horizonte).
+        # Previsión archivada (CONGELADA) más reciente de cada día pasado.
         pred_map = {}
         if archive_df is not None and not archive_df.empty and "target_date" in archive_df.columns:
             ad = archive_df.copy()
@@ -18679,26 +18681,37 @@ def forecast_reliability_daily(history_df, archive_df=None, days=30):
             return round(float(x), 1) if pd.notna(x) else np.nan
 
         rows = []
-        for td in sorted(a.index)[-int(days):]:
-            real = a.loc[td]
-            pr = pred_map.get(td)
+        for _, r in risk.sort_values("_d").iterrows():
+            d = r["_d"]
+            td = d.strftime("%Y-%m-%d")
+            pendiente = bool(r.get("Es_prediccion")) or d >= today
+            if pendiente:
+                # FUTURO/HOY: previsto = previsión EN VIVO; real aún no ha ocurrido.
+                rows.append({
+                    "_sort": d, "Fecha": d.strftime("%d/%m") + " 🔮",
+                    "Moteado prev.": _int(r.get("Mills_valor")),   "Moteado real": np.nan,
+                    "Monilia prev.": _int(r.get("Monilia_valor")), "Monilia real": np.nan,
+                    "Oídio prev.": _int(r.get("Oidio_valor")),     "Oídio real": np.nan,
+                    "Lluvia prev.": _r1(r.get("Lluvia")),          "Lluvia real": np.nan,
+                })
+            else:
+                pr = pred_map.get(td)
 
-            def _pi(col):   # previsto entero
-                return _int(pr.get(col)) if pr is not None else np.nan
+                def _pi(col):
+                    return _int(pr.get(col)) if pr is not None else np.nan
 
-            rows.append({
-                "Fecha": pd.to_datetime(td).strftime("%d/%m"),
-                "Moteado prev.": _pi("pred_mills"),
-                "Moteado real": _int(real.get("Mills_valor")),
-                "Monilia prev.": _pi("pred_monilia"),
-                "Monilia real": _int(real.get("Monilia_valor")),
-                "Oídio prev.": _pi("pred_oidio"),
-                "Oídio real": _int(real.get("Oidio_valor")),
-                "Lluvia prev.": (_r1(pr.get("pred_rain")) if pr is not None else np.nan),
-                "Lluvia real": _r1(real.get("Lluvia")),
-            })
-        out = pd.DataFrame(rows)
-        return out.iloc[::-1].reset_index(drop=True)   # más reciente arriba
+                rows.append({
+                    "_sort": d, "Fecha": d.strftime("%d/%m"),
+                    "Moteado prev.": _pi("pred_mills"),   "Moteado real": _int(r.get("Mills_valor")),
+                    "Monilia prev.": _pi("pred_monilia"), "Monilia real": _int(r.get("Monilia_valor")),
+                    "Oídio prev.": _pi("pred_oidio"),     "Oídio real": _int(r.get("Oidio_valor")),
+                    "Lluvia prev.": (_r1(pr.get("pred_rain")) if pr is not None else np.nan),
+                    "Lluvia real": _r1(r.get("Lluvia")),
+                })
+        if not rows:
+            return pd.DataFrame()
+        return (pd.DataFrame(rows).sort_values("_sort", ascending=False)
+                .drop(columns=["_sort"]).reset_index(drop=True))
     except Exception:
         return pd.DataFrame()
 
@@ -19886,11 +19899,12 @@ def render_decisiones_panel():
                     st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
 
             # ── Detalle DÍA A DÍA: valor de infección PREVISTO vs REAL ────────────
-            _daily = forecast_reliability_daily(history_df, days=30)
+            _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30, days_fwd=7)
             if _daily is not None and not _daily.empty:
-                st.markdown("**📋 Día a día: valor de infección previsto vs. real** — lo que la "
-                            "previsión anunció para cada día y lo que de verdad ocurrió (umbral "
-                            "grave = 100; «—» = no había previsión archivada de ese día).")
+                st.markdown("**📋 Día a día: valor de infección previsto vs. real.** Arriba, los días "
+                            "**🔮 futuros** con la previsión de hoy (el real aparecerá cuando llegue "
+                            "el día). Abajo, los **pasados**: lo que se predijo vs. lo real (umbral "
+                            "grave = 100; «—» = sin dato).")
                 _dcols = list(_daily.columns)
                 _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
                 _GRN2 = "background-color: rgba(0,150,60,0.16); color:#0a7a35; font-weight:700"
@@ -19914,10 +19928,10 @@ def render_decisiones_panel():
                 except Exception:
                     st.dataframe(_daily, use_container_width=True, hide_index=True)
                 st.caption(
-                    "🟢 = día con infección real (≥100) que la previsión **sí** anunció · "
-                    "🔴 = día con infección real que la previsión **no** vio (se le escapó). "
-                    "Tu ejemplo: si «Moteado prev.» pone 150 y «Moteado real» 23, la previsión "
-                    "exageró ese día. Lo más reciente, arriba."
+                    "🔮 = día futuro: solo hay previsión, el real está pendiente (se rellenará "
+                    "cuando pase el día). · 🟢 = día con infección real (≥100) que la previsión "
+                    "**sí** anunció · 🔴 = día con infección real que la previsión **no** vio (se le "
+                    "escapó). Si «Moteado prev.» pone 150 y «real» 23, la previsión exageró ese día."
                 )
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
