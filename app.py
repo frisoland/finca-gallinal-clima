@@ -18515,9 +18515,19 @@ def archive_today_forecast(history_df, forecast_df):
             return
         today = pd.Timestamp.now().normalize()
         issue = today.strftime("%Y-%m-%d")
+        # Archivar la previsión de HOY SOBRESCRIBIENDO cualquier entrada previa del
+        # mismo día (p. ej. una del informe diario con previsión más vieja), para que
+        # el archivo refleje SIEMPRE la previsión que el usuario está viendo. Para no
+        # escribir en Supabase en cada render, se hace solo UNA vez por sesión. En
+        # headless (informe diario) no hay session_state → se archiva igualmente.
+        try:
+            _flag = f"_fc_archived_{issue}"
+            if st.session_state.get(_flag):
+                return
+            _has_session = True
+        except Exception:
+            _has_session = False
         arch = load_forecast_archive()
-        if not arch.empty and "issue_date" in arch.columns and (arch["issue_date"] == issue).any():
-            return  # ya archivado hoy
         risk = build_risk_timeline(history_df, forecast_df, days_back=0)
         if risk.empty or "Es_prediccion" not in risk.columns:
             return
@@ -18534,9 +18544,16 @@ def archive_today_forecast(history_df, forecast_df):
                          "pred_oidio": float(r.get("Oidio_valor", np.nan)),
                          "pred_rain": float(r.get("Lluvia", np.nan))})
         new = pd.DataFrame(rows)
+        # `new` va DESPUÉS de `arch`: con keep="last", la previsión de hoy recién
+        # calculada SOBRESCRIBE cualquier entrada previa del mismo (issue, target).
         out = pd.concat([arch, new], ignore_index=True) if not arch.empty else new
         out = out.drop_duplicates(["issue_date", "target_date"], keep="last")
         if upload_forecast_archive(out):
+            if _has_session:
+                try:
+                    st.session_state[_flag] = True
+                except Exception:
+                    pass
             try:
                 _download_forecast_archive.clear()
             except Exception:
