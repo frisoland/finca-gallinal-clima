@@ -18665,20 +18665,23 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
         risk = risk.drop_duplicates("_d")
         risk = risk[risk["_d"] <= today + pd.Timedelta(days=int(days_fwd))]
 
-        # Previsión archivada (CONGELADA) más reciente de cada día pasado.
+        # Previsión archivada por día. Se PREFIERE la hecha con 1+ días de antelación
+        # (que ve el día COMPLETO) sobre la del mismo día (horizonte 0): como el Mills
+        # se asigna al día en que ACABA el evento, la del propio día suele salir 0.
         pred_map = {}
         if archive_df is not None and not archive_df.empty and "target_date" in archive_df.columns:
             ad = archive_df.copy()
-            ad["horizon"] = pd.to_numeric(ad.get("horizon"), errors="coerce").fillna(99)
-            ad = ad.sort_values("horizon").drop_duplicates("target_date", keep="first")
+            ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce").fillna(99)
+            ad["_rank"] = ad["_h"].where(ad["_h"] >= 1, 1000)   # h0 → último recurso
+            ad = ad.sort_values("_rank").drop_duplicates("target_date", keep="first")
             for _, r in ad.iterrows():
                 pred_map[str(r.get("target_date"))] = r
 
-        def _int(x):
-            return float(round(float(x))) if pd.notna(x) else np.nan
+        def _si(x):   # entero como texto; "—" si falta
+            return str(int(round(float(x)))) if pd.notna(x) else "—"
 
-        def _r1(x):
-            return round(float(x), 1) if pd.notna(x) else np.nan
+        def _sr(x):   # 1 decimal como texto; "—" si falta
+            return f"{float(x):.1f}" if pd.notna(x) else "—"
 
         rows = []
         for _, r in risk.sort_values("_d").iterrows():
@@ -18689,24 +18692,24 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                 # FUTURO/HOY: previsto = previsión EN VIVO; real aún no ha ocurrido.
                 rows.append({
                     "_sort": d, "Fecha": d.strftime("%d/%m") + " 🔮",
-                    "Moteado prev.": _int(r.get("Mills_valor")),   "Moteado real": np.nan,
-                    "Monilia prev.": _int(r.get("Monilia_valor")), "Monilia real": np.nan,
-                    "Oídio prev.": _int(r.get("Oidio_valor")),     "Oídio real": np.nan,
-                    "Lluvia prev.": _r1(r.get("Lluvia")),          "Lluvia real": np.nan,
+                    "Moteado prev.": _si(r.get("Mills_valor")),   "Moteado real": "—",
+                    "Monilia prev.": _si(r.get("Monilia_valor")), "Monilia real": "—",
+                    "Oídio prev.": _si(r.get("Oidio_valor")),     "Oídio real": "—",
+                    "Lluvia prev.": _sr(r.get("Lluvia")),         "Lluvia real": "—",
                 })
             else:
                 pr = pred_map.get(td)
 
-                def _pi(col):
-                    return _int(pr.get(col)) if pr is not None else np.nan
+                def _pp(col):
+                    return _si(pr.get(col)) if pr is not None else "—"
 
                 rows.append({
                     "_sort": d, "Fecha": d.strftime("%d/%m"),
-                    "Moteado prev.": _pi("pred_mills"),   "Moteado real": _int(r.get("Mills_valor")),
-                    "Monilia prev.": _pi("pred_monilia"), "Monilia real": _int(r.get("Monilia_valor")),
-                    "Oídio prev.": _pi("pred_oidio"),     "Oídio real": _int(r.get("Oidio_valor")),
-                    "Lluvia prev.": (_r1(pr.get("pred_rain")) if pr is not None else np.nan),
-                    "Lluvia real": _r1(r.get("Lluvia")),
+                    "Moteado prev.": _pp("pred_mills"),   "Moteado real": _si(r.get("Mills_valor")),
+                    "Monilia prev.": _pp("pred_monilia"), "Monilia real": _si(r.get("Monilia_valor")),
+                    "Oídio prev.": _pp("pred_oidio"),     "Oídio real": _si(r.get("Oidio_valor")),
+                    "Lluvia prev.": (_sr(pr.get("pred_rain")) if pr is not None else "—"),
+                    "Lluvia real": _sr(r.get("Lluvia")),
                 })
         if not rows:
             return pd.DataFrame()
@@ -19909,21 +19912,24 @@ def render_decisiones_panel():
                 _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
                 _GRN2 = "background-color: rgba(0,150,60,0.16); color:#0a7a35; font-weight:700"
 
+                def _num(v):
+                    try:
+                        return float(v)
+                    except Exception:
+                        return None
                 def _row_style(r):
                     styles = [""] * len(_dcols)
                     for prevc, realc in [("Moteado prev.", "Moteado real"),
                                          ("Monilia prev.", "Monilia real")]:
-                        rv = float(r.get(realc)) if pd.notna(r.get(realc)) else None
-                        pv = float(r.get(prevc)) if pd.notna(r.get(prevc)) else None
+                        rv = _num(r.get(realc))
+                        pv = _num(r.get(prevc))
                         if rv is not None and rv >= 100:   # día de EVENTO real
                             css = _GRN2 if (pv is not None and pv >= 100) else _RED2
                             styles[_dcols.index(realc)] = css
                             styles[_dcols.index(prevc)] = css
                     return styles
-                _fmt = {c: ("{:.1f}" if "Lluvia" in c else "{:.0f}")
-                        for c in _dcols if c != "Fecha"}
                 try:
-                    st.dataframe(_daily.style.apply(_row_style, axis=1).format(_fmt, na_rep="—"),
+                    st.dataframe(_daily.style.apply(_row_style, axis=1),
                                  use_container_width=True, hide_index=True)
                 except Exception:
                     st.dataframe(_daily, use_container_width=True, hide_index=True)
