@@ -18528,7 +18528,10 @@ def archive_today_forecast(history_df, forecast_df):
         except Exception:
             _has_session = False
         arch = load_forecast_archive()
-        risk = build_risk_timeline(history_df, forecast_df, days_back=0)
+        # days_back=14 (NO 0): el detector de eventos de mojadura necesita histórico de
+        # contexto para que el valor archivado COINCIDA con el de la gráfica de Decisiones
+        # (con days_back=0 salían 0/valores raros que no cuadraban con lo que veía el usuario).
+        risk = build_risk_timeline(history_df, forecast_df, days_back=14)
         if risk.empty or "Es_prediccion" not in risk.columns:
             return
         fut = risk[risk["Es_prediccion"] == True]
@@ -18665,15 +18668,14 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
         risk = risk.drop_duplicates("_d")
         risk = risk[risk["_d"] <= today + pd.Timedelta(days=int(days_fwd))]
 
-        # Previsión archivada por día. Se PREFIERE la hecha con 1+ días de antelación
-        # (que ve el día COMPLETO) sobre la del mismo día (horizonte 0): como el Mills
-        # se asigna al día en que ACABA el evento, la del propio día suele salir 0.
+        # Previsión archivada de cada día: la MÁS RECIENTE (menor horizonte = la del
+        # propio día). Ahora es correcta porque el archivado usa el mismo cálculo que
+        # la gráfica (build_risk_timeline con contexto), no days_back=0.
         pred_map = {}
         if archive_df is not None and not archive_df.empty and "target_date" in archive_df.columns:
             ad = archive_df.copy()
             ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce").fillna(99)
-            ad["_rank"] = ad["_h"].where(ad["_h"] >= 1, 1000)   # h0 → último recurso
-            ad = ad.sort_values("_rank").drop_duplicates("target_date", keep="first")
+            ad = ad.sort_values("_h").drop_duplicates("target_date", keep="first")
             for _, r in ad.iterrows():
                 pred_map[str(r.get("target_date"))] = r
 
