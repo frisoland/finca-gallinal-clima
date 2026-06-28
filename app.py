@@ -18507,6 +18507,32 @@ def load_forecast_archive(use_cache=True):
         return pd.DataFrame()
 
 
+def purge_forecast_archive():
+    """Borra de Supabase el archivo de previsiones (empezar de cero). Limpia la caché
+    y el flag de sesión para que se vuelva a archivar la previsión de hoy enseguida."""
+    if not supabase_is_configured():
+        return False, "Supabase no está configurado."
+    try:
+        url, key = get_supabase_credentials()
+        endpoint = (f"{url.rstrip('/')}/storage/v1/object/"
+                    f"{SUPABASE_SNAPSHOT_BUCKET}/{SUPABASE_FORECAST_ARCHIVE_PATH}")
+        r = requests.delete(endpoint, headers=supabase_headers(), timeout=60)
+        ok = r.status_code in (200, 204, 404)   # 404 = ya no existía = correcto
+        try:
+            _download_forecast_archive.clear()
+        except Exception:
+            pass
+        try:
+            for _k in [k for k in st.session_state.keys() if str(k).startswith("_fc_archived_")]:
+                del st.session_state[_k]
+        except Exception:
+            pass
+        return ok, (f"Archivo borrado (HTTP {r.status_code})." if ok
+                    else f"No se pudo borrar (HTTP {r.status_code}).")
+    except Exception as e:
+        return False, str(e)
+
+
 def archive_today_forecast(history_df, forecast_df):
     """Guarda (UNA vez al día) el riesgo PREVISTO por día, para luego compararlo con
     lo que de verdad pase. Silencioso y a prueba de fallos: nunca rompe el panel."""
@@ -19817,6 +19843,25 @@ def render_decisiones_panel():
                 _rd, _rm = forecast_reliability(history_df)
             st.session_state["forecast_reliab_df"] = _rd
             st.session_state["forecast_reliab_meta"] = _rm
+
+        with st.expander("🗑️ Reiniciar archivo de fiabilidad (empezar de cero)"):
+            st.caption(
+                "Borra TODO el archivo de previsiones guardado (incluidos los valores antiguos "
+                "mal calculados, como los 44/0/122). A partir de hoy se vuelve a llenar con el "
+                "cálculo correcto (que coincide con la gráfica). No afecta al clima ni a nada más."
+            )
+            _ok_purge = st.checkbox("Sí, entiendo que se pierde el histórico previo de fiabilidad",
+                                    key="purge_fc_confirm")
+            if st.button("🗑️ Borrar y empezar de cero", key="purge_fc_btn", disabled=not _ok_purge):
+                _pok, _pmsg = purge_forecast_archive()
+                if _pok:
+                    st.session_state.pop("forecast_reliab_df", None)
+                    st.session_state.pop("forecast_reliab_meta", None)
+                    # Re-archiva la previsión de hoy ya, con el cálculo bueno.
+                    archive_today_forecast(history_df, forecast_df)
+                    st.success(f"✅ {_pmsg} Empezamos limpio: a partir de ahora solo datos correctos.")
+                else:
+                    st.error(f"No se pudo borrar: {_pmsg}")
         _rel_df = st.session_state.get("forecast_reliab_df")
         _rel_meta = st.session_state.get("forecast_reliab_meta", {"n": 0})
         if _rel_df is None or (hasattr(_rel_df, "empty") and _rel_df.empty):
