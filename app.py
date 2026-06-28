@@ -18508,16 +18508,23 @@ def load_forecast_archive(use_cache=True):
 
 
 def purge_forecast_archive():
-    """Borra de Supabase el archivo de previsiones (empezar de cero). Limpia la caché
-    y el flag de sesión para que se vuelva a archivar la previsión de hoy enseguida."""
+    """Reinicia el archivo de previsiones SOBRESCRIBIÉNDOLO con un parquet vacío (el
+    DELETE de Storage da 400; el POST/upsert sí funciona). Limpia caché y el flag de
+    sesión para volver a archivar la previsión de hoy enseguida."""
     if not supabase_is_configured():
         return False, "Supabase no está configurado."
     try:
-        url, key = get_supabase_credentials()
-        endpoint = (f"{url.rstrip('/')}/storage/v1/object/"
-                    f"{SUPABASE_SNAPSHOT_BUCKET}/{SUPABASE_FORECAST_ARCHIVE_PATH}")
-        r = requests.delete(endpoint, headers=supabase_headers(), timeout=60)
-        ok = r.status_code in (200, 204, 404)   # 404 = ya no existía = correcto
+        empty = pd.DataFrame(columns=["issue_date", "target_date", "horizon",
+                                      "pred_mills", "pred_monilia", "pred_oidio", "pred_rain"])
+        buf = io.BytesIO()
+        empty.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
+        buf.seek(0)
+        endpoint = climate_snapshot_storage_url(SUPABASE_FORECAST_ARCHIVE_PATH)
+        headers = supabase_headers()
+        headers["Content-Type"] = "application/octet-stream"
+        headers["x-upsert"] = "true"
+        r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        ok = r.status_code in (200, 201)
         try:
             _download_forecast_archive.clear()
         except Exception:
@@ -18527,8 +18534,8 @@ def purge_forecast_archive():
                 del st.session_state[_k]
         except Exception:
             pass
-        return ok, (f"Archivo borrado (HTTP {r.status_code})." if ok
-                    else f"No se pudo borrar (HTTP {r.status_code}).")
+        return ok, (f"Archivo reiniciado (HTTP {r.status_code})." if ok
+                    else f"No se pudo reiniciar (HTTP {r.status_code}).")
     except Exception as e:
         return False, str(e)
 
