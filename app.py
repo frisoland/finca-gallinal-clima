@@ -14785,6 +14785,250 @@ def autosave_phenology_to_supabase():
         st.warning(f"⚠️ Error en el guardado automático de fenología: {e}")
 
 
+# ── Resultado sanitario (valoración visual pre-cosecha por campo/variedad) ────
+SUPABASE_RESULTADO_SANITARIO_FILE = "resultado_sanitario.parquet"
+RS_KEY_COLS  = ["Año", "Campo", "Variedad"]
+RS_EDIT_COLS = ["Defoliación", "Moteado hoja", "Moteado fruto", "% fruta manchada",
+                "Monilia", "Oídio", "Estado general", "Observaciones", "Fecha valoración"]
+
+
+def normalize_resultado_sanitario_df(df):
+    out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    for c in RS_KEY_COLS + RS_EDIT_COLS:
+        if c not in out.columns:
+            out[c] = ""
+    out = out[RS_KEY_COLS + RS_EDIT_COLS].copy()
+    if not out.empty:
+        out["Año"] = pd.to_numeric(out["Año"], errors="coerce").fillna(0).astype(int)
+        for c in RS_EDIT_COLS + ["Campo", "Variedad"]:
+            out[c] = out[c].astype(str).replace({"nan": "", "None": "", "<NA>": "", "NaT": ""})
+    return out.reset_index(drop=True)
+
+
+def resultado_sanitario_storage_url():
+    url, _ = get_supabase_credentials()
+    return f"{url.rstrip('/')}/storage/v1/object/climate-snapshots/{SUPABASE_RESULTADO_SANITARIO_FILE}"
+
+
+def load_resultado_sanitario_from_supabase():
+    if not supabase_is_configured():
+        return None, "Supabase no configurado."
+    headers = supabase_headers(); headers.pop("Prefer", None)
+    try:
+        r = requests.get(resultado_sanitario_storage_url(), headers=headers, timeout=60)
+    except Exception as e:
+        return None, f"Error de conexión: {e}"
+    if r.status_code != 200:
+        return None, "Sin resultado sanitario guardado."
+    try:
+        return pd.read_parquet(io.BytesIO(r.content), engine="pyarrow"), "Cargado."
+    except Exception as e:
+        return None, f"Error Parquet: {e}"
+
+
+def upload_resultado_sanitario_to_supabase(df):
+    if not supabase_is_configured():
+        return False, "Supabase no configurado."
+    out = normalize_resultado_sanitario_df(df if df is not None else pd.DataFrame())
+    buf = io.BytesIO()
+    out.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
+    buf.seek(0)
+    headers = supabase_headers()
+    headers["Content-Type"] = "application/octet-stream"
+    headers["x-upsert"] = "true"
+    try:
+        r = requests.post(resultado_sanitario_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+    except Exception as e:
+        return False, f"Error de conexión: {e}"
+    if r.status_code not in (200, 201):
+        return False, f"Error {r.status_code}"
+    return True, f"Guardado: {len(out)} filas."
+
+
+def autosave_resultado_sanitario_to_supabase():
+    if not supabase_is_configured():
+        return
+    try:
+        upload_resultado_sanitario_to_supabase(st.session_state.get("resultado_sanitario_df", pd.DataFrame()))
+    except Exception:
+        pass
+
+
+def _resultado_fungicide_by_field(activities_df, year):
+    """dict campo -> (nº pases fungicidas, detalle 'dd/mm Producto · …') del año."""
+    out = {}
+    if activities_df is None or activities_df.empty:
+        return out
+    try:
+        ax = expand_activities_by_field_for_recommendation(activities_df)
+    except Exception:
+        return out
+    if ax is None or ax.empty:
+        return out
+    ax = ax.copy()
+    ax["_f"] = pd.to_datetime(ax["Fecha"], errors="coerce")
+    ax = ax.dropna(subset=["_f"])
+    ax = ax[ax["_f"].dt.year == int(year)]
+    if ax.empty:
+        return out
+    ax = ax[ax.apply(lambda r: is_fungicide_activity(r.get("Producto", ""), r.get("Trabajo", "")), axis=1)]
+    if ax.empty:
+        return out
+    for campo, g in ax.groupby(ax["Campo"].astype(str)):
+        pairs = sorted({(r["_f"].date(), str(r.get("Producto", "")).strip()) for _, r in g.iterrows()})
+        n = len({d for d, _ in pairs})
+        det = " · ".join(f"{d.strftime('%d/%m')} {p}" for d, p in pairs if p) or "—"
+        out[str(campo).strip()] = (n, det)
+    return out
+
+
+def resultado_sanitario_base_rows(year):
+    """Una fila por (Campo, Variedad) con tratamientos fungicidas del año (auto)."""
+    fung = _resultado_fungicide_by_field(st.session_state.get("activities_df", pd.DataFrame()), year)
+    rows = []
+    for fr in FIELDS_BASE_ROWS:
+        campo = str(fr.get("Campo", "")).strip()
+        sup = fr.get("Superficie ha")
+        vars_ = [v.strip() for v in str(fr.get("Variedades actuales", "")).split(",") if v.strip()]
+        n, det = fung.get(campo, (0, "—"))
+        for v in vars_:
+            rows.append({
+                "Año": int(year), "Campo": campo, "Variedad": v, "Sup. ha": sup,
+                "Fungicidas campo (nº)": n, "Detalle tratamientos": det,
+            })
+    return pd.DataFrame(rows)
+
+
+def resultado_sanitario_tab():
+    st.markdown("### 🩺 Resultado sanitario por campo y variedad")
+    st.caption(
+        "Cruza, por **campo y variedad**, los **tratamientos fungicidas del año** (automático "
+        "desde Agroptima) con tu **valoración visual antes de la cosecha**. Con los años te deja "
+        "ver el resultado según lo que trataste — incluidos los campos/variedades que dejaste "
+        "**sin tratar (testigos)**. No mide euros (eso ya lo llevas en Agroptima)."
+    )
+    if "resultado_sanitario_df" not in st.session_state:
+        _df, _ = load_resultado_sanitario_from_supabase()
+        st.session_state.resultado_sanitario_df = normalize_resultado_sanitario_df(
+            _df if _df is not None else pd.DataFrame())
+
+    _saved_years = pd.to_numeric(
+        st.session_state.resultado_sanitario_df.get("Año", pd.Series(dtype=int)),
+        errors="coerce").dropna().astype(int).tolist()
+    _years = sorted({2026, 2025, 2024} | set(_saved_years), reverse=True)
+    year = st.selectbox("Campaña", _years, index=_years.index(2026) if 2026 in _years else 0, key="rs_year")
+
+    base = resultado_sanitario_base_rows(year)
+    if base.empty:
+        st.info("No hay campos/variedades configurados (item Campos).")
+        return
+    saved = st.session_state.resultado_sanitario_df
+    saved_y = saved[saved["Año"] == int(year)] if not saved.empty else pd.DataFrame()
+    _merge_cols = ["Campo", "Variedad"] + RS_EDIT_COLS
+    disp = base.merge(
+        saved_y[_merge_cols] if not saved_y.empty else pd.DataFrame(columns=_merge_cols),
+        on=["Campo", "Variedad"], how="left")
+    for c in RS_EDIT_COLS:
+        if c not in disp.columns:
+            disp[c] = ""
+        disp[c] = disp[c].fillna("")
+    disp["% fruta manchada"] = pd.to_numeric(disp["% fruta manchada"], errors="coerce")
+    disp["Fecha valoración"] = pd.to_datetime(disp["Fecha valoración"], errors="coerce")
+
+    editor_key = f"rs_editor_{year}"
+    _pos_key = {i: (int(year), r["Campo"], r["Variedad"])
+                for i, r in disp.reset_index(drop=True).iterrows()}
+
+    def _apply_rs():
+        ed = (st.session_state.get(editor_key) or {}).get("edited_rows", {})
+        if not ed:
+            return
+        master = normalize_resultado_sanitario_df(st.session_state.resultado_sanitario_df)
+        for _pos, _ch in ed.items():
+            key = _pos_key.get(int(_pos))
+            if not key:
+                continue
+            yr, campo, var = key
+            mask = (master["Año"] == yr) & (master["Campo"] == campo) & (master["Variedad"] == var)
+            if not mask.any():
+                _nr = {"Año": yr, "Campo": campo, "Variedad": var}
+                for c in RS_EDIT_COLS:
+                    _nr[c] = ""
+                master = pd.concat([master, pd.DataFrame([_nr])], ignore_index=True)
+                mask = (master["Año"] == yr) & (master["Campo"] == campo) & (master["Variedad"] == var)
+            for col, val in _ch.items():
+                if col not in RS_EDIT_COLS:
+                    continue
+                if col == "Fecha valoración":
+                    _ts = pd.to_datetime(val, errors="coerce")
+                    master.loc[mask, col] = _ts.strftime("%Y-%m-%d") if pd.notna(_ts) else ""
+                else:
+                    master.loc[mask, col] = "" if val is None else str(val)
+        st.session_state.resultado_sanitario_df = normalize_resultado_sanitario_df(master)
+        autosave_resultado_sanitario_to_supabase()
+
+    _sev = ["", "0", "1", "2", "3"]
+    st.data_editor(
+        disp, key=editor_key, on_change=_apply_rs, num_rows="fixed",
+        use_container_width=True, hide_index=True,
+        disabled=["Año", "Campo", "Variedad", "Sup. ha", "Fungicidas campo (nº)", "Detalle tratamientos"],
+        column_config={
+            "Año": st.column_config.NumberColumn("Año", format="%d"),
+            "Sup. ha": st.column_config.NumberColumn("Sup. ha", format="%.2f"),
+            "Fungicidas campo (nº)": st.column_config.NumberColumn(
+                "Fungic. (nº)", format="%d",
+                help="Pases de fungicida del CAMPO este año (desde Agroptima). Si una variedad "
+                     "fue distinta (testigo), anótalo en Observaciones."),
+            "Defoliación": st.column_config.SelectboxColumn(
+                "Defoliación", options=["", "Nula", "Leve", "Moderada", "Alta", "Severa"],
+                help="Pérdida de hoja antes de cosecha"),
+            "Moteado hoja": st.column_config.SelectboxColumn("Moteado hoja", options=_sev,
+                help="0 nada · 1 leve · 2 moderado · 3 severo"),
+            "Moteado fruto": st.column_config.SelectboxColumn("Moteado fruto", options=_sev),
+            "% fruta manchada": st.column_config.NumberColumn("% fruta manchada", min_value=0,
+                max_value=100, format="%d"),
+            "Monilia": st.column_config.SelectboxColumn("Monilia", options=_sev,
+                help="Podredumbre de fruto (Monilinia)"),
+            "Oídio": st.column_config.SelectboxColumn("Oídio", options=_sev),
+            "Estado general": st.column_config.SelectboxColumn(
+                "Estado general", options=["", "Bueno", "Regular", "Malo"]),
+            "Fecha valoración": st.column_config.DateColumn("Fecha valoración", format="YYYY-MM-DD"),
+        },
+    )
+    st.caption(
+        "Escalas: **0** nada · **1** leve · **2** moderado · **3** severo. Se guarda solo en "
+        "Supabase al editar. Para tu **testigo** de 2026 (variedad sin tratar), pon la nota en "
+        "Observaciones — Agroptima registra el tratamiento por campo, no por variedad."
+    )
+
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        st.download_button(
+            "⬇️ Descargar plantilla / datos (CSV)",
+            data=disp.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"resultado_sanitario_{year}.csv", mime="text/csv",
+            use_container_width=True)
+    with _c2:
+        if st.button("☁️ Guardar en Supabase", use_container_width=True, type="primary", key="rs_save"):
+            ok, msg = upload_resultado_sanitario_to_supabase(st.session_state.resultado_sanitario_df)
+            (st.success if ok else st.error)(f"{'✅' if ok else '❌'} {msg}")
+
+    with st.expander("⬆️ Subir plantilla rellenada (CSV)"):
+        _up = st.file_uploader("CSV con columnas Año, Campo, Variedad + valoración",
+                               type=["csv"], key="rs_upload")
+        if _up is not None and st.button("Importar plantilla", key="rs_import"):
+            try:
+                _imp = pd.read_csv(_up)
+                _merged = normalize_resultado_sanitario_df(pd.concat(
+                    [st.session_state.resultado_sanitario_df, _imp], ignore_index=True))
+                _merged = _merged.drop_duplicates(["Año", "Campo", "Variedad"], keep="last")
+                st.session_state.resultado_sanitario_df = _merged
+                autosave_resultado_sanitario_to_supabase()
+                st.success(f"✅ Importadas {len(_imp)} filas.")
+            except Exception as _e:
+                st.error(f"No se pudo importar: {_e}")
+
+
 # ── Auto-carga Supabase al arrancar (una sola vez por sesión) ─────────────────
 # Carga Agroptima, Producción y Carpocapsa automáticamente si Supabase está
 # configurado y los datos de sesión están vacíos.
@@ -20891,6 +21135,7 @@ if not _HEADLESS:
         "sanidad":       ("🍄", "Cultivo", "Sanidad"),
         "decisiones":    ("🎯", "Cultivo", "Decisiones"),
         "carpocapsa":    ("🐛", "Cultivo", "Carpocapsa"),
+        "resultado":     ("🩺", "Cultivo", "Resultado sanitario"),
         "riego":         ("💧", "Cultivo", "Riego"),
         "campos":        ("🌳", "Gestión", "Campos"),
         "agroptima":     ("🧾", "Gestión", "Agroptima"),
@@ -20939,7 +21184,8 @@ if not _HEADLESS:
         ("🍎", "Prod.",      "produccion"),
     ]
     _MOBILE_MORE = [
-        ("🍄 Sanidad", "sanidad"), ("❄️ Frío", "frio"), ("🌱 Fenología", "fenologia"),
+        ("🍄 Sanidad", "sanidad"), ("🩺 Resultado sanitario", "resultado"),
+        ("❄️ Frío", "frio"), ("🌱 Fenología", "fenologia"),
         ("🔎 Análisis", "analisis"), ("📈 Comparador", "comparador"), ("💧 Riego", "riego"),
         ("🌳 Campos", "campos"), ("🧾 Agroptima", "agroptima"),
         ("🍏 Análisis Gallinal", "gallinal"), ("📝 Informe semanal", "informe"),
@@ -21041,6 +21287,7 @@ if not _HEADLESS:
                 _nav_btn("🍄 Sanidad",     "sanidad")
                 _nav_btn("🎯 Decisiones",  "decisiones")
                 _nav_btn("🐛 Carpocapsa",  "carpocapsa")
+                _nav_btn("🩺 Resultado sanitario", "resultado")
                 _nav_btn("💧 Riego",       "riego")
 
             with st.expander("📋  Gestión", expanded=True, key="grp_gestion"):
@@ -21088,6 +21335,8 @@ if not _HEADLESS:
         render_decisiones_panel()
     elif _page == "carpocapsa":
         carpocapsa_tab(history)
+    elif _page == "resultado":
+        resultado_sanitario_tab()
     elif _page == "riego":
         irrigation_tab(history, soil_type, hoja_threshold)
     elif _page == "campos":
