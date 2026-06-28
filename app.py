@@ -19955,44 +19955,45 @@ def render_decisiones_panel():
                                 "de nada a ese plazo:*")
                     st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
 
-            # ── Detalle DÍA A DÍA: valor de infección PREVISTO vs REAL ────────────
-            _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30, days_fwd=7)
-            if _daily is not None and not _daily.empty:
-                st.markdown("**📋 Día a día: valor de infección previsto vs. real.** Arriba, los días "
-                            "**🔮 futuros** con la previsión de hoy (el real aparecerá cuando llegue "
-                            "el día). Abajo, los **pasados**: lo que se predijo vs. lo real (umbral "
-                            "grave = 100; «—» = sin dato).")
-                _dcols = list(_daily.columns)
-                _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
-                _GRN2 = "background-color: rgba(0,150,60,0.16); color:#0a7a35; font-weight:700"
+        # ── Detalle DÍA A DÍA: PREVISTO vs REAL (fuera del if: se muestra SIEMPRE,
+        #    aunque el archivo esté vacío, para ver los días 🔮 futuros). ──────────
+        _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30, days_fwd=7)
+        if _daily is not None and not _daily.empty:
+            st.markdown("**📋 Día a día: valor de infección previsto vs. real.** Arriba, los días "
+                        "**🔮 futuros** con la previsión de hoy (el real aparecerá cuando llegue "
+                        "el día). Abajo, los **pasados**: lo que se predijo vs. lo real (umbral "
+                        "grave = 100; «—» = sin dato).")
+            _dcols = list(_daily.columns)
+            _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
+            _GRN2 = "background-color: rgba(0,150,60,0.16); color:#0a7a35; font-weight:700"
 
-                def _num(v):
-                    try:
-                        return float(v)
-                    except Exception:
-                        return None
-                def _row_style(r):
-                    styles = [""] * len(_dcols)
-                    for prevc, realc in [("Moteado prev.", "Moteado real"),
-                                         ("Monilia prev.", "Monilia real")]:
-                        rv = _num(r.get(realc))
-                        pv = _num(r.get(prevc))
-                        if rv is not None and rv >= 100:   # día de EVENTO real
-                            css = _GRN2 if (pv is not None and pv >= 100) else _RED2
-                            styles[_dcols.index(realc)] = css
-                            styles[_dcols.index(prevc)] = css
-                    return styles
+            def _num(v):
                 try:
-                    st.dataframe(_daily.style.apply(_row_style, axis=1),
-                                 use_container_width=True, hide_index=True)
+                    return float(v)
                 except Exception:
-                    st.dataframe(_daily, use_container_width=True, hide_index=True)
-                st.caption(
-                    "🔮 = día futuro: solo hay previsión, el real está pendiente (se rellenará "
-                    "cuando pase el día). · 🟢 = día con infección real (≥100) que la previsión "
-                    "**sí** anunció · 🔴 = día con infección real que la previsión **no** vio (se le "
-                    "escapó). Si «Moteado prev.» pone 150 y «real» 23, la previsión exageró ese día."
-                )
+                    return None
+            def _row_style(r):
+                styles = [""] * len(_dcols)
+                for prevc, realc in [("Moteado prev.", "Moteado real"),
+                                     ("Monilia prev.", "Monilia real")]:
+                    rv = _num(r.get(realc))
+                    pv = _num(r.get(prevc))
+                    if rv is not None and rv >= 100:   # día de EVENTO real
+                        css = _GRN2 if (pv is not None and pv >= 100) else _RED2
+                        styles[_dcols.index(realc)] = css
+                        styles[_dcols.index(prevc)] = css
+                return styles
+            try:
+                st.dataframe(_daily.style.apply(_row_style, axis=1),
+                             use_container_width=True, hide_index=True)
+            except Exception:
+                st.dataframe(_daily, use_container_width=True, hide_index=True)
+            st.caption(
+                "🔮 = día futuro: solo hay previsión, el real está pendiente (se rellenará "
+                "cuando pase el día). · 🟢 = día con infección real (≥100) que la previsión "
+                "**sí** anunció · 🔴 = día con infección real que la previsión **no** vio (se le "
+                "escapó). Si «Moteado prev.» pone 150 y «real» 23, la previsión exageró ese día."
+            )
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
         st.markdown(
