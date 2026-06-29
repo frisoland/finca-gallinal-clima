@@ -20062,30 +20062,44 @@ def build_daily_report_text(history_df, traps_df, activities_df,
         dec = pd.DataFrame()
 
     lines.append("🍎 <b>FUNGICIDAS</b>")
+    _modo_fc, _fase_fc = fenologia_modo_hoy()
+    _modo_txt = ("<b>preventivo</b> (mantener escudo; la previsión solo informa)"
+                 if _modo_fc == "preventivo"
+                 else "<b>reactivo</b> (solo trata si hay evento real reciente; previsión solo avisa)"
+                 if _modo_fc == "reactivo" else "fuera de campaña fúngica")
+    lines.append(f"  📍 Fase: <b>{_esc(_fase_fc)}</b> → modo {_modo_txt}")
+
+    _cat_fc = pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG)   # headless: sin session_state
+
+    def _prod_fc(r):
+        try:
+            _p, _a, _ = get_smart_recommendation(
+                r.get("_dominant_list", []), _cat_fc,
+                last_product=str(r.get("_last_product", "")),
+                app_counts=r.get("_app_counts", {}), sdhi_total=int(r.get("_sdhi_total", 0)))
+            return _p
+        except Exception:
+            return "—"
+
     if not dec.empty and "_priority" in dec.columns:
-        red    = dec[dec["_priority"] == 1]   # tratar hoy (infección prevista)
-        orange = dec[dec["_priority"] == 2]   # tratar pronto (cobertura caducada + exposición)
-        yellow = dec[dec["_priority"] == 3]   # planificar (sin cobertura activa)
+        red    = dec[dec["_priority"] == 1]   # tratar HOY (acción real)
+        orange = dec[dec["_priority"] == 2]   # tratar pronto (preventivo: mantener escudo)
+        yellow = dec[dec["_priority"] == 3]   # vigilar (previsión / fuera de ventana)
         if not red.empty:
-            lines.append("<b>🔴 Tratar HOY (infección prevista):</b>")
+            lines.append("<b>🔴 TRATAR HOY:</b>")
             for _, r in red.iterrows():
-                campo  = _esc(r.get("Campo", ""))
-                dias   = r.get("Días sin trat.", "")
-                lines.append(f"  • <b>{campo}</b> — {dias} días sin tratar")
+                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b> "
+                             f"({r.get('Días sin trat.','')}d sin trat.) → <b>{_esc(_prod_fc(r))}</b>")
         if not orange.empty:
-            lines.append("<b>🟠 Tratar pronto (cobertura caducada):</b>")
+            lines.append("<b>🟠 Tratar pronto (mantener escudo):</b>")
             for _, r in orange.iterrows():
-                campo = _esc(r.get("Campo", ""))
-                dias  = r.get("Días sin trat.", "")
-                lines.append(f"  • <b>{campo}</b> — {dias} días sin tratar")
+                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b> "
+                             f"({r.get('Días sin trat.','')}d) → <b>{_esc(_prod_fc(r))}</b>")
         if not yellow.empty:
-            lines.append("<b>🟡 Planificar (sin cobertura activa):</b>")
-            for _, r in yellow.iterrows():
-                campo = _esc(r.get("Campo", ""))
-                dias  = r.get("Días sin trat.", "")
-                lines.append(f"  • <b>{campo}</b> — {dias} días sin tratar")
+            lines.append("<b>🟡 Vigilar</b> (por si la previsión se confirma):")
+            lines.append("  " + ", ".join(_esc(r.get("Campo", "")) for _, r in yellow.iterrows()))
         if red.empty and orange.empty and yellow.empty:
-            lines.append("  ✅ Todos los campos con cobertura vigente.")
+            lines.append("  ✅ Sin acción: sin eventos recientes ni cobertura caducada.")
     else:
         lines.append("  ℹ️ Sin datos suficientes para el panel de decisión.")
 
