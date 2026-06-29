@@ -10444,7 +10444,8 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
     _c4.metric("🟢 OK",            int((dec["_priority"] == 4).sum()))
 
     _cols = ["Campo", "Fase", "🎯 Acción", "Riesgo principal", "1ª elección", "Alternativa",
-             "Último fungicida", "Días sin trat.", "Eventos infección", "Previsión Mills", "📋 Motivo"]
+             "Último fungicida", "Días sin trat.", "Eventos infección", "Ev. sin cobertura",
+             "Previsión Mills", "📋 Motivo"]
     _cols = [c for c in _cols if c in dec.columns]
     st.dataframe(dec.sort_values("_priority")[_cols], use_container_width=True, hide_index=True)
     st.download_button(
@@ -18356,6 +18357,34 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         )
         acts_clean = _acts[_mask_fung].copy()
 
+    # Eventos de infección REALES de la campaña (1 ene → hoy), del sensor, para contar
+    # por campo cuántos quedaron SIN cobertura (ni preventiva ni curativa). Es de finca
+    # (un solo sensor) → se calcula UNA vez.
+    _season_event_dates = []
+    try:
+        _hy = history_df.copy()
+        _hy["fecha_hora"] = pd.to_datetime(_hy["fecha_hora"], errors="coerce")
+        _hy = _hy.dropna(subset=["fecha_hora"])
+        _hy = _hy[(_hy["fecha_hora"] >= pd.Timestamp(today.year, 1, 1)) & (_hy["fecha_hora"] <= today)]
+        if not _hy.empty:
+            _ev_season = detect_leaf_wetness_events(_hy)
+            if _ev_season is not None and not _ev_season.empty:
+                for _, _e in _ev_season.iterrows():
+                    if (pd.to_numeric(_e.get("Ratio moteado"), errors="coerce") >= 1.0 or
+                            pd.to_numeric(_e.get("Ratio monilia"), errors="coerce") >= 1.0):
+                        _season_event_dates.append(pd.Timestamp(_e["Fin"]).normalize())
+    except Exception:
+        _season_event_dates = []
+
+    def _evento_cubierto(ev_date, fung_dates, persist, curativa=4):
+        """Un evento está cubierto si hubo fungicida dentro de la persistencia ANTES
+        (preventivo) o dentro de la ventana curativa (4 días) DESPUÉS."""
+        for f in fung_dates:
+            if (f <= ev_date and (ev_date - f).days <= persist) or \
+               (f >= ev_date and (f - ev_date).days <= curativa):
+                return True
+        return False
+
     for field_row in FIELDS_BASE_ROWS:
         campo      = field_row["Campo"]
         variedades = field_row.get("Variedades actuales", "")
@@ -18367,11 +18396,14 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         last_date       = None
         last_products   = []   # lista de todos los fungicidas de la última pasada
         last_product    = "Sin registro"   # representación legible para display
+        _field_fung_dates = []   # todas las fechas de fungicida del campo (campaña)
         if not acts_clean.empty:
             mask = acts_clean["Campos reconocidos"].fillna("").apply(
                 lambda x: _campo_exact_in_list(x, campo)
             )
             campo_acts_all = acts_clean[mask].sort_values("Fecha_dt", ascending=False)
+            _field_fung_dates = sorted({d.normalize() for d in campo_acts_all["Fecha_dt"]
+                                        if pd.notna(d) and d.year == today.year})
             if not campo_acts_all.empty:
                 last_date = campo_acts_all.iloc[0]["Fecha_dt"].normalize()
                 # Todos los productos fungicidas del mismo día = misma pasada
@@ -18425,6 +18457,24 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             max_mills_since      = float(hist_risk["Mills_valor"].fillna(0).max())
             max_monilia_since    = float(hist_risk["Monilia_valor"].fillna(0).max())
 
+        # Evento REAL en los últimos 4 días (VENTANA CURATIVA): solo mientras esté
+        # abierta tiene sentido el aviso reactivo (después, tratar no rescata nada).
+        recent_event = False
+        if not risk_df.empty:
+            _rec = risk_df[(~risk_df["Es_prediccion"]) &
+                           (risk_df["Fecha"] >= today - pd.Timedelta(days=4)) &
+                           (risk_df["Fecha"] <= today)]
+            if not _rec.empty:
+                recent_event = bool((_rec["Mills_valor"].fillna(0) >= 100).any() or
+                                    (_rec["Monilia_valor"].fillna(0) >= 100).any())
+
+        # Eventos de la campaña SIN cobertura de NINGÚN tipo (ni preventiva ni curativa)
+        # en este campo → el indicador que correlaciona con el daño visual de fin de año.
+        eventos_sin_cobertura = sum(
+            1 for _d in _season_event_dates
+            if not _evento_cubierto(_d, _field_fung_dates, eff_persistence)
+        )
+
         # ── Previsión 3 días ──────────────────────────────────────────────────
         fc_mills_max   = 0.0
         fc_monilia_max = 0.0
@@ -18465,7 +18515,6 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         # ── Prioridades SEGÚN FASE FENOLÓGICA ─────────────────────────────────
         # Mismo criterio para Decisiones y Sanidad. El peso cambia con la fase:
         _RED, _ORA, _YEL, _GRN = "#ffcdd2", "#ffe0b2", "#fff9c4", "#f1f8f1"
-        real_event = (mills_events_since + monilia_events_since) >= 1
 
         if _modo == "reposo":
             # Fuera de campaña fúngica (invierno / tras cosecha): sin decisión.
@@ -18484,17 +18533,17 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
                 priority = 4; action = "🟢 OK — protegido"; row_bg = _GRN
 
         else:
-            # CUAJADO EN ADELANTE: REACTIVO. Solo un EVENTO REAL ya producido dispara.
-            # Una cobertura caducada SIN evento real NO se trata (ahorro). La previsión
-            # solo avisa.
-            if real_event and unprotected:
-                priority = 1; action = "🔴 TRATAR HOY — evento real sin cobertura"; row_bg = _RED
-            elif real_event:
+            # CUAJADO EN ADELANTE: REACTIVO. Solo un evento real DENTRO DE LA VENTANA
+            # CURATIVA (≤4 días) dispara — el aviso se autocaduca pasada la ventana
+            # (tratar entonces no rescata nada). La previsión solo avisa.
+            if recent_event and unprotected:
+                priority = 1; action = "🔴 TRATAR HOY — evento real (ventana curativa abierta)"; row_bg = _RED
+            elif recent_event:
                 priority = 3; action = "🟡 Vigilar — evento real (cobertura aún activa)"; row_bg = _YEL
             elif fc_alert:
                 priority = 3; action = "🟡 Vigilar — previsión (sin evento real aún)"; row_bg = _YEL
             else:
-                priority = 4; action = "🟢 OK — sin eventos"; row_bg = _GRN
+                priority = 4; action = "🟢 OK — sin eventos recientes"; row_bg = _GRN
 
         # Riesgo dominante (para seleccionar producto)
         # Solo incluye patógenos con previsión activa o exposición acumulada relevante
@@ -18550,6 +18599,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "Días protección":   int(round(eff_persistence)),
             "Lluvia desde mm":   rain_since,
             "Eventos infección":  mills_events_since + monilia_events_since,
+            "Ev. sin cobertura":  eventos_sin_cobertura,
             "Previsión Mills":   int(fc_mills_max),
             "Lluvia prevista mm": round(fc_rain, 1),
             "Pases campaña":     _pases_label,
@@ -20605,7 +20655,7 @@ def render_decisiones_panel():
         _display_cols = [
             "Campo", "Fase", "🎯 Acción",
             "Último fungicida", "Días sin trat.", "Días protección",
-            "Lluvia desde mm", "Eventos infección", "Previsión Mills",
+            "Lluvia desde mm", "Eventos infección", "Ev. sin cobertura", "Previsión Mills",
             "Pases campaña", "Riesgo principal",
             "1ª elección", "Alternativa", "🐛 Combo cuba",
             "Por qué", "📋 Motivo",
