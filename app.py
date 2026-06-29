@@ -10482,6 +10482,66 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
 
 
 
+def _sanitary_phase_for_md(ts):
+    """Fase fenológica regional por (mes, día). None fuera de brotación→cuajado."""
+    md = (ts.month, ts.day)
+    if (4, 1) <= md <= (4, 20):
+        return "Brotación"
+    if (4, 21) <= md <= (5, 21):
+        return "Floración"
+    if (5, 22) <= md <= (6, 15):
+        return "Cuajado"
+    return None
+
+
+def sanitary_events_history(history_df, start_year=2019):
+    """Eventos de infección CONFIRMADOS por AÑO y FASE (ventanas regionales por defecto),
+    del DATO REAL del sensor: moteado y monilia = eventos de hoja mojada con ratio ≥ 1;
+    oídio = días con índice ≥ 100. Para ver si una campaña es atípica."""
+    if history_df is None or history_df.empty:
+        return pd.DataFrame()
+    h = history_df.copy()
+    h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+    h = h.dropna(subset=["fecha_hora"])
+    rows = []
+    for y in sorted({int(x) for x in h["fecha_hora"].dt.year.tolist() if int(x) >= start_year}):
+        wy = h[(h["fecha_hora"] >= pd.Timestamp(y, 4, 1)) &
+               (h["fecha_hora"] <= pd.Timestamp(y, 6, 15, 23, 59))]
+        if wy.empty or wy["fecha_hora"].dt.date.nunique() < 30:
+            continue   # año sin datos suficientes en la ventana
+        cnt = {(dis, ph): 0 for dis in ("Moteado", "Monilia")
+               for ph in ("Brotación", "Floración", "Cuajado")}
+        try:
+            ev = detect_leaf_wetness_events(wy)
+        except Exception:
+            ev = pd.DataFrame()
+        if ev is not None and not ev.empty:
+            for _, e in ev.iterrows():
+                ph = _sanitary_phase_for_md(pd.Timestamp(e["Fin"]))
+                if ph is None:
+                    continue
+                if pd.to_numeric(e.get("Ratio moteado"), errors="coerce") >= 1.0:
+                    cnt[("Moteado", ph)] += 1
+                if pd.to_numeric(e.get("Ratio monilia"), errors="coerce") >= 1.0:
+                    cnt[("Monilia", ph)] += 1
+        wd = wy.copy(); wd["_d"] = wd["fecha_hora"].dt.date
+        gd = wd.groupby("_d").agg(tm=("temp_media", "mean"), hm=("hr_media", "mean"),
+                                  ll=("lluvia_mm", "sum"))
+        oi = int(sum(1 for t, hh, l in zip(gd["tm"], gd["hm"], gd["ll"])
+                     if _dec_oidio_value(t, hh, l) >= 100))
+        rows.append({
+            "Año": y,
+            "Mot. Brot.": cnt[("Moteado", "Brotación")],
+            "Mot. Flor.": cnt[("Moteado", "Floración")],
+            "Mot. Cuaj.": cnt[("Moteado", "Cuajado")],
+            "Mon. Brot.": cnt[("Monilia", "Brotación")],
+            "Mon. Flor.": cnt[("Monilia", "Floración")],
+            "Mon. Cuaj.": cnt[("Monilia", "Cuajado")],
+            "Oídio (días)": oi,
+        })
+    return pd.DataFrame(rows)
+
+
 def health_tab(history, soil_type, hoja_threshold):
     st.subheader("Sanidad vegetal")
 
@@ -10518,6 +10578,36 @@ def health_tab(history, soil_type, hoja_threshold):
         start_ts=period_start,
         end_ts=period_end,
     )
+
+    with st.expander("📅 Histórico de eventos de infección por año y fase", expanded=False):
+        st.caption(
+            "Eventos **confirmados** (dato real del sensor de hoja mojada) de **moteado** y "
+            "**monilia** por fase, y **días muy favorables a oídio**, en cada campaña. Sirve para "
+            "ver si un año es **atípico** o si el patrón se repite — base para el triaje por fases."
+        )
+        if st.button("📊 Analizar todos los años", key="sani_hist_btn"):
+            with st.spinner("Calculando eventos de todas las campañas…"):
+                st.session_state["sani_events_hist"] = sanitary_events_history(history)
+        _eh = st.session_state.get("sani_events_hist")
+        if _eh is not None and not _eh.empty:
+            st.dataframe(_eh, use_container_width=True, hide_index=True)
+            _bf = (_eh["Mot. Brot."] + _eh["Mot. Flor."] + _eh["Mon. Brot."] + _eh["Mon. Flor."])
+            _cu = (_eh["Mot. Cuaj."] + _eh["Mon. Cuaj."])
+            _tot = _bf + _cu
+            _n_dom = int(((_bf >= _cu) & (_tot > 0)).sum())
+            _n_val = int((_tot > 0).sum())
+            _cuaj_years = int((_cu > 0).sum())
+            if _n_val:
+                st.markdown(
+                    f"**Lectura:** en **{_n_dom} de {_n_val}** campañas con eventos, el grueso de "
+                    f"moteado+monilia cayó en **brotación‑floración** (no en cuajado). En "
+                    f"**{_cuaj_years}** campañas hubo **algún** evento en cuajado. → Si {_n_dom} ≈ "
+                    f"{_n_val}, el patrón de 2026 (peligro en floración, cuajado tranquilo) es **la "
+                    f"norma** y el triaje por fases es sólido; si hay varios años con eventos en "
+                    f"cuajado, ahí **no conviene relajarse** ese tramo."
+                )
+            st.caption("Ventanas regionales: **Brotación** 1–20 abr · **Floración** 21 abr–21 may · "
+                       "**Cuajado** 22 may–15 jun. Oídio = días con índice ≥100 (cualitativo).")
 
     with st.expander("Plan de rotación FRAC para próxima campaña", expanded=False):
         st.info("El plan de rotación FRAC está disponible en la pestaña **Actuaciones**, para evitar duplicar controles internos de Streamlit.")
