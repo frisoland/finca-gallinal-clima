@@ -18365,7 +18365,9 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         _hy = history_df.copy()
         _hy["fecha_hora"] = pd.to_datetime(_hy["fecha_hora"], errors="coerce")
         _hy = _hy.dropna(subset=["fecha_hora"])
-        _hy = _hy[(_hy["fecha_hora"] >= pd.Timestamp(today.year, 1, 1)) & (_hy["fecha_hora"] <= today)]
+        # Desde BROTACIÓN (1 abr): antes el árbol está dormido (sin hoja/flor que
+        # infectar), así que los periodos húmedos de invierno NO son infecciones reales.
+        _hy = _hy[(_hy["fecha_hora"] >= pd.Timestamp(today.year, 4, 1)) & (_hy["fecha_hora"] <= today)]
         if not _hy.empty:
             _ev_season = detect_leaf_wetness_events(_hy)
             if _ev_season is not None and not _ev_season.empty:
