@@ -10401,83 +10401,56 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
             })
         st.dataframe(pd.DataFrame(product_rows), use_container_width=True, hide_index=True)
 
-    min_interval = st.number_input(
-        "Intervalo mínimo entre tratamientos por campo",
-        min_value=7,
-        max_value=45,
-        value=15,
-        step=1,
-        help="Regla de trabajo configurada por ti. La app la usa para evitar recomendar tratamientos demasiado seguidos.",
-        key="treatment_min_interval_v85",
-    )
-
-    recs = build_field_treatment_recommendations(
-        st.session_state.get("history_df", pd.DataFrame(columns=CANONICAL_COLUMNS)),
-        activities_df,
-        period_df,
-        soil_type,
-        hoja_threshold,
-        start_ts=start_ts,
-        end_ts=end_ts,
-        min_interval_days=int(min_interval),
-    )
-
-    if recs.empty:
-        st.info("No se han podido generar recomendaciones por campo.")
+    # ── Recomendación UNIFICADA con Decisiones (MISMO motor, criterio, prioridad y
+    #    producto). No hay dos lógicas: Sanidad y Decisiones muestran lo mismo. ──
+    history_df  = st.session_state.get("history_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
+    _modo, _fase = fenologia_modo_hoy()
+    try:
+        risk_df = build_risk_timeline(history_df, forecast_df, days_back=60)
+    except Exception:
+        risk_df = pd.DataFrame()
+    dec = daily_treatment_decision(history_df, activities_df, risk_df)
+    if dec is None or dec.empty:
+        st.info("No se han podido generar recomendaciones por campo (¿falta histórico o actuaciones?).")
         return
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Campos evaluados", len(recs))
-    c2.metric("Aplicar/valorar", int(recs["Decisión"].astype(str).str.contains("Aplicar|valorar", case=False, na=False).sum()))
-    c3.metric("Sin tratamiento directo", int(recs["Decisión"].astype(str).str.contains("Observar|No tratar", case=False, na=False).sum()))
+    # Producto por campo con el MISMO motor científico que Decisiones.
+    _catalog_df = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
+    _prim, _alt = [], []
+    for _, _r in dec.iterrows():
+        _p, _a, _ = get_smart_recommendation(
+            _r.get("_dominant_list", []), _catalog_df,
+            last_product=str(_r.get("_last_product", "")),
+            app_counts=_r.get("_app_counts", {}), sdhi_total=int(_r.get("_sdhi_total", 0)))
+        _prim.append(_p); _alt.append(_a)
+    dec = dec.copy(); dec["1ª elección"] = _prim; dec["Alternativa"] = _alt
 
+    _modo_txt = ("En **brotación/floración** el disparador es la **cobertura caducada** (mantener "
+                 "escudo); la previsión solo informa." if _modo == "preventivo"
+                 else "En **cuajado en adelante** solo dispara un **evento real** ya producido; la "
+                      "previsión solo avisa." if _modo == "reactivo"
+                 else "Fuera de campaña fúngica (reposo).")
+    st.info(f"🌿 **Fase de hoy: {_fase} → modo {_modo}.** {_modo_txt}")
     st.caption(
-        "🍃 Este panel valora la presión **fúngica** (moteado/monilia/oídio): solo cuenta como "
-        "cobertura un **fungicida**. Un insecticida de carpocapsa (Bactur, Madex…) **no** baja la "
-        "prioridad aquí — la carpocapsa se gestiona en su propio item. **El producto y la alternativa "
-        "se calculan con el mismo motor y la misma base de riesgo que *Decisiones* (hoy + previsión "
-        "3 días)**, así que coinciden con ese item."
-    )
-    st.dataframe(
-        recs[[
-            "Campo",
-            "Riesgo dominante",
-            "Nivel riesgo",
-            "Prioridad de campo",
-            "Decisión",
-            "Producto recomendado",
-            "Alternativa",
-            "Último tratamiento",
-            "Variedades tratadas último tratamiento",
-            "Días desde último tratamiento",
-            "Usos campaña por producto",
-            "Motivo",
-            "Advertencia FRAC",
-        ]].rename(columns={
-            "Último tratamiento": "Último fungicida",
-            "Variedades tratadas último tratamiento": "Variedades del último fungicida",
-            "Días desde último tratamiento": "Días desde último fungicida",
-        }),
-        use_container_width=True,
-        hide_index=True,
+        "Mismo **motor, criterio, prioridad y producto** que **Decisiones** (no hay dos lógicas). "
+        "Solo cuenta como cobertura un **fungicida** (la carpocapsa va en su item)."
     )
 
-    with st.expander("Lectura rápida campo a campo", expanded=True):
-        for _, row in recs.iterrows():
-            st.markdown(f"**{row['Campo']} · {row['Riesgo dominante']} · {row['Nivel riesgo']}**")
-            st.write(f"- Prioridad: {row.get('Prioridad de campo', '')}")
-            st.write(f"- Decisión: {row['Decisión']}")
-            st.write(f"- Producto recomendado: **{row['Producto recomendado']}**. Alternativa: {row['Alternativa']}")
-            st.write(f"- Último fungicida: {row['Último tratamiento']}")
-            st.write(f"- Variedades del último fungicida: {row.get('Variedades tratadas último tratamiento', '')}")
-            st.write(f"- Motivo de recomendación: {row['Motivo']}")
-            st.write(f"- FRAC: {row['Advertencia FRAC']}")
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    _c1.metric("🔴 Tratar hoy",    int((dec["_priority"] == 1).sum()))
+    _c2.metric("🟠 Tratar pronto", int((dec["_priority"] == 2).sum()))
+    _c3.metric("🟡 Vigilar",       int((dec["_priority"] == 3).sum()))
+    _c4.metric("🟢 OK",            int((dec["_priority"] == 4).sum()))
 
+    _cols = ["Campo", "Fase", "🎯 Acción", "Riesgo principal", "1ª elección", "Alternativa",
+             "Último fungicida", "Días sin trat.", "Eventos infección", "Previsión Mills", "📋 Motivo"]
+    _cols = [c for c in _cols if c in dec.columns]
+    st.dataframe(dec.sort_values("_priority")[_cols], use_container_width=True, hide_index=True)
     st.download_button(
-        "Descargar recomendaciones de tratamiento por campo",
-        data=recs.to_csv(index=False).encode("utf-8-sig"),
-        file_name="recomendaciones_tratamiento_por_campo.csv",
-        mime="text/csv",
+        "Descargar recomendaciones por campo (CSV)",
+        data=dec[_cols].to_csv(index=False).encode("utf-8-sig"),
+        file_name="recomendaciones_sanidad.csv", mime="text/csv", use_container_width=True,
     )
 
 
@@ -18313,6 +18286,29 @@ def is_fungicide_activity(producto_str, trabajo_str=""):
     return False
 
 
+def fenologia_modo_hoy(today=None):
+    """Modo de tratamiento según la FASE fenológica de HOY (ventanas regionales):
+       · 'preventivo' (brotación 1–20 abr + floración 21 abr–21 may): el disparador es
+         la COBERTURA caducada; la previsión solo INFORMA (no dispara sola).
+       · 'reactivo' (cuajado 22 may → maduración 20 oct): solo un EVENTO REAL ya
+         producido dispara; la previsión solo avisa.
+       · 'reposo' (resto): fuera de campaña fúngica.
+    Devuelve (modo, etiqueta_fase)."""
+    t = pd.Timestamp.now().normalize() if today is None else pd.Timestamp(today).normalize()
+    md = (t.month, t.day)
+    if (4, 1) <= md <= (4, 20):
+        return "preventivo", "Brotación"
+    if (4, 21) <= md <= (5, 21):
+        return "preventivo", "Floración"
+    if (5, 22) <= md <= (6, 15):
+        return "reactivo", "Cuajado"
+    if (6, 16) <= md <= (8, 31):
+        return "reactivo", "Engorde"
+    if (9, 1) <= md <= (10, 20):
+        return "reactivo", "Maduración"
+    return "reposo", "Reposo"
+
+
 def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16):
     """
     Para cada campo de la finca, calcula el estado de protección FUNGICIDA y
@@ -18324,6 +18320,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
     """
     today = pd.Timestamp.now().normalize()
     rows  = []
+    _modo, _fase_label = fenologia_modo_hoy(today)   # mismo criterio de fase para toda la finca
 
     # Mapa de persistencia por producto, desde el catálogo de fungicidas (el mismo
     # que normaliza los productos). Base = DEFAULT_FUNGICIDE_CATALOG; si la sesión
@@ -18465,40 +18462,39 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         # pero es conservador para frutales de pepita en fase sensible).
         accumulated_exposure = (mills_events_since + monilia_events_since) >= 3
 
-        # ── Prioridades ───────────────────────────────────────────────────────
-        if unprotected and fc_alert:
-            # Sin cobertura + infección inminente: actuar antes de la lluvia
-            priority = 1
-            action   = "🔴 TRATAR HOY — infección prevista"
-            row_bg   = "#ffcdd2"
+        # ── Prioridades SEGÚN FASE FENOLÓGICA ─────────────────────────────────
+        # Mismo criterio para Decisiones y Sanidad. El peso cambia con la fase:
+        _RED, _ORA, _YEL, _GRN = "#ffcdd2", "#ffe0b2", "#fff9c4", "#f1f8f1"
+        real_event = (mills_events_since + monilia_events_since) >= 1
 
-        elif unprotected and accumulated_exposure:
-            # Sin cobertura + exposición acumulada seria + sin previsión inmediata:
-            # planificar en ≤2 días, no es una emergencia de hoy pero no puede esperar
-            priority = 2
-            action   = "🟠 Tratar pronto — cobertura caducada"
-            row_bg   = "#ffe0b2"
+        if _modo == "reposo":
+            # Fuera de campaña fúngica (invierno / tras cosecha): sin decisión.
+            priority = 4; action = "🟢 Fuera de campaña"; row_bg = _GRN
 
-        elif unprotected:
-            # Sin cobertura pero sin previsión ni exposición seria:
-            # ventana segura corta, planificar en 3-5 días
-            priority = 3
-            action   = "🟡 Planificar — sin cobertura activa"
-            row_bg   = "#fff9c4"
-
-        elif fc_alert and days_since >= max(5, eff_persistence - 4):
-            # Cobertura aún activa pero próxima a caducar (a ≤4 días del fin de la
-            # persistencia del producto) + previsión de infección: la lluvia puede
-            # lavar o coincidir con el fin de cobertura
-            priority = 3
-            action   = "🟡 Vigilar — infección prevista"
-            row_bg   = "#fff9c4"
+        elif _modo == "preventivo":
+            # BROTACIÓN/FLORACIÓN: el disparador es la COBERTURA caducada (mantener
+            # escudo). La previsión NO dispara sola — solo aumenta urgencia o avisa.
+            if unprotected and (fc_alert or accumulated_exposure):
+                priority = 1; action = "🔴 TRATAR HOY — sin cobertura (riesgo a la vista)"; row_bg = _RED
+            elif unprotected:
+                priority = 2; action = "🟠 Tratar pronto — mantener escudo (preventivo)"; row_bg = _ORA
+            elif fc_alert:
+                priority = 3; action = "🟡 Vigilar — previsión de infección (cobertura activa)"; row_bg = _YEL
+            else:
+                priority = 4; action = "🟢 OK — protegido"; row_bg = _GRN
 
         else:
-            # Cobertura activa y sin previsión de infección
-            priority = 4
-            action   = "🟢 OK — protegido"
-            row_bg   = "#f1f8f1"
+            # CUAJADO EN ADELANTE: REACTIVO. Solo un EVENTO REAL ya producido dispara.
+            # Una cobertura caducada SIN evento real NO se trata (ahorro). La previsión
+            # solo avisa.
+            if real_event and unprotected:
+                priority = 1; action = "🔴 TRATAR HOY — evento real sin cobertura"; row_bg = _RED
+            elif real_event:
+                priority = 3; action = "🟡 Vigilar — evento real (cobertura aún activa)"; row_bg = _YEL
+            elif fc_alert:
+                priority = 3; action = "🟡 Vigilar — previsión (sin evento real aún)"; row_bg = _YEL
+            else:
+                priority = 4; action = "🟢 OK — sin eventos"; row_bg = _GRN
 
         # Riesgo dominante (para seleccionar producto)
         # Solo incluye patógenos con previsión activa o exposición acumulada relevante
@@ -18558,9 +18554,11 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "Lluvia prevista mm": round(fc_rain, 1),
             "Pases campaña":     _pases_label,
             "Riesgo principal":  ", ".join(dominant),
+            "Fase":              f"{_fase_label} ({_modo})",
             "🎯 Acción":         action,
             "📋 Motivo":         _narrative,
             "_priority":         priority,
+            "_modo":             _modo,
             "_bg":               row_bg,
             "_days_sort":        days_since,
             "_last_product":     last_product,
@@ -20605,7 +20603,7 @@ def render_decisiones_panel():
         # Orden: columnas de acción inmediata primero (visible sin scroll),
         # recomendaciones en bloque central, combo cuba junto a la elección.
         _display_cols = [
-            "Campo", "🎯 Acción",
+            "Campo", "Fase", "🎯 Acción",
             "Último fungicida", "Días sin trat.", "Días protección",
             "Lluvia desde mm", "Eventos infección", "Previsión Mills",
             "Pases campaña", "Riesgo principal",
