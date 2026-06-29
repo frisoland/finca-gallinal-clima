@@ -10549,6 +10549,37 @@ def health_tab(history, soil_type, hoja_threshold):
         st.info("Carga primero el histórico.")
         return
 
+    # ── Análisis multi-año (no depende del periodo: usa el histórico completo) ──
+    with st.expander("📅 Histórico de eventos de infección por año y fase (todos los años)",
+                     expanded=False):
+        st.caption(
+            "Eventos **confirmados** (dato real del sensor de hoja mojada) de **moteado** y "
+            "**monilia** por fase, y **días muy favorables a oídio**, en cada campaña. Sirve para "
+            "ver si un año es **atípico** o si el patrón se repite — base para el triaje por fases."
+        )
+        if st.button("📊 Analizar todos los años", key="sani_hist_btn"):
+            with st.spinner("Calculando eventos de todas las campañas…"):
+                st.session_state["sani_events_hist"] = sanitary_events_history(history)
+        _eh = st.session_state.get("sani_events_hist")
+        if _eh is not None and not _eh.empty:
+            st.dataframe(_eh, use_container_width=True, hide_index=True)
+            _bf = (_eh["Mot. Brot."] + _eh["Mot. Flor."] + _eh["Mon. Brot."] + _eh["Mon. Flor."])
+            _cu = (_eh["Mot. Cuaj."] + _eh["Mon. Cuaj."])
+            _tot = _bf + _cu
+            _n_dom = int(((_bf >= _cu) & (_tot > 0)).sum())
+            _n_val = int((_tot > 0).sum())
+            _cuaj_years = int((_cu > 0).sum())
+            if _n_val:
+                st.markdown(
+                    f"**Lectura:** en **{_n_dom} de {_n_val}** campañas con eventos, el grueso de "
+                    f"moteado+monilia cayó en **brotación‑floración**. Pero en **{_cuaj_years}** "
+                    f"campañas hubo **eventos también en cuajado** → **no conviene relajar el "
+                    f"cuajado por calendario**: hay que tratarlo de forma **reactiva** (solo si el "
+                    f"sensor confirma evento, que en varios años ocurre)."
+                )
+            st.caption("Ventanas regionales: **Brotación** 1–20 abr · **Floración** 21 abr–21 may · "
+                       "**Cuajado** 22 may–15 jun. Oídio = días con índice ≥100 (cualitativo).")
+
     period, period_df, avail, summary, global_summary = get_period_data(history, soil_type, hoja_threshold)
     if period is None:
         st.info("Selecciona primero un periodo en la pestaña **Análisis**.")
@@ -10578,36 +10609,6 @@ def health_tab(history, soil_type, hoja_threshold):
         start_ts=period_start,
         end_ts=period_end,
     )
-
-    with st.expander("📅 Histórico de eventos de infección por año y fase", expanded=False):
-        st.caption(
-            "Eventos **confirmados** (dato real del sensor de hoja mojada) de **moteado** y "
-            "**monilia** por fase, y **días muy favorables a oídio**, en cada campaña. Sirve para "
-            "ver si un año es **atípico** o si el patrón se repite — base para el triaje por fases."
-        )
-        if st.button("📊 Analizar todos los años", key="sani_hist_btn"):
-            with st.spinner("Calculando eventos de todas las campañas…"):
-                st.session_state["sani_events_hist"] = sanitary_events_history(history)
-        _eh = st.session_state.get("sani_events_hist")
-        if _eh is not None and not _eh.empty:
-            st.dataframe(_eh, use_container_width=True, hide_index=True)
-            _bf = (_eh["Mot. Brot."] + _eh["Mot. Flor."] + _eh["Mon. Brot."] + _eh["Mon. Flor."])
-            _cu = (_eh["Mot. Cuaj."] + _eh["Mon. Cuaj."])
-            _tot = _bf + _cu
-            _n_dom = int(((_bf >= _cu) & (_tot > 0)).sum())
-            _n_val = int((_tot > 0).sum())
-            _cuaj_years = int((_cu > 0).sum())
-            if _n_val:
-                st.markdown(
-                    f"**Lectura:** en **{_n_dom} de {_n_val}** campañas con eventos, el grueso de "
-                    f"moteado+monilia cayó en **brotación‑floración** (no en cuajado). En "
-                    f"**{_cuaj_years}** campañas hubo **algún** evento en cuajado. → Si {_n_dom} ≈ "
-                    f"{_n_val}, el patrón de 2026 (peligro en floración, cuajado tranquilo) es **la "
-                    f"norma** y el triaje por fases es sólido; si hay varios años con eventos en "
-                    f"cuajado, ahí **no conviene relajarse** ese tramo."
-                )
-            st.caption("Ventanas regionales: **Brotación** 1–20 abr · **Floración** 21 abr–21 may · "
-                       "**Cuajado** 22 may–15 jun. Oídio = días con índice ≥100 (cualitativo).")
 
     with st.expander("Plan de rotación FRAC para próxima campaña", expanded=False):
         st.info("El plan de rotación FRAC está disponible en la pestaña **Actuaciones**, para evitar duplicar controles internos de Streamlit.")
