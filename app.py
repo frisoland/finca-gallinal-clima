@@ -7116,6 +7116,16 @@ def dashboard_tab(history, soil_type, hoja_threshold):
     c2.metric("Desde", str(min_dt))
     c3.metric("Hasta", str(max_dt))
 
+    st.download_button(
+        "⬇️ Descargar histórico (CSV)",
+        data=history.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"historico_finca_gallinal_{pd.Timestamp.now():%Y%m%d}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        help="Histórico climático horario completo (incluye humectación de hoja). "
+             "Para análisis externos o para pasar el dato actualizado.",
+    )
+
     with st.expander("🔍 Calidad del dato", expanded=False):
         avail_global = availability_table(history, min_dt, max_dt)
         st.dataframe(avail_global, use_container_width=True)
