@@ -14854,47 +14854,60 @@ def autosave_resultado_sanitario_to_supabase():
         pass
 
 
-def _resultado_fungicide_by_field(activities_df, year):
-    """dict campo -> (nº pases fungicidas, detalle 'dd/mm Producto · …') del año."""
-    out = {}
+def _norm_var(s):
+    """Normaliza un nombre de variedad: quita el sufijo '(Manzano)' y espacios, minúsculas."""
+    s = re.sub(r"\s*\([^)]*\)\s*$", "", str(s or "").strip()).strip()
+    return s.lower()
+
+
+def _resultado_fungicide_passes(activities_df, year):
+    """Lista de fungicidas del año: (campo, fecha, producto, variedades_norm | None).
+    `None` = la actuación no especifica variedad → cuenta para TODAS las del campo."""
+    passes = []
     if activities_df is None or activities_df.empty:
-        return out
+        return passes
     try:
         ax = expand_activities_by_field_for_recommendation(activities_df)
     except Exception:
-        return out
+        return passes
     if ax is None or ax.empty:
-        return out
+        return passes
     ax = ax.copy()
     ax["_f"] = pd.to_datetime(ax["Fecha"], errors="coerce")
     ax = ax.dropna(subset=["_f"])
     ax = ax[ax["_f"].dt.year == int(year)]
     if ax.empty:
-        return out
+        return passes
     ax = ax[ax.apply(lambda r: is_fungicide_activity(r.get("Producto", ""), r.get("Trabajo", "")), axis=1)]
-    if ax.empty:
-        return out
-    for campo, g in ax.groupby(ax["Campo"].astype(str)):
-        pairs = sorted({(r["_f"].date(), str(r.get("Producto", "")).strip()) for _, r in g.iterrows()})
-        n = len({d for d, _ in pairs})
-        det = " · ".join(f"{d.strftime('%d/%m')} {p}" for d, p in pairs if p) or "—"
-        out[str(campo).strip()] = (n, det)
-    return out
+    for _, r in ax.iterrows():
+        vraw = str(r.get("Variedades tratadas", "") or "").strip()
+        if vraw and vraw.lower() not in ("nan", "none", ""):
+            vset = {_norm_var(x) for x in re.split(r"[\n,;]+", vraw) if _norm_var(x)}
+        else:
+            vset = None
+        passes.append((str(r.get("Campo", "")).strip(), r["_f"].date(),
+                       str(r.get("Producto", "")).strip(), vset))
+    return passes
 
 
 def resultado_sanitario_base_rows(year):
-    """Una fila por (Campo, Variedad) con tratamientos fungicidas del año (auto)."""
-    fung = _resultado_fungicide_by_field(st.session_state.get("activities_df", pd.DataFrame()), year)
+    """Una fila por (Campo, Variedad) con los fungicidas del año atribuidos POR VARIEDAD,
+    usando las variedades que registras en cada tratamiento de Agroptima."""
+    passes = _resultado_fungicide_passes(st.session_state.get("activities_df", pd.DataFrame()), year)
     rows = []
     for fr in FIELDS_BASE_ROWS:
         campo = str(fr.get("Campo", "")).strip()
         sup = fr.get("Superficie ha")
         vars_ = [v.strip() for v in str(fr.get("Variedades actuales", "")).split(",") if v.strip()]
-        n, det = fung.get(campo, (0, "—"))
+        cpasses = [p for p in passes if p[0] == campo]
         for v in vars_:
+            vn = _norm_var(v)
+            mine = [(d, prod) for (_c, d, prod, vset) in cpasses if (vset is None) or (vn in vset)]
+            n = len({d for d, _ in mine})
+            det = " · ".join(f"{d.strftime('%d/%m')} {p}" for d, p in sorted(set(mine)) if p) or "—"
             rows.append({
                 "Año": int(year), "Campo": campo, "Variedad": v, "Sup. ha": sup,
-                "Fungicidas campo (nº)": n, "Detalle tratamientos": det,
+                "Fungicidas (nº)": n, "Detalle tratamientos": det,
             })
     return pd.DataFrame(rows)
 
@@ -14971,14 +14984,14 @@ def resultado_sanitario_tab():
     st.data_editor(
         disp, key=editor_key, on_change=_apply_rs, num_rows="fixed",
         use_container_width=True, hide_index=True,
-        disabled=["Año", "Campo", "Variedad", "Sup. ha", "Fungicidas campo (nº)", "Detalle tratamientos"],
+        disabled=["Año", "Campo", "Variedad", "Sup. ha", "Fungicidas (nº)", "Detalle tratamientos"],
         column_config={
             "Año": st.column_config.NumberColumn("Año", format="%d"),
             "Sup. ha": st.column_config.NumberColumn("Sup. ha", format="%.2f"),
-            "Fungicidas campo (nº)": st.column_config.NumberColumn(
+            "Fungicidas (nº)": st.column_config.NumberColumn(
                 "Fungic. (nº)", format="%d",
-                help="Pases de fungicida del CAMPO este año (desde Agroptima). Si una variedad "
-                     "fue distinta (testigo), anótalo en Observaciones."),
+                help="Pases de fungicida de ESA variedad este año (desde Agroptima, según las "
+                     "variedades que registras en cada tratamiento). Tu testigo saldrá en 0 solo."),
             "Defoliación": st.column_config.SelectboxColumn(
                 "Defoliación", options=["", "Nula", "Leve", "Moderada", "Alta", "Severa"],
                 help="Pérdida de hoja antes de cosecha"),
@@ -14997,8 +15010,9 @@ def resultado_sanitario_tab():
     )
     st.caption(
         "Escalas: **0** nada · **1** leve · **2** moderado · **3** severo. Se guarda solo en "
-        "Supabase al editar. Para tu **testigo** de 2026 (variedad sin tratar), pon la nota en "
-        "Observaciones — Agroptima registra el tratamiento por campo, no por variedad."
+        "Supabase al editar. Los fungicidas se cuentan **por variedad** (según las variedades que "
+        "registras en cada tratamiento de Agroptima), así que tu **testigo** sin tratar saldrá "
+        "**en 0 automáticamente**."
     )
 
     _c1, _c2 = st.columns(2)
