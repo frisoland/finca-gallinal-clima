@@ -20660,8 +20660,10 @@ def render_decisiones_panel():
             "- **Eventos infección** — nº de infecciones (moteado/monilia) **desde el último "
             "fungicida**.\n"
             "- **Ev. sin cobertura** — infecciones de **toda la campaña** (desde brotación) que se "
-            "colaron **sin protección de ningún tipo** (ni preventiva ni curativa). Es un "
-            "**indicador de daño** para fin de campaña, **no** un aviso de tratar.\n"
+            "colaron **sin protección de ningún tipo** (ni preventiva ni curativa). Se mide "
+            "**por etiqueta de cada producto** (su persistencia antes y su ventana curativa "
+            "después), editables en *Catálogo de fungicidas*. Es un **indicador de daño** para "
+            "fin de campaña, **no** un aviso de tratar.\n"
             "- **Previsión Mills** — índice de riesgo de **moteado** (modelo Mills): "
             "**100 = evento de infección**.\n"
             "- **Pases campaña** — aplicaciones de cada fungicida esta campaña / **máximo "
@@ -20739,9 +20741,17 @@ def render_decisiones_panel():
     # ══════════════════════════════════════════════════════════════════════════
     with st.expander("⚙️ Catálogo de fungicidas (campaña activa)", expanded=False):
         st.caption(
-            "Productos disponibles en almacén esta campaña. "
-            "La columna **Objetivos** guía las recomendaciones del panel diario. "
-            "La columna **FRAC** se usa para el asesor de rotación de la próxima campaña."
+            "Productos disponibles en almacén esta campaña. **Todas las columnas son editables** "
+            "(doble clic en la celda) — los cambios se usan al instante. Qué hace cada una:\n\n"
+            "- **Objetivos** — guía las recomendaciones del panel diario.\n"
+            "- **FRAC** — alimenta el asesor de rotación de la próxima campaña.\n"
+            "- **Persistencia días** — cuántos días protege ANTES (preventivo). Define hasta "
+            "cuándo un evento posterior se considera **cubierto** y cuándo caduca la cobertura.\n"
+            "- **Ventana curativa días** — cuántos días puede frenar la infección DESPUÉS del "
+            "evento (rescate; p. ej. Folicur ~72 h → 3, Luna ~96-120 h → 5). Define hasta cuándo "
+            "un evento anterior se considera **rescatado**.\n\n"
+            "Persistencia y curativa son las que cuentan **«Ev. sin cobertura»**: ajústalas aquí "
+            "si tu etiqueta dice otra cosa, sin tocar el código."
         )
         _catalog_key = "fungicide_catalog_editor_v2"
         _catalog_edited = st.data_editor(
@@ -20749,6 +20759,17 @@ def render_decisiones_panel():
             num_rows="dynamic",
             use_container_width=True,
             key=_catalog_key,
+            column_config={
+                "Persistencia días": st.column_config.NumberColumn(
+                    "Persistencia días", min_value=0, max_value=60, step=1, format="%d",
+                    help="Días de protección PREVENTIVA (antes del evento). Cuenta para "
+                         "«Ev. sin cobertura» y para la caducidad de la cobertura."),
+                "Ventana curativa días": st.column_config.NumberColumn(
+                    "Ventana curativa días", min_value=0, max_value=15, step=1, format="%d",
+                    help="Días en que el producto aún frena la infección DESPUÉS del evento "
+                         "(rescate, según etiqueta). Folicur ~72h→3, Luna ~96-120h→5, "
+                         "estrobilurinas poca. Cuenta para «Ev. sin cobertura»."),
+            },
         )
         try:
             if not _catalog_edited.equals(st.session_state.get("fungicide_catalog_df", pd.DataFrame())):
