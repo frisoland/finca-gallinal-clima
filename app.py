@@ -17998,7 +17998,7 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
 def build_treatment_narrative(days_since, rain_since, mills_events_since,
                               monilia_events_since, fc_mills_max, fc_monilia_max,
                               fc_rain, last_product, persistence_days, priority,
-                              last_date=None):
+                              last_date=None, infeccion_activa=False):
     """
     Genera una narrativa en lenguaje claro explicando POR QUÉ se recomienda
     (o no) un tratamiento fungicida hoy para un campo concreto.
@@ -18082,14 +18082,18 @@ def build_treatment_narrative(days_since, rain_since, mills_events_since,
         )
 
     # ── 4. Ventana curativa ───────────────────────────────────────────────────
-    # Si el último evento real fue reciente (aproximado: hay eventos y cobertura caducada
-    # pero todavía dentro del umbral de 96h para SDHI/triazoles)
-    if total_events >= 1 and days_since >= persistence_days and days_since <= persistence_days + 4:
+    # Hay infección que RESCATAR ahora si: evento EN CURSO o real en los últimos 4 días
+    # (lo pasa el motor en `infeccion_activa`) — o, respaldo, cobertura recién caducada
+    # (días sin tratar dentro de la ventana curativa del producto). Esto manda sobre el
+    # tipo "preventivo" porque sí queda algo que rescatar curativamente.
+    _curativa = infeccion_activa or (
+        total_events >= 1 and days_since >= persistence_days and days_since <= persistence_days + 4)
+    if _curativa:
         reasons.append(
-            "Posible ventana curativa activa: los fungicidas DMI (triazoles) y SDHI "
-            "pueden detener infecciones incipientes hasta 48-96h post-eventos "
-            "(Köller 2001; BASF ficha Luna Experience). "
-            "Preferir productos con acción curativa (Folicur, Luna Experience)."
+            "Ventana curativa activa: hay infección reciente o en curso. Los fungicidas DMI "
+            "(triazoles) y SDHI pueden detener infecciones incipientes hasta 48-96h post-evento "
+            "(Köller 2001; ficha Luna Experience). Preferir productos con acción curativa "
+            "(Folicur, Luna Experience)."
         )
         tipo = "Curativo + preventivo"
 
@@ -18630,6 +18634,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             persistence_days   = eff_persistence,
             priority           = priority,
             last_date          = last_date,
+            infeccion_activa   = bool(_open_event or recent_event),
         )
 
         rows.append({
