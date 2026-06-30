@@ -18310,6 +18310,36 @@ def fenologia_modo_hoy(today=None):
     return "reposo", "Reposo"
 
 
+def current_open_wet_event(history_df, lookback_days=5, gap_hours=6):
+    """Si AHORA hay un periodo de hoja mojada EN CURSO (o cerrado hace < gap_hours),
+    devuelve (mills_provisional, monilia_provisional, True). El valor es PROVISIONAL:
+    sube hasta que la hoja se seca y el evento cierra. Sirve para adelantar la alerta
+    (no esperar a que escampe) y para mostrar el valor con asterisco mientras crece."""
+    try:
+        if history_df is None or history_df.empty or "humectacion_hoja" not in history_df.columns:
+            return 0.0, 0.0, False
+        h = history_df.copy()
+        h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+        h = h.dropna(subset=["fecha_hora"])
+        if h.empty:
+            return 0.0, 0.0, False
+        _last_ts = h["fecha_hora"].max()
+        h = h[h["fecha_hora"] >= _last_ts - pd.Timedelta(days=lookback_days)]
+        ev = detect_leaf_wetness_events(h)
+        if ev is None or ev.empty:
+            return 0.0, 0.0, False
+        last = ev.sort_values("Fin").iloc[-1]
+        if pd.isna(last.get("Fin")):
+            return 0.0, 0.0, False
+        if (_last_ts - pd.Timestamp(last["Fin"])) <= pd.Timedelta(hours=gap_hours):
+            _m = min(float(pd.to_numeric(last.get("Ratio moteado"), errors="coerce") or 0) * 100, 150.0)
+            _o = min(float(pd.to_numeric(last.get("Ratio monilia"), errors="coerce") or 0) * 100, 100.0)
+            return round(_m), round(_o), True
+        return 0.0, 0.0, False
+    except Exception:
+        return 0.0, 0.0, False
+
+
 def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16):
     """
     Para cada campo de la finca, calcula el estado de protección FUNGICIDA y
@@ -18386,6 +18416,11 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
                (f >= ev_date and (f - ev_date).days <= curativa):
                 return True
         return False
+
+    # Evento de hoja mojada EN CURSO ahora mismo (de finca): adelanta la alerta sin
+    # esperar a que la hoja se seque. Provisional = sube hasta que el evento cierra.
+    _open_mills, _open_monilia, _open_abierto = current_open_wet_event(history_df)
+    _open_event = _open_abierto and (_open_mills >= 100 or _open_monilia >= 100)
 
     for field_row in FIELDS_BASE_ROWS:
         campo      = field_row["Campo"]
@@ -18525,22 +18560,26 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         elif _modo == "preventivo":
             # BROTACIÓN/FLORACIÓN: el disparador es la COBERTURA caducada (mantener
             # escudo). La previsión NO dispara sola — solo aumenta urgencia o avisa.
-            if unprotected and (fc_alert or accumulated_exposure):
+            if unprotected and _open_event:
+                priority = 1; action = "🔴 TRATAR HOY — infección EN CURSO sin cobertura"; row_bg = _RED
+            elif unprotected and (fc_alert or accumulated_exposure):
                 priority = 1; action = "🔴 TRATAR HOY — sin cobertura (riesgo a la vista)"; row_bg = _RED
             elif unprotected:
                 priority = 2; action = "🟠 Tratar pronto — mantener escudo (preventivo)"; row_bg = _ORA
-            elif fc_alert:
-                priority = 3; action = "🟡 Vigilar — previsión de infección (cobertura activa)"; row_bg = _YEL
+            elif _open_event or fc_alert:
+                priority = 3; action = "🟡 Vigilar — infección en curso/prevista (cobertura activa)"; row_bg = _YEL
             else:
                 priority = 4; action = "🟢 OK — protegido"; row_bg = _GRN
 
         else:
-            # CUAJADO EN ADELANTE: REACTIVO. Solo un evento real DENTRO DE LA VENTANA
-            # CURATIVA (≤4 días) dispara — el aviso se autocaduca pasada la ventana
-            # (tratar entonces no rescata nada). La previsión solo avisa.
-            if recent_event and unprotected:
+            # CUAJADO EN ADELANTE: REACTIVO. Dispara un evento EN CURSO ahora mismo, o
+            # un evento real DENTRO DE LA VENTANA CURATIVA (≤4 días). Pasada la ventana
+            # el aviso se autocaduca (tratar ya no rescata). La previsión solo avisa.
+            if _open_event and unprotected:
+                priority = 1; action = "🔴 TRATAR HOY — infección EN CURSO (gánale tiempo)"; row_bg = _RED
+            elif recent_event and unprotected:
                 priority = 1; action = "🔴 TRATAR HOY — evento real (ventana curativa abierta)"; row_bg = _RED
-            elif recent_event:
+            elif recent_event or _open_event:
                 priority = 3; action = "🟡 Vigilar — evento real (cobertura aún activa)"; row_bg = _YEL
             elif fc_alert:
                 priority = 3; action = "🟡 Vigilar — previsión (sin evento real aún)"; row_bg = _YEL
@@ -19127,17 +19166,25 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
         def _sr(x):   # 1 decimal como texto; "—" si falta
             return f"{float(x):.1f}" if pd.notna(x) else "—"
 
+        # Evento de hoja mojada EN CURSO ahora: el valor real de HOY se muestra
+        # provisional (con *) mientras el evento no cierre (sube hasta que la hoja seca).
+        _om, _oo, _oab = current_open_wet_event(history_df)
+
         rows = []
         for _, r in risk.sort_values("_d").iterrows():
             d = r["_d"]
             td = d.strftime("%Y-%m-%d")
             pendiente = bool(r.get("Es_prediccion")) or d >= today
             if pendiente:
-                # FUTURO/HOY: previsto = previsión EN VIVO; real aún no ha ocurrido.
+                # FUTURO/HOY: previsto = previsión EN VIVO; real aún no ha ocurrido,
+                # salvo que HOY haya un evento EN CURSO → valor provisional con "*".
+                _hoy_abierto = bool(_oab and d == today)
                 rows.append({
-                    "_sort": d, "Fecha": d.strftime("%d/%m") + " 🔮",
-                    "Moteado prev.": _si(r.get("Mills_valor")),   "Moteado real": "—",
-                    "Monilia prev.": _si(r.get("Monilia_valor")), "Monilia real": "—",
+                    "_sort": d, "Fecha": d.strftime("%d/%m") + (" 🔄" if _hoy_abierto else " 🔮"),
+                    "Moteado prev.": _si(r.get("Mills_valor")),
+                    "Moteado real": (f"{int(_om)}*" if _hoy_abierto else "—"),
+                    "Monilia prev.": _si(r.get("Monilia_valor")),
+                    "Monilia real": (f"{int(_oo)}*" if _hoy_abierto else "—"),
                     "Oídio prev.": _si(r.get("Oidio_valor")),     "Oídio real": "—",
                     "Lluvia prev.": _sr(r.get("Lluvia")),         "Lluvia real": "—",
                 })
@@ -20392,7 +20439,7 @@ def render_decisiones_panel():
 
             def _num(v):
                 try:
-                    return float(v)
+                    return float(str(v).replace("*", "").strip())   # "150*" → 150
                 except Exception:
                     return None
             def _row_style(r):
@@ -20412,10 +20459,12 @@ def render_decisiones_panel():
             except Exception:
                 st.dataframe(_daily, use_container_width=True, hide_index=True)
             st.caption(
-                "🔮 = día futuro: solo hay previsión, el real está pendiente (se rellenará "
-                "cuando pase el día). · 🟢 = día con infección real (≥100) que la previsión "
-                "**sí** anunció · 🔴 = día con infección real que la previsión **no** vio (se le "
-                "escapó). Si «Moteado prev.» pone 150 y «real» 23, la previsión exageró ese día."
+                "🔮 = día futuro: solo hay previsión, el real está pendiente. · 🔄 + valor con "
+                "**asterisco (*)** = **infección EN CURSO**: la hoja sigue mojada y el valor es "
+                "**provisional** (sube hasta que se seca y el evento cierra). · 🟢 = día con "
+                "infección real (≥100) que la previsión **sí** anunció · 🔴 = día con infección real "
+                "que la previsión **no** vio (se le escapó). Si «Moteado prev.» pone 150 y «real» 23, "
+                "la previsión exageró ese día."
             )
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
