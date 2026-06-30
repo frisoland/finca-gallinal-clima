@@ -15102,6 +15102,86 @@ def resultado_sanitario_tab():
             ok, msg = upload_resultado_sanitario_to_supabase(st.session_state.resultado_sanitario_df)
             (st.success if ok else st.error)(f"{'✅' if ok else '❌'} {msg}")
 
+    # ── 📈 Qué pasó en el campo: infecciones vs tratamientos ──────────────────
+    st.divider()
+    st.markdown("#### 📈 Qué pasó en el campo: infecciones vs tratamientos")
+    st.caption(
+        "Elige **campo** y **variedad** para ver, en la campaña seleccionada arriba, los "
+        "**eventos de infección** de moteado, monilia y oídio (el mismo motor que Decisiones) y, "
+        "superpuestas, las **líneas verticales de cada tratamiento** de ese campo/variedad "
+        "(pasa el ratón por una línea morada para ver el producto). Periodo brotación→cosecha. "
+        "Así, de un vistazo, comparas lo que ocurrió con el **estado visual** de árbol y fruto."
+    )
+
+    _campos_rs = [str(fr.get("Campo", "")).strip() for fr in FIELDS_BASE_ROWS]
+    _cc1, _cc2 = st.columns(2)
+    with _cc1:
+        campo_sel = st.selectbox("Campo", _campos_rs, key="rs_chart_campo")
+    _vars_campo = []
+    for fr in FIELDS_BASE_ROWS:
+        if str(fr.get("Campo", "")).strip() == campo_sel:
+            _vars_campo = [v.strip() for v in str(fr.get("Variedades actuales", "")).split(",") if v.strip()]
+            break
+    with _cc2:
+        var_sel = st.selectbox("Variedad", ["(todas)"] + _vars_campo, key="rs_chart_var")
+
+    _hist_rs = st.session_state.get("history_df", pd.DataFrame())
+    _today_norm = pd.Timestamp.now().normalize()
+    _w0 = pd.Timestamp(int(year), 4, 1)             # brotación
+    _w1 = min(pd.Timestamp(int(year), 11, 15), _today_norm)   # cosecha (o hoy si la campaña va por la mitad)
+
+    if _hist_rs is None or _hist_rs.empty:
+        st.info("No hay histórico climático cargado para dibujar las gráficas.")
+    elif _w0 > _today_norm:
+        st.info(f"La campaña {year} aún no ha empezado (brotación arranca el 1 de abril).")
+    else:
+        _risk_rs = build_risk_timeline(_hist_rs, pd.DataFrame(), window_start=_w0, window_end=_w1)
+        if _risk_rs is None or _risk_rs.empty:
+            st.warning(f"No hay datos de sensor suficientes para {year} en el periodo brotación→cosecha.")
+        else:
+            # Tratamientos del campo/variedad elegidos (mismos pases que cuentan en la tabla).
+            _passes = _resultado_fungicide_passes(
+                st.session_state.get("activities_df", pd.DataFrame()), int(year))
+            _vn = None if var_sel == "(todas)" else _norm_var(var_sel)
+            _trows = []
+            for (_c, _d, _prod, _vset) in _passes:
+                if _c != campo_sel:
+                    continue
+                if _vn is not None and not ((_vset is None) or (_vn in _vset)):
+                    continue
+                _trows.append({"Fecha_dt": pd.Timestamp(_d), "Campo": _c, "Producto": _prod})
+            _treats_rs = pd.DataFrame(_trows)
+
+            _ttl_var = "todas las variedades" if var_sel == "(todas)" else var_sel
+            if _treats_rs.empty:
+                st.caption(
+                    f"🟣 Sin tratamientos fungicidas registrados para **{campo_sel} · {_ttl_var}** "
+                    f"en {year} — ninguna línea morada (posible testigo)."
+                )
+            else:
+                _nt = _treats_rs["Fecha_dt"].dt.normalize().nunique()
+                st.caption(
+                    f"🟣 **{_nt}** día(s) con tratamiento en **{campo_sel} · {_ttl_var}**. "
+                    "Pasa el ratón por cada línea morada para ver el producto."
+                )
+
+            for _emoji, _vcol, _dname in [
+                ("🍄", "Mills_valor", "Moteado"),
+                ("🍑", "Monilia_valor", "Monilia"),
+                ("🌫️", "Oidio_valor", "Oídio"),
+            ]:
+                st.markdown(f"**{_emoji} {_dname}**")
+                st.plotly_chart(
+                    _dec_disease_chart(_risk_rs, _vcol, _dname, _today_norm, _treats_rs, 250),
+                    use_container_width=True,
+                    config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False},
+                )
+            st.caption(
+                "Líneas horizontales de referencia: **100 = infección confirmada** (evento real), "
+                "50 moderado, 25 ligero. Líneas moradas verticales = tratamientos de ese "
+                "campo/variedad. El valor de cada día se apunta cuando el evento de mojada **termina**."
+            )
+
     with st.expander("⬆️ Subir plantilla rellenada (CSV)"):
         _up = st.file_uploader("CSV con columnas Año, Campo, Variedad + valoración",
                                type=["csv"], key="rs_upload")
@@ -18775,7 +18855,8 @@ def calibrate_leaf_wetness(history, sensor_min_minutes=30):
     return res, best
 
 
-def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, upper_temp=31.1):
+def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, upper_temp=31.1,
+                        window_start=None, window_end=None):
     """
     DataFrame diario con valores de riesgo para Moteado, Monilia, Oídio y DD Carpocapsa.
     Cubre los últimos `days_back` días reales + todos los días de predicción.
@@ -18785,16 +18866,25 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
     y su ratio frente al umbral de Mills, NO de la suma diaria de horas húmedas (que
     sobreestimaba y pintaba casi todos los días como "grave"). Cada evento se asigna
     al día en que TERMINA (cuando se completa la infección).
+
+    Ventana: por defecto va anclada al presente (últimos `days_back` días + previsión).
+    Si se pasan `window_start`/`window_end` (Timestamp/fecha), se construye en cambio
+    sobre ESE tramo histórico cerrado — útil para revisar una campaña pasada (p. ej.
+    brotación→cosecha de 2024) solo con datos reales.
     """
     today = pd.Timestamp.now().normalize()
-    start = today - pd.Timedelta(days=int(days_back))
+    _win = (window_start is not None) or (window_end is not None)
+    start = pd.Timestamp(window_start).normalize() if window_start is not None else today - pd.Timedelta(days=int(days_back))
+    # Fin (exclusivo) del tramo real: el día siguiente a window_end para incluirlo entero,
+    # o "hoy" en el modo normal anclado al presente.
+    _hist_end = (pd.Timestamp(window_end).normalize() + pd.Timedelta(days=1)) if window_end is not None else today
 
     # 1. Combinar histórico (real) + previsión (futuro) en un único horario.
     frames = []
     if history_df is not None and not history_df.empty:
         h = history_df.copy()
         h["fecha_hora"] = pd.to_datetime(h["fecha_hora"])
-        h = h[(h["fecha_hora"] >= start) & (h["fecha_hora"] < today)].copy()
+        h = h[(h["fecha_hora"] >= start) & (h["fecha_hora"] < _hist_end)].copy()
         if not h.empty:
             h["_es_pred"] = False
             frames.append(h)
@@ -18802,6 +18892,8 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
         f = forecast_df.copy()
         f["fecha_hora"] = pd.to_datetime(f["fecha_hora"])
         f = f[f["fecha_hora"] >= today].copy()
+        if _win:
+            f = f[f["fecha_hora"] < _hist_end]
         if not f.empty:
             # La previsión no tiene sensor de hoja: se estima. Modelo seleccionable.
             if "humectacion_hoja" not in f.columns:
@@ -19345,11 +19437,13 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
             bgcolor="rgba(255,255,255,0.6)",
         )
 
-    # Línea de hoy
-    fig.add_vline(
-        x=today,
-        line_color="rgba(255,140,0,0.9)", line_width=2, line_dash="solid",
-    )
+    # Línea de hoy (solo si cae dentro del rango mostrado: en una campaña pasada
+    # "hoy" queda fuera de la ventana y no debe estirar el eje ni pintarse).
+    if not dates or (min(dates) <= today <= max(dates)):
+        fig.add_vline(
+            x=today,
+            line_color="rgba(255,140,0,0.9)", line_width=2, line_dash="solid",
+        )
 
     # Tratamientos — líneas verticales HOVERABLES (muestran los campos tratados ese día)
     _ymax_d = max(160, max(values) * 1.1) if values else 160
