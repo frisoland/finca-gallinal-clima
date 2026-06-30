@@ -17714,6 +17714,7 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Tipo": "Sistémico curativo",
         "Plazo seguridad días": 7,
         "Persistencia días": 11,
+        "Ventana curativa días": 3,
         "FRAC": "G1",
         "Familia": "Triazol (DMI)",
         "Notas": (
@@ -17729,6 +17730,7 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Tipo": "Sistémico preventivo",
         "Plazo seguridad días": 7,
         "Persistencia días": 14,
+        "Ventana curativa días": 2,
         "FRAC": "C2+C3",
         "Familia": "SDHI + Estrobilurina",
         "Notas": (
@@ -17745,6 +17747,7 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Tipo": "Sistémico preventivo/curativo",
         "Plazo seguridad días": 14,
         "Persistencia días": 12,
+        "Ventana curativa días": 2,
         "FRAC": "C3",
         "Familia": "Estrobilurina (QoI)",
         "Notas": (
@@ -17761,6 +17764,7 @@ DEFAULT_FUNGICIDE_CATALOG = [
         "Tipo": "Sistémico curativo + preventivo",
         "Plazo seguridad días": 7,
         "Persistencia días": 14,
+        "Ventana curativa días": 5,
         "FRAC": "C2+G1",
         "Familia": "SDHI + Triazol",
         "Notas": (
@@ -17814,7 +17818,7 @@ ROTATION_ALTERNATIVES = [
 ]
 
 # Inicialización session_state del catálogo — versión 2 (fuerza reseteo si hay productos obsoletos)
-_CATALOG_VERSION = "v3_2026_persistencia"
+_CATALOG_VERSION = "v4_2026_curativa"
 _VALID_PRODUCTS_2026 = {"FOLICUR 25 WG", "SIGNUM", "FLINT 50 WG", "LUNA EXPERIENCE"}
 _needs_reset = (
     "fungicide_catalog_df" not in st.session_state
@@ -18482,6 +18486,23 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             except (TypeError, ValueError, KeyError):
                 pass
 
+    # Mapa de VENTANA CURATIVA por producto (días en que un fungicida aplicado DESPUÉS
+    # del evento aún puede frenar la infección, según etiqueta/notas: Folicur ~72h,
+    # Luna 96-120h, estróbilurinas/Signum poca). Mismo patrón que la persistencia.
+    _curative_map = {
+        str(d["Producto"]).strip(): float(d["Ventana curativa días"])
+        for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Ventana curativa días")
+    }
+    if isinstance(_fung_df, pd.DataFrame) and "Ventana curativa días" in _fung_df.columns:
+        for _, _fr in _fung_df.iterrows():
+            try:
+                _pp = str(_fr["Producto"]).strip()
+                _cv = float(_fr["Ventana curativa días"])
+                if _pp and _cv >= 0:
+                    _curative_map[_pp] = _cv
+            except (TypeError, ValueError, KeyError):
+                pass
+
     # Pre-process activities: solo fungicidas, con fecha válida
     acts_clean = pd.DataFrame()
     if not activities_df.empty and "Campos reconocidos" in activities_df.columns:
@@ -18519,10 +18540,12 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
     except Exception:
         _season_event_dates = []
 
-    def _evento_cubierto(ev_date, fung_dates, persist, curativa=4):
-        """Un evento está cubierto si hubo fungicida dentro de la persistencia ANTES
-        (preventivo) o dentro de la ventana curativa (4 días) DESPUÉS."""
-        for f in fung_dates:
+    def _evento_cubierto(ev_date, fung_passes):
+        """Un evento está cubierto si ALGÚN pase de fungicida lo tapa, usando la etiqueta
+        de ESE producto: dentro de SU persistencia si fue ANTES (preventivo), o dentro de
+        SU ventana curativa si fue DESPUÉS (rescate). `fung_passes` = lista de
+        (fecha_norm, persistencia_días, curativa_días) de cada aplicación del campo."""
+        for f, persist, curativa in fung_passes:
             if (f <= ev_date and (ev_date - f).days <= persist) or \
                (f >= ev_date and (f - ev_date).days <= curativa):
                 return True
@@ -18544,14 +18567,31 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         last_date       = None
         last_products   = []   # lista de todos los fungicidas de la última pasada
         last_product    = "Sin registro"   # representación legible para display
-        _field_fung_dates = []   # todas las fechas de fungicida del campo (campaña)
+        # Cada pase del campo (campaña) con SU persistencia y SU curativa según el
+        # producto aplicado ese día → para contar "Ev. sin cobertura" por etiqueta real.
+        _field_fung_passes = []   # lista de (fecha_norm, persistencia, curativa)
         if not acts_clean.empty:
             mask = acts_clean["Campos reconocidos"].fillna("").apply(
                 lambda x: _campo_exact_in_list(x, campo)
             )
             campo_acts_all = acts_clean[mask].sort_values("Fecha_dt", ascending=False)
-            _field_fung_dates = sorted({d.normalize() for d in campo_acts_all["Fecha_dt"]
-                                        if pd.notna(d) and d.year == today.year})
+            _cy_acts = campo_acts_all[
+                campo_acts_all["Fecha_dt"].notna() &
+                (campo_acts_all["Fecha_dt"].dt.year == today.year)
+            ]
+            for _fd, _grp in _cy_acts.groupby(_cy_acts["Fecha_dt"].dt.normalize()):
+                _pers_day, _cur_day = [], []
+                for _, _gr in _grp.iterrows():
+                    for _ck in _normalize_product_to_catalog(_gr.get("Producto", "")):
+                        if _ck in _persist_map:
+                            _pers_day.append(_persist_map[_ck])
+                        if _ck in _curative_map:
+                            _cur_day.append(_curative_map[_ck])
+                # Caldo mixto → manda el de mayor persistencia / mayor curativa. Si el
+                # producto no está catalogado, respaldo: persistencia global y curativa 4.
+                _p = max(_pers_day) if _pers_day else float(persistence_days)
+                _c = max(_cur_day) if _cur_day else 4.0
+                _field_fung_passes.append((_fd, _p, _c))
             if not campo_acts_all.empty:
                 last_date = campo_acts_all.iloc[0]["Fecha_dt"].normalize()
                 # Todos los productos fungicidas del mismo día = misma pasada
@@ -18620,7 +18660,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         # en este campo → el indicador que correlaciona con el daño visual de fin de año.
         eventos_sin_cobertura = sum(
             1 for _d in _season_event_dates
-            if not _evento_cubierto(_d, _field_fung_dates, eff_persistence)
+            if not _evento_cubierto(_d, _field_fung_passes)
         )
 
         # ── Previsión 3 días ──────────────────────────────────────────────────
