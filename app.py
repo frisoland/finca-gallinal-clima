@@ -15165,21 +15165,48 @@ def resultado_sanitario_tab():
                     "Pasa el ratón por cada línea morada para ver el producto."
                 )
 
+            # Fecha(s) de valoración visual de la tabla → línea(s) verde(s) de referencia.
+            _val_dates = []
+            _saved_rs = st.session_state.get("resultado_sanitario_df", pd.DataFrame())
+            if _saved_rs is not None and not _saved_rs.empty and "Fecha valoración" in _saved_rs.columns:
+                _vm = ((pd.to_numeric(_saved_rs.get("Año"), errors="coerce") == int(year)) &
+                       (_saved_rs.get("Campo").astype(str).str.strip() == campo_sel))
+                _vsub = _saved_rs[_vm]
+                if var_sel != "(todas)":
+                    _vsub = _vsub[_vsub["Variedad"].apply(lambda v: _norm_var(v) == _vn)]
+                for _, _vr in _vsub.iterrows():
+                    _vd = pd.to_datetime(_vr.get("Fecha valoración"), errors="coerce")
+                    if pd.notna(_vd):
+                        _val_dates.append(_vd.normalize())
+                _val_dates = sorted(set(_val_dates))
+
+            _rs_min, _rs_max = _risk_rs["Fecha"].min(), _risk_rs["Fecha"].max()
             for _emoji, _vcol, _dname in [
                 ("🍄", "Mills_valor", "Moteado"),
                 ("🍑", "Monilia_valor", "Monilia"),
                 ("🌫️", "Oidio_valor", "Oídio"),
             ]:
                 st.markdown(f"**{_emoji} {_dname}**")
+                _fig_rs = _dec_disease_chart(_risk_rs, _vcol, _dname, _today_norm, _treats_rs, 250)
+                for _vd in _val_dates:
+                    if _rs_min <= _vd <= _rs_max:
+                        _fig_rs.add_vline(
+                            x=_vd, line_color="rgba(27,107,53,0.9)", line_width=2, line_dash="dot",
+                            annotation_text="🩺 Valoración", annotation_position="top left",
+                            annotation_font=dict(size=10, color="rgba(27,107,53,0.9)"),
+                        )
                 st.plotly_chart(
-                    _dec_disease_chart(_risk_rs, _vcol, _dname, _today_norm, _treats_rs, 250),
-                    use_container_width=True,
+                    _fig_rs, use_container_width=True,
                     config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False},
                 )
+            _val_txt = (" Línea **verde punteada** = fecha de tu valoración visual."
+                        if _val_dates else
+                        " (Aún no has anotado la *Fecha valoración* en la tabla → sin línea verde.)")
             st.caption(
                 "Líneas horizontales de referencia: **100 = infección confirmada** (evento real), "
                 "50 moderado, 25 ligero. Líneas moradas verticales = tratamientos de ese "
-                "campo/variedad. El valor de cada día se apunta cuando el evento de mojada **termina**."
+                "campo/variedad. El valor de cada día se apunta cuando el evento de mojada "
+                "**termina**." + _val_txt
             )
 
     with st.expander("⬆️ Subir plantilla rellenada (CSV)"):
