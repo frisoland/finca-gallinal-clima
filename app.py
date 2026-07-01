@@ -15320,6 +15320,10 @@ MEASURED_SOIL_PROFILES = {
     # MO 4.26 %. Más arcilla que los otros → más retención → TAW ~93 mm/80cm.
     "Piedrona Rincón": {"Textura": "Franco", "CC (%)": 18.1, "PMP (%)": 9.5,
                         "Da (g/cm³)": 1.36, "Prof. raíz (cm)": 80},
+    # Sector 3 (AGQ, feb-2024, "Gallinal 3"): Arena 68 / Limo 21 / Arcilla 11 %, MO 2.29 %
+    # (la más baja) → TAW ~72 mm/80cm.
+    "Sector 3": {"Textura": "Franco-arenoso", "CC (%)": 11.8, "PMP (%)": 5.7,
+                 "Da (g/cm³)": 1.48, "Prof. raíz (cm)": 80},
 }
 
 
