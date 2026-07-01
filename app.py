@@ -19243,22 +19243,34 @@ def forecast_reliability(history_df, archive_df=None):
         actual["target_date"] = pd.to_datetime(actual["Fecha"]).dt.strftime("%Y-%m-%d")
         a = actual.drop_duplicates("target_date").set_index("target_date")
         THR, RAIN = 100.0, 0.2  # lluvia: cualquier precipitación medible (≥0,2 mm/día)
+        # Banda "casi" (jul-2026): en un día de evento real, una previsión que llega al
+        # ≥90% del umbral (≥90 cuando el real ≥100) cuenta como AVISADA — el modelo sí
+        # marcó riesgo alto; el corte exacto en 100 es demasiado brusco con muestras
+        # pequeñas (p. ej. previsión 97 vs real 100). Solo afecta a ESTA métrica de
+        # fiabilidad, NO al umbral 100 que dispara tratamientos. La lluvia no lleva banda.
+        NEAR = 0.90
         recs = []
         for _, r in archive_df.iterrows():
             td = str(r.get("target_date"))
             if td not in a.index:
                 continue
+            _mp = float(r.get("pred_mills", 0));   _mr = float(a.loc[td, "Mills_valor"])
+            _op = float(r.get("pred_monilia", 0)); _omr = float(a.loc[td, "Monilia_valor"])
+            _dp = float(r.get("pred_oidio", 0));   _dr = float(a.loc[td, "Oidio_valor"])
+            _lp = float(r.get("pred_rain", 0));    _lr = float(a.loc[td, "Lluvia"])
             recs.append({
                 "target_date": td,
                 "horizon": int(r.get("horizon", 0)),
-                "moteado_p": float(r.get("pred_mills", 0)) >= THR,
-                "moteado_r": float(a.loc[td, "Mills_valor"]) >= THR,
-                "monilia_p": float(r.get("pred_monilia", 0)) >= THR,
-                "monilia_r": float(a.loc[td, "Monilia_valor"]) >= THR,
-                "oidio_p": float(r.get("pred_oidio", 0)) >= THR,
-                "oidio_r": float(a.loc[td, "Oidio_valor"]) >= THR,
-                "lluvia_p": float(r.get("pred_rain", 0)) >= RAIN,
-                "lluvia_r": float(a.loc[td, "Lluvia"]) >= RAIN,
+                # Booleanas (corte estricto ≥umbral) — usadas por la tabla de antelación.
+                "moteado_p": _mp >= THR,  "moteado_r": _mr >= THR,
+                "monilia_p": _op >= THR,  "monilia_r": _omr >= THR,
+                "oidio_p":   _dp >= THR,  "oidio_r":   _dr >= THR,
+                "lluvia_p":  _lp >= RAIN, "lluvia_r":  _lr >= RAIN,
+                # Numéricas — el resumen aplica sobre ellas la banda "casi".
+                "moteado_pv": _mp, "moteado_rv": _mr,
+                "monilia_pv": _op, "monilia_rv": _omr,
+                "oidio_pv":   _dp, "oidio_rv":   _dr,
+                "lluvia_pv":  _lp, "lluvia_rv":  _lr,
             })
         comp = pd.DataFrame(recs)
         if comp.empty:
@@ -19269,18 +19281,21 @@ def forecast_reliability(history_df, archive_df=None):
         # días, no por comparaciones. (La tabla de antelación de abajo sí usa todas.)
         comp_day = comp.sort_values("horizon").drop_duplicates("target_date", keep="first")
         out_rows = []
-        for label, pc, rc in [("🍄 Moteado", "moteado_p", "moteado_r"),
-                              ("🟤 Monilia", "monilia_p", "monilia_r"),
-                              ("⚪ Oídio", "oidio_p", "oidio_r"),
-                              ("🌧️ Lluvia", "lluvia_p", "lluvia_r")]:
-            _p = comp_day[pc]
-            _r = comp_day[rc]
-            aciertos = int((_p == _r).sum())              # días que la app predijo BIEN
-            tp = int((_p & _r).sum())                     # evento real que SÍ avisó (pillado)
-            fp = int((_p & ~_r).sum())                    # avisó y NO pasó (falsa alarma)
-            fn = int((~_p & _r).sum())                    # NO avisó y SÍ pasó (se le escapó)
+        for label, pv, rv, thr, near in [
+                ("🍄 Moteado", "moteado_pv", "moteado_rv", THR,  NEAR),
+                ("🟤 Monilia", "monilia_pv", "monilia_rv", THR,  NEAR),
+                ("⚪ Oídio",   "oidio_pv",   "oidio_rv",   THR,  NEAR),
+                ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, 1.0)]:
+            _p_full = comp_day[pv] >= thr             # aviso PLENO (≥umbral) → falsas alarmas
+            _p_warn = comp_day[pv] >= thr * near      # aviso incl. "casi" (≥90% del umbral)
+            _r = comp_day[rv] >= thr                  # evento real
             reales = int(_r.sum())
-            avisos = int(_p.sum())
+            tp = int((_p_warn & _r).sum())            # evento real que SÍ avisó (incl. casi)
+            fp = int((_p_full & ~_r).sum())           # aviso PLENO que NO pasó (falsa alarma)
+            fn = int((~_p_warn & _r).sum())           # evento real que ni casi avisó (escapó)
+            avisos = int(_p_full.sum())
+            # Día correcto: evento→avisado(≥90%) · sin evento→sin aviso pleno.
+            aciertos = int(((_r & _p_warn) | (~_r & ~_p_full)).sum())
             # Fiabilidad basada en LO QUE IMPORTA: ¿pilla los eventos de infección reales?
             # Un "acierto" global alto no vale si se le escapan eventos (premia días tranquilos).
             if reales == 0:
@@ -20574,6 +20589,10 @@ def render_decisiones_panel():
                 "pero seguro: tratas de más).\n"
                 "- **Se le escapó (no avisó, sí pasó)** — **no** avisó y **sí** ocurrió (🔴 lo "
                 "peligroso: te pilla sin proteger).\n\n"
+                "ℹ️ **Casi‑avisos:** en un día de evento real, una previsión que llega al **≥90 % del "
+                "umbral** (≥90 cuando el real ≥100) cuenta como **avisado** — el modelo sí marcó "
+                "riesgo alto aunque no cruzara el 100 exacto. Esto solo afecta a esta métrica, **no** "
+                "al umbral 100 que decide los tratamientos. (Las *falsas alarmas* sí exigen aviso pleno ≥100.)\n\n"
                 "**Para la lluvia:** «avisó» = predijo lluvia; «falsa alarma» = predijo y no llovió; "
                 "«se le escapó» = no predijo y llovió. Cuenta como lluvia ≥ 0,2 mm.\n\n"
                 "**Fiabilidad** (depende de si pilla los eventos, no del acierto global): "
