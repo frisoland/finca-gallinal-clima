@@ -20627,7 +20627,9 @@ def render_decisiones_panel():
                         "grave = 100; «—» = sin dato).")
             _dcols = list(_daily.columns)
             _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
+            _AMB2 = "background-color: rgba(240,160,0,0.22); color:#9a6a00; font-weight:700"
             _GRN2 = "background-color: rgba(0,150,60,0.16); color:#0a7a35; font-weight:700"
+            _THR2, _NEAR2 = 100.0, 90.0   # coherente con la banda "casi" del resumen (≥90%)
 
             def _num(v):
                 try:
@@ -20640,8 +20642,13 @@ def render_decisiones_panel():
                                      ("Monilia prev.", "Monilia real")]:
                     rv = _num(r.get(realc))
                     pv = _num(r.get(prevc))
-                    if rv is not None and rv >= 100:   # día de EVENTO real
-                        css = _GRN2 if (pv is not None and pv >= 100) else _RED2
+                    if rv is not None and rv >= _THR2:   # día de EVENTO real
+                        if pv is not None and pv >= _THR2:
+                            css = _GRN2                  # aviso pleno (≥100)
+                        elif pv is not None and pv >= _NEAR2:
+                            css = _AMB2                  # casi-aviso (90–100 → cuenta como avisado)
+                        else:
+                            css = _RED2                  # se le escapó (<90)
                         styles[_dcols.index(realc)] = css
                         styles[_dcols.index(prevc)] = css
                 return styles
@@ -20653,10 +20660,11 @@ def render_decisiones_panel():
             st.caption(
                 "🔮 = día futuro: solo hay previsión, el real está pendiente. · 🔄 + valor con "
                 "**asterisco (*)** = **infección EN CURSO**: la hoja sigue mojada y el valor es "
-                "**provisional** (sube hasta que se seca y el evento cierra). · 🟢 = día con "
-                "infección real (≥100) que la previsión **sí** anunció · 🔴 = día con infección real "
-                "que la previsión **no** vio (se le escapó). Si «Moteado prev.» pone 150 y «real» 23, "
-                "la previsión exageró ese día."
+                "**provisional** (sube hasta que se seca y el evento cierra). En un día de "
+                "**infección real (≥100)**: 🟢 = la previsión lo **anunció pleno** (≥100) · "
+                "🟡 = **casi-aviso** (llegó al 90–100 % del umbral → cuenta como avisado, pero se "
+                "quedó justo por debajo) · 🔴 = **se le escapó** (previsión <90). Si «Moteado prev.» "
+                "pone 150 y «real» 23, la previsión exageró ese día."
             )
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
