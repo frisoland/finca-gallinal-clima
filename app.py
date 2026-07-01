@@ -8420,6 +8420,211 @@ def render_health_recommendation(period_df, soil_type, hoja_threshold, start_ts=
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# RIEGO · Balance hídrico FAO-56 (ETc = ET0 × Kc − lluvia efectiva)
+# ══════════════════════════════════════════════════════════════════════════════
+# ET0 por Hargreaves-Samani (temperatura + radiación tope de atmósfera Ra por latitud),
+# el método robusto de FAO-56 cuando no hay viento fiable. Kc del manzano por fase
+# (suelo desnudo / laboreo, Tabla 12 FAO-56). Balance de reserva de suelo por tipo de
+# suelo. Refs: FAO-56 (Allen et al. 1998); Hargreaves & Samani 1985.
+GALLINAL_LAT_DEG = 43.4   # Asturias
+
+# Kc del MANZANO, suelo desnudo/laboreo (FAO-56 Tabla 12, "sin cubierta"). Anclajes
+# (mes, día, Kc) interpolados por día del año → curva en campana:
+#   reposo 0.40 · brotación 0.50 · fin floración 0.80 · engorde (verano) 0.95 ·
+#   maduración 0.75 · caída de hoja 0.50. (Con hierba en calles subirían ~+0.2.)
+APPLE_KC_ANCHORS = [
+    (1, 1, 0.40), (4, 1, 0.50), (5, 21, 0.80), (6, 16, 0.95),
+    (8, 31, 0.95), (10, 20, 0.75), (11, 15, 0.50), (12, 31, 0.40),
+]
+# Agua útil del suelo (capacidad de campo − punto de marchitez), mm por m de raíz.
+SOIL_AWC_MM_PER_M = {
+    "Arenoso": 90, "Franco-arenoso": 120, "Franco": 160,
+    "Franco-arcilloso": 180, "Arcilloso": 160,
+}
+APPLE_ROOT_DEPTH_M = 1.0     # manzano adulto, prof. radicular efectiva (FAO-56 Zr)
+APPLE_DEPLETION_P = 0.50     # fracción de agotamiento sin estrés (FAO-56 p)
+
+
+def _extraterrestrial_ra_mj(lat_deg, doy):
+    """Radiación solar tope de atmósfera Ra (MJ/m²/día) por latitud y día del año
+    (FAO-56 ec. 21-24). Base para estimar ET0 sin piranómetro."""
+    import math
+    phi = math.radians(lat_deg)
+    dr = 1 + 0.033 * math.cos(2 * math.pi / 365 * doy)
+    dec = 0.409 * math.sin(2 * math.pi / 365 * doy - 1.39)
+    x = max(-1.0, min(1.0, -math.tan(phi) * math.tan(dec)))
+    ws = math.acos(x)
+    ra = (24 * 60 / math.pi) * 0.0820 * dr * (
+        ws * math.sin(phi) * math.sin(dec) + math.cos(phi) * math.cos(dec) * math.sin(ws))
+    return max(0.0, ra)
+
+
+def hargreaves_et0(tmin, tmax, tmean, doy, lat_deg=GALLINAL_LAT_DEG):
+    """ET0 de referencia (mm/día) por Hargreaves-Samani 1985:
+    ET0 = 0.0023 · Ra_mm · (Tmed+17.8) · √(Tmáx−Tmín)."""
+    if any(pd.isna(x) for x in (tmin, tmax, tmean)):
+        return np.nan
+    td = max(0.0, float(tmax) - float(tmin))
+    ra_mm = 0.408 * _extraterrestrial_ra_mj(lat_deg, int(doy))
+    return max(0.0, 0.0023 * ra_mm * (float(tmean) + 17.8) * (td ** 0.5))
+
+
+def apple_kc(ts):
+    """Kc del manzano para una fecha (interpola los anclajes por día del año)."""
+    ts = pd.Timestamp(ts)
+    xs = [pd.Timestamp(ts.year, m, d).dayofyear for (m, d, _k) in APPLE_KC_ANCHORS]
+    ys = [k for (_m, _d, k) in APPLE_KC_ANCHORS]
+    return float(np.interp(ts.dayofyear, xs, ys))
+
+
+def soil_water_balance(history_df, soil_type, upto_ts, lat_deg=GALLINAL_LAT_DEG,
+                       root_depth_m=APPLE_ROOT_DEPTH_M, p=APPLE_DEPLETION_P, anchor_md=(4, 1)):
+    """Balance hídrico diario FAO-56 (Kc simple) desde el 1-abr (suelo a capacidad de
+    campo tras las lluvias de invierno) hasta `upto_ts`. Devuelve (df diario, meta).
+    Agotamiento Dr acotado [0, TAW]; el exceso de lluvia drena."""
+    if history_df is None or history_df.empty:
+        return pd.DataFrame(), {}
+    h = history_df.copy()
+    h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+    h = h.dropna(subset=["fecha_hora"])
+    upto = pd.Timestamp(upto_ts).normalize()
+    start = pd.Timestamp(upto.year, anchor_md[0], anchor_md[1])
+    if start > upto:                       # periodo antes de abril → arranca en enero
+        start = pd.Timestamp(upto.year, 1, 1)
+    hh = h[(h["fecha_hora"] >= start) &
+           (h["fecha_hora"] <= upto + pd.Timedelta(hours=23, minutes=59))].copy()
+    if hh.empty:
+        return pd.DataFrame(), {}
+    for _c in ("temp_min", "temp_max", "temp_media", "lluvia_mm"):
+        if _c not in hh.columns:
+            hh[_c] = np.nan
+    hh["_d"] = hh["fecha_hora"].dt.date
+    g = hh.groupby("_d").agg(
+        tmin=("temp_min", "min"), tmax=("temp_max", "max"),
+        tmean=("temp_media", "mean"), rain=("lluvia_mm", "sum")).reset_index()
+    g["tmin"] = g["tmin"].fillna(g["tmean"])
+    g["tmax"] = g["tmax"].fillna(g["tmean"])
+
+    awc = SOIL_AWC_MM_PER_M.get(soil_type, 150)
+    taw = awc * root_depth_m               # reserva útil total (mm)
+    raw = p * taw                          # reserva fácilmente disponible (mm)
+    Dr = 0.0                               # agotamiento inicial (suelo a capacidad campo)
+    rows = []
+    for _, r in g.iterrows():
+        ts = pd.Timestamp(r["_d"])
+        et0 = hargreaves_et0(r["tmin"], r["tmax"], r["tmean"], ts.dayofyear, lat_deg)
+        kc = apple_kc(ts)
+        etc = (float(et0) * kc) if pd.notna(et0) else 0.0
+        rain = float(r["rain"] or 0.0)
+        Dr = Dr + etc - rain
+        if Dr < 0:
+            Dr = 0.0                        # exceso de lluvia drena
+        if Dr > taw:
+            Dr = taw                        # no se seca más que la reserva útil
+        rows.append({
+            "Fecha": ts,
+            "ET0": round(float(et0), 2) if pd.notna(et0) else None,
+            "Kc": round(kc, 2),
+            "ETc": round(etc, 2),
+            "Lluvia": round(rain, 1),
+            "Agotam. mm": round(Dr, 1),
+            "Reserva %": int(round(100 * (taw - Dr) / taw)) if taw else None,
+        })
+    df = pd.DataFrame(rows)
+    meta = {
+        "AWC": awc, "TAW": taw, "RAW": raw, "root_depth": root_depth_m, "p": p,
+        "Dr": Dr, "reserva_pct": (100 * (taw - Dr) / taw) if taw else np.nan,
+        "riego_mm": (round(Dr) if Dr >= raw else 0),
+    }
+    return df, meta
+
+
+def render_water_balance(history, soil_type, start_ts, end_ts):
+    """Riego por balance hídrico FAO-56: ET0 (Hargreaves) × Kc(manzano) − lluvia, con
+    reserva de suelo. Da mm a reponer (goteo) o solo el déficit/estrés (secano)."""
+    bal, meta = soil_water_balance(history, soil_type, end_ts)
+    if bal is None or bal.empty or not meta:
+        st.info("No hay datos de temperatura/lluvia suficientes para el balance hídrico.")
+        return
+
+    # Fase y Kc de hoy
+    _end = pd.Timestamp(end_ts).normalize()
+    _phase_lbl = "—"
+    for (_pid, _lbl, _sm, _sd, _em, _ed, _w) in _GALLINAL_PHASES:
+        if _pid == "frio":
+            continue
+        _s, _e = _phase_window(_sm, _sd, _em, _ed, _end.year)
+        if _s <= _end <= _e:
+            _phase_lbl = _lbl
+            break
+    kc_now = apple_kc(_end)
+
+    # Slice del periodo seleccionado (para los acumulados que ve el usuario)
+    _s0 = pd.Timestamp(start_ts).normalize()
+    per = bal[(bal["Fecha"] >= _s0) & (bal["Fecha"] <= _end)]
+    if per.empty:
+        per = bal.tail(14)
+    et0_sum = float(pd.to_numeric(per["ET0"], errors="coerce").sum())
+    etc_sum = float(pd.to_numeric(per["ETc"], errors="coerce").sum())
+    rain_sum = float(pd.to_numeric(per["Lluvia"], errors="coerce").sum())
+    deficit = etc_sum - rain_sum
+
+    Dr, raw, taw = meta["Dr"], meta["RAW"], meta["TAW"]
+    reserva = meta["reserva_pct"]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("ETc periodo", f"{etc_sum:.0f} mm", help="Agua que gastó el manzano (ET0×Kc) en el periodo.")
+    c2.metric("Lluvia periodo", f"{rain_sum:.0f} mm")
+    c3.metric("Déficit (ETc−lluvia)", f"{deficit:+.0f} mm",
+              help="Positivo = el árbol gastó más de lo que llovió (tira de la reserva del suelo).")
+    c4.metric("Reserva de suelo", f"{reserva:.0f} %",
+              help=f"Agua útil disponible en la zona radicular. Umbral de riego ≈ {int(round((1-meta['p'])*100))} %.")
+
+    # Recomendación por estado de la reserva
+    if Dr >= raw:
+        st.error(
+            f"💧 **Regar** — la reserva bajó al **{reserva:.0f} %** (umbral "
+            f"{int(round((1-meta['p'])*100))} %). En parcelas con **goteo**, reponer "
+            f"**~{meta['riego_mm']:.0f} mm** para volver a capacidad de campo. En **secano**, "
+            f"el árbol está entrando en **estrés hídrico** (riesgo de perder calibre en engorde)."
+        )
+    elif Dr >= 0.75 * raw:
+        # días hasta el umbral con el ritmo de ETc reciente
+        _etc_recent = pd.to_numeric(bal.tail(7)["ETc"], errors="coerce").mean()
+        _dias = int((raw - Dr) / _etc_recent) if _etc_recent and _etc_recent > 0 else None
+        _txt = f" (~{_dias} días si sigue seco)" if _dias is not None else ""
+        st.warning(
+            f"🟠 **Cerca del umbral** — reserva al **{reserva:.0f} %**{_txt}. "
+            "Vigilar; si no llueve, preparar riego en los próximos días."
+        )
+    else:
+        st.success(
+            f"🟢 **Sin necesidad de riego** — reserva de suelo al **{reserva:.0f} %**. "
+            "El manzano tiene agua disponible suficiente."
+        )
+
+    st.caption(
+        f"**Fase:** {_phase_lbl} · **Kc hoy** {kc_now:.2f} · Suelo **{soil_type}** "
+        f"(agua útil {meta['AWC']:.0f} mm/m · raíz {meta['root_depth']:.1f} m → reserva "
+        f"{taw:.0f} mm). Balance desde el 1-abr (suelo lleno tras el invierno)."
+    )
+
+    with st.expander("📈 Detalle diario del balance", expanded=False):
+        _show = per.copy()
+        _show["Fecha"] = pd.to_datetime(_show["Fecha"]).dt.strftime("%d/%m")
+        st.dataframe(_show, use_container_width=True, hide_index=True)
+    st.caption(
+        "**Método:** FAO-56. **ETc = ET0 × Kc**; ET0 por **Hargreaves-Samani** "
+        "(temperatura + radiación tope de atmósfera por latitud). **Kc del manzano** por "
+        "fase (suelo desnudo/laboreo, Tabla 12 FAO-56). El **agotamiento** de la reserva "
+        "sube con ETc y baja con la lluvia; se avisa de regar cuando cae por debajo del "
+        f"{int(round((1-meta['p'])*100))} % (fracción p={meta['p']:.2f}). Kc orientativo "
+        "(tabla FAO, calibrable con tu experiencia). En Asturias, lo normal es reserva alta "
+        "casi todo el año: el valor está en cazar las **rachas secas de verano** (engorde)."
+    )
+
+
 def render_irrigation_recommendation(period_df, soil_type, hoja_threshold, start_ts=None, end_ts=None):
     st.subheader("Recomendación de riego orientativa")
 
@@ -10659,24 +10864,29 @@ def health_tab(history, soil_type, hoja_threshold):
 
 
 def irrigation_tab(history, soil_type, hoja_threshold):
-    st.subheader("Riego y demanda evaporativa")
+    st.subheader("💧 Riego · Balance hídrico (FAO-56)")
 
-    with st.expander("Cómo interpretar la recomendación de riego", expanded=False):
+    with st.expander("Cómo funciona el balance de riego", expanded=False):
         st.markdown(
             """
-            **Índice evaporativo**  
-            Es una escala orientativa que resume la demanda de agua del ambiente. Tiene en cuenta temperatura, humedad, radiación y, cuando está disponible, viento.
+            La app calcula el **balance hídrico del suelo** con el método estándar **FAO-56**:
 
-            **Tipo de suelo**  
-            Un suelo arenoso o franco-arenoso suele perder agua antes y tiene menor reserva útil. Un suelo arcilloso o franco-arcilloso retiene más agua, pero también puede tener problemas si se riega en exceso.
+            - **ETc = ET0 × Kc** = agua que gasta el manzano cada día.
+              - **ET0** (demanda de la atmósfera) se estima por **Hargreaves-Samani** con tu
+                temperatura y la radiación teórica según la latitud de Gallinal.
+              - **Kc** = coeficiente del manzano, que **cambia con la fase** (más bajo en
+                brotación, máximo en verano/engorde, baja en maduración).
+            - **Reserva de suelo**: el suelo guarda un "depósito" de agua útil (según su textura
+              y la profundidad de raíz). Cada día la ETc **vacía** ese depósito y la lluvia lo
+              **rellena**. Cuando baja de ~50 %, el árbol empieza a pasar sed.
 
-            **Recomendación de riego**  
-            La app cruza lluvia, demanda evaporativa, tipo de suelo y fase fenológica. La recomendación es una ayuda para decidir si conviene observar, comprobar humedad real o valorar riego.
+            **Qué te dice:** en parcelas con **goteo**, los **mm a reponer**; en **secano**,
+            cuándo el árbol entra en **estrés** (clave en el engorde del fruto de verano).
             """
         )
         st.caption(
-            "Base técnica: programación de riego por balance hídrico, evapotranspiración, lluvia, suelo y estado del cultivo. "
-            "Siempre conviene contrastar con humedad real del suelo."
+            "Kc de tabla FAO-56 (manzano, suelo desnudo/laboreo) — orientativo y calibrable. "
+            "Contrastar siempre con humedad real del suelo."
         )
 
     if history.empty:
@@ -10691,24 +10901,17 @@ def irrigation_tab(history, soil_type, hoja_threshold):
         st.warning("No hay datos en el periodo seleccionado.")
         return
 
-    cols = [
-        "Lluvia total mm", "Lluvia efectiva estimada mm",
-        "Radiación acumulada estimada MJ/m²", "Radiación acumulada estimada kWh/m²",
-        "Índice evaporativo medio", "Índice evaporativo ajustado suelo",
-        "Horas demanda evaporativa alta", "Orientación riego"
-    ]
-    st.dataframe(global_summary[[c for c in cols if c in global_summary.columns]], use_container_width=True)
-
-    st.divider()
-    render_irrigation_recommendation(
-        period_df,
+    render_water_balance(
+        history,
         soil_type,
-        hoja_threshold,
         start_ts=period_df["fecha_hora"].min(),
         end_ts=period_df["fecha_hora"].max(),
     )
 
-    st.info("Este módulo sigue siendo orientativo. El siguiente salto sería integrar humedad real del suelo por parcela.")
+    st.caption(
+        "Próximo salto: humedad real del suelo por parcela (sonda) para calibrar el balance, "
+        "y traducir los mm a **tiempo de riego** según el caudal de tu goteo."
+    )
 
 
 
