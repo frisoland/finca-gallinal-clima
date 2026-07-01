@@ -16456,9 +16456,20 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
             pm = _phase_metrics(history, s, e, tcol)
             rain[pid] = pm["rain_mm"] if (pm and pd.notna(pm.get("rain_mm"))) else np.nan
             sl = history[(history["fecha_hora"] >= s) & (history["fecha_hora"] <= e)]
-            ev = leaf_event_metrics(sl) if not sl.empty else {}
-            mon[pid] = int(ev.get("Eventos monilia medio/alto", 0))
-            mot[pid] = int(ev.get("Eventos moteado medio/alto", 0))
+            # Eventos CONFIRMADOS (ratio ≥ 1.0 = infección completada = valor 100), MISMO
+            # criterio que "Sanidad → Analizar todos los años" y que el resto de la app.
+            # (Antes contaba "medio/alto" ≥0.75, que metía ruido de eventos no confirmados.)
+            _mo = _mn = 0
+            if not sl.empty:
+                try:
+                    _evs = detect_leaf_wetness_events(sl)
+                except Exception:
+                    _evs = pd.DataFrame()
+                if _evs is not None and not _evs.empty:
+                    _mo = int((pd.to_numeric(_evs.get("Ratio moteado"), errors="coerce") >= 1.0).sum())
+                    _mn = int((pd.to_numeric(_evs.get("Ratio monilia"), errors="coerce") >= 1.0).sum())
+            mon[pid] = _mn
+            mot[pid] = _mo
 
         s, e = _win("floracion")
         polscore, polqual = _ficha_pollination(history, s, e)
@@ -16498,7 +16509,7 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
             + (f" (score {polscore:.0f})" if pd.notna(polscore) else "")
             + f". Lluvia brotación/floración/cuajado: {mm(rain['brotacion'])}/"
             f"{mm(rain['floracion'])}/{mm(rain['cuajado'])} mm. "
-            f"Eventos sanitarios medio/alto — monilia {mon['brotacion']+mon['floracion']+mon['cuajado']}, "
+            f"Eventos sanitarios confirmados — monilia {mon['brotacion']+mon['floracion']+mon['cuajado']}, "
             f"moteado {mot['brotacion']+mot['floracion']+mot['cuajado']} "
             f"(brotación·floración·cuajado: monilia {mon['brotacion']}·{mon['floracion']}·{mon['cuajado']}, "
             f"moteado {mot['brotacion']}·{mot['floracion']}·{mot['cuajado']})."
@@ -16642,7 +16653,9 @@ def gallinal_tab(history):
             "**req.** = requerimiento de la variedad, **obt.** = obtenido esa campaña (frío de toda "
             "la campaña; calor desde la salida de reposo **hasta el inicio del cuajado**) · "
             "**Poliniz.** = score 0–100 y calidad en la ventana de floración · "
-            "**(b·f·c)** = eventos de riesgo medio/alto en brotación · floración · cuajado. "
+            "**(b·f·c)** = eventos de infección **confirmados** (ratio ≥ 1.0 = valor 100, "
+            "mismo criterio que *Sanidad → todos los años* y el resto de la app) en "
+            "brotación · floración · cuajado. "
             "Marcas req.: **†** aproximado (Verdialona, Gallinal) · **\\*** sin dato → máx. conocido. "
             "Ventanas de fase: **✏️** junto al año = usa **tu fenología registrada** (item "
             "Fenología) para ese año·campo·variedad — también para el fin del conteo de GDH "
