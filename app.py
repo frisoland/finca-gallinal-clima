@@ -15312,6 +15312,10 @@ MEASURED_SOIL_PROFILES = {
     # Huertona (AGQ, feb-2024): Arena 76 / Limo 18 / Arcilla 6 %, MO 3.5 % → TAW ~66 mm/80cm.
     "Huertona": {"Textura": "Franco-arenoso", "CC (%)": 10.9, "PMP (%)": 4.9,
                  "Da (g/cm³)": 1.37, "Prof. raíz (cm)": 80},
+    # GY (AGQ, feb-2024, "Gallinal 1"): Arena 75 / Limo 19 / Arcilla 6 %, MO 6.03 % (alta)
+    # → más retención, Da baja → TAW ~79 mm/80cm.
+    "GY": {"Textura": "Franco-arenoso", "CC (%)": 16.3, "PMP (%)": 7.9,
+           "Da (g/cm³)": 1.19, "Prof. raíz (cm)": 80},
 }
 
 
