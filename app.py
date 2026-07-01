@@ -8470,6 +8470,46 @@ def hargreaves_et0(tmin, tmax, tmean, doy, lat_deg=GALLINAL_LAT_DEG):
     return max(0.0, 0.0023 * ra_mm * (float(tmean) + 17.8) * (td ** 0.5))
 
 
+GALLINAL_ELEV_M = 150.0   # altitud aprox. de la finca (afecta poco: presión atmosférica)
+
+
+def penman_monteith_et0(tmin, tmax, tmean, rh_mean, rs_mj, wind_kmh,
+                        doy, lat_deg=GALLINAL_LAT_DEG, elevation_m=GALLINAL_ELEV_M):
+    """ET0 de referencia (mm/día) por FAO-56 **Penman-Monteith** completa, con radiación
+    solar y viento MEDIDOS (más precisa que Hargreaves en días de viento seco). Devuelve
+    NaN si falta radiación o viento → el llamador cae a Hargreaves. Ra se calcula por
+    fecha (mejor que el Rso constante de una hoja de cálculo). Viento en km/h → m/s a 2 m."""
+    import math
+    if any(pd.isna(x) for x in (tmin, tmax, tmean, rh_mean, rs_mj, wind_kmh)):
+        return np.nan
+    tmin, tmax, tmean = float(tmin), float(tmax), float(tmean)
+    rh, rs = float(rh_mean), float(rs_mj)
+    if rs <= 0:
+        return np.nan
+    u2 = max(0.0, float(wind_kmh) / 3.6 * 0.748)     # km/h → m/s, ajuste a 2 m (sensor ~10 m)
+
+    def _es(t):
+        return 0.6108 * math.exp(17.27 * t / (t + 237.3))
+
+    es = (_es(tmax) + _es(tmin)) / 2.0
+    ea = es * rh / 100.0
+    delta = 4098 * _es(tmean) / ((tmean + 237.3) ** 2)
+    P = 101.3 * ((293 - 0.0065 * elevation_m) / 293) ** 5.26
+    gamma = 0.000665 * P
+    ra = _extraterrestrial_ra_mj(lat_deg, int(doy))
+    rso = (0.75 + 2e-5 * elevation_m) * ra
+    rns = 0.77 * rs                                   # neta onda corta (albedo 0.23)
+    rnl = 0.0
+    if rso > 0:
+        rnl = (4.903e-9 * (((tmax + 273.16) ** 4 + (tmin + 273.16) ** 4) / 2.0)
+               * (0.34 - 0.14 * math.sqrt(max(ea, 0.0)))
+               * (1.35 * min(rs / rso, 1.0) - 0.35))
+    rn = rns - rnl
+    et0 = ((0.408 * delta * rn + gamma * (900 / (tmean + 273)) * u2 * (es - ea))
+           / (delta + gamma * (1 + 0.34 * u2)))
+    return max(0.0, et0)
+
+
 def apple_kc(ts):
     """Kc del manzano para una fecha (interpola los anclajes por día del año)."""
     ts = pd.Timestamp(ts)
@@ -8478,78 +8518,103 @@ def apple_kc(ts):
     return float(np.interp(ts.dayofyear, xs, ys))
 
 
-def soil_water_balance(history_df, soil_type, upto_ts, lat_deg=GALLINAL_LAT_DEG,
-                       root_depth_m=APPLE_ROOT_DEPTH_M, p=APPLE_DEPLETION_P, anchor_md=(4, 1)):
-    """Balance hídrico diario FAO-56 (Kc simple) desde el 1-abr (suelo a capacidad de
-    campo tras las lluvias de invierno) hasta `upto_ts`. Devuelve (df diario, meta).
-    Agotamiento Dr acotado [0, TAW]; el exceso de lluvia drena."""
+def daily_et_frame(history_df, upto_ts, lat_deg=GALLINAL_LAT_DEG, anchor_md=(4, 1)):
+    """Serie DIARIA de clima + ET0/ETc del manzano (COMPARTIDA por toda la finca — un solo
+    sensor), desde el 1-abr hasta `upto_ts`. ET0 por **Penman-Monteith** (radiación+viento
+    medidos) y, si faltan, **Hargreaves** de respaldo. Devuelve (df, método_predominante)."""
     if history_df is None or history_df.empty:
-        return pd.DataFrame(), {}
+        return pd.DataFrame(), "—"
     h = history_df.copy()
     h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
     h = h.dropna(subset=["fecha_hora"])
     upto = pd.Timestamp(upto_ts).normalize()
     start = pd.Timestamp(upto.year, anchor_md[0], anchor_md[1])
-    if start > upto:                       # periodo antes de abril → arranca en enero
+    if start > upto:
         start = pd.Timestamp(upto.year, 1, 1)
     hh = h[(h["fecha_hora"] >= start) &
            (h["fecha_hora"] <= upto + pd.Timedelta(hours=23, minutes=59))].copy()
     if hh.empty:
-        return pd.DataFrame(), {}
-    for _c in ("temp_min", "temp_max", "temp_media", "lluvia_mm"):
+        return pd.DataFrame(), "—"
+    for _c in ("temp_min", "temp_max", "temp_media", "lluvia_mm",
+               "hr_media", "irradiancia", "viento_velocidad"):
         if _c not in hh.columns:
             hh[_c] = np.nan
     hh["_d"] = hh["fecha_hora"].dt.date
     g = hh.groupby("_d").agg(
         tmin=("temp_min", "min"), tmax=("temp_max", "max"),
-        tmean=("temp_media", "mean"), rain=("lluvia_mm", "sum")).reset_index()
+        tmean=("temp_media", "mean"), rain=("lluvia_mm", "sum"),
+        rh=("hr_media", "mean"), rs=("irradiancia", "sum"),
+        wind=("viento_velocidad", "mean")).reset_index()
     g["tmin"] = g["tmin"].fillna(g["tmean"])
     g["tmax"] = g["tmax"].fillna(g["tmean"])
-
-    awc = SOIL_AWC_MM_PER_M.get(soil_type, 150)
-    taw = awc * root_depth_m               # reserva útil total (mm)
-    raw = p * taw                          # reserva fácilmente disponible (mm)
-    Dr = 0.0                               # agotamiento inicial (suelo a capacidad campo)
     rows = []
+    n_pm = n_hs = 0
     for _, r in g.iterrows():
-        ts = pd.Timestamp(r["_d"])
-        et0 = hargreaves_et0(r["tmin"], r["tmax"], r["tmean"], ts.dayofyear, lat_deg)
+        ts = pd.Timestamp(r["_d"]); doy = ts.dayofyear
+        et0 = penman_monteith_et0(r["tmin"], r["tmax"], r["tmean"], r["rh"],
+                                  r["rs"], r["wind"], doy, lat_deg)
+        met = "PM"
+        if pd.isna(et0):
+            et0 = hargreaves_et0(r["tmin"], r["tmax"], r["tmean"], doy, lat_deg)
+            met = "HS"
+        if pd.notna(et0):
+            n_pm += (met == "PM"); n_hs += (met == "HS")
         kc = apple_kc(ts)
         etc = (float(et0) * kc) if pd.notna(et0) else 0.0
-        rain = float(r["rain"] or 0.0)
-        Dr = Dr + etc - rain
-        if Dr < 0:
-            Dr = 0.0                        # exceso de lluvia drena
-        if Dr > taw:
-            Dr = taw                        # no se seca más que la reserva útil
-        rows.append({
-            "Fecha": ts,
-            "ET0": round(float(et0), 2) if pd.notna(et0) else None,
-            "Kc": round(kc, 2),
-            "ETc": round(etc, 2),
-            "Lluvia": round(rain, 1),
-            "Agotam. mm": round(Dr, 1),
-            "Reserva %": int(round(100 * (taw - Dr) / taw)) if taw else None,
-        })
+        rows.append({"Fecha": ts, "ET0": round(float(et0), 2) if pd.notna(et0) else None,
+                     "Kc": round(kc, 2), "ETc": round(etc, 2),
+                     "Lluvia": round(float(r["rain"] or 0.0), 1), "_etc": etc})
     df = pd.DataFrame(rows)
-    meta = {
-        "AWC": awc, "TAW": taw, "RAW": raw, "root_depth": root_depth_m, "p": p,
-        "Dr": Dr, "reserva_pct": (100 * (taw - Dr) / taw) if taw else np.nan,
-        "riego_mm": (round(Dr) if Dr >= raw else 0),
-    }
-    return df, meta
+    metodo = "Penman-Monteith" if n_pm >= n_hs else "Hargreaves"
+    if n_pm and n_hs:
+        metodo = f"Penman-Monteith ({n_pm} d) + Hargreaves ({n_hs} d)"
+    return df, metodo
+
+
+def run_soil_depletion(daily_df, taw_mm, p=APPLE_DEPLETION_P):
+    """Aplica el balance de reserva de suelo a la serie diaria de ETc/lluvia para un TAW
+    dado (una parcela). Dr acotado [0, TAW]; el exceso de lluvia drena."""
+    if daily_df is None or daily_df.empty or not taw_mm:
+        return pd.DataFrame(), {}
+    taw = float(taw_mm); raw = p * taw; Dr = 0.0
+    out = daily_df.copy()
+    ag, res = [], []
+    for _, r in out.iterrows():
+        Dr = Dr + float(r.get("_etc") or 0.0) - float(r.get("Lluvia") or 0.0)
+        Dr = min(max(Dr, 0.0), taw)
+        ag.append(round(Dr, 1)); res.append(int(round(100 * (taw - Dr) / taw)))
+    out["Agotam. mm"] = ag; out["Reserva %"] = res
+    meta = {"TAW": taw, "RAW": raw, "p": p, "Dr": Dr,
+            "reserva_pct": 100 * (taw - Dr) / taw,
+            "riego_mm": (round(Dr) if Dr >= raw else 0)}
+    return out, meta
+
+
+def soil_water_balance(history_df, soil_type, upto_ts, lat_deg=GALLINAL_LAT_DEG,
+                       root_depth_m=APPLE_ROOT_DEPTH_M, p=APPLE_DEPLETION_P):
+    """Compat: balance para un soil_type genérico (AWC por textura × prof.). Para el
+    balance POR PARCELA usa daily_et_frame + run_soil_depletion con el TAW de la parcela."""
+    daily, _met = daily_et_frame(history_df, upto_ts, lat_deg)
+    if daily is None or daily.empty:
+        return pd.DataFrame(), {}
+    taw = SOIL_AWC_MM_PER_M.get(soil_type, 150) * root_depth_m
+    out, meta = run_soil_depletion(daily, taw, p)
+    meta["AWC"] = SOIL_AWC_MM_PER_M.get(soil_type, 150)
+    meta["root_depth"] = root_depth_m
+    return out, meta
 
 
 def render_water_balance(history, soil_type, start_ts, end_ts):
-    """Riego por balance hídrico FAO-56: ET0 (Hargreaves) × Kc(manzano) − lluvia, con
-    reserva de suelo. Da mm a reponer (goteo) o solo el déficit/estrés (secano)."""
-    bal, meta = soil_water_balance(history, soil_type, end_ts)
-    if bal is None or bal.empty or not meta:
+    """Riego por balance hídrico FAO-56 POR PARCELA. Clima/ET0 (Penman-Monteith, con
+    Hargreaves de respaldo) es de finca (un sensor); la reserva de suelo es por campo
+    según su perfil editable. Da mm a reponer (goteo) o el déficit/estrés (secano)."""
+    _end = pd.Timestamp(end_ts).normalize()
+    daily, metodo = daily_et_frame(history, _end)
+    if daily is None or daily.empty:
         st.info("No hay datos de temperatura/lluvia suficientes para el balance hídrico.")
         return
 
-    # Fase y Kc de hoy
-    _end = pd.Timestamp(end_ts).normalize()
+    # Fase y Kc de hoy (compartidos)
     _phase_lbl = "—"
     for (_pid, _lbl, _sm, _sd, _em, _ed, _w) in _GALLINAL_PHASES:
         if _pid == "frio":
@@ -8560,68 +8625,138 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             break
     kc_now = apple_kc(_end)
 
-    # Slice del periodo seleccionado (para los acumulados que ve el usuario)
+    # Acumulados del periodo seleccionado (clima común)
     _s0 = pd.Timestamp(start_ts).normalize()
-    per = bal[(bal["Fecha"] >= _s0) & (bal["Fecha"] <= _end)]
+    per = daily[(daily["Fecha"] >= _s0) & (daily["Fecha"] <= _end)]
     if per.empty:
-        per = bal.tail(14)
+        per = daily.tail(14)
     et0_sum = float(pd.to_numeric(per["ET0"], errors="coerce").sum())
     etc_sum = float(pd.to_numeric(per["ETc"], errors="coerce").sum())
     rain_sum = float(pd.to_numeric(per["Lluvia"], errors="coerce").sum())
-    deficit = etc_sum - rain_sum
-
-    Dr, raw, taw = meta["Dr"], meta["RAW"], meta["TAW"]
-    reserva = meta["reserva_pct"]
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("ETc periodo", f"{etc_sum:.0f} mm", help="Agua que gastó el manzano (ET0×Kc) en el periodo.")
-    c2.metric("Lluvia periodo", f"{rain_sum:.0f} mm")
-    c3.metric("Déficit (ETc−lluvia)", f"{deficit:+.0f} mm",
-              help="Positivo = el árbol gastó más de lo que llovió (tira de la reserva del suelo).")
-    c4.metric("Reserva de suelo", f"{reserva:.0f} %",
-              help=f"Agua útil disponible en la zona radicular. Umbral de riego ≈ {int(round((1-meta['p'])*100))} %.")
+    c1.metric("ET0 periodo", f"{et0_sum:.0f} mm", help="Demanda de la atmósfera (evapotranspiración de referencia).")
+    c2.metric("ETc manzano", f"{etc_sum:.0f} mm", help="Agua que gastó el manzano (ET0×Kc) en el periodo.")
+    c3.metric("Lluvia periodo", f"{rain_sum:.0f} mm")
+    c4.metric("Déficit (ETc−lluvia)", f"{etc_sum - rain_sum:+.0f} mm",
+              help="Positivo = gastó más de lo que llovió (tira de la reserva del suelo).")
+    st.caption(f"**Fase:** {_phase_lbl} · **Kc hoy** {kc_now:.2f} · **ET0:** {metodo} · "
+               "clima de finca (un sensor); la reserva es por campo según su suelo.")
 
-    # Recomendación por estado de la reserva
-    if Dr >= raw:
-        st.error(
-            f"💧 **Regar** — la reserva bajó al **{reserva:.0f} %** (umbral "
-            f"{int(round((1-meta['p'])*100))} %). En parcelas con **goteo**, reponer "
-            f"**~{meta['riego_mm']:.0f} mm** para volver a capacidad de campo. En **secano**, "
-            f"el árbol está entrando en **estrés hídrico** (riesgo de perder calibre en engorde)."
-        )
-    elif Dr >= 0.75 * raw:
-        # días hasta el umbral con el ritmo de ETc reciente
-        _etc_recent = pd.to_numeric(bal.tail(7)["ETc"], errors="coerce").mean()
-        _dias = int((raw - Dr) / _etc_recent) if _etc_recent and _etc_recent > 0 else None
-        _txt = f" (~{_dias} días si sigue seco)" if _dias is not None else ""
-        st.warning(
-            f"🟠 **Cerca del umbral** — reserva al **{reserva:.0f} %**{_txt}. "
-            "Vigilar; si no llueve, preparar riego en los próximos días."
-        )
-    else:
-        st.success(
-            f"🟢 **Sin necesidad de riego** — reserva de suelo al **{reserva:.0f} %**. "
-            "El manzano tiene agua disponible suficiente."
-        )
-
+    # ── Perfiles de suelo por parcela (editable, como la fenología) ────────────
+    st.markdown("##### 🌱 Perfiles de suelo por parcela")
     st.caption(
-        f"**Fase:** {_phase_lbl} · **Kc hoy** {kc_now:.2f} · Suelo **{soil_type}** "
-        f"(agua útil {meta['AWC']:.0f} mm/m · raíz {meta['root_depth']:.1f} m → reserva "
-        f"{taw:.0f} mm). Balance desde el 1-abr (suelo lleno tras el invierno)."
+        "Edita el suelo de cada campo (textura o, mejor, **CC/PMP/Da/prof.** de tu análisis "
+        "de laboratorio) y marca **Riego = Sí** en los de goteo. Por defecto todos "
+        "**franco-arenoso**; ve ajustándolos poco a poco. Se guarda en Supabase."
+    )
+    if "soil_profiles_df" not in st.session_state:
+        _sp, _ = load_soil_profiles_from_supabase()
+        st.session_state.soil_profiles_df = normalize_soil_profiles_df(
+            _sp if _sp is not None else pd.DataFrame())
+    eff = soil_profiles_effective()
+    _editor_key = "soil_profiles_editor"
+    _pos_key = {i: r["Campo"] for i, r in eff.reset_index(drop=True).iterrows()}
+
+    def _apply_sp():
+        ed = (st.session_state.get(_editor_key) or {}).get("edited_rows", {})
+        if not ed:
+            return
+        master = normalize_soil_profiles_df(st.session_state.soil_profiles_df)
+        for _pos, _ch in ed.items():
+            campo = _pos_key.get(int(_pos))
+            if not campo:
+                continue
+            mask = master["Campo"] == campo
+            if not mask.any():
+                _cur = eff[eff["Campo"] == campo].iloc[0]
+                _nr = {"Campo": campo}
+                for c in SOIL_PROFILE_EDIT_COLS:
+                    _nr[c] = _cur[c]
+                master = pd.concat([master, pd.DataFrame([_nr])], ignore_index=True)
+                mask = master["Campo"] == campo
+            # cambiar textura reajusta CC/PMP/Da a la referencia FAO (luego mandan ediciones explícitas)
+            if _ch.get("Textura") in SOIL_TEXTURE_REF:
+                _cc, _pmp, _da = SOIL_TEXTURE_REF[_ch["Textura"]]
+                master.loc[mask, "CC (%)"] = _cc
+                master.loc[mask, "PMP (%)"] = _pmp
+                master.loc[mask, "Da (g/cm³)"] = _da
+            for col, val in _ch.items():
+                if col in SOIL_PROFILE_EDIT_COLS:
+                    master.loc[mask, col] = val
+        st.session_state.soil_profiles_df = normalize_soil_profiles_df(master)
+        autosave_soil_profiles_to_supabase()
+
+    _disp = eff[["Campo"] + SOIL_PROFILE_EDIT_COLS + ["TAW mm"]].copy()
+    st.data_editor(
+        _disp, key=_editor_key, on_change=_apply_sp, num_rows="fixed",
+        use_container_width=True, hide_index=True, disabled=["Campo", "TAW mm"],
+        column_config={
+            "Textura": st.column_config.SelectboxColumn("Textura", options=list(SOIL_TEXTURE_REF.keys())),
+            "CC (%)": st.column_config.NumberColumn("CC %", min_value=0, max_value=60,
+                help="Capacidad de campo (% gravimétrico)."),
+            "PMP (%)": st.column_config.NumberColumn("PMP %", min_value=0, max_value=45,
+                help="Punto de marchitez permanente (%)."),
+            "Da (g/cm³)": st.column_config.NumberColumn("Da", min_value=0.8, max_value=2.0, step=0.05,
+                help="Densidad aparente (g/cm³)."),
+            "Prof. raíz (cm)": st.column_config.NumberColumn("Raíz cm", min_value=10, max_value=200),
+            "Riego": st.column_config.SelectboxColumn("Riego", options=["", "Sí", "No"],
+                help="¿Tiene instalación de riego (goteo)?"),
+            "TAW mm": st.column_config.NumberColumn("Reserva TAW", format="%d mm",
+                help="Agua útil total = (CC−PMP)/100 · Da · prof · 10. Se recalcula sola."),
+        },
     )
 
-    with st.expander("📈 Detalle diario del balance", expanded=False):
-        _show = per.copy()
+    # ── Estado hídrico por campo (hoy) ─────────────────────────────────────────
+    st.markdown("##### 💧 Estado hídrico por campo (hoy)")
+    _rows, _n_regar, _n_vig = [], 0, 0
+    _etc_recent = pd.to_numeric(daily.tail(7)["ETc"], errors="coerce").mean()
+    for _, pr in eff.iterrows():
+        _taw = pr["TAW mm"]
+        if not _taw or pd.isna(_taw):
+            continue
+        _, m = run_soil_depletion(daily, _taw)
+        if not m:
+            continue
+        Dr, raw = m["Dr"], m["RAW"]
+        if Dr >= raw:
+            estado = "🔴 Regar"; _n_regar += 1
+        elif Dr >= 0.75 * raw:
+            estado = "🟠 Vigilar"; _n_vig += 1
+        else:
+            estado = "🟢 OK"
+        _dias = int((raw - Dr) / _etc_recent) if (_etc_recent and _etc_recent > 0 and Dr < raw) else 0
+        _rows.append({
+            "Campo": pr["Campo"], "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
+            "Reserva %": int(round(m["reserva_pct"])), "Agotam. mm": round(Dr, 1),
+            "Regar mm": m["riego_mm"], "Días al umbral": (_dias if Dr < raw else 0),
+            "Estado": estado,
+        })
+    fld = pd.DataFrame(_rows)
+    if not fld.empty:
+        fld = fld.sort_values("Reserva %").reset_index(drop=True)
+        if _n_regar:
+            st.error(f"💧 **{_n_regar} campo(s)** en umbral de riego. En los de **goteo**, reponer "
+                     "los *Regar mm*; en **secano**, están entrando en estrés (calibre).")
+        elif _n_vig:
+            st.warning(f"🟠 **{_n_vig} campo(s)** cerca del umbral. Vigilar por si no llueve.")
+        else:
+            st.success("🟢 Todos los campos con reserva de suelo suficiente. Sin necesidad de riego.")
+        st.dataframe(fld, use_container_width=True, hide_index=True)
+
+    with st.expander("📈 Detalle diario del clima y ETc (finca)", expanded=False):
+        _show = per[["Fecha", "ET0", "Kc", "ETc", "Lluvia"]].copy()
         _show["Fecha"] = pd.to_datetime(_show["Fecha"]).dt.strftime("%d/%m")
         st.dataframe(_show, use_container_width=True, hide_index=True)
+
     st.caption(
-        "**Método:** FAO-56. **ETc = ET0 × Kc**; ET0 por **Hargreaves-Samani** "
-        "(temperatura + radiación tope de atmósfera por latitud). **Kc del manzano** por "
-        "fase (suelo desnudo/laboreo, Tabla 12 FAO-56). El **agotamiento** de la reserva "
-        "sube con ETc y baja con la lluvia; se avisa de regar cuando cae por debajo del "
-        f"{int(round((1-meta['p'])*100))} % (fracción p={meta['p']:.2f}). Kc orientativo "
-        "(tabla FAO, calibrable con tu experiencia). En Asturias, lo normal es reserva alta "
-        "casi todo el año: el valor está en cazar las **rachas secas de verano** (engorde)."
+        "**Método FAO-56.** **ETc = ET0 × Kc**. **ET0** por **Penman-Monteith** completa "
+        "(radiación solar + viento + HR + temperatura medidos; Ra por fecha) y, si falta "
+        "radiación/viento, **Hargreaves** de respaldo. **Kc del manzano** por fase (suelo "
+        "desnudo/laboreo, FAO-56 Tabla 12). **Reserva** por parcela = agua útil de su suelo; "
+        "el agotamiento sube con ETc y baja con la lluvia; se avisa de regar bajo el "
+        f"{int(round((1-APPLE_DEPLETION_P)*100))} % (fracción p={APPLE_DEPLETION_P:.2f}). "
+        "Balance desde el 1-abr (suelo lleno tras el invierno). Todo calibrable."
     )
 
 
@@ -15147,6 +15282,129 @@ def autosave_resultado_sanitario_to_supabase():
         pass
 
 
+# ── Perfiles de suelo por PARCELA (editable como la fenología) ────────────────
+# Cada campo tiene su textura + CC/PMP/Da/prof. de raíz (de laboratorio, editable). El
+# balance de riego usa el TAW de cada parcela. Valores de referencia FAO por textura.
+SUPABASE_SOIL_PROFILES_FILE = "soil_profiles.parquet"
+SOIL_PROFILE_KEY = ["Campo"]
+SOIL_PROFILE_EDIT_COLS = ["Textura", "CC (%)", "PMP (%)", "Da (g/cm³)", "Prof. raíz (cm)", "Riego"]
+# Referencia FAO (Excel del usuario): textura → (CC %, PMP %, Da g/cm³)
+SOIL_TEXTURE_REF = {
+    "Arenoso": (9, 4, 1.65), "Franco-arenoso": (14, 6, 1.55), "Franco": (22, 10, 1.4),
+    "Franco-limoso": (28, 14, 1.35), "Franco-arcilloso": (34, 18, 1.3),
+    "Arcillo-limoso": (38, 22, 1.25), "Arcilloso": (42, 25, 1.2),
+}
+DEFAULT_SOIL_TEXTURE = "Franco-arenoso"
+DEFAULT_ROOT_DEPTH_CM = 80
+
+
+def taw_from_profile(cc, pmp, da, prof_cm):
+    """Reserva útil total TAW (mm) = (CC−PMP)/100 · Da · prof(cm) · 10. El ×10 convierte
+    cm→mm (el fallo de la hoja de cálculo era omitirlo → reserva 10× baja)."""
+    try:
+        cc, pmp, da, prof = float(cc), float(pmp), float(da), float(prof_cm)
+        return max(0.0, (cc - pmp) / 100.0 * da * prof * 10.0)
+    except (TypeError, ValueError):
+        return np.nan
+
+
+def normalize_soil_profiles_df(df):
+    out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    for c in SOIL_PROFILE_KEY + SOIL_PROFILE_EDIT_COLS:
+        if c not in out.columns:
+            out[c] = ""
+    out = out[SOIL_PROFILE_KEY + SOIL_PROFILE_EDIT_COLS].copy()
+    if not out.empty:
+        out["Campo"] = out["Campo"].astype(str)
+        for c in ("Textura", "Riego"):
+            out[c] = out[c].astype(str).replace({"nan": "", "None": "", "<NA>": ""})
+    return out.reset_index(drop=True)
+
+
+def soil_profiles_storage_url():
+    url, _ = get_supabase_credentials()
+    return f"{url.rstrip('/')}/storage/v1/object/climate-snapshots/{SUPABASE_SOIL_PROFILES_FILE}"
+
+
+def load_soil_profiles_from_supabase():
+    if not supabase_is_configured():
+        return None, "Supabase no configurado."
+    headers = supabase_headers(); headers.pop("Prefer", None)
+    try:
+        r = requests.get(soil_profiles_storage_url(), headers=headers, timeout=60)
+    except Exception as e:
+        return None, f"Error de conexión: {e}"
+    if r.status_code != 200:
+        return None, "Sin perfiles de suelo guardados."
+    try:
+        return pd.read_parquet(io.BytesIO(r.content), engine="pyarrow"), "Cargado."
+    except Exception as e:
+        return None, f"Error Parquet: {e}"
+
+
+def upload_soil_profiles_to_supabase(df):
+    if not supabase_is_configured():
+        return False, "Supabase no configurado."
+    out = normalize_soil_profiles_df(df if df is not None else pd.DataFrame())
+    buf = io.BytesIO()
+    out.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
+    buf.seek(0)
+    headers = supabase_headers()
+    headers["Content-Type"] = "application/octet-stream"
+    headers["x-upsert"] = "true"
+    try:
+        r = requests.post(soil_profiles_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+    except Exception as e:
+        return False, f"Error de conexión: {e}"
+    if r.status_code not in (200, 201):
+        return False, f"Error {r.status_code}"
+    return True, f"Guardado: {len(out)} filas."
+
+
+def autosave_soil_profiles_to_supabase():
+    if not supabase_is_configured():
+        return
+    try:
+        upload_soil_profiles_to_supabase(st.session_state.get("soil_profiles_df", pd.DataFrame()))
+    except Exception:
+        pass
+
+
+def soil_profiles_base_rows():
+    """Una fila por campo (de la base de campos) con el perfil por defecto (franco-arenoso,
+    valores FAO). El usuario los edita poco a poco con su análisis de laboratorio."""
+    cc, pmp, da = SOIL_TEXTURE_REF[DEFAULT_SOIL_TEXTURE]
+    rows = []
+    for fr in FIELDS_BASE_ROWS:
+        rows.append({
+            "Campo": str(fr.get("Campo", "")).strip(),
+            "Textura": DEFAULT_SOIL_TEXTURE, "CC (%)": cc, "PMP (%)": pmp,
+            "Da (g/cm³)": da, "Prof. raíz (cm)": DEFAULT_ROOT_DEPTH_CM, "Riego": "",
+        })
+    return pd.DataFrame(rows)
+
+
+def soil_profiles_effective():
+    """Perfiles fusionados (base por defecto + lo que el usuario guardó), normalizados,
+    con TAW calculado por parcela. Devuelve DataFrame indexado por Campo."""
+    base = soil_profiles_base_rows()
+    saved = normalize_soil_profiles_df(st.session_state.get("soil_profiles_df", pd.DataFrame()))
+    merged = base.set_index("Campo")
+    if not saved.empty:
+        s = saved.set_index("Campo")
+        for campo in s.index:
+            if campo in merged.index:
+                for c in SOIL_PROFILE_EDIT_COLS:
+                    v = s.loc[campo, c]
+                    if pd.notna(v) and str(v).strip() not in ("", "nan", "None"):
+                        merged.loc[campo, c] = v
+    merged = merged.reset_index()
+    merged["TAW mm"] = merged.apply(
+        lambda r: round(taw_from_profile(r["CC (%)"], r["PMP (%)"], r["Da (g/cm³)"],
+                                         r["Prof. raíz (cm)"]), 0), axis=1)
+    return merged
+
+
 def _norm_var(s):
     """Normaliza un nombre de variedad: quita el sufijo '(Manzano)' y espacios, minúsculas."""
     s = re.sub(r"\s*\([^)]*\)\s*$", "", str(s or "").strip()).strip()
@@ -15477,6 +15735,12 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         _phen_df, _ = load_phenology_from_supabase()
         if _phen_df is not None and not _phen_df.empty:
             st.session_state.phenology_df = normalize_phenology_df(_phen_df)
+
+    # Perfiles de suelo por parcela (para el balance de riego)
+    if st.session_state.get("soil_profiles_df", pd.DataFrame()).empty:
+        _sp_df, _ = load_soil_profiles_from_supabase()
+        if _sp_df is not None and not _sp_df.empty:
+            st.session_state.soil_profiles_df = normalize_soil_profiles_df(_sp_df)
 
     # Carpocapsa (capturas, biofix y daños)
     if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
