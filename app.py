@@ -15296,6 +15296,9 @@ SOIL_TEXTURE_REF = {
 }
 DEFAULT_SOIL_TEXTURE = "Franco-arenoso"
 DEFAULT_ROOT_DEPTH_CM = 80
+# Campos SIN riego (secano) — el usuario los indicó (2026-07-01). El resto = con goteo.
+# Editable después en la tabla de perfiles de suelo.
+FIELDS_WITHOUT_IRRIGATION = {"Campazón", "Viaducto", "Sector 1", "Piedrona 1"}
 
 
 def taw_from_profile(cc, pmp, da, prof_cm):
@@ -15376,10 +15379,12 @@ def soil_profiles_base_rows():
     cc, pmp, da = SOIL_TEXTURE_REF[DEFAULT_SOIL_TEXTURE]
     rows = []
     for fr in FIELDS_BASE_ROWS:
+        campo = str(fr.get("Campo", "")).strip()
         rows.append({
-            "Campo": str(fr.get("Campo", "")).strip(),
+            "Campo": campo,
             "Textura": DEFAULT_SOIL_TEXTURE, "CC (%)": cc, "PMP (%)": pmp,
-            "Da (g/cm³)": da, "Prof. raíz (cm)": DEFAULT_ROOT_DEPTH_CM, "Riego": "",
+            "Da (g/cm³)": da, "Prof. raíz (cm)": DEFAULT_ROOT_DEPTH_CM,
+            "Riego": ("No" if campo in FIELDS_WITHOUT_IRRIGATION else "Sí"),
         })
     return pd.DataFrame(rows)
 
