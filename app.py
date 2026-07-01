@@ -18534,27 +18534,6 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         )
         acts_clean = _acts[_mask_fung].copy()
 
-    # Eventos de infección REALES de la campaña (1 ene → hoy), del sensor, para contar
-    # por campo cuántos quedaron SIN cobertura (ni preventiva ni curativa). Es de finca
-    # (un solo sensor) → se calcula UNA vez.
-    _season_event_dates = []
-    try:
-        _hy = history_df.copy()
-        _hy["fecha_hora"] = pd.to_datetime(_hy["fecha_hora"], errors="coerce")
-        _hy = _hy.dropna(subset=["fecha_hora"])
-        # Desde BROTACIÓN (1 abr): antes el árbol está dormido (sin hoja/flor que
-        # infectar), así que los periodos húmedos de invierno NO son infecciones reales.
-        _hy = _hy[(_hy["fecha_hora"] >= pd.Timestamp(today.year, 4, 1)) & (_hy["fecha_hora"] <= today)]
-        if not _hy.empty:
-            _ev_season = detect_leaf_wetness_events(_hy)
-            if _ev_season is not None and not _ev_season.empty:
-                for _, _e in _ev_season.iterrows():
-                    if (pd.to_numeric(_e.get("Ratio moteado"), errors="coerce") >= 1.0 or
-                            pd.to_numeric(_e.get("Ratio monilia"), errors="coerce") >= 1.0):
-                        _season_event_dates.append(pd.Timestamp(_e["Fin"]).normalize())
-    except Exception:
-        _season_event_dates = []
-
     def _evento_cubierto(ev_date, fung_passes):
         """Un evento está cubierto si ALGÚN pase de fungicida lo tapa, usando la etiqueta
         de ESE producto: dentro de SU persistencia si fue ANTES (preventivo), o dentro de
@@ -18643,6 +18622,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         mills_events_since  = 0
         monilia_events_since = 0
         eventos_infeccion_dias = 0   # DÍAS distintos con infección (moteado y/o monilia)
+        _infection_dates_since = []  # fechas de esos días-evento (para "Ev. sin cobertura")
         max_mills_since     = 0.0
         max_monilia_since   = 0.0
 
@@ -18661,7 +18641,10 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             mills_events_since   = int(_mills_d.sum())
             monilia_events_since = int(_monilia_d.sum())
             # Un día con moteado Y monilia = UN evento (mismo periodo de mojada), no dos.
-            eventos_infeccion_dias = int((_mills_d | _monilia_d).sum())
+            _inf_mask = _mills_d | _monilia_d
+            eventos_infeccion_dias = int(_inf_mask.sum())
+            _infection_dates_since = pd.to_datetime(
+                hist_risk.loc[_inf_mask, "Fecha"]).dt.normalize().tolist()
             max_mills_since      = float(hist_risk["Mills_valor"].fillna(0).max())
             max_monilia_since    = float(hist_risk["Monilia_valor"].fillna(0).max())
 
@@ -18676,10 +18659,12 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
                 recent_event = bool((_rec["Mills_valor"].fillna(0) >= 100).any() or
                                     (_rec["Monilia_valor"].fillna(0) >= 100).any())
 
-        # Eventos de la campaña SIN cobertura de NINGÚN tipo (ni preventiva ni curativa)
-        # en este campo → el indicador que correlaciona con el daño visual de fin de año.
+        # De los eventos DESDE EL ÚLTIMO TRATAMIENTO (los mismos que cuenta "Eventos
+        # infección"), cuántos quedaron SIN cobertura según el MISMO criterio de la app
+        # (persistencia del producto + ventana curativa). Mismo reloj que "Eventos infección":
+        # si tratas el día 1 y hay un evento el día 2 dentro de la persistencia → cubierto (0).
         eventos_sin_cobertura = sum(
-            1 for _d in _season_event_dates
+            1 for _d in _infection_dates_since
             if not _evento_cubierto(_d, _field_fung_passes)
         )
 
@@ -20701,11 +20686,13 @@ def render_decisiones_panel():
             "- **Eventos infección** — nº de **días con infección** (moteado y/o monilia) **desde "
             "el último fungicida**. Un día con las dos cuenta **una vez** (mismo evento de mojada); "
             "el desglose *X Mills + Y Monilia* está en el análisis detallado por campo.\n"
-            "- **Ev. sin cobertura** — infecciones de **toda la campaña** (desde brotación) que se "
-            "colaron **sin protección de ningún tipo** (ni preventiva ni curativa). Se mide "
-            "**por etiqueta de cada producto** (su persistencia antes y su ventana curativa "
-            "después), editables en *Catálogo de fungicidas*. Es un **indicador de daño** para "
-            "fin de campaña, **no** un aviso de tratar.\n"
+            "- **Ev. sin cobertura** — de esos mismos **eventos desde el último fungicida**, "
+            "cuántos quedaron **sin cobertura** (se colaron sin protección). Mismo criterio de la "
+            "app: cubierto si un pase lo tapa por **persistencia** (antes) o **ventana curativa** "
+            "(después), **por etiqueta de cada producto** (editables en *Catálogo de fungicidas*). "
+            "Ej.: tratas el día 1 y hay evento el día 2 dentro de la persistencia → *Eventos "
+            "infección 1 · Ev. sin cobertura 0*. Si sale >0, la cobertura caducó y te entraron "
+            "infecciones.\n"
             "- **Previsión Mills** — índice de riesgo de **moteado** (modelo Mills): "
             "**100 = evento de infección**.\n"
             "- **Pases campaña** — aplicaciones de cada fungicida esta campaña / **máximo "
@@ -21110,9 +21097,10 @@ def render_decisiones_panel():
             "cumple; si se cumple pasará a 🔴) · 🟢 **OK / sin eventos recientes**.\n\n"
             "**Columnas clave:** *Eventos infección* = **días con infección** (moteado y/o monilia) "
             "reales **desde tu último fungicida** (un día con las dos cuenta una vez). "
-            "*Ev. sin cobertura* = infecciones de **toda la campaña** que se colaron sin "
-            "protección de ningún tipo (ni preventiva ni curativa) → **indicador de daño** para fin de "
-            "campaña, no un aviso de tratar. *Previsión Mills* = riesgo previsto (≥100 = grave). "
+            "*Ev. sin cobertura* = de esos mismos eventos, cuántos quedaron **sin cobertura** "
+            "(mismo reloj; cubierto = un pase lo tapa por persistencia o ventana curativa, por "
+            "etiqueta de cada producto). Ej.: tratas el día 1 y hay evento el día 2 → *1 · 0*. "
+            "*Previsión Mills* = riesgo previsto (≥100 = grave). "
             "*Pases campaña* = aplicaciones / máximo por registro MAPA.\n\n"
             "**1ª elección / Alternativa:** el **mejor producto** para la situación de ese campo "
             "(eficacia por patógeno + **rotación FRAC** + límite de pases + límite SDHI). "
