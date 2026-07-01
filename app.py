@@ -18642,6 +18642,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         rain_since          = 0.0
         mills_events_since  = 0
         monilia_events_since = 0
+        eventos_infeccion_dias = 0   # DÍAS distintos con infección (moteado y/o monilia)
         max_mills_since     = 0.0
         max_monilia_since   = 0.0
 
@@ -18655,8 +18656,12 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
 
         if not risk_df.empty:
             hist_risk = risk_df[(risk_df["Fecha"] >= ref_date) & (~risk_df["Es_prediccion"])]
-            mills_events_since   = int((hist_risk["Mills_valor"].fillna(0)   >= 100).sum())
-            monilia_events_since = int((hist_risk["Monilia_valor"].fillna(0) >= 100).sum())
+            _mills_d   = hist_risk["Mills_valor"].fillna(0)   >= 100
+            _monilia_d = hist_risk["Monilia_valor"].fillna(0) >= 100
+            mills_events_since   = int(_mills_d.sum())
+            monilia_events_since = int(_monilia_d.sum())
+            # Un día con moteado Y monilia = UN evento (mismo periodo de mojada), no dos.
+            eventos_infeccion_dias = int((_mills_d | _monilia_d).sum())
             max_mills_since      = float(hist_risk["Mills_valor"].fillna(0).max())
             max_monilia_since    = float(hist_risk["Monilia_valor"].fillna(0).max())
 
@@ -18806,7 +18811,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "Días sin trat.":    (days_since if days_since < 999 else "—"),
             "Días protección":   int(round(eff_persistence)),
             "Lluvia desde mm":   rain_since,
-            "Eventos infección":  mills_events_since + monilia_events_since,
+            "Eventos infección":  eventos_infeccion_dias,
             "Ev. sin cobertura":  eventos_sin_cobertura,
             "Previsión Mills":   int(fc_mills_max),
             "Lluvia prevista mm": round(fc_rain, 1),
@@ -20691,8 +20696,9 @@ def render_decisiones_panel():
             "- **Días protección** — persistencia real del producto aplicado (Luna 14, "
             "Folicur 11…). Si los *días sin tratar* la superan → cobertura caducada.\n"
             "- **Lluvia desde mm** — lluvia acumulada desde el tratamiento (lava el producto).\n"
-            "- **Eventos infección** — nº de infecciones (moteado/monilia) **desde el último "
-            "fungicida**.\n"
+            "- **Eventos infección** — nº de **días con infección** (moteado y/o monilia) **desde "
+            "el último fungicida**. Un día con las dos cuenta **una vez** (mismo evento de mojada); "
+            "el desglose *X Mills + Y Monilia* está en el análisis detallado por campo.\n"
             "- **Ev. sin cobertura** — infecciones de **toda la campaña** (desde brotación) que se "
             "colaron **sin protección de ningún tipo** (ni preventiva ni curativa). Se mide "
             "**por etiqueta de cada producto** (su persistencia antes y su ventana curativa "
@@ -21100,8 +21106,9 @@ def render_decisiones_panel():
             "**Colores (acción de hoy):** 🔴 **Tratar hoy** (hay que actuar ya) · 🟠 **Tratar pronto** "
             "(mantener escudo, primavera) · 🟡 **Vigilar** (mirar cada mañana por si la previsión se "
             "cumple; si se cumple pasará a 🔴) · 🟢 **OK / sin eventos recientes**.\n\n"
-            "**Columnas clave:** *Eventos infección* = infecciones reales **desde tu último "
-            "fungicida**. *Ev. sin cobertura* = infecciones de **toda la campaña** que se colaron sin "
+            "**Columnas clave:** *Eventos infección* = **días con infección** (moteado y/o monilia) "
+            "reales **desde tu último fungicida** (un día con las dos cuenta una vez). "
+            "*Ev. sin cobertura* = infecciones de **toda la campaña** que se colaron sin "
             "protección de ningún tipo (ni preventiva ni curativa) → **indicador de daño** para fin de "
             "campaña, no un aviso de tratar. *Previsión Mills* = riesgo previsto (≥100 = grave). "
             "*Pases campaña* = aplicaciones / máximo por registro MAPA.\n\n"
