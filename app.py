@@ -15448,6 +15448,13 @@ def soil_profiles_effective():
                     v = s.loc[campo, c]
                     if pd.notna(v) and str(v).strip() not in ("", "nan", "None"):
                         merged.loc[campo, c] = v
+    # Los perfiles MEDIDOS en laboratorio MANDAN SIEMPRE: dato autoritativo que se mete
+    # desde el código; evita que un guardado antiguo/erróneo en Supabase tape el valor real.
+    for campo, prof in MEASURED_SOIL_PROFILES.items():
+        if campo in merged.index:
+            for c, v in prof.items():
+                if c in merged.columns:
+                    merged.loc[campo, c] = v
     merged = merged.reset_index()
     merged["TAW mm"] = merged.apply(
         lambda r: round(taw_from_profile(r["CC (%)"], r["PMP (%)"], r["Da (g/cm³)"],
