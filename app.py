@@ -15316,6 +15316,10 @@ MEASURED_SOIL_PROFILES = {
     # → más retención, Da baja → TAW ~79 mm/80cm.
     "GY": {"Textura": "Franco-arenoso", "CC (%)": 16.3, "PMP (%)": 7.9,
            "Da (g/cm³)": 1.19, "Prof. raíz (cm)": 80},
+    # Piedrona Rincón (AGQ, feb-2024, "Gallinal 5"): Arena 59 / Limo 25 / Arcilla 16 %,
+    # MO 4.26 %. Más arcilla que los otros → más retención → TAW ~93 mm/80cm.
+    "Piedrona Rincón": {"Textura": "Franco", "CC (%)": 18.1, "PMP (%)": 9.5,
+                        "Da (g/cm³)": 1.36, "Prof. raíz (cm)": 80},
 }
 
 
