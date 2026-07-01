@@ -8688,21 +8688,26 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         autosave_soil_profiles_to_supabase()
 
     _disp = eff[["Campo"] + SOIL_PROFILE_EDIT_COLS + ["TAW mm"]].copy()
+    # Forzar tipo numérico decimal (si no, el editor los trata como enteros y al escribir
+    # "10.9" se come el punto → "109" y lo recorta al máximo).
+    for _c in ("CC (%)", "PMP (%)", "Da (g/cm³)", "Prof. raíz (cm)", "TAW mm"):
+        _disp[_c] = pd.to_numeric(_disp[_c], errors="coerce").astype(float)
     st.data_editor(
         _disp, key=_editor_key, on_change=_apply_sp, num_rows="fixed",
         use_container_width=True, hide_index=True, disabled=["Campo", "TAW mm"],
         column_config={
             "Textura": st.column_config.SelectboxColumn("Textura", options=list(SOIL_TEXTURE_REF.keys())),
-            "CC (%)": st.column_config.NumberColumn("CC %", min_value=0, max_value=60,
-                help="Capacidad de campo (% gravimétrico)."),
-            "PMP (%)": st.column_config.NumberColumn("PMP %", min_value=0, max_value=45,
-                help="Punto de marchitez permanente (%)."),
-            "Da (g/cm³)": st.column_config.NumberColumn("Da", min_value=0.8, max_value=2.0, step=0.05,
-                help="Densidad aparente (g/cm³)."),
-            "Prof. raíz (cm)": st.column_config.NumberColumn("Raíz cm", min_value=10, max_value=200),
+            "CC (%)": st.column_config.NumberColumn("CC %", min_value=0.0, max_value=60.0,
+                step=0.1, format="%.1f", help="Capacidad de campo (% gravimétrico)."),
+            "PMP (%)": st.column_config.NumberColumn("PMP %", min_value=0.0, max_value=45.0,
+                step=0.1, format="%.1f", help="Punto de marchitez permanente (%)."),
+            "Da (g/cm³)": st.column_config.NumberColumn("Da", min_value=0.8, max_value=2.0,
+                step=0.05, format="%.2f", help="Densidad aparente (g/cm³)."),
+            "Prof. raíz (cm)": st.column_config.NumberColumn("Raíz cm", min_value=10.0, max_value=200.0,
+                step=5.0, format="%.0f"),
             "Riego": st.column_config.SelectboxColumn("Riego", options=["", "Sí", "No"],
                 help="¿Tiene instalación de riego (goteo)?"),
-            "TAW mm": st.column_config.NumberColumn("Reserva TAW", format="%d mm",
+            "TAW mm": st.column_config.NumberColumn("Reserva TAW", format="%.0f mm",
                 help="Agua útil total = (CC−PMP)/100 · Da · prof · 10. Se recalcula sola."),
         },
     )
@@ -15300,6 +15305,15 @@ DEFAULT_ROOT_DEPTH_CM = 80
 # Editable después en la tabla de perfiles de suelo.
 FIELDS_WITHOUT_IRRIGATION = {"Campazón", "Viaducto", "Sector 1", "Piedrona 1"}
 
+# Perfiles de suelo MEDIDOS en laboratorio. La analítica da textura + MO; CC/PMP/Da se
+# estiman por pedotransferencia (Saxton-Rawls 2006). Se van añadiendo campos según llegan
+# análisis. Sobrescriben el default franco-arenoso en la tabla (y el usuario puede editar).
+MEASURED_SOIL_PROFILES = {
+    # Huertona (AGQ, feb-2024): Arena 76 / Limo 18 / Arcilla 6 %, MO 3.5 % → TAW ~66 mm/80cm.
+    "Huertona": {"Textura": "Franco-arenoso", "CC (%)": 10.9, "PMP (%)": 4.9,
+                 "Da (g/cm³)": 1.37, "Prof. raíz (cm)": 80},
+}
+
 
 def taw_from_profile(cc, pmp, da, prof_cm):
     """Reserva útil total TAW (mm) = (CC−PMP)/100 · Da · prof(cm) · 10. El ×10 convierte
@@ -15380,12 +15394,15 @@ def soil_profiles_base_rows():
     rows = []
     for fr in FIELDS_BASE_ROWS:
         campo = str(fr.get("Campo", "")).strip()
-        rows.append({
+        row = {
             "Campo": campo,
             "Textura": DEFAULT_SOIL_TEXTURE, "CC (%)": cc, "PMP (%)": pmp,
             "Da (g/cm³)": da, "Prof. raíz (cm)": DEFAULT_ROOT_DEPTH_CM,
             "Riego": ("No" if campo in FIELDS_WITHOUT_IRRIGATION else "Sí"),
-        })
+        }
+        if campo in MEASURED_SOIL_PROFILES:      # dato real de laboratorio
+            row.update(MEASURED_SOIL_PROFILES[campo])
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
