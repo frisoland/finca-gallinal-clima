@@ -18713,12 +18713,14 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         fc_rain_alert    = fc_rain >= 15           # ≥15 mm previstos (umbral lavado + infección)
         fc_alert = fc_mills_event or fc_monilia_event or fc_rain_alert
 
-        # EXPOSICIÓN ACUMULADA SIN COBERTURA: eventos Mills/Monilia desde el último fungicida.
-        # Cada evento = período de infección completado (latencia 9-21 días, Rühmer 1998).
-        # NO dispara "tratar hoy" por sí solo, pero aumenta la urgencia de planificar.
-        # Umbral: ≥3 eventos sin cobertura = exposición seria (no hay número en la bibliografía
-        # pero es conservador para frutales de pepita en fase sensible).
-        accumulated_exposure = (mills_events_since + monilia_events_since) >= 3
+        # EXPOSICIÓN ACUMULADA SIN COBERTURA: DÍAS con infección (moteado y/o monilia) desde
+        # el último fungicida. Cada día-evento = período de infección completado (latencia
+        # 9-21 días, Rühmer 1998). NO dispara "tratar hoy" por sí solo, pero aumenta la
+        # urgencia de planificar. Umbral: ≥3 días-evento sin cobertura = exposición seria (no
+        # hay número en la bibliografía pero es conservador para pepita en fase sensible).
+        # Cuenta DÍAS distintos (igual que la columna "Eventos infección"): un día con las dos
+        # enfermedades = 1, no 2 (mismo evento de mojada).
+        accumulated_exposure = eventos_infeccion_dias >= 3
 
         # ── Prioridades SEGÚN FASE FENOLÓGICA ─────────────────────────────────
         # Mismo criterio para Decisiones y Sanidad. El peso cambia con la fase:
