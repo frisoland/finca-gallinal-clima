@@ -765,9 +765,17 @@ POLLINATION = {
 
 
 # Módulo de eventos de humectación foliar.
-# El sensor mide minutos de hoja mojada por hora.
+# El sensor mide minutos de hoja mojada por hora. Estos dos umbrales (ÚNICO sitio a
+# tocar para calibrar) definen cuándo empieza/cierra un evento continuo de mojada:
+#   - min_minutes_to_start_event: minutos de mojada en una hora para considerarla
+#     "hora mojada". Una hora por debajo cuenta como SECA. Se subió de 1 → 20 min
+#     ("opción B", jul-2026): con 1 min, una condensación de traza (3-6 min) impedía
+#     que el evento cerrara nunca. 20 min ≈ colapsar los minutos/hora del sensor a la
+#     hora binaria mojada/seca que asume el modelo de Mills.
+#   - dry_hours_to_close_event: horas SECAS seguidas para dar por cerrado el evento.
+#     6 h de sequedad continua = criterio estándar de MacHardy & Gadoury (1989)/NEWA.
 LEAF_WETNESS = {
-    "min_minutes_to_start_event": 1,
+    "min_minutes_to_start_event": 20,
     "dry_hours_to_close_event": 6,
 }
 
@@ -1248,8 +1256,15 @@ def add_event_interpretation_columns(events_df, phases=None):
     return out
 
 
-def detect_leaf_wetness_events(df, min_minutes=1, dry_hours_to_close=6):
-    """Detecta eventos de hoja mojada acumulando minutos por hora."""
+def detect_leaf_wetness_events(df,
+                               min_minutes=LEAF_WETNESS["min_minutes_to_start_event"],
+                               dry_hours_to_close=LEAF_WETNESS["dry_hours_to_close_event"]):
+    """Detecta eventos continuos de hoja mojada acumulando minutos por hora.
+
+    Una hora cuenta como MOJADA si tiene `min_minutes` (por defecto 20, "opción B") de
+    humectación; por debajo se considera SECA. El evento se cierra tras
+    `dry_hours_to_close` horas secas seguidas (6 = criterio MacHardy & Gadoury/NEWA de
+    6 h de sequedad continua). Umbrales centralizados en el dict LEAF_WETNESS."""
     if df.empty or "humectacion_hoja" not in df.columns:
         return pd.DataFrame()
 
