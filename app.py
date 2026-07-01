@@ -15328,6 +15328,12 @@ MEASURED_SOIL_PROFILES = {
     # → TAW ~81 mm/80cm. (Secano.)
     "Viaducto": {"Textura": "Franco-arenoso", "CC (%)": 15.7, "PMP (%)": 8.2,
                  "Da (g/cm³)": 1.34, "Prof. raíz (cm)": 80},
+    # Campazón (lab 2026, capa 20-50 cm): solo dan CLASE (Franco-arenosa) + MO 1.2 %
+    # oxidable (subsuelo). Sin % arena/arcilla → estimación gruesa con textura
+    # representativa 68/22/10 → TAW ~68 mm/80cm. PROVISIONAL (falta análisis 0-20 cm).
+    # Secano.
+    "Campazón": {"Textura": "Franco-arenoso", "CC (%)": 9.9, "PMP (%)": 4.4,
+                 "Da (g/cm³)": 1.55, "Prof. raíz (cm)": 80},
 }
 
 
