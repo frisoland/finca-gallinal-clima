@@ -15328,12 +15328,12 @@ MEASURED_SOIL_PROFILES = {
     # → TAW ~81 mm/80cm. (Secano.)
     "Viaducto": {"Textura": "Franco-arenoso", "CC (%)": 15.7, "PMP (%)": 8.2,
                  "Da (g/cm³)": 1.34, "Prof. raíz (cm)": 80},
-    # Campazón (lab 2026, capa 20-50 cm): solo dan CLASE (Franco-arenosa) + MO 1.2 %
-    # oxidable (subsuelo). Sin % arena/arcilla → estimación gruesa con textura
-    # representativa 68/22/10 → TAW ~68 mm/80cm. PROVISIONAL (falta análisis 0-20 cm).
-    # Secano.
-    "Campazón": {"Textura": "Franco-arenoso", "CC (%)": 9.9, "PMP (%)": 4.4,
-                 "Da (g/cm³)": 1.55, "Prof. raíz (cm)": 80},
+    # Campazón (Eurofins/SERIDA 2026, DOS capas combinadas por espesor 0-20 + 20-80):
+    #   0-20 cm: Arena 55.6 / Limo 36.6 / Arcilla 7.8 %, MO 4.3 % (alta) → mucha agua útil.
+    #   20-80 cm: subsuelo (solo clase franco-arenosa + MO 1.2) → representativa 68/22/10.
+    # Perfil efectivo ponderado → TAW ~80 mm/80cm. Secano.
+    "Campazón": {"Textura": "Franco-arenoso", "CC (%)": 11.7, "PMP (%)": 5.0,
+                 "Da (g/cm³)": 1.48, "Prof. raíz (cm)": 80},
     # Sector 4 (Eurofins/SERIDA 2026, capa 20-50 cm): Arena 67.6 / Limo 8.7 / Arcilla 23.8 %
     # (franco-arcillo-arenosa), MO 0.88 % (muy baja). Mucha arcilla pero sube el PMP y la
     # densidad → TAW ~65 mm/80cm. PROVISIONAL (subsuelo; el 0-20 cm sería más arenoso).
