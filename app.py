@@ -15324,6 +15324,10 @@ MEASURED_SOIL_PROFILES = {
     # (la más baja) → TAW ~72 mm/80cm.
     "Sector 3": {"Textura": "Franco-arenoso", "CC (%)": 11.8, "PMP (%)": 5.7,
                  "Da (g/cm³)": 1.48, "Prof. raíz (cm)": 80},
+    # Viaducto (AGQ, feb-2024, "Gallinal 2"): Arena 68 / Limo 20 / Arcilla 12 %, MO 4.47 %
+    # → TAW ~81 mm/80cm. (Secano.)
+    "Viaducto": {"Textura": "Franco-arenoso", "CC (%)": 15.7, "PMP (%)": 8.2,
+                 "Da (g/cm³)": 1.34, "Prof. raíz (cm)": 80},
 }
 
 
