@@ -15334,11 +15334,12 @@ MEASURED_SOIL_PROFILES = {
     # Perfil efectivo ponderado → TAW ~80 mm/80cm. Secano.
     "Campazón": {"Textura": "Franco-arenoso", "CC (%)": 11.7, "PMP (%)": 5.0,
                  "Da (g/cm³)": 1.48, "Prof. raíz (cm)": 80},
-    # Sector 4 (Eurofins/SERIDA 2026, capa 20-50 cm): Arena 67.6 / Limo 8.7 / Arcilla 23.8 %
-    # (franco-arcillo-arenosa), MO 0.88 % (muy baja). Mucha arcilla pero sube el PMP y la
-    # densidad → TAW ~65 mm/80cm. PROVISIONAL (subsuelo; el 0-20 cm sería más arenoso).
-    "Sector 4": {"Textura": "Franco-arcilloso", "CC (%)": 14.4, "PMP (%)": 9.3,
-                 "Da (g/cm³)": 1.59, "Prof. raíz (cm)": 80},
+    # Sector 4 (Eurofins/SERIDA 2026, DOS capas combinadas 0-20 + 20-80):
+    #   0-20 cm: Arena 61.6 / Limo 28.6 / Arcilla 9.8 %, MO 2.6 %.
+    #   20-80 cm: Arena 67.6 / Limo 8.7 / Arcilla 23.8 %, MO 0.88 % (arcilloso, agua poco útil).
+    # Perfil efectivo ponderado → TAW ~70 mm/80cm.
+    "Sector 4": {"Textura": "Franco-arenoso", "CC (%)": 14.0, "PMP (%)": 8.4,
+                 "Da (g/cm³)": 1.56, "Prof. raíz (cm)": 80},
 }
 
 
