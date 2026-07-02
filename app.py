@@ -15498,6 +15498,15 @@ ROOTSTOCK_ROOT_DEPTH_CM = {
     "M9": 55, "M7": 90, "MM109": 115, "MM111": 120, "Franco": 145,
 }
 
+# Patrón indicado A MANO por el usuario (cuando Producción no lo trae o no cuadra el
+# nombre). Manda sobre el dato de producción. Se va completando según el usuario indica.
+FIELD_ROOTSTOCK = {
+    "GY": "M9",
+    "Los Pinos 1": "M9", "Los Pinos 2": "M9", "Los Pinos 3": "M9",
+    "Los Pinos 4": "M9", "Los Pinos 5": "M9",
+    "Sector 8": "M9", "Sector 10-B": "M9",
+}
+
 
 def field_root_depths():
     """Por campo: (profundidad radicular efectiva PONDERADA por nº de árboles según el
@@ -15525,6 +15534,11 @@ def field_root_depths():
                     dommax, dom = n, pat
         if den > 0:
             out[str(campo).strip()] = (int(round(num / den)), dom or "—")
+    # Override manual: el patrón que el usuario fijó a mano manda sobre el de producción.
+    for campo, pat in FIELD_ROOTSTOCK.items():
+        d = ROOTSTOCK_ROOT_DEPTH_CM.get(str(pat).strip())
+        if d is not None:
+            out[campo] = (d, str(pat).strip())
     return out
 
 
