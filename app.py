@@ -8687,18 +8687,24 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         st.session_state.soil_profiles_df = normalize_soil_profiles_df(master)
         autosave_soil_profiles_to_supabase()
 
-    _disp = eff[["Campo", "Fuente"] + SOIL_PROFILE_EDIT_COLS + ["TAW mm"]].copy()
+    _sp_cols = ["Campo", "Fuente", "Patrón"] + SOIL_PROFILE_EDIT_COLS + ["TAW mm"]
+    _disp = eff[[c for c in _sp_cols if c in eff.columns]].copy()
     # Forzar tipo numérico decimal (si no, el editor los trata como enteros y al escribir
     # "10.9" se come el punto → "109" y lo recorta al máximo).
     for _c in ("CC (%)", "PMP (%)", "Da (g/cm³)", "Prof. raíz (cm)", "TAW mm"):
         _disp[_c] = pd.to_numeric(_disp[_c], errors="coerce").astype(float)
     st.data_editor(
         _disp, key=_editor_key, on_change=_apply_sp, num_rows="fixed",
-        use_container_width=True, hide_index=True, disabled=["Campo", "Fuente", "TAW mm"],
+        use_container_width=True, hide_index=True,
+        disabled=["Campo", "Fuente", "Patrón", "TAW mm"],
         column_config={
             "Fuente": st.column_config.TextColumn("Fuente",
                 help="🔬 Lab = de analítica de suelo · ≈ Estim.* = estimado por analogía (sin "
                      "análisis, prioridad para pedirlo) · · Def.* = valor por defecto."),
+            "Patrón": st.column_config.TextColumn("Patrón",
+                help="Portainjerto dominante del campo (de Producción). Fija la 'Raíz cm' efectiva: "
+                     "M9 55 · M7 90 · MM109 115 · MM111 120 · Franco 145. Edita 'Raíz cm' para "
+                     "sobreescribir."),
             "Textura": st.column_config.SelectboxColumn("Textura", options=list(SOIL_TEXTURE_REF.keys())),
             "CC (%)": st.column_config.NumberColumn("CC %", min_value=0.0, max_value=60.0,
                 step=0.1, format="%.1f", help="Capacidad de campo (% gravimétrico)."),
@@ -8707,7 +8713,9 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             "Da (g/cm³)": st.column_config.NumberColumn("Da", min_value=0.8, max_value=2.0,
                 step=0.05, format="%.2f", help="Densidad aparente (g/cm³)."),
             "Prof. raíz (cm)": st.column_config.NumberColumn("Raíz cm", min_value=10.0, max_value=200.0,
-                step=5.0, format="%.0f"),
+                step=5.0, format="%.0f",
+                help="Profundidad radicular efectiva. Por defecto la fija el PATRÓN del campo "
+                     "(columna Patrón); edítala para ponerla a tu criterio."),
             "Riego": st.column_config.SelectboxColumn("Riego", options=["", "Sí", "No"],
                 help="¿Tiene instalación de riego (goteo)?"),
             "TAW mm": st.column_config.NumberColumn("Reserva TAW", format="%.0f mm",
@@ -8766,8 +8774,10 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         "**Método FAO-56.** **ETc = ET0 × Kc**. **ET0** por **Penman-Monteith** completa "
         "(radiación solar + viento + HR + temperatura medidos; Ra por fecha) y, si falta "
         "radiación/viento, **Hargreaves** de respaldo. **Kc del manzano** por fase (suelo "
-        "desnudo/laboreo, FAO-56 Tabla 12). **Reserva** por parcela = agua útil de su suelo; "
-        "el agotamiento sube con ETc y baja con la lluvia; se avisa de regar bajo el "
+        "desnudo/laboreo, FAO-56 Tabla 12). **Reserva** por parcela = agua útil de su suelo × "
+        "**profundidad de raíz según el patrón** (M9 somero → poca reserva/más riego; Franco/MM "
+        "profundo → más reserva/tolerante). El agotamiento sube con ETc y baja con la lluvia; "
+        "se avisa de regar bajo el "
         f"{int(round((1-APPLE_DEPLETION_P)*100))} % (fracción p={APPLE_DEPLETION_P:.2f}). "
         "Balance desde el 1-abr (suelo lleno tras el invierno). Todo calibrable."
     )
@@ -15480,6 +15490,44 @@ def soil_profiles_base_rows():
     return pd.DataFrame(rows)
 
 
+# Profundidad radicular EFECTIVA por PATRÓN (portainjerto), en cm. El patrón fija cuánto
+# suelo explora la raíz → tamaño del "depósito" de agua. Enanizante = superficial (sensible
+# a sequía, más riego); vigoroso = profundo (tolerante). Literatura: dwarf M9 raíz somera
+# vs vigorosos MM111/Franco raíz extensa (Plant&Soil 1997; refs riego). Editable/calibrable.
+ROOTSTOCK_ROOT_DEPTH_CM = {
+    "M9": 55, "M7": 90, "MM109": 115, "MM111": 120, "Franco": 145,
+}
+
+
+def field_root_depths():
+    """Por campo: (profundidad radicular efectiva PONDERADA por nº de árboles según el
+    portainjerto, patrón_dominante). Desde produccion_df (año más reciente por campo)."""
+    out = {}
+    prod = st.session_state.get("produccion_df", pd.DataFrame())
+    if prod is None or prod.empty or "Portainjerto_nombre" not in prod.columns:
+        return out
+    p = prod.copy()
+    p["Num_arboles"] = pd.to_numeric(p.get("Num_arboles"), errors="coerce").fillna(0)
+    if "Año" in p.columns:
+        p = p[p["Año"] == p.groupby("Campo")["Año"].transform("max")]
+    g = p.groupby(["Campo", "Portainjerto_nombre"])["Num_arboles"].sum().reset_index()
+    for campo, sub in g.groupby("Campo"):
+        num = den = 0.0
+        dom, dommax = None, -1.0
+        for _, r in sub.iterrows():
+            pat = str(r["Portainjerto_nombre"]).strip()
+            n = float(r["Num_arboles"])
+            d = ROOTSTOCK_ROOT_DEPTH_CM.get(pat)
+            if d is not None and n > 0:
+                num += d * n
+                den += n
+                if n > dommax:
+                    dommax, dom = n, pat
+        if den > 0:
+            out[str(campo).strip()] = (int(round(num / den)), dom or "—")
+    return out
+
+
 def soil_profiles_effective():
     """Perfiles fusionados (base por defecto + lo que el usuario guardó), normalizados,
     con TAW calculado por parcela. Devuelve DataFrame indexado por Campo."""
@@ -15497,12 +15545,31 @@ def soil_profiles_effective():
     # Perfiles por ANALOGÍA (criterio) y luego MEDIDOS (laboratorio) MANDAN sobre lo
     # guardado — evita que un guardado antiguo/erróneo en Supabase tape el valor. Se aplican
     # en este orden para que un dato de laboratorio gane a una analogía si coincidieran.
+    # OJO: NO tocan "Prof. raíz (cm)" — la profundidad la fija el PATRÓN (abajo), no la analítica.
     for _src in (ANALOGY_SOIL_PROFILES, MEASURED_SOIL_PROFILES):
         for campo, prof in _src.items():
             if campo in merged.index:
                 for c, v in prof.items():
-                    if c in merged.columns:
+                    if c in merged.columns and c != "Prof. raíz (cm)":
                         merged.loc[campo, c] = v
+
+    # Profundidad de raíz por PATRÓN (portainjerto): el patrón ponderado del campo fija la
+    # profundidad efectiva (default), SALVO que el usuario la haya editado a mano (guardado).
+    _saved_prof = set()
+    if not saved.empty and "Prof. raíz (cm)" in saved.columns:
+        _ss = saved.set_index("Campo")
+        for campo in _ss.index:
+            v = _ss.loc[campo, "Prof. raíz (cm)"]
+            if pd.notna(v) and str(v).strip() not in ("", "nan", "None"):
+                _saved_prof.add(campo)
+    _rd = field_root_depths()
+    merged["Patrón"] = "—"
+    for campo in merged.index:
+        if campo in _rd:
+            merged.loc[campo, "Patrón"] = _rd[campo][1]
+            if campo not in _saved_prof:
+                merged.loc[campo, "Prof. raíz (cm)"] = _rd[campo][0]
+
     merged = merged.reset_index()
     merged["TAW mm"] = merged.apply(
         lambda r: round(taw_from_profile(r["CC (%)"], r["PMP (%)"], r["Da (g/cm³)"],
