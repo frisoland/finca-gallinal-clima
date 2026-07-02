@@ -15361,6 +15361,25 @@ MEASURED_SOIL_PROFILES = {
                     "Da (g/cm³)": 1.36, "Prof. raíz (cm)": 80},
 }
 
+# Perfiles por ANALOGÍA — SIN analítica todavía, asignados por el CRITERIO del usuario
+# (2026-07-02) por parecido con campos ya analizados. Provisionales: se reemplazan por el
+# medido cuando llegue el análisis. Se aplican igual que los medidos (mandan sobre lo
+# guardado en Supabase), pero conceptualmente son estimaciones.
+_GY_LIKE  = {"Textura": "Franco-arenoso", "CC (%)": 16.3, "PMP (%)": 7.9, "Da (g/cm³)": 1.19, "Prof. raíz (cm)": 80}
+_HU_LIKE  = {"Textura": "Franco-arenoso", "CC (%)": 10.9, "PMP (%)": 4.9, "Da (g/cm³)": 1.37, "Prof. raíz (cm)": 80}
+_S4_LIKE  = {"Textura": "Franco-arenoso", "CC (%)": 14.0, "PMP (%)": 8.4, "Da (g/cm³)": 1.56, "Prof. raíz (cm)": 80}
+_PR_LIKE  = {"Textura": "Franco",         "CC (%)": 18.1, "PMP (%)": 9.5, "Da (g/cm³)": 1.36, "Prof. raíz (cm)": 80}
+_CLAY_LIKE = {"Textura": "Franco",        "CC (%)": 14.3, "PMP (%)": 7.9, "Da (g/cm³)": 1.50, "Prof. raíz (cm)": 80}  # como 3/4 + arcilla
+ANALOGY_SOIL_PROFILES = {
+    "Sector 1": dict(_CLAY_LIKE), "Sector 2": dict(_CLAY_LIKE),   # muy arcillosos (≈3/4 +arcilla)
+    "Sector 5": dict(_S4_LIKE),                                   # ≈ Sector 4
+    "Sector 6": dict(_GY_LIKE), "Sector 8": dict(_GY_LIKE), "Sector 9": dict(_GY_LIKE),
+    "Sector 10": dict(_GY_LIKE), "Sector 10-B": dict(_GY_LIKE),
+    "Sector 11": dict(_GY_LIKE), "Sector 12": dict(_GY_LIKE),     # ≈ GY
+    "Sector 7": dict(_HU_LIKE),                                   # ≈ Huertona
+    "Piedrona 2": dict(_PR_LIKE),                                 # ≈ Piedrona Rincón
+}
+
 
 def taw_from_profile(cc, pmp, da, prof_cm):
     """Reserva útil total TAW (mm) = (CC−PMP)/100 · Da · prof(cm) · 10. El ×10 convierte
@@ -15467,13 +15486,15 @@ def soil_profiles_effective():
                     v = s.loc[campo, c]
                     if pd.notna(v) and str(v).strip() not in ("", "nan", "None"):
                         merged.loc[campo, c] = v
-    # Los perfiles MEDIDOS en laboratorio MANDAN SIEMPRE: dato autoritativo que se mete
-    # desde el código; evita que un guardado antiguo/erróneo en Supabase tape el valor real.
-    for campo, prof in MEASURED_SOIL_PROFILES.items():
-        if campo in merged.index:
-            for c, v in prof.items():
-                if c in merged.columns:
-                    merged.loc[campo, c] = v
+    # Perfiles por ANALOGÍA (criterio) y luego MEDIDOS (laboratorio) MANDAN sobre lo
+    # guardado — evita que un guardado antiguo/erróneo en Supabase tape el valor. Se aplican
+    # en este orden para que un dato de laboratorio gane a una analogía si coincidieran.
+    for _src in (ANALOGY_SOIL_PROFILES, MEASURED_SOIL_PROFILES):
+        for campo, prof in _src.items():
+            if campo in merged.index:
+                for c, v in prof.items():
+                    if c in merged.columns:
+                        merged.loc[campo, c] = v
     merged = merged.reset_index()
     merged["TAW mm"] = merged.apply(
         lambda r: round(taw_from_profile(r["CC (%)"], r["PMP (%)"], r["Da (g/cm³)"],
