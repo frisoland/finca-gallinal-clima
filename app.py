@@ -8742,12 +8742,17 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         else:
             estado = "🟢 OK"
         _dias = int((raw - Dr) / _etc_recent) if (_etc_recent and _etc_recent > 0 and Dr < raw) else 0
+        # Minutos de riego para reponer los mm recomendados (si hay config de goteo).
+        _dm = drip_system_metrics(pr["Campo"])
+        _regar_min = ""
+        if _dm and str(pr["Riego"]).strip() == "Sí" and m["riego_mm"] and _dm["min_per_mm"]:
+            _regar_min = int(round(m["riego_mm"] * _dm["min_per_mm"]))
         _rows.append({
             "Campo": (pr["Campo"] + " *") if str(pr.get("Fuente", "")).endswith("*") else pr["Campo"],
             "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
             "Reserva %": int(round(m["reserva_pct"])), "Agotam. mm": round(Dr, 1),
-            "Regar mm": m["riego_mm"], "Días al umbral": (_dias if Dr < raw else 0),
-            "Estado": estado,
+            "Regar mm": m["riego_mm"], "Regar min": _regar_min,
+            "Días al umbral": (_dias if Dr < raw else 0), "Estado": estado,
         })
     fld = pd.DataFrame(_rows)
     if not fld.empty:
@@ -8762,8 +8767,35 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         st.dataframe(fld, use_container_width=True, hide_index=True)
         st.caption(
             "**\\*** junto al campo = perfil de suelo **estimado** (sin analítica todavía; "
-            "ver columna *Fuente* arriba). Prioriza pedir su análisis de suelo para afinarlo."
+            "ver columna *Fuente* arriba). Prioriza pedir su análisis de suelo para afinarlo. "
+            "**Regar min** = minutos de goteo para reponer los *Regar mm* (solo en campos con "
+            "config de goteo cargada)."
         )
+        # ── Sistemas de riego configurados (goteo) ─────────────────────────────
+        _drip_rows = []
+        for _c in FIELD_DRIP_CONFIG:
+            _dmc = drip_system_metrics(_c)
+            if not _dmc:
+                continue
+            _cfg = FIELD_DRIP_CONFIG[_c]
+            _drip_rows.append({
+                "Campo": _c,
+                "Manguera m": _cfg.get("metros"),
+                "Goteros": int(round(_dmc["n_emitters"])),
+                "Caudal sist. L/h": int(round(_dmc["flow_lph"])),
+                "Pluviom. mm/h": round(_dmc["app_rate_mmph"], 2),
+                "Min por mm": int(round(_dmc["min_per_mm"])) if _dmc["min_per_mm"] else None,
+                "Árboles": _cfg.get("arboles"),
+            })
+        if _drip_rows:
+            with st.expander("🚿 Sistemas de riego configurados (goteo)", expanded=False):
+                st.dataframe(pd.DataFrame(_drip_rows), use_container_width=True, hide_index=True)
+                st.caption(
+                    "Caudal del sistema = (metros ÷ distancia goteros) × caudal por gotero. "
+                    "Pluviometría = caudal ÷ superficie del campo (1 mm = 1 L/m²). "
+                    "**Min por mm** = 60 ÷ pluviometría → los minutos de riego salen de "
+                    "*Regar mm × Min por mm*. Datos editables (dímelos y los ajusto)."
+                )
 
     with st.expander("📈 Detalle diario del clima y ETc (finca)", expanded=False):
         _show = per[["Fecha", "ET0", "Kc", "ETc", "Lluvia"]].copy()
@@ -15540,6 +15572,43 @@ def field_root_depths():
         if d is not None:
             out[campo] = (d, str(pat).strip())
     return out
+
+
+# Configuración de RIEGO por goteo, por campo (metros de manguera, distancia entre
+# goteros en m, caudal por gotero L/h, nº de árboles). El usuario los va dando; editable.
+FIELD_DRIP_CONFIG = {
+    "GY": {"metros": 2978, "dist_goteros_m": 0.75, "caudal_gotero_lph": 1.6, "arboles": 2766},
+}
+
+
+def _field_area_m2(campo):
+    for fr in FIELDS_BASE_ROWS:
+        if str(fr.get("Campo", "")).strip() == str(campo).strip():
+            ha = pd.to_numeric(fr.get("Superficie ha"), errors="coerce")
+            return float(ha) * 10000.0 if pd.notna(ha) else None
+    return None
+
+
+def drip_system_metrics(campo):
+    """Del goteo de un campo: nº goteros, caudal del sistema (L/h), pluviometría (mm/h) y
+    minutos necesarios por cada mm a reponer. mm ↔ L: 1 mm = 1 L/m². Devuelve None si no
+    hay config o datos."""
+    cfg = FIELD_DRIP_CONFIG.get(str(campo).strip())
+    if not cfg:
+        return None
+    try:
+        metros = float(cfg["metros"]); dist = float(cfg["dist_goteros_m"])
+        q = float(cfg["caudal_gotero_lph"]); area = _field_area_m2(campo)
+        if not (metros > 0 and dist > 0 and q > 0 and area and area > 0):
+            return None
+        n = metros / dist                        # nº de goteros
+        flow = n * q                             # caudal del sistema (L/h)
+        rate = flow / area                       # pluviometría (L/m²/h = mm/h)
+        return {"n_emitters": n, "flow_lph": flow, "app_rate_mmph": rate,
+                "min_per_mm": (60.0 / rate if rate > 0 else None),
+                "area_m2": area, "arboles": cfg.get("arboles")}
+    except Exception:
+        return None
 
 
 def soil_profiles_effective():
