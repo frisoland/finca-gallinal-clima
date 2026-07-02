@@ -15346,6 +15346,19 @@ MEASURED_SOIL_PROFILES = {
     # Perfil efectivo ponderado → TAW ~70 mm/80cm.
     "Sector 4": {"Textura": "Franco-arenoso", "CC (%)": 14.0, "PMP (%)": 8.4,
                  "Da (g/cm³)": 1.56, "Prof. raíz (cm)": 80},
+    # Los Pinos 1-5 (AGQ 2023, "LOS PINOS - GALLINAL", una capa/superficie): Arena 68 /
+    # Limo 17 / Arcilla 15 %, MO 4.52 % → TAW ~80 mm/80cm. Misma analítica para las 5
+    # parcelas Los Pinos (el usuario indicó que comparten suelo).
+    "Los Pinos 1": {"Textura": "Franco-arenoso", "CC (%)": 16.6, "PMP (%)": 9.3,
+                    "Da (g/cm³)": 1.36, "Prof. raíz (cm)": 80},
+    "Los Pinos 2": {"Textura": "Franco-arenoso", "CC (%)": 16.6, "PMP (%)": 9.3,
+                    "Da (g/cm³)": 1.36, "Prof. raíz (cm)": 80},
+    "Los Pinos 3": {"Textura": "Franco-arenoso", "CC (%)": 16.6, "PMP (%)": 9.3,
+                    "Da (g/cm³)": 1.36, "Prof. raíz (cm)": 80},
+    "Los Pinos 4": {"Textura": "Franco-arenoso", "CC (%)": 16.6, "PMP (%)": 9.3,
+                    "Da (g/cm³)": 1.36, "Prof. raíz (cm)": 80},
+    "Los Pinos 5": {"Textura": "Franco-arenoso", "CC (%)": 16.6, "PMP (%)": 9.3,
+                    "Da (g/cm³)": 1.36, "Prof. raíz (cm)": 80},
 }
 
 
