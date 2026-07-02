@@ -21186,6 +21186,7 @@ def render_decisiones_panel():
             _AMB2 = "background-color: rgba(240,160,0,0.22); color:#9a6a00; font-weight:700"
             _GRN2 = "background-color: rgba(0,150,60,0.16); color:#0a7a35; font-weight:700"
             _BLU2 = "background-color: rgba(40,110,210,0.15); color:#1a5fb4; font-weight:700"
+            _GRY2 = "background-color: rgba(140,140,140,0.18); color:#555555; font-weight:700"
             _THR2, _NEAR2 = 100.0, 90.0   # coherente con la banda "casi" del resumen (≥90%)
 
             def _num(v):
@@ -21193,31 +21194,40 @@ def render_decisiones_panel():
                     return float(str(v).replace("*", "").strip())   # "150*" → 150
                 except Exception:
                     return None
-            def _row_style(r):
-                styles = [""] * len(_dcols)
+
+            def _style_frame(df):
+                # axis=None: estilo de TODA la tabla a la vez → permite mirar días vecinos
+                # (tolerancia temporal ±1 día: una falsa alarma pegada a un evento real es la
+                #  COLA del mismo episodio, no un aviso en falso — el modelo vio la infección
+                #  pero no clava la hora exacta en que la hoja se seca).
+                sty = pd.DataFrame("", index=df.index, columns=df.columns)
+                n = len(df)
                 for prevc, realc in [("Moteado prev.", "Moteado real"),
                                      ("Monilia prev.", "Monilia real")]:
-                    rv = _num(r.get(realc))
-                    pv = _num(r.get(prevc))
-                    _rreal = str(r.get(realc))
-                    # Día "cerrado" = ya tiene real definitivo (no futuro "—" ni en curso "*").
-                    _settled = (rv is not None) and ("*" not in _rreal) and ("—" not in _rreal)
-                    if rv is not None and rv >= _THR2:        # día de EVENTO real
-                        if pv is not None and pv >= _THR2:
-                            css = _GRN2                       # aviso pleno (≥100)
-                        elif pv is not None and pv >= _NEAR2:
-                            css = _AMB2                       # casi-aviso (90–100)
-                        else:
-                            css = _RED2                       # se le escapó (<90)
-                        styles[_dcols.index(realc)] = css
-                        styles[_dcols.index(prevc)] = css
-                    elif _settled and pv is not None and pv >= _THR2:
-                        # FALSA ALARMA: avisó (≥100) y el real se quedó por debajo → no pasó.
-                        styles[_dcols.index(realc)] = _BLU2
-                        styles[_dcols.index(prevc)] = _BLU2
-                return styles
+                    if prevc not in df.columns or realc not in df.columns:
+                        continue
+                    reals = [_num(df.iloc[i][realc]) for i in range(n)]
+                    prevs = [_num(df.iloc[i][prevc]) for i in range(n)]
+                    raw = [str(df.iloc[i][realc]) for i in range(n)]
+                    isevt = [(reals[i] is not None and reals[i] >= _THR2) for i in range(n)]
+                    ip, ir = df.columns.get_loc(prevc), df.columns.get_loc(realc)
+                    for i in range(n):
+                        rv, pv = reals[i], prevs[i]
+                        settled = (rv is not None) and ("*" not in raw[i]) and ("—" not in raw[i])
+                        css = ""
+                        if isevt[i]:                                   # día de EVENTO real
+                            css = (_GRN2 if (pv is not None and pv >= _THR2)
+                                   else _AMB2 if (pv is not None and pv >= _NEAR2) else _RED2)
+                        elif settled and pv is not None and pv >= _THR2:
+                            # avisó y no pasó: ¿pegado a un evento real (±1 día)? → cola, no falsa alarma
+                            _adj = (i > 0 and isevt[i - 1]) or (i < n - 1 and isevt[i + 1])
+                            css = _GRY2 if _adj else _BLU2
+                        if css:
+                            sty.iloc[i, ip] = css
+                            sty.iloc[i, ir] = css
+                return sty
             try:
-                st.dataframe(_daily.style.apply(_row_style, axis=1),
+                st.dataframe(_daily.style.apply(_style_frame, axis=None),
                              use_container_width=True, hide_index=True)
             except Exception:
                 st.dataframe(_daily, use_container_width=True, hide_index=True)
@@ -21229,8 +21239,10 @@ def render_decisiones_panel():
                 "🟡 = **casi-aviso** (llegó al 90–100 % del umbral → cuenta como avisado, pero se "
                 "quedó justo por debajo) · 🔴 = **se le escapó** (previsión <90). En un día "
                 "**sin** infección: 🔵 = **falsa alarma** (avisó ≥100 y no pasó → tratarías de más, "
-                "pero sin riesgo). El 🔴 (escape) es el error peligroso; el 🔵 (falsa alarma), el "
-                "molesto pero seguro. Ambos se cuentan arriba en el resumen."
+                "pero sin riesgo) · ⚪ **gris** = **cola de evento**: avisó y no pasó, pero **pegado "
+                "a un día de infección real** (±1 día) → es el mismo episodio, el modelo lo vio pero "
+                "no acertó la hora exacta de corte (no es un fallo real). El 🔴 (escape) es el error "
+                "peligroso; el 🔵 (falsa alarma), el molesto pero seguro."
             )
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
