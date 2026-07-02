@@ -21185,6 +21185,7 @@ def render_decisiones_panel():
             _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
             _AMB2 = "background-color: rgba(240,160,0,0.22); color:#9a6a00; font-weight:700"
             _GRN2 = "background-color: rgba(0,150,60,0.16); color:#0a7a35; font-weight:700"
+            _BLU2 = "background-color: rgba(40,110,210,0.15); color:#1a5fb4; font-weight:700"
             _THR2, _NEAR2 = 100.0, 90.0   # coherente con la banda "casi" del resumen (≥90%)
 
             def _num(v):
@@ -21198,15 +21199,22 @@ def render_decisiones_panel():
                                      ("Monilia prev.", "Monilia real")]:
                     rv = _num(r.get(realc))
                     pv = _num(r.get(prevc))
-                    if rv is not None and rv >= _THR2:   # día de EVENTO real
+                    _rreal = str(r.get(realc))
+                    # Día "cerrado" = ya tiene real definitivo (no futuro "—" ni en curso "*").
+                    _settled = (rv is not None) and ("*" not in _rreal) and ("—" not in _rreal)
+                    if rv is not None and rv >= _THR2:        # día de EVENTO real
                         if pv is not None and pv >= _THR2:
-                            css = _GRN2                  # aviso pleno (≥100)
+                            css = _GRN2                       # aviso pleno (≥100)
                         elif pv is not None and pv >= _NEAR2:
-                            css = _AMB2                  # casi-aviso (90–100 → cuenta como avisado)
+                            css = _AMB2                       # casi-aviso (90–100)
                         else:
-                            css = _RED2                  # se le escapó (<90)
+                            css = _RED2                       # se le escapó (<90)
                         styles[_dcols.index(realc)] = css
                         styles[_dcols.index(prevc)] = css
+                    elif _settled and pv is not None and pv >= _THR2:
+                        # FALSA ALARMA: avisó (≥100) y el real se quedó por debajo → no pasó.
+                        styles[_dcols.index(realc)] = _BLU2
+                        styles[_dcols.index(prevc)] = _BLU2
                 return styles
             try:
                 st.dataframe(_daily.style.apply(_row_style, axis=1),
@@ -21219,8 +21227,10 @@ def render_decisiones_panel():
                 "**provisional** (sube hasta que se seca y el evento cierra). En un día de "
                 "**infección real (≥100)**: 🟢 = la previsión lo **anunció pleno** (≥100) · "
                 "🟡 = **casi-aviso** (llegó al 90–100 % del umbral → cuenta como avisado, pero se "
-                "quedó justo por debajo) · 🔴 = **se le escapó** (previsión <90). Si «Moteado prev.» "
-                "pone 150 y «real» 23, la previsión exageró ese día."
+                "quedó justo por debajo) · 🔴 = **se le escapó** (previsión <90). En un día "
+                "**sin** infección: 🔵 = **falsa alarma** (avisó ≥100 y no pasó → tratarías de más, "
+                "pero sin riesgo). El 🔴 (escape) es el error peligroso; el 🔵 (falsa alarma), el "
+                "molesto pero seguro. Ambos se cuentan arriba en el resumen."
             )
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
