@@ -15577,7 +15577,13 @@ def field_root_depths():
 # Configuración de RIEGO por goteo, por campo (metros de manguera, distancia entre
 # goteros en m, caudal por gotero L/h, nº de árboles). El usuario los va dando; editable.
 FIELD_DRIP_CONFIG = {
-    "GY": {"metros": 2978, "dist_goteros_m": 0.75, "caudal_gotero_lph": 1.6, "arboles": 2766},
+    # GY = 3 subsectores de riego que corren EN SECUENCIA (no a la vez):
+    #   S5 GY-Amariega     788 árb · 1345 m
+    #   S6 GY-Gallinal nuevo 1212 árb · 1123 m
+    #   S7 GY-Gallinal      1080 árb · 1620 m
+    # Total 3080 árb · 4088 m. "zonas"=3 → el caudal se reparte en el tiempo (secuencial).
+    "GY": {"metros": 4088, "dist_goteros_m": 0.75, "caudal_gotero_lph": 1.6,
+           "arboles": 3080, "zonas": 3},
 }
 
 
@@ -15599,14 +15605,18 @@ def drip_system_metrics(campo):
     try:
         metros = float(cfg["metros"]); dist = float(cfg["dist_goteros_m"])
         q = float(cfg["caudal_gotero_lph"]); area = _field_area_m2(campo)
+        zonas = max(1, int(cfg.get("zonas", 1) or 1))   # subsectores que riegan en SECUENCIA
         if not (metros > 0 and dist > 0 and q > 0 and area and area > 0):
             return None
-        n = metros / dist                        # nº de goteros
-        flow = n * q                             # caudal del sistema (L/h)
-        rate = flow / area                       # pluviometría (L/m²/h = mm/h)
+        n = metros / dist                        # nº de goteros (total)
+        flow = n * q                             # caudal si regasen TODOS a la vez (L/h)
+        # Pluviometría EFECTIVA sobre el campo: si hay N zonas secuenciales, solo 1/N del
+        # caudal riega a la vez → el tiempo de reloj para dar 1 mm a todo el campo se
+        # multiplica por N. rate = caudal / superficie / zonas.
+        rate = flow / area / zonas
         return {"n_emitters": n, "flow_lph": flow, "app_rate_mmph": rate,
                 "min_per_mm": (60.0 / rate if rate > 0 else None),
-                "area_m2": area, "arboles": cfg.get("arboles")}
+                "area_m2": area, "arboles": cfg.get("arboles"), "zonas": zonas}
     except Exception:
         return None
 
