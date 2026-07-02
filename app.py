@@ -19848,23 +19848,44 @@ def forecast_reliability(history_df, archive_df=None):
         # Tabla principal POR DÍA: una fila por día real, usando la previsión MÁS
         # RECIENTE de cada día (la más fiable). Así "acertó X de N días" se cuenta por
         # días, no por comparaciones. (La tabla de antelación de abajo sí usa todas.)
-        comp_day = comp.sort_values("horizon").drop_duplicates("target_date", keep="first")
+        comp_day = comp.sort_values("horizon").drop_duplicates("target_date", keep="first").copy()
+        comp_day["_dt"] = pd.to_datetime(comp_day["target_date"], errors="coerce").dt.normalize()
         out_rows = []
-        for label, pv, rv, thr, near in [
-                ("🍄 Moteado", "moteado_pv", "moteado_rv", THR,  NEAR),
-                ("🟤 Monilia", "monilia_pv", "monilia_rv", THR,  NEAR),
-                ("⚪ Oídio",   "oidio_pv",   "oidio_rv",   THR,  NEAR),
-                ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, 1.0)]:
-            _p_full = comp_day[pv] >= thr             # aviso PLENO (≥umbral) → falsas alarmas
-            _p_warn = comp_day[pv] >= thr * near      # aviso incl. "casi" (≥90% del umbral)
-            _r = comp_day[rv] >= thr                  # evento real
-            reales = int(_r.sum())
-            tp = int((_p_warn & _r).sum())            # evento real que SÍ avisó (incl. casi)
-            fp = int((_p_full & ~_r).sum())           # aviso PLENO que NO pasó (falsa alarma)
-            fn = int((~_p_warn & _r).sum())           # evento real que ni casi avisó (escapó)
-            avisos = int(_p_full.sum())
-            # Día correcto: evento→avisado(≥90%) · sin evento→sin aviso pleno.
-            aciertos = int(((_r & _p_warn) | (~_r & ~_p_full)).sum())
+        # `tol` = tolerancia temporal en días (±1 para infecciones: un aviso/evento a un día
+        # de distancia = mismo episodio, el modelo no clava la hora de corte. La lluvia va
+        # estricta, tol=0, porque es una medida diaria directa, no un episodio).
+        for label, pv, rv, thr, near, tol in [
+                ("🍄 Moteado", "moteado_pv", "moteado_rv", THR,  NEAR, 1),
+                ("🟤 Monilia", "monilia_pv", "monilia_rv", THR,  NEAR, 1),
+                ("⚪ Oídio",   "oidio_pv",   "oidio_rv",   THR,  NEAR, 1),
+                ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, 1.0, 0)]:
+            # Estado por día: (aviso_pleno ≥umbral, aviso_casi ≥90%, evento_real).
+            _day = {}
+            for _, _rw in comp_day.iterrows():
+                _d = _rw["_dt"]
+                if pd.isna(_d):
+                    continue
+                _day[_d] = (float(_rw[pv]) >= thr, float(_rw[pv]) >= thr * near,
+                            float(_rw[rv]) >= thr)
+
+            def _near(_d, _i, _day=_day, _tol=tol):
+                """¿Algún día en ±tol cumple la condición _i (0=aviso pleno,1=casi,2=evento)?"""
+                return any(_day.get(_d + pd.Timedelta(days=k), (False, False, False))[_i]
+                           for k in range(-_tol, _tol + 1))
+
+            reales = tp = fn = fp = aciertos = 0
+            for _d, (_pf, _pw, _re) in _day.items():
+                if _re:                                    # día de EVENTO real
+                    reales += 1
+                    if _near(_d, 1):                       # avisó (≥90%) en ±tol → pillado
+                        tp += 1; aciertos += 1
+                    else:
+                        fn += 1                            # se escapó (ni a ±tol)
+                else:                                      # sin evento
+                    if _pf and not _near(_d, 2):           # aviso pleno y NINGÚN evento en ±tol
+                        fp += 1                            # falsa alarma real
+                    else:
+                        aciertos += 1                      # sin aviso, o "cola" de evento (excusada)
             # Fiabilidad basada en LO QUE IMPORTA: ¿pilla los eventos de infección reales?
             # Un "acierto" global alto no vale si se le escapan eventos (premia días tranquilos).
             if reales == 0:
@@ -21162,6 +21183,11 @@ def render_decisiones_panel():
                 "umbral** (≥90 cuando el real ≥100) cuenta como **avisado** — el modelo sí marcó "
                 "riesgo alto aunque no cruzara el 100 exacto. Esto solo afecta a esta métrica, **no** "
                 "al umbral 100 que decide los tratamientos. (Las *falsas alarmas* sí exigen aviso pleno ≥100.)\n\n"
+                "ℹ️ **Tolerancia de ±1 día (solo moteado/monilia/oídio):** las infecciones son "
+                "**episodios**, y el modelo no clava la hora exacta en que la hoja se seca. Por eso un "
+                "evento se cuenta **avisado** si la previsión lo marcó en el día **o en el de al lado**, "
+                "y un aviso **no** cuenta como falsa alarma si hubo un evento real a ±1 día (es la cola "
+                "del mismo episodio). La **lluvia** va estricta, sin tolerancia (es una medida diaria).\n\n"
                 "**Para la lluvia:** «avisó» = predijo lluvia; «falsa alarma» = predijo y no llovió; "
                 "«se le escapó» = no predijo y llovió. Cuenta como lluvia ≥ 0,2 mm.\n\n"
                 "**Fiabilidad** (depende de si pilla los eventos, no del acierto global): "
