@@ -8687,15 +8687,18 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         st.session_state.soil_profiles_df = normalize_soil_profiles_df(master)
         autosave_soil_profiles_to_supabase()
 
-    _disp = eff[["Campo"] + SOIL_PROFILE_EDIT_COLS + ["TAW mm"]].copy()
+    _disp = eff[["Campo", "Fuente"] + SOIL_PROFILE_EDIT_COLS + ["TAW mm"]].copy()
     # Forzar tipo numérico decimal (si no, el editor los trata como enteros y al escribir
     # "10.9" se come el punto → "109" y lo recorta al máximo).
     for _c in ("CC (%)", "PMP (%)", "Da (g/cm³)", "Prof. raíz (cm)", "TAW mm"):
         _disp[_c] = pd.to_numeric(_disp[_c], errors="coerce").astype(float)
     st.data_editor(
         _disp, key=_editor_key, on_change=_apply_sp, num_rows="fixed",
-        use_container_width=True, hide_index=True, disabled=["Campo", "TAW mm"],
+        use_container_width=True, hide_index=True, disabled=["Campo", "Fuente", "TAW mm"],
         column_config={
+            "Fuente": st.column_config.TextColumn("Fuente",
+                help="🔬 Lab = de analítica de suelo · ≈ Estim.* = estimado por analogía (sin "
+                     "análisis, prioridad para pedirlo) · · Def.* = valor por defecto."),
             "Textura": st.column_config.SelectboxColumn("Textura", options=list(SOIL_TEXTURE_REF.keys())),
             "CC (%)": st.column_config.NumberColumn("CC %", min_value=0.0, max_value=60.0,
                 step=0.1, format="%.1f", help="Capacidad de campo (% gravimétrico)."),
@@ -8732,7 +8735,8 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             estado = "🟢 OK"
         _dias = int((raw - Dr) / _etc_recent) if (_etc_recent and _etc_recent > 0 and Dr < raw) else 0
         _rows.append({
-            "Campo": pr["Campo"], "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
+            "Campo": (pr["Campo"] + " *") if str(pr.get("Fuente", "")).endswith("*") else pr["Campo"],
+            "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
             "Reserva %": int(round(m["reserva_pct"])), "Agotam. mm": round(Dr, 1),
             "Regar mm": m["riego_mm"], "Días al umbral": (_dias if Dr < raw else 0),
             "Estado": estado,
@@ -8748,6 +8752,10 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         else:
             st.success("🟢 Todos los campos con reserva de suelo suficiente. Sin necesidad de riego.")
         st.dataframe(fld, use_container_width=True, hide_index=True)
+        st.caption(
+            "**\\*** junto al campo = perfil de suelo **estimado** (sin analítica todavía; "
+            "ver columna *Fuente* arriba). Prioriza pedir su análisis de suelo para afinarlo."
+        )
 
     with st.expander("📈 Detalle diario del clima y ETc (finca)", expanded=False):
         _show = per[["Fecha", "ET0", "Kc", "ETc", "Lluvia"]].copy()
@@ -15499,6 +15507,14 @@ def soil_profiles_effective():
     merged["TAW mm"] = merged.apply(
         lambda r: round(taw_from_profile(r["CC (%)"], r["PMP (%)"], r["Da (g/cm³)"],
                                          r["Prof. raíz (cm)"]), 0), axis=1)
+
+    def _src(campo):
+        if campo in MEASURED_SOIL_PROFILES:
+            return "🔬 Lab"
+        if campo in ANALOGY_SOIL_PROFILES:
+            return "≈ Estim.*"
+        return "· Def.*"
+    merged["Fuente"] = merged["Campo"].map(_src)
     return merged
 
 
