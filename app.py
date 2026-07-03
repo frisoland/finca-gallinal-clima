@@ -8696,7 +8696,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         st.session_state.soil_profiles_df = normalize_soil_profiles_df(master)
         autosave_soil_profiles_to_supabase()
 
-    _sp_cols = ["Campo", "Fuente", "Patrón"] + SOIL_PROFILE_EDIT_COLS + ["TAW mm"]
+    _sp_cols = ["Campo", "Fuente", "Patrón", "Kc×"] + SOIL_PROFILE_EDIT_COLS + ["TAW mm"]
     _disp = eff[[c for c in _sp_cols if c in eff.columns]].copy()
     # Forzar tipo numérico decimal (si no, el editor los trata como enteros y al escribir
     # "10.9" se come el punto → "109" y lo recorta al máximo).
@@ -8705,8 +8705,12 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
     st.data_editor(
         _disp, key=_editor_key, on_change=_apply_sp, num_rows="fixed",
         use_container_width=True, hide_index=True,
-        disabled=["Campo", "Fuente", "Patrón", "TAW mm"],
+        disabled=["Campo", "Fuente", "Patrón", "Kc×", "TAW mm"],
         column_config={
+            "Kc×": st.column_config.NumberColumn("Kc×", format="%.2f",
+                help="Factor de cobertura/edad que ajusta la ETc (1.0 = adulto a plena "
+                     "cobertura; menor = enano/joven). Calibración — se afina con el estado "
+                     "real del árbol / calibre. Dímelo y lo ajusto."),
             "Fuente": st.column_config.TextColumn("Fuente",
                 help="🔬 Lab = de analítica de suelo · ≈ Estim.* = estimado por analogía (sin "
                      "análisis, prioridad para pedirlo) · · Def.* = valor por defecto."),
@@ -8772,7 +8776,8 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         if not _taw or pd.isna(_taw):
             continue
         _irr = field_irrigation_by_date(pr["Campo"])
-        _, m = run_soil_depletion(daily, _taw, irr_by_date=_irr)
+        _cov = field_cover_factor(pr["Campo"])
+        _, m = run_soil_depletion(daily, _taw, cover=_cov, irr_by_date=_irr)
         if not m:
             continue
         Dr, raw = m["Dr"], m["RAW"]
@@ -15581,6 +15586,21 @@ FIELD_ROOTSTOCK = {
     "Sector 8": "M9", "Sector 10-B": "M9",
 }
 
+# PASO B — factor de calibración de COBERTURA/EDAD (Kc×) por campo. Escala la ETc: 1.0 =
+# adulto a plena cobertura (default). Menor = enano/joven que no cubren todo el suelo →
+# menos ET real. Se AFINA con la evidencia (estado del árbol / calibre de septiembre).
+# Provisional: GY es M9 + parte plantada hace 3 años → cobertura incompleta.
+FIELD_COVER_FACTOR = {
+    "GY": 0.75,
+}
+
+
+def field_cover_factor(campo):
+    try:
+        return float(FIELD_COVER_FACTOR.get(str(campo).strip(), 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
 
 def field_root_depths():
     """Por campo: (profundidad radicular efectiva PONDERADA por nº de árboles según el
@@ -15845,6 +15865,7 @@ def soil_profiles_effective():
             return "≈ Estim.*"
         return "· Def.*"
     merged["Fuente"] = merged["Campo"].map(_src)
+    merged["Kc×"] = merged["Campo"].map(field_cover_factor)
     return merged
 
 
