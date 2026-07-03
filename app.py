@@ -15637,6 +15637,7 @@ FIELD_ROOTSTOCK = {
 # GY (M9 + parte plantada hace 3 años, cobertura incompleta) calibrado a 0.70.
 FIELD_COVER_FACTOR = {
     "GY": 0.70,
+    "Sector 8": 0.70,   # mismo M9 + suelo que GY → misma cobertura para comparar justo
 }
 
 # Override de PROFUNDIDAD RADICULAR efectiva por campo (cm), por CALIBRACIÓN — cuando el
@@ -15645,6 +15646,7 @@ FIELD_COVER_FACTOR = {
 # provisional, se confirma con el calibre). Manda sobre el patrón; una edición manual gana.
 FIELD_ROOT_DEPTH_OVERRIDE = {
     "GY": 120,
+    "Sector 8": 120,   # mismo M9 + suelo que GY → misma raíz efectiva para comparar justo
 }
 
 
