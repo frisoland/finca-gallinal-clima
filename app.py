@@ -8858,7 +8858,8 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             )
         # ── Sistemas de riego configurados (goteo) ─────────────────────────────
         _drip_rows = []
-        for _c in sorted({str(z.get("campo", "")).strip() for z in IRRIGATION_ZONES.values()}):
+        for _c in sorted({str(p.get("campo", "")).strip()
+                          for parts in IRRIGATION_ZONES.values() for p in parts}):
             _dmc = drip_system_metrics(_c)
             if not _dmc:
                 continue
