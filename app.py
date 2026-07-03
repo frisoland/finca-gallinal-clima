@@ -15645,6 +15645,7 @@ FIELD_ROOTSTOCK = {
 FIELD_COVER_FACTOR = {
     "GY": 0.70,
     "Sector 8": 0.70,   # mismo M9 + suelo que GY → misma cobertura para comparar justo
+    "Sector 7": 0.85,   # MM111 vigoroso (más copa que los M9); árboles finos
 }
 
 # Override de PROFUNDIDAD RADICULAR efectiva por campo (cm), por CALIBRACIÓN — cuando el
@@ -15654,6 +15655,7 @@ FIELD_COVER_FACTOR = {
 FIELD_ROOT_DEPTH_OVERRIDE = {
     "GY": 120,
     "Sector 8": 120,   # mismo M9 + suelo que GY → misma raíz efectiva para comparar justo
+    "Sector 7": 200,   # MM111 vigoroso → raíz muy profunda (calibrado a árboles finos)
 }
 
 
