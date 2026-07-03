@@ -8722,9 +8722,9 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 help="🔬 Lab = de analítica de suelo · ≈ Estim.* = estimado por analogía (sin "
                      "análisis, prioridad para pedirlo) · · Def.* = valor por defecto."),
             "Patrón": st.column_config.TextColumn("Patrón",
-                help="Portainjerto dominante del campo (de Producción). Fija la 'Raíz cm' efectiva: "
-                     "M9 55 · M7 90 · MM109 115 · MM111 120 · Franco 145. Edita 'Raíz cm' para "
-                     "sobreescribir."),
+                help="Portainjerto dominante del campo (de Producción). Fija la 'Raíz cm' efectiva "
+                     "(secano/suplementario): M9 90 · M7 115 · MM109 140 · MM111 150 · Franco 175. "
+                     "Edita 'Raíz cm' para sobreescribir."),
             "Textura": st.column_config.SelectboxColumn("Textura", options=list(SOIL_TEXTURE_REF.keys())),
             "CC (%)": st.column_config.NumberColumn("CC %", min_value=0.0, max_value=60.0,
                 step=0.1, format="%.1f", help="Capacidad de campo (% gravimétrico)."),
@@ -15582,8 +15582,11 @@ def soil_profiles_base_rows():
 # suelo explora la raíz → tamaño del "depósito" de agua. Enanizante = superficial (sensible
 # a sequía, más riego); vigoroso = profundo (tolerante). Literatura: dwarf M9 raíz somera
 # vs vigorosos MM111/Franco raíz extensa (Plant&Soil 1997; refs riego). Editable/calibrable.
+# Valores de SECANO/SUPLEMENTARIO (extremo profundo del rango FAO): en riego no intensivo
+# la raíz baja a buscar agua, así que se usa la Zr grande, no la pequeña de riego diario.
+# (Antes: M9 55 · M7 90 · MM109 115 · MM111 120 · Franco 145 = versión riego intensivo.)
 ROOTSTOCK_ROOT_DEPTH_CM = {
-    "M9": 55, "M7": 90, "MM109": 115, "MM111": 120, "Franco": 145,
+    "M9": 90, "M7": 115, "MM109": 140, "MM111": 150, "Franco": 175,
 }
 
 # Patrón indicado A MANO por el usuario (cuando Producción no lo trae o no cuadra el
