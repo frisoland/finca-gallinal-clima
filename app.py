@@ -8518,19 +8518,26 @@ def apple_kc(ts):
     return float(np.interp(ts.dayofyear, xs, ys))
 
 
-def daily_et_frame(history_df, upto_ts, lat_deg=GALLINAL_LAT_DEG, anchor_md=(4, 1)):
+def daily_et_frame(history_df, upto_ts, lat_deg=GALLINAL_LAT_DEG, anchor_md=None):
     """Serie DIARIA de clima + ET0/ETc del manzano (COMPARTIDA por toda la finca — un solo
-    sensor), desde el 1-abr hasta `upto_ts`. ET0 por **Penman-Monteith** (radiación+viento
-    medidos) y, si faltan, **Hargreaves** de respaldo. Devuelve (df, método_predominante)."""
+    sensor). Corre en CONTINUO desde el otoño anterior (o el inicio de los datos) hasta
+    `upto_ts`, con lluvia y ET reales → el estado del depósito se DERIVA del historial, no se
+    asume "lleno el 1-abr". ET0 por **Penman-Monteith** (radiación+viento medidos) y, si
+    faltan, **Hargreaves** de respaldo. Devuelve (df, método_predominante)."""
     if history_df is None or history_df.empty:
         return pd.DataFrame(), "—"
     h = history_df.copy()
     h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
     h = h.dropna(subset=["fecha_hora"])
     upto = pd.Timestamp(upto_ts).normalize()
-    start = pd.Timestamp(upto.year, anchor_md[0], anchor_md[1])
-    if start > upto:
-        start = pd.Timestamp(upto.year, 1, 1)
+    # Arranca en el OTOÑO ANTERIOR (inicio de la temporada húmeda asturiana): el invierno
+    # satura el suelo y la reserva se acota a capacidad de campo, así que el estado inicial
+    # se "olvida" y el depósito de verano queda derivado del historial real. Si los datos
+    # empiezan más tarde, se usa el primer dato disponible.
+    start = pd.Timestamp(upto.year - 1, 10, 1)
+    _dmin = h["fecha_hora"].min()
+    if pd.notna(_dmin) and _dmin.normalize() > start:
+        start = _dmin.normalize()
     hh = h[(h["fecha_hora"] >= start) &
            (h["fecha_hora"] <= upto + pd.Timedelta(hours=23, minutes=59))].copy()
     if hh.empty:
@@ -8858,7 +8865,9 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         "profundo → más reserva/tolerante). El agotamiento sube con ETc y baja con la lluvia; "
         "se avisa de regar bajo el "
         f"{int(round((1-APPLE_DEPLETION_P)*100))} % (fracción p={APPLE_DEPLETION_P:.2f}). "
-        "Balance desde el 1-abr (suelo lleno tras el invierno). Todo calibrable."
+        "El balance corre en **continuo desde el otoño anterior** con lluvia y ET reales, así "
+        "que el estado del depósito se **deriva del historial**, no se asume lleno en primavera. "
+        "Todo calibrable."
     )
 
 
