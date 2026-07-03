@@ -8815,19 +8815,19 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         )
         # ── Sistemas de riego configurados (goteo) ─────────────────────────────
         _drip_rows = []
-        for _c in FIELD_DRIP_CONFIG:
+        for _c in sorted({str(z.get("campo", "")).strip() for z in IRRIGATION_ZONES.values()}):
             _dmc = drip_system_metrics(_c)
             if not _dmc:
                 continue
-            _cfg = FIELD_DRIP_CONFIG[_c]
             _drip_rows.append({
                 "Campo": _c,
-                "Manguera m": _cfg.get("metros"),
+                "Manguera m": int(round(_dmc.get("metros") or 0)),
+                "Zonas": _dmc.get("zonas"),
                 "Goteros": int(round(_dmc["n_emitters"])),
                 "Caudal sist. L/h": int(round(_dmc["flow_lph"])),
                 "Pluviom. mm/h": round(_dmc["app_rate_mmph"], 2),
                 "Min por mm": int(round(_dmc["min_per_mm"])) if _dmc["min_per_mm"] else None,
-                "Árboles": _cfg.get("arboles"),
+                "Árboles": int(round(_dmc.get("arboles") or 0)),
             })
         if _drip_rows:
             with st.expander("🚿 Sistemas de riego configurados (goteo)", expanded=False):
