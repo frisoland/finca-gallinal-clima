@@ -15627,6 +15627,7 @@ FIELD_ROOTSTOCK = {
     "Los Pinos 1": "M9", "Los Pinos 2": "M9", "Los Pinos 3": "M9",
     "Los Pinos 4": "M9", "Los Pinos 5": "M9",
     "Sector 8": "M9", "Sector 10-B": "M9",
+    "Sector 7": "MM111",   # vigoroso (raíz profunda)
 }
 
 # PASO B — factor de calibración de COBERTURA/EDAD (Kc×) por campo. Escala la ETc: 1.0 =
@@ -15690,11 +15691,18 @@ def field_root_depths():
 # Zonas de RIEGO por goteo. Un campo puede tener varias zonas (subsectores) que riegan
 # EN SECUENCIA. La CLAVE es el nombre de la zona tal como sale en el Excel de Agronic/Vegga
 # (columna "Nombre") → así el historial de riego se mapea al campo. Editable.
+# Cada NOMBRE del Excel (Agronic/Vegga) → LISTA de partes {campo, metros, dist, caudal,
+# árboles}. Normalmente 1 campo por válvula; si una electroválvula riega VARIOS campos a la
+# vez (compartida), lleva varias partes → ese riego se reparte entre ellos.
 IRRIGATION_ZONES = {
-    # GY = 3 subsectores (E5 Amariega, E6 Gallinal nuevo, E7 Gallinal):
-    "E5-SYAma":     {"campo": "GY", "metros": 1345, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 788},
-    "E6-SYGaNuevo": {"campo": "GY", "metros": 1123, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1212},
-    "E7-SYGa":      {"campo": "GY", "metros": 1620, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1080},
+    # GY = 3 subsectores que riegan EN SECUENCIA:
+    "E5-SYAma":     [{"campo": "GY", "metros": 1345, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 788}],
+    "E6-SYGaNuevo": [{"campo": "GY", "metros": 1123, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1212}],
+    "E7-SYGa":      [{"campo": "GY", "metros": 1620, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1080}],
+    # Sector 7 + Sector 8 = UNA electroválvula compartida (riegan juntos, mismos minutos).
+    # 1365 m repartidos por nº de árboles (320/552).
+    "E6-6d-S8y":    [{"campo": "Sector 7", "metros": 501, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 320},
+                     {"campo": "Sector 8", "metros": 864, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 552}],
 }
 
 
@@ -15707,8 +15715,12 @@ def _field_area_m2(campo):
 
 
 def field_irrigation_zones(campo):
-    return [z for z in IRRIGATION_ZONES.values()
-            if str(z.get("campo", "")).strip() == str(campo).strip()]
+    out = []
+    for parts in IRRIGATION_ZONES.values():
+        for p in parts:
+            if str(p.get("campo", "")).strip() == str(campo).strip():
+                out.append(p)
+    return out
 
 
 def drip_system_metrics(campo):
@@ -15763,19 +15775,20 @@ def parse_agronic_excel(uploaded_file):
             if pd.isna(fecha):
                 continue
             nombre = str(r.iloc[3]).strip() if len(r) > 3 else ""
-            zone = IRRIGATION_ZONES.get(nombre)
-            if not zone:
+            parts = IRRIGATION_ZONES.get(nombre)
+            if not parts:
                 continue
             mins = _hhmm_to_min(r.iloc[4]) if len(r) > 4 else 0
             if mins <= 0:
                 continue
-            area = _field_area_m2(zone["campo"])
-            if not area:
-                continue
-            emit = float(zone["metros"]) / float(zone["dist_m"])
-            vol_l = emit * float(zone["caudal_lph"]) * mins / 60.0      # litros
-            rows.append({"Campo": zone["campo"], "Fecha": fecha.normalize(),
-                         "mm": vol_l / area})
+            for p in parts:                       # una válvula puede regar VARIOS campos
+                area = _field_area_m2(p["campo"])
+                if not area:
+                    continue
+                emit = float(p["metros"]) / float(p["dist_m"])
+                vol_l = emit * float(p["caudal_lph"]) * mins / 60.0     # litros
+                rows.append({"Campo": p["campo"], "Fecha": fecha.normalize(),
+                             "mm": vol_l / area})
     if not rows:
         return pd.DataFrame(columns=["Campo", "Fecha", "mm"])
     out = (pd.DataFrame(rows).groupby(["Campo", "Fecha"], as_index=False)["mm"].sum())
