@@ -15601,9 +15601,17 @@ FIELD_ROOTSTOCK = {
 # PASO B — factor de calibración de COBERTURA/EDAD (Kc×) por campo. Escala la ETc: 1.0 =
 # adulto a plena cobertura (default). Menor = enano/joven que no cubren todo el suelo →
 # menos ET real. Se AFINA con la evidencia (estado del árbol / calibre de septiembre).
-# Provisional: GY es M9 + parte plantada hace 3 años → cobertura incompleta.
+# GY (M9 + parte plantada hace 3 años, cobertura incompleta) calibrado a 0.70.
 FIELD_COVER_FACTOR = {
-    "GY": 0.75,
+    "GY": 0.70,
+}
+
+# Override de PROFUNDIDAD RADICULAR efectiva por campo (cm), por CALIBRACIÓN — cuando el
+# árbol accede a más/menos agua de lo que dice el patrón de tabla. GY: M9 en suelo profundo
+# que baja al subsuelo en sequía → 120 cm efectivos (calibrado a "árbol fino + riego mínimo";
+# provisional, se confirma con el calibre). Manda sobre el patrón; una edición manual gana.
+FIELD_ROOT_DEPTH_OVERRIDE = {
+    "GY": 120,
 }
 
 
@@ -15864,6 +15872,10 @@ def soil_profiles_effective():
             merged.loc[campo, "Patrón"] = _rd[campo][1]
             if campo not in _saved_prof:
                 merged.loc[campo, "Prof. raíz (cm)"] = _rd[campo][0]
+    # Override de raíz por CALIBRACIÓN (manda sobre el patrón; edición manual sigue ganando).
+    for campo, _d in FIELD_ROOT_DEPTH_OVERRIDE.items():
+        if campo in merged.index and campo not in _saved_prof:
+            merged.loc[campo, "Prof. raíz (cm)"] = _d
 
     merged = merged.reset_index()
     merged["TAW mm"] = merged.apply(
