@@ -8761,8 +8761,15 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 st.warning("No reconocí ninguna zona. Revisa que los nombres del Excel estén "
                            "en la config de zonas (de momento: GY).")
             else:
+                # REEMPLAZAR (no sumar) las fechas que trae el import → subir el mismo Excel
+                # varias veces NO duplica. Otras fechas del histórico se conservan.
+                _new_norm = normalize_irrigation_log_df(_new)
+                _exist = normalize_irrigation_log_df(st.session_state.irrigation_log_df)
+                if not _exist.empty:
+                    _keys = set(map(tuple, _new_norm[["Campo", "Fecha"]].to_numpy()))
+                    _exist = _exist[~_exist[["Campo", "Fecha"]].apply(tuple, axis=1).isin(_keys)]
                 _merged = normalize_irrigation_log_df(
-                    pd.concat([st.session_state.irrigation_log_df, _new], ignore_index=True))
+                    pd.concat([_exist, _new_norm], ignore_index=True))
                 st.session_state.irrigation_log_df = _merged
                 autosave_irrigation_log_to_supabase()
                 _resumen = _new.groupby("Campo")["mm"].agg(["count", "sum"])
