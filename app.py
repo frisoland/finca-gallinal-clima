@@ -8795,36 +8795,67 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         else:
             estado = "🟢 OK"
         _dias = int((raw - Dr) / _etc_recent) if (_etc_recent and _etc_recent > 0 and Dr < raw) else 0
-        # Minutos de riego para reponer los mm recomendados (si hay config de goteo).
-        _dm = drip_system_metrics(pr["Campo"])
-        _regar_min = ""
-        if _dm and str(pr["Riego"]).strip() == "Sí" and m["riego_mm"] and _dm["min_per_mm"]:
-            _regar_min = int(round(m["riego_mm"] * _dm["min_per_mm"]))
         _rows.append({
             "Campo": (pr["Campo"] + " *") if str(pr.get("Fuente", "")).endswith("*") else pr["Campo"],
             "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
             "Reserva %": int(round(m["reserva_pct"])), "Agotam. mm": round(Dr, 1),
             "Riego camp.": (round(m["riego_total"]) if m.get("riego_total") else 0),
-            "Regar mm": m["riego_mm"], "Regar min": _regar_min,
             "Días al umbral": (_dias if Dr < raw else 0), "Estado": estado,
         })
     fld = pd.DataFrame(_rows)
     if not fld.empty:
         fld = fld.sort_values("Reserva %").reset_index(drop=True)
         if _n_regar:
-            st.error(f"💧 **{_n_regar} campo(s)** en umbral de riego. En los de **goteo**, reponer "
-                     "los *Regar mm*; en **secano**, están entrando en estrés (calibre).")
+            st.error(f"💧 **{_n_regar} campo(s)** por debajo del umbral de confort (**reserva < 50 %**). "
+                     "Mira **Reserva %** y **Días al umbral**. En secano es aviso de estrés (calibre); "
+                     "en goteo, refuerza el riego en la racha seca.")
         elif _n_vig:
             st.warning(f"🟠 **{_n_vig} campo(s)** cerca del umbral. Vigilar por si no llueve.")
         else:
             st.success("🟢 Todos los campos con reserva de suelo suficiente. Sin necesidad de riego.")
         st.dataframe(fld, use_container_width=True, hide_index=True)
         st.caption(
-            "**\\*** junto al campo = perfil de suelo **estimado** (sin analítica todavía; "
-            "ver columna *Fuente* arriba). Prioriza pedir su análisis de suelo para afinarlo. "
-            "**Regar min** = minutos de goteo para reponer los *Regar mm* (solo en campos con "
-            "config de goteo cargada)."
+            "Guíate por la **Reserva %** (100 = lleno · 50 = umbral de confort) y los **Días al "
+            "umbral**. **\\*** junto al campo = perfil de suelo **estimado** (ver *Fuente* arriba)."
         )
+
+        # ── ¿Tu riego real sostiene la reserva? (campos con riego cargado) ──────
+        _val_rows = []
+        for _, pr in eff.iterrows():
+            _taw = pr["TAW mm"]
+            if not _taw or pd.isna(_taw):
+                continue
+            _irr = field_irrigation_by_date(pr["Campo"])
+            if not _irr:
+                continue                        # solo campos con riego REAL cargado
+            _cov = field_cover_factor(pr["Campo"])
+            _dfc, _mc = run_soil_depletion(daily, _taw, cover=_cov, irr_by_date=_irr)
+            _dfs, _ms = run_soil_depletion(daily, _taw, cover=_cov, irr_by_date=None)
+            _mincon = int(pd.to_numeric(_dfc["Reserva %"], errors="coerce").min())
+            _minsin = int(pd.to_numeric(_dfs["Reserva %"], errors="coerce").min())
+            if _mincon >= 50:
+                _vd = "🟢 Holgado — tu riego + lluvia sostienen la reserva sobre el confort."
+            elif _mincon >= 25:
+                _vd = "🟠 Justo pero OK — baja al umbral en seco; un poco más daría margen al calibre."
+            else:
+                _vd = "🔴 Corto — la reserva cae bastante en seco; regarías más en las rachas."
+            _aporte = _mincon - _minsin
+            _val_rows.append({
+                "Campo": pr["Campo"], "Riego real (mm)": round(_mc.get("riego_total", 0)),
+                "Reserva hoy %": int(round(_mc["reserva_pct"])),
+                "Res. mín (con riego)": _mincon, "Res. mín (sin riego)": _minsin,
+                "Aporte riego (ptos)": f"+{_aporte}" if _aporte > 0 else str(_aporte),
+                "Lectura": _vd,
+            })
+        if _val_rows:
+            st.markdown("##### 🌿 ¿Tu riego real sostiene la reserva?")
+            st.dataframe(pd.DataFrame(_val_rows), use_container_width=True, hide_index=True)
+            st.caption(
+                "Compara la reserva **con** tu riego real vs **sin** riego (solo lluvia+suelo). El "
+                "**Aporte** = puntos de reserva que suma tu riego en la racha seca (si es poco, tu "
+                "goteo es **suplementario** y manda el suelo+lluvia). **Res. mín** = lo más bajo que "
+                "llegó: >50 % holgado · 25-50 % justo · <25 % corto. El juez del calibre es septiembre."
+            )
         # ── Sistemas de riego configurados (goteo) ─────────────────────────────
         _drip_rows = []
         for _c in sorted({str(z.get("campo", "")).strip() for z in IRRIGATION_ZONES.values()}):
