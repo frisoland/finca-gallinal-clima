@@ -8571,22 +8571,31 @@ def daily_et_frame(history_df, upto_ts, lat_deg=GALLINAL_LAT_DEG, anchor_md=(4, 
     return df, metodo
 
 
-def run_soil_depletion(daily_df, taw_mm, p=APPLE_DEPLETION_P):
-    """Aplica el balance de reserva de suelo a la serie diaria de ETc/lluvia para un TAW
-    dado (una parcela). Dr acotado [0, TAW]; el exceso de lluvia drena."""
+def run_soil_depletion(daily_df, taw_mm, p=APPLE_DEPLETION_P, cover=1.0, irr_by_date=None):
+    """Aplica el balance de reserva de suelo a la serie diaria para un TAW dado (parcela).
+    `cover` = factor de cobertura/edad que escala la ETc (paso B, por defecto 1.0 = adulto
+    a plena cobertura). `irr_by_date` = {fecha: mm} de RIEGO real, que rellena el depósito
+    igual que la lluvia. Dr acotado [0, TAW]; el exceso drena."""
     if daily_df is None or daily_df.empty or not taw_mm:
         return pd.DataFrame(), {}
     taw = float(taw_mm); raw = p * taw; Dr = 0.0
+    irr_by_date = irr_by_date or {}
     out = daily_df.copy()
-    ag, res = [], []
+    ag, res, irr_col = [], [], []
+    riego_total = 0.0
     for _, r in out.iterrows():
-        Dr = Dr + float(r.get("_etc") or 0.0) - float(r.get("Lluvia") or 0.0)
+        _d = pd.Timestamp(r["Fecha"]).normalize()
+        _ir = float(irr_by_date.get(_d, 0.0))
+        riego_total += _ir
+        Dr = Dr + float(r.get("_etc") or 0.0) * float(cover) - float(r.get("Lluvia") or 0.0) - _ir
         Dr = min(max(Dr, 0.0), taw)
         ag.append(round(Dr, 1)); res.append(int(round(100 * (taw - Dr) / taw)))
-    out["Agotam. mm"] = ag; out["Reserva %"] = res
-    meta = {"TAW": taw, "RAW": raw, "p": p, "Dr": Dr,
+        irr_col.append(round(_ir, 2))
+    out["Agotam. mm"] = ag; out["Reserva %"] = res; out["Riego mm"] = irr_col
+    meta = {"TAW": taw, "RAW": raw, "p": p, "Dr": Dr, "cover": cover,
             "reserva_pct": 100 * (taw - Dr) / taw,
-            "riego_mm": (round(Dr) if Dr >= raw else 0)}
+            "riego_mm": (round(Dr) if Dr >= raw else 0),
+            "riego_total": round(riego_total, 1)}
     return out, meta
 
 
@@ -8723,6 +8732,37 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         },
     )
 
+    # ── Subir historial de riego real (Agronic/Vegga) ──────────────────────────
+    if "irrigation_log_df" not in st.session_state:
+        _il, _ = load_irrigation_log_from_supabase()
+        st.session_state.irrigation_log_df = normalize_irrigation_log_df(
+            _il if _il is not None else pd.DataFrame())
+    with st.expander("💦 Subir historial de riego real (Excel Agronic/Vegga)", expanded=False):
+        st.caption(
+            "Sube el **«Historial de sectores»** exportado de Agronic/Vegga. La app mapea cada "
+            "zona (columna *Nombre*) a su campo, convierte los **minutos a mm** con la config de "
+            "goteo y lo suma al balance. Así el balance usa tu **riego REAL**, no el teórico. "
+            "(Más adelante se puede automatizar la descarga desde Vegga.)")
+        _up = st.file_uploader("Excel de riego", type=["xlsx", "xls"], key="irr_upload")
+        if _up is not None and st.button("Importar riego", key="irr_import"):
+            _new = parse_agronic_excel(_up)
+            if _new.empty:
+                st.warning("No reconocí ninguna zona. Revisa que los nombres del Excel estén "
+                           "en la config de zonas (de momento: GY).")
+            else:
+                _merged = normalize_irrigation_log_df(
+                    pd.concat([st.session_state.irrigation_log_df, _new], ignore_index=True))
+                st.session_state.irrigation_log_df = _merged
+                autosave_irrigation_log_to_supabase()
+                _resumen = _new.groupby("Campo")["mm"].agg(["count", "sum"])
+                st.success("✅ Importado. Riego por campo: " + " · ".join(
+                    f"**{c}** {int(row['count'])} días, {row['sum']:.0f} mm"
+                    for c, row in _resumen.iterrows()))
+        _illog = normalize_irrigation_log_df(st.session_state.get("irrigation_log_df", pd.DataFrame()))
+        if not _illog.empty:
+            _tot = _illog.groupby("Campo")["mm"].sum().round(0)
+            st.caption("Historial cargado: " + " · ".join(f"{c} {v:.0f} mm" for c, v in _tot.items()))
+
     # ── Estado hídrico por campo (hoy) ─────────────────────────────────────────
     st.markdown("##### 💧 Estado hídrico por campo (hoy)")
     _rows, _n_regar, _n_vig = [], 0, 0
@@ -8731,7 +8771,8 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         _taw = pr["TAW mm"]
         if not _taw or pd.isna(_taw):
             continue
-        _, m = run_soil_depletion(daily, _taw)
+        _irr = field_irrigation_by_date(pr["Campo"])
+        _, m = run_soil_depletion(daily, _taw, irr_by_date=_irr)
         if not m:
             continue
         Dr, raw = m["Dr"], m["RAW"]
@@ -8751,6 +8792,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             "Campo": (pr["Campo"] + " *") if str(pr.get("Fuente", "")).endswith("*") else pr["Campo"],
             "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
             "Reserva %": int(round(m["reserva_pct"])), "Agotam. mm": round(Dr, 1),
+            "Riego camp.": (round(m["riego_total"]) if m.get("riego_total") else 0),
             "Regar mm": m["riego_mm"], "Regar min": _regar_min,
             "Días al umbral": (_dias if Dr < raw else 0), "Estado": estado,
         })
@@ -15574,16 +15616,14 @@ def field_root_depths():
     return out
 
 
-# Configuración de RIEGO por goteo, por campo (metros de manguera, distancia entre
-# goteros en m, caudal por gotero L/h, nº de árboles). El usuario los va dando; editable.
-FIELD_DRIP_CONFIG = {
-    # GY = 3 subsectores de riego que corren EN SECUENCIA (no a la vez):
-    #   S5 GY-Amariega     788 árb · 1345 m
-    #   S6 GY-Gallinal nuevo 1212 árb · 1123 m
-    #   S7 GY-Gallinal      1080 árb · 1620 m
-    # Total 3080 árb · 4088 m. "zonas"=3 → el caudal se reparte en el tiempo (secuencial).
-    "GY": {"metros": 4088, "dist_goteros_m": 0.75, "caudal_gotero_lph": 1.6,
-           "arboles": 3080, "zonas": 3},
+# Zonas de RIEGO por goteo. Un campo puede tener varias zonas (subsectores) que riegan
+# EN SECUENCIA. La CLAVE es el nombre de la zona tal como sale en el Excel de Agronic/Vegga
+# (columna "Nombre") → así el historial de riego se mapea al campo. Editable.
+IRRIGATION_ZONES = {
+    # GY = 3 subsectores (E5 Amariega, E6 Gallinal nuevo, E7 Gallinal):
+    "E5-SYAma":     {"campo": "GY", "metros": 1345, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 788},
+    "E6-SYGaNuevo": {"campo": "GY", "metros": 1123, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1212},
+    "E7-SYGa":      {"campo": "GY", "metros": 1620, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1080},
 }
 
 
@@ -15595,30 +15635,160 @@ def _field_area_m2(campo):
     return None
 
 
+def field_irrigation_zones(campo):
+    return [z for z in IRRIGATION_ZONES.values()
+            if str(z.get("campo", "")).strip() == str(campo).strip()]
+
+
 def drip_system_metrics(campo):
-    """Del goteo de un campo: nº goteros, caudal del sistema (L/h), pluviometría (mm/h) y
-    minutos necesarios por cada mm a reponer. mm ↔ L: 1 mm = 1 L/m². Devuelve None si no
-    hay config o datos."""
-    cfg = FIELD_DRIP_CONFIG.get(str(campo).strip())
-    if not cfg:
+    """Agrega las zonas de riego de un campo (riegan EN SECUENCIA) → nº goteros, caudal
+    total (L/h), pluviometría efectiva (mm/h) y minutos por mm. 1 mm = 1 L/m²."""
+    zs = field_irrigation_zones(campo)
+    area = _field_area_m2(campo)
+    if not zs or not area or area <= 0:
         return None
     try:
-        metros = float(cfg["metros"]); dist = float(cfg["dist_goteros_m"])
-        q = float(cfg["caudal_gotero_lph"]); area = _field_area_m2(campo)
-        zonas = max(1, int(cfg.get("zonas", 1) or 1))   # subsectores que riegan en SECUENCIA
-        if not (metros > 0 and dist > 0 and q > 0 and area and area > 0):
-            return None
-        n = metros / dist                        # nº de goteros (total)
-        flow = n * q                             # caudal si regasen TODOS a la vez (L/h)
-        # Pluviometría EFECTIVA sobre el campo: si hay N zonas secuenciales, solo 1/N del
-        # caudal riega a la vez → el tiempo de reloj para dar 1 mm a todo el campo se
-        # multiplica por N. rate = caudal / superficie / zonas.
+        n_em = sum(float(z["metros"]) / float(z["dist_m"]) for z in zs)
+        flow = sum(float(z["metros"]) / float(z["dist_m"]) * float(z["caudal_lph"]) for z in zs)
+        metros = sum(float(z["metros"]) for z in zs)
+        arboles = sum(float(z.get("arboles") or 0) for z in zs)
+        zonas = len(zs)                          # subsectores secuenciales
+        # Solo 1/zonas riega a la vez → el tiempo de reloj para 1 mm se multiplica por zonas.
         rate = flow / area / zonas
-        return {"n_emitters": n, "flow_lph": flow, "app_rate_mmph": rate,
-                "min_per_mm": (60.0 / rate if rate > 0 else None),
-                "area_m2": area, "arboles": cfg.get("arboles"), "zonas": zonas}
+        return {"n_emitters": n_em, "flow_lph": flow, "app_rate_mmph": rate,
+                "min_per_mm": (60.0 / rate if rate > 0 else None), "area_m2": area,
+                "arboles": arboles, "zonas": zonas, "metros": metros}
     except Exception:
         return None
+
+
+def _hhmm_to_min(t):
+    """'01:05' o time/datetime → minutos."""
+    try:
+        if hasattr(t, "hour"):
+            return int(t.hour) * 60 + int(t.minute)
+        h, m = str(t).split(":")[:2]
+        return int(h) * 60 + int(m)
+    except Exception:
+        return 0
+
+
+def parse_agronic_excel(uploaded_file):
+    """Parsea el Excel 'Historial de sectores' (Agronic/Vegga) → DataFrame (Campo, Fecha, mm).
+    Mapea cada zona (columna Nombre) a su campo vía IRRIGATION_ZONES y convierte los minutos
+    regados a mm sobre la superficie del campo. Ignora zonas no reconocidas."""
+    rows = []
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+    except Exception:
+        return pd.DataFrame(columns=["Campo", "Fecha", "mm"])
+    for sh in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name=sh, header=None)
+        except Exception:
+            continue
+        for _, r in df.iterrows():
+            fecha = pd.to_datetime(r.iloc[0], errors="coerce") if len(r) > 0 else pd.NaT
+            if pd.isna(fecha):
+                continue
+            nombre = str(r.iloc[3]).strip() if len(r) > 3 else ""
+            zone = IRRIGATION_ZONES.get(nombre)
+            if not zone:
+                continue
+            mins = _hhmm_to_min(r.iloc[4]) if len(r) > 4 else 0
+            if mins <= 0:
+                continue
+            area = _field_area_m2(zone["campo"])
+            if not area:
+                continue
+            emit = float(zone["metros"]) / float(zone["dist_m"])
+            vol_l = emit * float(zone["caudal_lph"]) * mins / 60.0      # litros
+            rows.append({"Campo": zone["campo"], "Fecha": fecha.normalize(),
+                         "mm": vol_l / area})
+    if not rows:
+        return pd.DataFrame(columns=["Campo", "Fecha", "mm"])
+    out = (pd.DataFrame(rows).groupby(["Campo", "Fecha"], as_index=False)["mm"].sum())
+    out["mm"] = out["mm"].round(2)
+    return out
+
+
+# ── Historial de RIEGO real (Campo · Fecha · mm) — persistido en Supabase ─────
+SUPABASE_IRRIGATION_LOG_FILE = "irrigation_log.parquet"
+
+
+def normalize_irrigation_log_df(df):
+    out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    for c in ("Campo", "Fecha", "mm"):
+        if c not in out.columns:
+            out[c] = "" if c != "mm" else 0.0
+    out = out[["Campo", "Fecha", "mm"]].copy()
+    if not out.empty:
+        out["Campo"] = out["Campo"].astype(str).str.strip()
+        out["Fecha"] = pd.to_datetime(out["Fecha"], errors="coerce").dt.normalize()
+        out["mm"] = pd.to_numeric(out["mm"], errors="coerce").fillna(0.0)
+        out = out.dropna(subset=["Fecha"])
+        out = out.groupby(["Campo", "Fecha"], as_index=False)["mm"].sum()
+    return out.reset_index(drop=True)
+
+
+def irrigation_log_storage_url():
+    url, _ = get_supabase_credentials()
+    return f"{url.rstrip('/')}/storage/v1/object/climate-snapshots/{SUPABASE_IRRIGATION_LOG_FILE}"
+
+
+def load_irrigation_log_from_supabase():
+    if not supabase_is_configured():
+        return None, "Supabase no configurado."
+    headers = supabase_headers(); headers.pop("Prefer", None)
+    try:
+        r = requests.get(irrigation_log_storage_url(), headers=headers, timeout=60)
+    except Exception as e:
+        return None, f"Error de conexión: {e}"
+    if r.status_code != 200:
+        return None, "Sin historial de riego guardado."
+    try:
+        return pd.read_parquet(io.BytesIO(r.content), engine="pyarrow"), "Cargado."
+    except Exception as e:
+        return None, f"Error Parquet: {e}"
+
+
+def upload_irrigation_log_to_supabase(df):
+    if not supabase_is_configured():
+        return False, "Supabase no configurado."
+    out = normalize_irrigation_log_df(df if df is not None else pd.DataFrame())
+    _o = out.copy()
+    _o["Fecha"] = _o["Fecha"].dt.strftime("%Y-%m-%d")   # parquet-friendly
+    buf = io.BytesIO()
+    _o.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
+    buf.seek(0)
+    headers = supabase_headers()
+    headers["Content-Type"] = "application/octet-stream"
+    headers["x-upsert"] = "true"
+    try:
+        r = requests.post(irrigation_log_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+    except Exception as e:
+        return False, f"Error de conexión: {e}"
+    if r.status_code not in (200, 201):
+        return False, f"Error {r.status_code}"
+    return True, f"Guardado: {len(out)} registros."
+
+
+def autosave_irrigation_log_to_supabase():
+    if not supabase_is_configured():
+        return
+    try:
+        upload_irrigation_log_to_supabase(st.session_state.get("irrigation_log_df", pd.DataFrame()))
+    except Exception:
+        pass
+
+
+def field_irrigation_by_date(campo):
+    """{fecha_normalizada: mm} del riego real de un campo (de irrigation_log_df)."""
+    log = normalize_irrigation_log_df(st.session_state.get("irrigation_log_df", pd.DataFrame()))
+    if log.empty:
+        return {}
+    sub = log[log["Campo"] == str(campo).strip()]
+    return {pd.Timestamp(r["Fecha"]).normalize(): float(r["mm"]) for _, r in sub.iterrows()}
 
 
 def soil_profiles_effective():
@@ -16014,6 +16184,12 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         _sp_df, _ = load_soil_profiles_from_supabase()
         if _sp_df is not None and not _sp_df.empty:
             st.session_state.soil_profiles_df = normalize_soil_profiles_df(_sp_df)
+
+    # Historial de riego real (Agronic/Vegga) para el balance
+    if st.session_state.get("irrigation_log_df", pd.DataFrame()).empty:
+        _il_df, _ = load_irrigation_log_from_supabase()
+        if _il_df is not None and not _il_df.empty:
+            st.session_state.irrigation_log_df = normalize_irrigation_log_df(_il_df)
 
     # Carpocapsa (capturas, biofix y daños)
     if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
