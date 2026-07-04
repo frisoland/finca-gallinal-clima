@@ -8843,6 +8843,56 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             _tot = _illog.groupby("Campo")["mm"].sum().round(0)
             st.caption("Historial cargado: " + " · ".join(f"{c} {v:.0f} mm" for c, v in _tot.items()))
 
+    # ── Riego MANUAL (motobomba, sin Excel) ────────────────────────────────────
+    with st.expander("🕹️ Riego manual (motobomba, sin Excel)", expanded=False):
+        st.caption(
+            "Para los campos que riegas con **motobomba** (sin exportación de Agronic). Añade "
+            "cada riego como **fecha + minutos**; la app lo convierte a **mm** con la config de "
+            "goteo del campo y lo suma al balance. Puedes **editar o borrar** filas y volver a "
+            "guardar. El total de campaña es la suma de todas las filas.")
+        _mfields = sorted(MANUAL_IRRIGATION_FIELDS)
+        _mf = st.selectbox("Campo (riego por motobomba)", _mfields, key="manual_irr_field")
+        _dmm = drip_system_metrics(_mf)
+        if not _dmm or not _dmm.get("min_per_mm"):
+            st.info("Este campo aún no tiene config de goteo.")
+        else:
+            _mpm = float(_dmm["min_per_mm"])
+            st.caption(f"**{_mf}** · {_dmm['app_rate_mmph']:.2f} mm/h → **{_mpm:.0f} min por mm** "
+                       f"(ej.: 120 min ≈ {120.0 / _mpm:.1f} mm).")
+            _log_all = normalize_irrigation_log_df(st.session_state.get("irrigation_log_df", pd.DataFrame()))
+            _curf = _log_all[_log_all["Campo"] == _mf].copy()
+            if not _curf.empty:
+                _curf["Minutos"] = (pd.to_numeric(_curf["mm"], errors="coerce") * _mpm).round().astype(int)
+                _seed = _curf[["Fecha", "Minutos"]].sort_values("Fecha").reset_index(drop=True)
+            else:
+                _seed = pd.DataFrame({"Fecha": pd.Series([], dtype="datetime64[ns]"),
+                                      "Minutos": pd.Series([], dtype="int64")})
+            _ed = st.data_editor(
+                _seed, num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=f"manual_irr_editor_{_mf}",
+                column_config={
+                    "Fecha": st.column_config.DateColumn("Fecha del riego", format="DD/MM/YYYY"),
+                    "Minutos": st.column_config.NumberColumn("Minutos regados", min_value=0, step=10,
+                        help="Minutos de ese riego (2 h = 120). Se convierte a mm automáticamente."),
+                })
+            if st.button("💾 Guardar riego manual", key=f"save_manual_{_mf}"):
+                _rows = []
+                for _, r in _ed.iterrows():
+                    _f = pd.to_datetime(r.get("Fecha"), errors="coerce")
+                    _min = pd.to_numeric(r.get("Minutos"), errors="coerce")
+                    if pd.isna(_f) or pd.isna(_min) or _min <= 0:
+                        continue
+                    _rows.append({"Campo": _mf, "Fecha": _f.normalize(),
+                                  "mm": round(float(_min) / _mpm, 2)})
+                _newf = normalize_irrigation_log_df(pd.DataFrame(_rows))
+                _other = _log_all[_log_all["Campo"] != _mf]
+                st.session_state.irrigation_log_df = normalize_irrigation_log_df(
+                    pd.concat([_other, _newf], ignore_index=True))
+                autosave_irrigation_log_to_supabase()
+                _tt = float(_newf["mm"].sum()) if not _newf.empty else 0.0
+                st.success(f"✅ Guardado **{_mf}**: {len(_newf)} riego(s), "
+                           f"**{_tt:.1f} mm** ({_tt * _mpm:.0f} min de campaña).")
+
     # ── Estado hídrico por campo (hoy) ─────────────────────────────────────────
     st.markdown("##### 💧 Estado hídrico por campo (hoy)")
     _rows, _n_regar, _n_vig = [], 0, 0
@@ -15603,6 +15653,10 @@ DEFAULT_ROOT_DEPTH_CM = 80
 # Editable después en la tabla de perfiles de suelo.
 FIELDS_WITHOUT_IRRIGATION = {"Campazón", "Viaducto", "Sector 1", "Piedrona 1"}
 
+# Campos regados con MOTOBOMBA (sin exportación de Agronic/Vegga): el riego se mete a MANO
+# (fecha + minutos) en la UI del módulo de riego y se convierte a mm con su config de goteo.
+MANUAL_IRRIGATION_FIELDS = {"Piedrona Rincón", "Piedrona 2"}
+
 # Perfiles de suelo MEDIDOS en laboratorio. La analítica da textura + MO; CC/PMP/Da se
 # estiman por pedotransferencia (Saxton-Rawls 2006). Se van añadiendo campos según llegan
 # análisis. Sobrescriben el default franco-arenoso en la tabla (y el usuario puede editar).
@@ -15908,6 +15962,11 @@ IRRIGATION_ZONES = {
                      {"campo": "Los Pinos 4", "metros": 1252, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 971}],
     # Los Pinos 5 = válvula E2-LP5 propia (la E2 sí es de LP5).
     "E2-LP5":       [{"campo": "Los Pinos 5", "metros": 1895, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1530}],
+    # Riego MANUAL con MOTOBOMBA (sin Excel): claves sintéticas que NO aparecen en ningún
+    # Excel (parse_agronic_excel nunca las mapea). Solo aportan la config de goteo para
+    # convertir a mm los minutos que el usuario mete a mano. Ver MANUAL_IRRIGATION_FIELDS.
+    "MANUAL-PiedronaRincon": [{"campo": "Piedrona Rincón", "metros": 1962, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1090}],
+    "MANUAL-Piedrona2":      [{"campo": "Piedrona 2", "metros": 413, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 275}],
 }
 
 
