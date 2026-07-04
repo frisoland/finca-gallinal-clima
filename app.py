@@ -15708,8 +15708,9 @@ FIELD_COVER_FACTOR = {
     "GY": 0.70,
     "Sector 8": 0.70,   # mismo M9 + suelo que GY → misma cobertura para comparar justo
     "Sector 7": 0.85,   # MM111 vigoroso (más copa que los M9); árboles finos
-    "Huertona": 0.70,   # M9 adulto SIN estrés (calibre grande todos los años); en suelo
-                        # arenoso el modelo era muy pesimista → misma rebaja de ETc que GY.
+    # Huertona: SIN factor de cobertura (=1.0). No se rebaja la ETc para "cuadrar" el
+    # resultado — el campo se modela tal cual; si el balance sale bajo, es información real
+    # (los árboles pueden ir bien por otras razones: suelo rico en MO, etc.).
 }
 
 # Override de PROFUNDIDAD RADICULAR efectiva por campo (cm), por CALIBRACIÓN — cuando el
@@ -15720,8 +15721,9 @@ FIELD_ROOT_DEPTH_OVERRIDE = {
     "GY": 120,
     "Sector 8": 120,   # mismo M9 + suelo que GY → misma raíz efectiva para comparar justo
     "Sector 7": 200,   # MM111 vigoroso → raíz muy profunda (calibrado a árboles finos)
-    "Huertona": 150,   # M9 en suelo ARENOSO (TAW bajo) pero rinde MEJOR que GY → raíz aún
-                       # más profunda que GY (compensa el suelo pobre); calibra con calibre real.
+    "Huertona": 103,   # EXPERIMENTAL: mezcla real 50% M7 (raíz 115) + 50% M9 (raíz 90) →
+                       # media por superficie ~103 cm. Producción lo cuenta todo como M9.
+                       # Dato físico real, no un ajuste para "cuadrar" el balance.
 }
 
 
