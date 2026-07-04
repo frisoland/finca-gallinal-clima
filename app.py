@@ -15777,6 +15777,8 @@ IRRIGATION_ZONES = {
     # 1365 m repartidos por nº de árboles (320/552).
     "E6-6d-S8y":    [{"campo": "Sector 7", "metros": 501, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 320},
                      {"campo": "Sector 8", "metros": 864, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 552}],
+    # Huertona = válvula E5 propia (solo Huertona; el "6c" del nombre NO riega aquí).
+    "E5-6c-Hue":    [{"campo": "Huertona", "metros": 1803, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 969}],
 }
 
 
