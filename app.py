@@ -15879,8 +15879,8 @@ IRRIGATION_ZONES = {
     "E8-4b":        [{"campo": "Sector 4", "metros": 1479, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 493}],
     # Los Pinos 1 = válvula E1-LP1 propia.
     "E1-LP1":       [{"campo": "Los Pinos 1", "metros": 1924, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1480}],
-    # Los Pinos 2 = válvula E2-LP2 (nombre por confirmar con el Excel).
-    "E2-LP2":       [{"campo": "Los Pinos 2", "metros": 1667, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1488}],
+    # Los Pinos 2 = válvula E3-LP2 (OJO: no sigue el patrón, la E2 no es de LP2).
+    "E3-LP2":       [{"campo": "Los Pinos 2", "metros": 1667, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1488}],
 }
 
 
