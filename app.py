@@ -8896,12 +8896,13 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
     # ── Editar config de goteo (AVANZADO — solo emergencia) ────────────────────
     with st.expander("⚙️ Editar configuración de goteo (avanzado — usar con cuidado)", expanded=False):
         st.warning(
-            "⚠️ **Editar con cuidado.** Estos datos (metros de manguera, distancia entre goteros, "
-            "caudal y nº de árboles) alimentan TODO el cálculo de riego: mm aportados, L/árbol, "
-            "objetivo 25%, minutos… Un valor mal puesto descuadra el balance de ese campo. "
-            "Lo normal es pedir el cambio en el código; usa esto **solo en caso de emergencia**. "
-            "Las **válvulas compartidas** (una válvula → varios campos, p.ej. `E6-6d-S8y`, "
-            "`E4-LP3y4`, `E10-5y9`) llevan **varias filas**: edita cada una con cuidado.")
+            "⚠️ **Editar con cuidado.** Estos datos alimentan TODO el cálculo de riego (mm, "
+            "L/árbol, objetivo 25%, minutos). Un valor mal puesto descuadra el balance del campo. "
+            "Lo normal es pedir el cambio en el código; usa esto **solo en caso de emergencia**.  \n"
+            "🔑 **Nombre de válvula = plan B:** el nombre debe coincidir EXACTO con el del Excel de "
+            "Agronic/Vegga. Si Agronic lo renombra (avería, reset, actualización) y el Excel deja de "
+            "reconocerse, cámbialo aquí para volver a mapearlo. Las **válvulas compartidas** "
+            "(`E6-6d-S8y`, `E4-LP3y4`, `E10-5y9`) llevan **varias filas**: edítalas con cuidado.")
         _cfg_base = irrigation_config_base_rows()
         _cfg_eff = irrigation_config_effective_rows()
         _n_ov = len(normalize_irrigation_config_df(st.session_state.get("irrigation_config_df", pd.DataFrame())))
@@ -8909,10 +8910,11 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             st.info(f"Ahora mismo hay **{_n_ov} fila(s)** con valores personalizados (mandan sobre "
                     "el código). El resto sigue los valores del código.")
         _ed_cfg = st.data_editor(
-            _cfg_eff, num_rows="fixed", use_container_width=True, hide_index=True,
+            _cfg_eff[IRR_CFG_EDIT_COLS], num_rows="fixed", use_container_width=True, hide_index=True,
             key="irr_cfg_editor",
             column_config={
-                "Válvula": st.column_config.TextColumn("Válvula (nombre Excel)", disabled=True),
+                "Válvula": st.column_config.TextColumn("Válvula (nombre Excel)",
+                    help="Nombre EXACTO como sale en el Excel de Agronic. Renómbralo aquí si Agronic lo cambió."),
                 "Campo": st.column_config.TextColumn("Campo", disabled=True),
                 "Metros": st.column_config.NumberColumn("Metros manguera", min_value=0.0, step=1.0),
                 "Dist. (m)": st.column_config.NumberColumn("Dist. goteros (m)", min_value=0.01,
@@ -8932,9 +8934,10 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             st.session_state.irrigation_config_df = normalize_irrigation_config_df(pd.DataFrame())
             autosave_irrigation_config_to_supabase()
             st.success("✅ Restaurado a los valores del código (se han borrado tus overrides).")
-        st.caption("**Válvula** y **Campo** no se pueden editar (mantienen el mapeo con el Excel). "
-                   "Solo cambia los números. Se guarda **solo lo que modifiques**; así, si más "
-                   "adelante corrijo un valor en el código, tus otras filas no lo tapan.")
+        st.caption("El **Campo** no se puede editar (es el ancla). Puedes cambiar el **nombre de la "
+                   "válvula** y los números. Se guarda **solo lo que modifiques**; así, si más "
+                   "adelante corrijo un valor en el código, tus otras filas no lo tapan. Un renombrado "
+                   "**reemplaza** el nombre (no duplica), así que el caudal del campo no se dobla.")
 
     # ── Estado hídrico por campo (hoy) ─────────────────────────────────────────
     st.markdown("##### 💧 Estado hídrico por campo (hoy)")
@@ -16018,31 +16021,38 @@ IRRIGATION_ZONES = {
 # corregir un dato desde la app (uso de emergencia): se guarda SOLO la fila cambiada y manda
 # sobre el código. El resto de funciones usan irrigation_zones_effective() (código + overrides).
 SUPABASE_IRRIGATION_CONFIG_FILE = "irrigation_config.parquet"
-IRR_CFG_COLS = ["Válvula", "Campo", "Metros", "Dist. (m)", "Caudal (L/h)", "Árboles"]
 _IRR_CFG_NUM = ["Metros", "Dist. (m)", "Caudal (L/h)", "Árboles"]
+# Esquema COMPLETO (interno y persistido). "Válvula base" = nombre de CÓDIGO = ancla estable
+# que NUNCA cambia (une la fila con su origen). "Válvula" = nombre EFECTIVO (el que debe
+# coincidir con el Excel de Agronic); el usuario puede renombrarlo (plan B si Agronic cambia
+# los nombres) sin romper el emparejamiento ni duplicar filas. "Campo" está bloqueado.
+_IRR_CFG_FULL = ["Válvula base", "Válvula", "Campo"] + _IRR_CFG_NUM
+# Columnas que ve/edita el usuario (sin el ancla interna).
+IRR_CFG_EDIT_COLS = ["Válvula", "Campo"] + _IRR_CFG_NUM
 
 
 def normalize_irrigation_config_df(df):
+    """Normaliza el DataFrame de OVERRIDES (esquema completo con ancla)."""
     out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
-    for c in IRR_CFG_COLS:
+    for c in _IRR_CFG_FULL:
         if c not in out.columns:
-            out[c] = "" if c in ("Válvula", "Campo") else np.nan
-    out = out[IRR_CFG_COLS].copy()
+            out[c] = "" if c in ("Válvula base", "Válvula", "Campo") else np.nan
+    out = out[_IRR_CFG_FULL].copy()
     if not out.empty:
-        out["Válvula"] = out["Válvula"].astype(str).str.strip()
-        out["Campo"] = out["Campo"].astype(str).str.strip()
+        for c in ("Válvula base", "Válvula", "Campo"):
+            out[c] = out[c].astype(str).str.strip()
         for c in _IRR_CFG_NUM:
             out[c] = pd.to_numeric(out[c], errors="coerce")
-        out = out[(out["Válvula"] != "") & (out["Válvula"] != "nan") & (out["Campo"] != "")]
+        out = out[(out["Válvula base"] != "") & (out["Válvula base"] != "nan") & (out["Campo"] != "")]
     return out.reset_index(drop=True)
 
 
 def irrigation_config_base_rows():
-    """Aplana IRRIGATION_ZONES (los valores del CÓDIGO) → DataFrame editable."""
+    """Aplana IRRIGATION_ZONES (valores del CÓDIGO). Válvula base == Válvula (sin renombrar)."""
     rows = []
     for valv, parts in IRRIGATION_ZONES.items():
         for p in parts:
-            rows.append({"Válvula": valv, "Campo": str(p.get("campo", "")).strip(),
+            rows.append({"Válvula base": valv, "Válvula": valv, "Campo": str(p.get("campo", "")).strip(),
                          "Metros": float(p.get("metros") or 0),
                          "Dist. (m)": float(p.get("dist_m") or 0),
                          "Caudal (L/h)": float(p.get("caudal_lph") or 0),
@@ -16051,42 +16061,58 @@ def irrigation_config_base_rows():
 
 
 def irrigation_config_effective_rows():
-    """Base del código + overrides guardados (mandan por (Válvula, Campo))."""
+    """Base del código + overrides (mandan por el ancla 'Válvula base'+'Campo'). Mismo nº y
+    orden de filas que la base (un override reemplaza su fila, no añade) → sin duplicados."""
     base = irrigation_config_base_rows()
     ov = normalize_irrigation_config_df(st.session_state.get("irrigation_config_df", pd.DataFrame()))
     if ov.empty:
         return base
-    b = base.set_index(["Válvula", "Campo"])
-    for _, r in ov.iterrows():
-        key = (r["Válvula"], r["Campo"])
-        if key in b.index:
+    ovi = ov.set_index(["Válvula base", "Campo"])
+    rows = []
+    for _, r in base.iterrows():
+        key = (r["Válvula base"], r["Campo"])
+        if key in ovi.index:
+            o = ovi.loc[key]
+            if isinstance(o, pd.DataFrame):
+                o = o.iloc[0]
+            nv = str(o["Válvula"]).strip()
+            row = {"Válvula base": r["Válvula base"],
+                   "Válvula": nv if nv not in ("", "nan") else r["Válvula"], "Campo": r["Campo"]}
             for c in _IRR_CFG_NUM:
-                if pd.notna(r[c]):
-                    b.loc[key, c] = r[c]
+                row[c] = o[c] if pd.notna(o[c]) else r[c]
+            rows.append(row)
         else:
-            b.loc[key, :] = [r[c] for c in _IRR_CFG_NUM]
-    return b.reset_index()
+            rows.append(r.to_dict())
+    return normalize_irrigation_config_df(pd.DataFrame(rows))
 
 
 def irrigation_config_diff(edited_df, base_df):
-    """Solo las filas del editor cuyos números difieren del código (o son nuevas) → overrides."""
-    ed = normalize_irrigation_config_df(edited_df)
-    b = normalize_irrigation_config_df(base_df).set_index(["Válvula", "Campo"])
+    """Compara el editor (por POSICIÓN, mismas filas/orden) con la base → guarda solo las filas
+    cambiadas, anclándolas por 'Válvula base' (permite haber renombrado la 'Válvula')."""
+    ed = edited_df.reset_index(drop=True)
+    b = base_df.reset_index(drop=True)
     keep = []
-    for _, r in ed.iterrows():
-        key = (r["Válvula"], r["Campo"])
-        if key in b.index:
-            same = all(abs(float(r[c]) - float(b.loc[key, c])) < 1e-6
-                       for c in _IRR_CFG_NUM if pd.notna(r[c]) and pd.notna(b.loc[key, c]))
-            if same:
-                continue
-        keep.append(r)
+    for i in range(min(len(b), len(ed))):
+        er, br = ed.iloc[i], b.iloc[i]
+        new_v = str(er.get("Válvula", "")).strip()
+        changed = bool(new_v) and (new_v != str(br["Válvula"]).strip())
+        for c in _IRR_CFG_NUM:
+            ev = pd.to_numeric(er.get(c), errors="coerce")
+            if pd.notna(ev) and abs(float(ev) - float(br[c])) > 1e-6:
+                changed = True
+        if changed:
+            row = {"Válvula base": br["Válvula base"], "Campo": br["Campo"],
+                   "Válvula": new_v or br["Válvula"]}
+            for c in _IRR_CFG_NUM:
+                _v = pd.to_numeric(er.get(c), errors="coerce")
+                row[c] = float(_v) if pd.notna(_v) else float(br[c])
+            keep.append(row)
     return normalize_irrigation_config_df(pd.DataFrame(keep))
 
 
 def irrigation_zones_effective():
-    """{válvula: [partes]} con overrides aplicados — lo que usa el resto del código en vez de
-    la constante IRRIGATION_ZONES, para que las ediciones del usuario surtan efecto."""
+    """{válvula EFECTIVA: [partes]} con overrides aplicados — lo que usa el resto del código en
+    vez de la constante IRRIGATION_ZONES (clave = nombre renombrado si lo hubo)."""
     out = {}
     for _, r in irrigation_config_effective_rows().iterrows():
         out.setdefault(r["Válvula"], []).append({
