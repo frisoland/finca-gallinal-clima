@@ -15886,6 +15886,8 @@ IRRIGATION_ZONES = {
     # LP4 0.52 ha 72%; densidad de gotero uniforme). Si hay datos reales por campo, se afina.
     "E4-LP3y4":     [{"campo": "Los Pinos 3", "metros": 481,  "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 373},
                      {"campo": "Los Pinos 4", "metros": 1252, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 971}],
+    # Los Pinos 5 = válvula E2-LP5 propia (la E2 sí es de LP5).
+    "E2-LP5":       [{"campo": "Los Pinos 5", "metros": 1895, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1530}],
 }
 
 
