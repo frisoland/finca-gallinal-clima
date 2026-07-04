@@ -8909,11 +8909,30 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             else:
                 _vd = "🔴 Corto — la reserva cae bastante en seco; regarías más en las rachas."
             _aporte = _mincon - _minsin
+            # ── Métricas por árbol + objetivo 25 % (se recalculan con clima y riego) ──
+            _dm = drip_system_metrics(pr["Campo"])
+            _area = _field_area_m2(pr["Campo"])
+            _trees = int((_dm.get("arboles") if _dm else 0) or 0)
+            _riego_mm = _mc.get("riego_total", 0) or 0
+            # L/árbol aportados esta temporada = mm regados · área / nº árboles (1 mm = 1 L/m²)
+            _l_arbol = round(_riego_mm * _area / _trees) if (_area and _trees) else None
+            # L/árbol de media en un riego de 60 min = caudal del sistema / nº árboles
+            _l_arbol_60 = round(_dm["flow_lph"] / _trees, 1) if (_dm and _trees) else None
+            # Objetivo 25 % de reserva: cuánto falta APORTAR desde el agotamiento de HOY
+            # (reserva 25 % ↔ agotamiento Dr = 0.75·TAW). Si ya está por encima → 0.
+            _dr_now = _mc.get("Dr")
+            _deficit25 = max(0.0, (_dr_now - 0.75 * _taw)) if _dr_now is not None else 0.0
+            _l_25 = round(_deficit25 * _area) if _area else None
+            _h_25 = round(_deficit25 * _dm["min_per_mm"] / 60.0, 1) if (_dm and _dm.get("min_per_mm")) else None
             _val_rows.append({
                 "Campo": pr["Campo"], "Riego real (mm)": round(_mc.get("riego_total", 0)),
                 "Reserva hoy %": int(round(_mc["reserva_pct"])),
                 "Res. mín (con riego)": _mincon, "Res. mín (sin riego)": _minsin,
                 "Aporte riego (ptos)": f"+{_aporte}" if _aporte > 0 else str(_aporte),
+                "L/árbol temporada": _l_arbol,
+                "L/árbol por 60 min": _l_arbol_60,
+                "L para 25%": _l_25,
+                "Horas para 25%": _h_25,
                 "Lectura": _vd,
             })
         if _val_rows:
@@ -8923,7 +8942,14 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 "Compara la reserva **con** tu riego real vs **sin** riego (solo lluvia+suelo). El "
                 "**Aporte** = puntos de reserva que suma tu riego en la racha seca (si es poco, tu "
                 "goteo es **suplementario** y manda el suelo+lluvia). **Res. mín** = lo más bajo que "
-                "llegó: >50 % holgado · 25-50 % justo · <25 % corto. El juez del calibre es septiembre."
+                "llegó: >50 % holgado · 25-50 % justo · <25 % corto.  \n"
+                "**L/árbol temporada** = litros que ha recibido cada árbol desde que empezaste a regar. "
+                "**L/árbol por 60 min** = litros de media por árbol en un riego de 1 hora (caudal del "
+                "sistema ÷ nº de árboles). **L para 25 %** y **Horas para 25 %** = agua y tiempo de riego "
+                "que harían falta HOY para subir la reserva al 25 % (0 si ya está por encima); se "
+                "recalculan solos con el clima (ET, lluvia) y cada riego que registras. Si las horas "
+                "salen muy altas, tu goteo no puede reponer de golpe → es **suplementario**. El juez del "
+                "calibre es septiembre."
             )
         # ── Sistemas de riego configurados (goteo) ─────────────────────────────
         _drip_rows = []
