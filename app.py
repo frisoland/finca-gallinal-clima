@@ -15708,6 +15708,8 @@ FIELD_COVER_FACTOR = {
     "GY": 0.70,
     "Sector 8": 0.70,   # mismo M9 + suelo que GY → misma cobertura para comparar justo
     "Sector 7": 0.85,   # MM111 vigoroso (más copa que los M9); árboles finos
+    "Huertona": 0.80,   # M9 adulto a plena cobertura pero SIN estrés (calibre grande todos
+                        # los años) → se rebaja la ETc menos que en GY (GY tiene parte joven).
 }
 
 # Override de PROFUNDIDAD RADICULAR efectiva por campo (cm), por CALIBRACIÓN — cuando el
@@ -15718,6 +15720,8 @@ FIELD_ROOT_DEPTH_OVERRIDE = {
     "GY": 120,
     "Sector 8": 120,   # mismo M9 + suelo que GY → misma raíz efectiva para comparar justo
     "Sector 7": 200,   # MM111 vigoroso → raíz muy profunda (calibrado a árboles finos)
+    "Huertona": 120,   # M9 en suelo arenoso pero rinde mejor que GY → baja al subsuelo igual
+                       # (misma raíz efectiva que GY, misma finca; calibra con calibre real).
 }
 
 
