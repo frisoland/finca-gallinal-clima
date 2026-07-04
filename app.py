@@ -15879,6 +15879,13 @@ IRRIGATION_ZONES = {
     # Sector 4 = 2 subsectores (4a + 4b) que riegan EN SECUENCIA. Iguales: 1479 m / 493 árb.
     "E7-4a":        [{"campo": "Sector 4", "metros": 1479, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 493}],
     "E8-4b":        [{"campo": "Sector 4", "metros": 1479, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 493}],
+    # Sector 5 lo riegan DOS válvulas: E9-5 (solo S5) y E10-5y9 (resto de S5 + todo S9).
+    # E9-5: 535 árb / 1605 m, todo Sector 5.
+    "E9-5":         [{"campo": "Sector 5", "metros": 1605, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 535}],
+    # E10-5y9 = compartida: 978 m / 326 árb (154 de S9). Los 172 de S5 → resto para S9. Metros
+    # repartidos por nº de árboles (172/154 → 516/462 m; densidad de gotero uniforme).
+    "E10-5y9":      [{"campo": "Sector 5", "metros": 516, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 172},
+                     {"campo": "Sector 9", "metros": 462, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 154}],
     # Los Pinos 1 = válvula E1-LP1 propia.
     "E1-LP1":       [{"campo": "Los Pinos 1", "metros": 1924, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1480}],
     # Los Pinos 2 = válvula E3-LP2 (OJO: no sigue el patrón, la E2 no es de LP2).
