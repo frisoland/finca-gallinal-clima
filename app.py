@@ -15703,24 +15703,20 @@ FIELD_ROOTSTOCK = {
 # PASO B — factor de calibración de COBERTURA/EDAD (Kc×) por campo. Escala la ETc: 1.0 =
 # adulto a plena cobertura (default). Menor = enano/joven que no cubren todo el suelo →
 # menos ET real. Se AFINA con la evidencia (estado del árbol / calibre de septiembre).
-# GY (M9 + parte plantada hace 3 años, cobertura incompleta) calibrado a 0.70.
+# IMPORTANTE (2026-07-04): NO se usa para "cuadrar" que un campo lea sano. Solo debe llevar
+# un valor < 1.0 si hay un DATO REAL de cobertura de copa (p.ej. % de suelo sombreado medido,
+# o un bloque claramente joven). Los valores anteriores (GY/S8 0.70, S7 0.85) eran ajustes al
+# resultado y se han quitado a petición del usuario (quiere información veraz). Vacío = todos
+# los campos usan ETc completa (Kc× 1.0).
 FIELD_COVER_FACTOR = {
-    "GY": 0.70,
-    "Sector 8": 0.70,   # mismo M9 + suelo que GY → misma cobertura para comparar justo
-    "Sector 7": 0.85,   # MM111 vigoroso (más copa que los M9); árboles finos
-    # Huertona: SIN factor de cobertura (=1.0). No se rebaja la ETc para "cuadrar" el
-    # resultado — el campo se modela tal cual; si el balance sale bajo, es información real
-    # (los árboles pueden ir bien por otras razones: suelo rico en MO, etc.).
 }
 
-# Override de PROFUNDIDAD RADICULAR efectiva por campo (cm), por CALIBRACIÓN — cuando el
-# árbol accede a más/menos agua de lo que dice el patrón de tabla. GY: M9 en suelo profundo
-# que baja al subsuelo en sequía → 120 cm efectivos (calibrado a "árbol fino + riego mínimo";
-# provisional, se confirma con el calibre). Manda sobre el patrón; una edición manual gana.
+# Override de PROFUNDIDAD RADICULAR efectiva por campo (cm). SOLO para razones FÍSICAS reales
+# (mezcla de patrones, etc.), NUNCA para "cuadrar" el balance. Los overrides de GY (120),
+# Sector 8 (120) y Sector 7 (200) eran ajustes al resultado → quitados (2026-07-04, info
+# veraz): esos campos usan ya la profundidad de su PATRÓN (M9 90, MM111 150 cm, valores de
+# secano de ROOTSTOCK_ROOT_DEPTH_CM). Manda sobre el patrón; una edición manual gana.
 FIELD_ROOT_DEPTH_OVERRIDE = {
-    "GY": 120,
-    "Sector 8": 120,   # mismo M9 + suelo que GY → misma raíz efectiva para comparar justo
-    "Sector 7": 200,   # MM111 vigoroso → raíz muy profunda (calibrado a árboles finos)
     "Huertona": 103,   # EXPERIMENTAL: mezcla real 50% M7 (raíz 115) + 50% M9 (raíz 90) →
                        # media por superficie ~103 cm. Producción lo cuenta todo como M9.
                        # Dato físico real, no un ajuste para "cuadrar" el balance.
