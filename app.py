@@ -15881,6 +15881,11 @@ IRRIGATION_ZONES = {
     "E1-LP1":       [{"campo": "Los Pinos 1", "metros": 1924, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1480}],
     # Los Pinos 2 = válvula E3-LP2 (OJO: no sigue el patrón, la E2 no es de LP2).
     "E3-LP2":       [{"campo": "Los Pinos 2", "metros": 1667, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1488}],
+    # Los Pinos 3 + Los Pinos 4 = UNA válvula compartida (riegan juntos, mismos minutos).
+    # El usuario dio totales (1733 m, 1344 árb); repartidos por SUPERFICIE (LP3 0.20 ha 28% /
+    # LP4 0.52 ha 72%; densidad de gotero uniforme). Si hay datos reales por campo, se afina.
+    "E4-LP3y4":     [{"campo": "Los Pinos 3", "metros": 481,  "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 373},
+                     {"campo": "Los Pinos 4", "metros": 1252, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 971}],
 }
 
 
