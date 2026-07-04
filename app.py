@@ -15877,6 +15877,8 @@ IRRIGATION_ZONES = {
     # Sector 4 = 2 subsectores (4a + 4b) que riegan EN SECUENCIA. Iguales: 1479 m / 493 árb.
     "E7-4a":        [{"campo": "Sector 4", "metros": 1479, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 493}],
     "E8-4b":        [{"campo": "Sector 4", "metros": 1479, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 493}],
+    # Los Pinos 1 = válvula E1-LP1 propia.
+    "E1-LP1":       [{"campo": "Los Pinos 1", "metros": 1924, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1480}],
 }
 
 
