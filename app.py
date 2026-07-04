@@ -15889,8 +15889,10 @@ IRRIGATION_ZONES = {
     # Sector 6 = campo grande con 2 subsectores propios (6a + 6b), distinto tamaño cada uno.
     "E3-6a":        [{"campo": "Sector 6", "metros": 1380, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 460}],
     "E4-6b":        [{"campo": "Sector 6", "metros": 1230, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 410}],
-    # Sector 10 = válvula E3-S10a (el "a" sugiere posible subsector "b" por confirmar).
+    # Sector 10 = válvula E3-S10a (el "a" NO es subsector: Sector 10-B es OTRO campo aparte).
     "E3-S10a":      [{"campo": "Sector 10", "metros": 2328, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 776}],
+    # Sector 10-B = campo APARTE (M9, Carrió), válvula E4-S10bCarrio propia.
+    "E4-S10bCarrio": [{"campo": "Sector 10-B", "metros": 1200, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 851}],
     # Los Pinos 1 = válvula E1-LP1 propia.
     "E1-LP1":       [{"campo": "Los Pinos 1", "metros": 1924, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1480}],
     # Los Pinos 2 = válvula E3-LP2 (OJO: no sigue el patrón, la E2 no es de LP2).
