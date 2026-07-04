@@ -15872,6 +15872,8 @@ IRRIGATION_ZONES = {
                      {"campo": "Sector 8", "metros": 864, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 552}],
     # Huertona = válvula E5 propia (solo Huertona; el "6c" del nombre NO riega aquí).
     "E5-6c-Hue":    [{"campo": "Huertona", "metros": 1803, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 969}],
+    # Sector 2 = válvula E2-S2 propia. Caudal 2,3 L/h. (Suelo por analogía, sin analítica.)
+    "E2-S2":        [{"campo": "Sector 2", "metros": 1257, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 419}],
     # Sector 3 = válvula E1 propia. OJO: caudal 2,3 L/h por gotero (distinto de los 1,6).
     "E1-S3":        [{"campo": "Sector 3", "metros": 1308, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 436}],
     # Sector 4 = 2 subsectores (4a + 4b) que riegan EN SECUENCIA. Iguales: 1479 m / 493 árb.
