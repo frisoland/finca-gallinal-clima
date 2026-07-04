@@ -1,10 +1,6 @@
 name: Informe diario Telegram
 
 on:
-  schedule:
-    # 05:40 UTC = 07:40 en Asturias (verano CEST) / 06:40 (invierno CET).
-    # Minuto 40 (no en punto) para evitar la cola de GitHub Actions a las HH:00.
-    - cron: "40 5 * * *"
   workflow_dispatch:   
   
 
