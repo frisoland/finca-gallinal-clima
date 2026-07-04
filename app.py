@@ -15886,6 +15886,9 @@ IRRIGATION_ZONES = {
     # repartidos por nº de árboles (172/154 → 516/462 m; densidad de gotero uniforme).
     "E10-5y9":      [{"campo": "Sector 5", "metros": 516, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 172},
                      {"campo": "Sector 9", "metros": 462, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 154}],
+    # Sector 6 = campo grande con 2 subsectores propios (6a + 6b), distinto tamaño cada uno.
+    "E3-6a":        [{"campo": "Sector 6", "metros": 1380, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 460}],
+    "E4-6b":        [{"campo": "Sector 6", "metros": 1230, "dist_m": 0.75, "caudal_lph": 2.3, "arboles": 410}],
     # Los Pinos 1 = válvula E1-LP1 propia.
     "E1-LP1":       [{"campo": "Los Pinos 1", "metros": 1924, "dist_m": 0.75, "caudal_lph": 1.6, "arboles": 1480}],
     # Los Pinos 2 = válvula E3-LP2 (OJO: no sigue el patrón, la E2 no es de LP2).
