@@ -8893,6 +8893,49 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 st.success(f"✅ Guardado **{_mf}**: {len(_newf)} riego(s), "
                            f"**{_tt:.1f} mm** ({_tt * _mpm:.0f} min de campaña).")
 
+    # ── Editar config de goteo (AVANZADO — solo emergencia) ────────────────────
+    with st.expander("⚙️ Editar configuración de goteo (avanzado — usar con cuidado)", expanded=False):
+        st.warning(
+            "⚠️ **Editar con cuidado.** Estos datos (metros de manguera, distancia entre goteros, "
+            "caudal y nº de árboles) alimentan TODO el cálculo de riego: mm aportados, L/árbol, "
+            "objetivo 25%, minutos… Un valor mal puesto descuadra el balance de ese campo. "
+            "Lo normal es pedir el cambio en el código; usa esto **solo en caso de emergencia**. "
+            "Las **válvulas compartidas** (una válvula → varios campos, p.ej. `E6-6d-S8y`, "
+            "`E4-LP3y4`, `E10-5y9`) llevan **varias filas**: edita cada una con cuidado.")
+        _cfg_base = irrigation_config_base_rows()
+        _cfg_eff = irrigation_config_effective_rows()
+        _n_ov = len(normalize_irrigation_config_df(st.session_state.get("irrigation_config_df", pd.DataFrame())))
+        if _n_ov:
+            st.info(f"Ahora mismo hay **{_n_ov} fila(s)** con valores personalizados (mandan sobre "
+                    "el código). El resto sigue los valores del código.")
+        _ed_cfg = st.data_editor(
+            _cfg_eff, num_rows="fixed", use_container_width=True, hide_index=True,
+            key="irr_cfg_editor",
+            column_config={
+                "Válvula": st.column_config.TextColumn("Válvula (nombre Excel)", disabled=True),
+                "Campo": st.column_config.TextColumn("Campo", disabled=True),
+                "Metros": st.column_config.NumberColumn("Metros manguera", min_value=0.0, step=1.0),
+                "Dist. (m)": st.column_config.NumberColumn("Dist. goteros (m)", min_value=0.01,
+                    step=0.05, format="%.2f"),
+                "Caudal (L/h)": st.column_config.NumberColumn("Caudal gotero (L/h)", min_value=0.1,
+                    step=0.1, format="%.1f"),
+                "Árboles": st.column_config.NumberColumn("Nº árboles", min_value=0.0, step=1.0),
+            })
+        _cc1, _cc2 = st.columns(2)
+        if _cc1.button("💾 Guardar configuración", key="irr_cfg_save"):
+            _ov = irrigation_config_diff(_ed_cfg, _cfg_base)
+            st.session_state.irrigation_config_df = _ov
+            autosave_irrigation_config_to_supabase()
+            st.success(f"✅ Guardado. **{len(_ov)}** fila(s) personalizada(s); el resto sigue el "
+                       "código. El balance ya usa los valores nuevos.")
+        if _cc2.button("↩️ Restaurar valores del código", key="irr_cfg_reset"):
+            st.session_state.irrigation_config_df = normalize_irrigation_config_df(pd.DataFrame())
+            autosave_irrigation_config_to_supabase()
+            st.success("✅ Restaurado a los valores del código (se han borrado tus overrides).")
+        st.caption("**Válvula** y **Campo** no se pueden editar (mantienen el mapeo con el Excel). "
+                   "Solo cambia los números. Se guarda **solo lo que modifiques**; así, si más "
+                   "adelante corrijo un valor en el código, tus otras filas no lo tapan.")
+
     # ── Estado hídrico por campo (hoy) ─────────────────────────────────────────
     st.markdown("##### 💧 Estado hídrico por campo (hoy)")
     _rows, _n_regar, _n_vig = [], 0, 0
@@ -9069,7 +9112,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         # ── Sistemas de riego configurados (goteo) ─────────────────────────────
         _drip_rows = []
         for _c in sorted({str(p.get("campo", "")).strip()
-                          for parts in IRRIGATION_ZONES.values() for p in parts}):
+                          for parts in irrigation_zones_effective().values() for p in parts}):
             _dmc = drip_system_metrics(_c)
             if not _dmc:
                 continue
@@ -15970,6 +16013,138 @@ IRRIGATION_ZONES = {
 }
 
 
+# ── Config de goteo EDITABLE (override de IRRIGATION_ZONES, persistida en Supabase) ─────
+# Lo normal es editar los valores en el CÓDIGO (IRRIGATION_ZONES). Pero el usuario puede
+# corregir un dato desde la app (uso de emergencia): se guarda SOLO la fila cambiada y manda
+# sobre el código. El resto de funciones usan irrigation_zones_effective() (código + overrides).
+SUPABASE_IRRIGATION_CONFIG_FILE = "irrigation_config.parquet"
+IRR_CFG_COLS = ["Válvula", "Campo", "Metros", "Dist. (m)", "Caudal (L/h)", "Árboles"]
+_IRR_CFG_NUM = ["Metros", "Dist. (m)", "Caudal (L/h)", "Árboles"]
+
+
+def normalize_irrigation_config_df(df):
+    out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    for c in IRR_CFG_COLS:
+        if c not in out.columns:
+            out[c] = "" if c in ("Válvula", "Campo") else np.nan
+    out = out[IRR_CFG_COLS].copy()
+    if not out.empty:
+        out["Válvula"] = out["Válvula"].astype(str).str.strip()
+        out["Campo"] = out["Campo"].astype(str).str.strip()
+        for c in _IRR_CFG_NUM:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+        out = out[(out["Válvula"] != "") & (out["Válvula"] != "nan") & (out["Campo"] != "")]
+    return out.reset_index(drop=True)
+
+
+def irrigation_config_base_rows():
+    """Aplana IRRIGATION_ZONES (los valores del CÓDIGO) → DataFrame editable."""
+    rows = []
+    for valv, parts in IRRIGATION_ZONES.items():
+        for p in parts:
+            rows.append({"Válvula": valv, "Campo": str(p.get("campo", "")).strip(),
+                         "Metros": float(p.get("metros") or 0),
+                         "Dist. (m)": float(p.get("dist_m") or 0),
+                         "Caudal (L/h)": float(p.get("caudal_lph") or 0),
+                         "Árboles": float(p.get("arboles") or 0)})
+    return normalize_irrigation_config_df(pd.DataFrame(rows))
+
+
+def irrigation_config_effective_rows():
+    """Base del código + overrides guardados (mandan por (Válvula, Campo))."""
+    base = irrigation_config_base_rows()
+    ov = normalize_irrigation_config_df(st.session_state.get("irrigation_config_df", pd.DataFrame()))
+    if ov.empty:
+        return base
+    b = base.set_index(["Válvula", "Campo"])
+    for _, r in ov.iterrows():
+        key = (r["Válvula"], r["Campo"])
+        if key in b.index:
+            for c in _IRR_CFG_NUM:
+                if pd.notna(r[c]):
+                    b.loc[key, c] = r[c]
+        else:
+            b.loc[key, :] = [r[c] for c in _IRR_CFG_NUM]
+    return b.reset_index()
+
+
+def irrigation_config_diff(edited_df, base_df):
+    """Solo las filas del editor cuyos números difieren del código (o son nuevas) → overrides."""
+    ed = normalize_irrigation_config_df(edited_df)
+    b = normalize_irrigation_config_df(base_df).set_index(["Válvula", "Campo"])
+    keep = []
+    for _, r in ed.iterrows():
+        key = (r["Válvula"], r["Campo"])
+        if key in b.index:
+            same = all(abs(float(r[c]) - float(b.loc[key, c])) < 1e-6
+                       for c in _IRR_CFG_NUM if pd.notna(r[c]) and pd.notna(b.loc[key, c]))
+            if same:
+                continue
+        keep.append(r)
+    return normalize_irrigation_config_df(pd.DataFrame(keep))
+
+
+def irrigation_zones_effective():
+    """{válvula: [partes]} con overrides aplicados — lo que usa el resto del código en vez de
+    la constante IRRIGATION_ZONES, para que las ediciones del usuario surtan efecto."""
+    out = {}
+    for _, r in irrigation_config_effective_rows().iterrows():
+        out.setdefault(r["Válvula"], []).append({
+            "campo": r["Campo"], "metros": float(r["Metros"]),
+            "dist_m": float(r["Dist. (m)"]), "caudal_lph": float(r["Caudal (L/h)"]),
+            "arboles": float(r["Árboles"])})
+    return out
+
+
+def irrigation_config_storage_url():
+    url, _ = get_supabase_credentials()
+    return f"{url.rstrip('/')}/storage/v1/object/climate-snapshots/{SUPABASE_IRRIGATION_CONFIG_FILE}"
+
+
+def load_irrigation_config_from_supabase():
+    if not supabase_is_configured():
+        return None, "Supabase no configurado."
+    headers = supabase_headers(); headers.pop("Prefer", None)
+    try:
+        r = requests.get(irrigation_config_storage_url(), headers=headers, timeout=60)
+    except Exception as e:
+        return None, f"Error de conexión: {e}"
+    if r.status_code != 200:
+        return None, "Sin config de riego guardada."
+    try:
+        return pd.read_parquet(io.BytesIO(r.content), engine="pyarrow"), "Cargado."
+    except Exception as e:
+        return None, f"Error Parquet: {e}"
+
+
+def upload_irrigation_config_to_supabase(df):
+    if not supabase_is_configured():
+        return False, "Supabase no configurado."
+    out = normalize_irrigation_config_df(df if df is not None else pd.DataFrame())
+    buf = io.BytesIO()
+    out.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
+    buf.seek(0)
+    headers = supabase_headers()
+    headers["Content-Type"] = "application/octet-stream"
+    headers["x-upsert"] = "true"
+    try:
+        r = requests.post(irrigation_config_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+    except Exception as e:
+        return False, f"Error de conexión: {e}"
+    if r.status_code not in (200, 201):
+        return False, f"Error {r.status_code}"
+    return True, f"Guardado: {len(out)} override(s)."
+
+
+def autosave_irrigation_config_to_supabase():
+    if not supabase_is_configured():
+        return
+    try:
+        upload_irrigation_config_to_supabase(st.session_state.get("irrigation_config_df", pd.DataFrame()))
+    except Exception:
+        pass
+
+
 def _field_area_m2(campo):
     for fr in FIELDS_BASE_ROWS:
         if str(fr.get("Campo", "")).strip() == str(campo).strip():
@@ -15980,7 +16155,7 @@ def _field_area_m2(campo):
 
 def field_irrigation_zones(campo):
     out = []
-    for parts in IRRIGATION_ZONES.values():
+    for parts in irrigation_zones_effective().values():
         for p in parts:
             if str(p.get("campo", "")).strip() == str(campo).strip():
                 out.append(p)
@@ -16025,6 +16200,7 @@ def parse_agronic_excel(uploaded_file):
     Mapea cada zona (columna Nombre) a su campo vía IRRIGATION_ZONES y convierte los minutos
     regados a mm sobre la superficie del campo. Ignora zonas no reconocidas."""
     rows = []
+    _zones = irrigation_zones_effective()
     try:
         xls = pd.ExcelFile(uploaded_file)
     except Exception:
@@ -16039,7 +16215,7 @@ def parse_agronic_excel(uploaded_file):
             if pd.isna(fecha):
                 continue
             nombre = str(r.iloc[3]).strip() if len(r) > 3 else ""
-            parts = IRRIGATION_ZONES.get(nombre)
+            parts = _zones.get(nombre)
             if not parts:
                 continue
             mins = _hhmm_to_min(r.iloc[4]) if len(r) > 4 else 0
@@ -16543,6 +16719,12 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         _il_df, _ = load_irrigation_log_from_supabase()
         if _il_df is not None and not _il_df.empty:
             st.session_state.irrigation_log_df = normalize_irrigation_log_df(_il_df)
+
+    # Overrides de config de goteo (edición de emergencia del usuario)
+    if st.session_state.get("irrigation_config_df", pd.DataFrame()).empty:
+        _ic_df, _ = load_irrigation_config_from_supabase()
+        if _ic_df is not None and not _ic_df.empty:
+            st.session_state.irrigation_config_df = normalize_irrigation_config_df(_ic_df)
 
     # Carpocapsa (capturas, biofix y daños)
     if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
