@@ -8951,6 +8951,71 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 "salen muy altas, tu goteo no puede reponer de golpe → es **suplementario**. El juez del "
                 "calibre es septiembre."
             )
+        # ── Evolución anual de la reserva por campo (gráfica) ──────────────────
+        st.markdown("##### 📈 Evolución de la reserva durante el año (por campo)")
+        _campos_g = list(dict.fromkeys(str(c) for c in eff["Campo"].tolist()))
+        if _campos_g:
+            _def_ix = _campos_g.index("GY") if "GY" in _campos_g else 0
+            _sel_g = st.selectbox("Campo", _campos_g, index=_def_ix, key="wb_chart_campo")
+            _prg = eff[eff["Campo"].astype(str) == _sel_g]
+            _tawg = _prg["TAW mm"].iloc[0] if not _prg.empty else None
+            if _tawg and not pd.isna(_tawg) and not daily.empty:
+                _covg = field_cover_factor(_sel_g)
+                _irrg = field_irrigation_by_date(_sel_g)
+                _outg, _mg = run_soil_depletion(daily, _tawg, cover=_covg, irr_by_date=_irrg)
+                if not _outg.empty:
+                    import plotly.graph_objects as go
+                    _x = pd.to_datetime(_outg["Fecha"])
+                    # Reserva del 1 de abril (inicio de temporada)
+                    _apr1 = pd.Timestamp(pd.Timestamp(end_ts).year, 4, 1)
+                    _ra = _outg[pd.to_datetime(_outg["Fecha"]) == _apr1]
+                    _res_apr1 = int(_ra["Reserva %"].iloc[0]) if not _ra.empty else None
+                    fig_wb = go.Figure()
+                    # Lluvia y riego como barras (eje derecho, mm/día)
+                    fig_wb.add_trace(go.Bar(
+                        x=_x, y=_outg["Lluvia"], name="Lluvia", yaxis="y2",
+                        marker_color="rgba(120,170,220,0.45)", hovertemplate="Lluvia %{y} mm<extra></extra>"))
+                    fig_wb.add_trace(go.Bar(
+                        x=_x, y=_outg["Riego mm"], name="Riego (lo aportas tú)", yaxis="y2",
+                        marker_color="rgba(30,110,200,0.9)", hovertemplate="Riego %{y} mm<extra></extra>"))
+                    # Reserva % como línea (eje izquierdo)
+                    fig_wb.add_trace(go.Scatter(
+                        x=_x, y=_outg["Reserva %"], name="Reserva %", mode="lines",
+                        line=dict(color="#1b7f4b", width=2.4),
+                        hovertemplate="Reserva %{y}%<extra></extra>"))
+                    # Umbrales de confort
+                    fig_wb.add_hline(y=50, line_dash="dot", line_color="rgba(230,150,0,0.7)",
+                                     annotation_text="50% confort", annotation_position="right")
+                    fig_wb.add_hline(y=25, line_dash="dot", line_color="rgba(210,40,40,0.6)",
+                                     annotation_text="25%", annotation_position="right")
+                    # Marca de inicio de temporada (1 de abril)
+                    fig_wb.add_trace(go.Scatter(
+                        x=[_apr1, _apr1], y=[0, 100], mode="lines", showlegend=False,
+                        line=dict(color="rgba(80,80,80,0.7)", dash="dash", width=1.4),
+                        hoverinfo="skip"))
+                    _txt_apr = ("Inicio temporada · 1-abr"
+                                + (f" · reserva {_res_apr1}%" if _res_apr1 is not None else ""))
+                    fig_wb.add_annotation(x=_apr1, y=100, text=_txt_apr, showarrow=False,
+                                          yanchor="bottom", font=dict(size=11, color="#555"))
+                    fig_wb.update_layout(
+                        height=400, margin=dict(l=10, r=10, t=30, b=10), barmode="overlay",
+                        xaxis=dict(tickformat="%d %b", title=""),
+                        yaxis=dict(title="Reserva de agua (%)", range=[0, 100]),
+                        yaxis2=dict(title="mm/día", overlaying="y", side="right",
+                                    rangemode="tozero", showgrid=False),
+                        legend=dict(orientation="h", y=1.10, x=0),
+                        hovermode="x unified")
+                    st.plotly_chart(fig_wb, use_container_width=True)
+                    st.caption(
+                        "**Línea verde** = reserva de agua del suelo (%), cómo se llena con la "
+                        "**lluvia** y se vacía con la evaporación del cultivo. **Barras azules** = el "
+                        "**riego** que aportas tú; **azul claro** = lluvia. La **línea gris** marca el "
+                        "**1 de abril** (inicio de temporada) y con cuánta reserva arranca. El balance "
+                        "viene calculado en continuo desde el otoño anterior, así que el arranque de "
+                        "abril **se deriva del invierno real** (no se asume lleno). 50 % = umbral de "
+                        "confort; por debajo, el árbol empieza a pasar sed."
+                    )
+
         # ── Sistemas de riego configurados (goteo) ─────────────────────────────
         _drip_rows = []
         for _c in sorted({str(p.get("campo", "")).strip()
