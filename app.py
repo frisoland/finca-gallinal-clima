@@ -20281,21 +20281,28 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
 
         # Riesgo dominante (para seleccionar producto)
         # Solo incluye patógenos con previsión activa o exposición acumulada relevante
-        # Riesgo principal = lo ACCIONABLE HOY: enfermedad con evento RECIENTE (≤4 días,
-        # ventana curativa) o PREVISTO (3 días). NO se listan enfermedades cuyos eventos ya
-        # pasaron su ventana (tratar hoy no los rescata), aunque sumen en "Eventos infección".
+        # Riesgo principal = lo ACCIONABLE HOY, ETIQUETANDO el origen: (real) = infección real
+        # reciente (≤4 días, ventana curativa) · (prev.) = solo previsto (3 días) · (real+prev.)
+        # = ambas. NO se listan enfermedades cuyos eventos ya pasaron su ventana (tratar hoy no
+        # los rescata), aunque sumen en "Eventos infección". `dominant` (limpio, sin etiqueta)
+        # alimenta la selección de producto; `_rp_parts` es solo para MOSTRAR.
         dominant = []
-        if fc_mills_event or recent_mills:
-            dominant.append("Moteado")
-        if fc_monilia_event or recent_monilia:
-            dominant.append("Monilia")
-        if fc_oidio_event or recent_oidio:
-            dominant.append("Oídio")
+        _rp_parts = []
+        for _dis, _rec_f, _fc_f in (("Moteado", recent_mills, fc_mills_event),
+                                    ("Monilia", recent_monilia, fc_monilia_event),
+                                    ("Oídio",   recent_oidio,   fc_oidio_event)):
+            if _rec_f or _fc_f:
+                dominant.append(_dis)
+                _tag = "real+prev." if (_rec_f and _fc_f) else ("real" if _rec_f else "prev.")
+                _rp_parts.append(f"{_dis} ({_tag})")
         if not dominant and unprotected:
             # Sin cobertura y sin evento reciente/previsto concreto → espectro amplio preventivo.
             dominant = ["Moteado", "Monilia"]
+            _rp_parts = ["Moteado (sin cobertura)", "Monilia (sin cobertura)"]
         if not dominant:
             dominant = ["—"]
+            _rp_parts = ["—"]
+        _riesgo_principal = " · ".join(_rp_parts)
 
         # Conteo de aplicaciones en la campaña actual para este campo
         _app_counts, _sdhi_total = count_field_applications(
@@ -20343,7 +20350,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "Previsión Mills":   int(fc_mills_max),
             "Lluvia prevista mm": round(fc_rain, 1),
             "Pases campaña":     _pases_label,
-            "Riesgo principal":  ", ".join(dominant),
+            "Riesgo principal":  _riesgo_principal,
             "Fase":              f"{_fase_label} ({_modo})",
             "🎯 Acción":         action,
             "📋 Motivo":         _narrative,
@@ -22295,7 +22302,11 @@ def render_decisiones_panel():
             "**100 = evento de infección**.\n"
             "- **Pases campaña** — aplicaciones de cada fungicida esta campaña / **máximo "
             "legal** (registro MAPA), p. ej. *Luna 1/2*.\n"
-            "- **Riesgo principal** — enfermedad dominante prevista (moteado/monilia/oídio).\n"
+            "- **Riesgo principal** — enfermedad(es) **accionables hoy**, con su origen: "
+            "**(real)** = infección real reciente (≤4 días, aún en ventana curativa) · **(prev.)** "
+            "= solo **prevista** (próximos 3 días) · **(real+prev.)** = ambas. Los eventos ya "
+            "pasados de ventana NO se listan aquí (aunque cuenten en *Eventos infección*). "
+            "Ej.: *Oídio (real) · Moteado (prev.)*.\n"
             "- **1ª elección / Alternativa** — producto recomendado según el riesgo y la "
             "**rotación FRAC** (para no repetir modo de acción y evitar resistencias).\n"
             "- **🐛 Combo cuba** — si conviene **combinar** el fungicida con el insecticida "
