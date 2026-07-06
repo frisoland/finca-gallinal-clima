@@ -8960,16 +8960,21 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         else:
             estado = "🟢 OK"
         _dias = int((raw - Dr) / _etc_recent) if (_etc_recent and _etc_recent > 0 and Dr < raw) else 0
+        # Modelo B "goteo/árbol": ETc×Kd (cobertura) + raíz profunda por patrón + riego×0.90
+        _, _mB = field_model_b_reserve(daily, pr, _irr)
+        _resB = int(round(_mB["reserva_pct"])) if _mB else None
         _rows.append({
             "Campo": (pr["Campo"] + " *") if str(pr.get("Fuente", "")).endswith("*") else pr["Campo"],
             "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
-            "Reserva %": int(round(m["reserva_pct"])), "Agotam. mm": round(Dr, 1),
+            "Reserva % (clásico)": int(round(m["reserva_pct"])),
+            "Reserva % (goteo)": (_resB if _resB is not None else "—"),
+            "Agotam. mm": round(Dr, 1),
             "Riego camp.": (round(m["riego_total"]) if m.get("riego_total") else 0),
             "Días al umbral": (_dias if Dr < raw else 0), "Estado": estado,
         })
     fld = pd.DataFrame(_rows)
     if not fld.empty:
-        fld = fld.sort_values("Reserva %").reset_index(drop=True)
+        fld = fld.sort_values("Reserva % (clásico)").reset_index(drop=True)
         if _n_regar:
             st.error(f"💧 **{_n_regar} campo(s)** por debajo del umbral de confort (**reserva < 50 %**). "
                      "Mira **Reserva %** y **Días al umbral**. En secano es aviso de estrés (calibre); "
@@ -8980,9 +8985,38 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             st.success("🟢 Todos los campos con reserva de suelo suficiente. Sin necesidad de riego.")
         st.dataframe(fld, use_container_width=True, hide_index=True)
         st.caption(
-            "Guíate por la **Reserva %** (100 = lleno · 50 = umbral de confort) y los **Días al "
-            "umbral**. **\\*** junto al campo = perfil de suelo **estimado** (ver *Fuente* arriba)."
+            "**Dos modelos comparados. Reserva % (clásico)** = balance FAO-56 a escala de campo "
+            "(agua repartida por toda la superficie). **Reserva % (goteo)** = modelo alternativo que "
+            "**(1)** baja la ETc según la **cobertura de copa** (Allen-Pereira, del ancho de calle), "
+            "**(2)** usa **raíz más profunda** en patrones vigorosos (franco/MM111 llegan al agua "
+            "profunda) y **(3)** aplica la **eficiencia del goteo** (×0,90). En los **franco/MM111** "
+            "el goteo sube bastante (raíz honda); en los **M9** apenas, porque su raíz es somera "
+            "(siguen siendo los más dependientes del riego). Ninguno es \"el bueno\": son dos "
+            "lecturas para pensar; el **calibre de septiembre** es el árbitro. 100 = lleno · 50 = "
+            "confort. **\\*** = perfil de suelo estimado (ver *Fuente*)."
         )
+        with st.expander("📖 ¿Por qué dos modelos de riego? (clásico vs goteo)"):
+            st.markdown(
+                "El **clásico (FAO-56)** reparte el agua y la evapotranspiración por **toda la "
+                "superficie** del campo. Es el método estándar, pero para **goteo** tiene dos "
+                "limitaciones conocidas: el goteo **no moja todo el suelo** (solo un ~15-40 %) y las "
+                "**raíces no ocupan toda la calle** — se concentran junto al árbol. Por eso, con goteo, "
+                "el clásico tiende a leer reservas **más bajas** de lo que el árbol realmente sufre.\n\n"
+                "El modelo **goteo** corrige eso con literatura publicada, **sin inventar**:\n"
+                "- **ETc por cobertura de copa** (Allen & Pereira 2009): un árbol pequeño (M9 en calle "
+                "estrecha) transpira menos que un huerto a plena cobertura. La cobertura se estima del "
+                "**ancho de calle real** de cada campo (copa ≈ calle − ~1,8 m de pasillo).\n"
+                "- **Raíz más profunda por patrón** (literatura: un franco/seedling enraíza 2-4 m): "
+                "los árboles grandes acceden a un agua profunda que el clásico no cuenta → por eso "
+                "aguantan el 0 % sin verse mal.\n"
+                "- **Eficiencia del goteo** (×0,90): el goteo pierde poco agua.\n\n"
+                "**Importante y honesto:** el modelo goteo **no “pone verde” toda la finca**. En los "
+                "**M9** (raíz somera) apenas cambia — su reserva baja es real y dependen del riego "
+                "frecuente. Donde más sube es en los **vigorosos** (franco/MM111), que es justo donde "
+                "la raíz profunda explica que se vean bien. Ambos modelos comparten suelo, clima, "
+                "lluvia y riego; solo cambian esos tres supuestos. El juez final sigue siendo el "
+                "**calibre**."
+            )
 
         # ── ¿Tu riego real sostiene la reserva? (campos con riego cargado) ──────
         _val_rows = []
@@ -9059,6 +9093,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 _covg = field_cover_factor(_sel_g)
                 _irrg = field_irrigation_by_date(_sel_g)
                 _outg, _mg = run_soil_depletion(daily, _tawg, cover=_covg, irr_by_date=_irrg)
+                _outg_B, _mgB = field_model_b_reserve(daily, _prg.iloc[0], _irrg)   # Modelo B
                 if not _outg.empty:
                     import plotly.graph_objects as go
                     _x = pd.to_datetime(_outg["Fecha"])
@@ -9074,11 +9109,17 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                     fig_wb.add_trace(go.Bar(
                         x=_x, y=_outg["Riego mm"], name="Riego (lo aportas tú)", yaxis="y2",
                         marker_color="rgba(30,110,200,0.9)", hovertemplate="Riego %{y} mm<extra></extra>"))
-                    # Reserva % como línea (eje izquierdo)
+                    # Reserva % como línea (eje izquierdo) — CLÁSICO (sólida) y GOTEO (discontinua)
                     fig_wb.add_trace(go.Scatter(
-                        x=_x, y=_outg["Reserva %"], name="Reserva %", mode="lines",
+                        x=_x, y=_outg["Reserva %"], name="Reserva % (clásico)", mode="lines",
                         line=dict(color="#1b7f4b", width=2.4),
-                        hovertemplate="Reserva %{y}%<extra></extra>"))
+                        hovertemplate="Clásico %{y}%<extra></extra>"))
+                    if _outg_B is not None and not _outg_B.empty:
+                        fig_wb.add_trace(go.Scatter(
+                            x=pd.to_datetime(_outg_B["Fecha"]), y=_outg_B["Reserva %"],
+                            name="Reserva % (goteo)", mode="lines",
+                            line=dict(color="#8e44ad", width=2.0, dash="dash"),
+                            hovertemplate="Goteo %{y}%<extra></extra>"))
                     # Umbrales de confort
                     fig_wb.add_hline(y=50, line_dash="dot", line_color="rgba(230,150,0,0.7)",
                                      annotation_text="50% confort", annotation_position="right")
@@ -9103,13 +9144,15 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                         hovermode="x unified")
                     st.plotly_chart(fig_wb, use_container_width=True)
                     st.caption(
-                        "**Línea verde** = reserva de agua del suelo (%), cómo se llena con la "
-                        "**lluvia** y se vacía con la evaporación del cultivo. **Barras azules** = el "
-                        "**riego** que aportas tú; **azul claro** = lluvia. La **línea gris** marca el "
-                        "**1 de abril** (inicio de temporada) y con cuánta reserva arranca. El balance "
-                        "viene calculado en continuo desde el otoño anterior, así que el arranque de "
-                        "abril **se deriva del invierno real** (no se asume lleno). 50 % = umbral de "
-                        "confort; por debajo, el árbol empieza a pasar sed."
+                        "**Línea verde (continua)** = reserva de agua del suelo, modelo **clásico** "
+                        "(FAO-56 a escala de campo). **Línea morada (discontinua)** = modelo **goteo** "
+                        "(ETc por cobertura de copa + raíz profunda por patrón + eficiencia del goteo). "
+                        "La distancia entre las dos líneas es lo que aportan esos tres supuestos: mucha "
+                        "en franco/MM111 (raíz honda), poca en M9. **Barras azules** = el **riego** que "
+                        "aportas; **azul claro** = lluvia. La **línea gris** marca el **1 de abril** "
+                        "(inicio de temporada) y con cuánta reserva arranca (derivada del invierno "
+                        "real). 50 % = umbral de confort. El árbitro de cuál se acerca más a la realidad "
+                        "es el **calibre de septiembre**."
                     )
 
         # ── Sistemas de riego configurados (goteo) ─────────────────────────────
@@ -15777,6 +15820,103 @@ ANALOGY_SOIL_PROFILES = {
     "Sector 7": dict(_HU_LIKE),                                   # ≈ Huertona
     "Piedrona 2": dict(_PR_LIKE),                                 # ≈ Piedrona Rincón
 }
+
+
+# ── MODELO B "goteo/árbol": ETc por cobertura (Allen-Pereira 2009) + raíz profunda por vigor ──
+# Segundo modelo, COMPARABLE al clásico FAO-56 (comparten suelo/clima/lluvia/riego). Difiere en:
+#  (1) ETc × Kd — coeficiente de DENSIDAD (Allen & Pereira 2009) a partir de la cobertura de copa
+#      fc (estimada del ancho de calle real) y la altura del árbol (por patrón).
+#  (2) Raíz efectiva MÁS PROFUNDA en patrones vigorosos (literatura: seedling 2-4 m).
+#  (3) Eficiencia de aplicación del goteo (0.90; el goteo pierde poco). Todo editable.
+ROOTSTOCK_HEIGHT_M = {"M9": 2.75, "M7": 3.75, "MM106": 4.0, "MM109": 4.5, "MM111": 4.75, "Franco": 6.0}
+ROOTSTOCK_ROOT_DEPTH_CM_DRIP = {"M9": 90, "M7": 135, "MM106": 155, "MM109": 170, "MM111": 200, "Franco": 300}
+CANOPY_WORK_ALLEY_M = 1.8            # pasillo de maquinaria (m) que NO cubre la copa
+DRIP_APPLICATION_EFFICIENCY = 0.90  # eficiencia de aplicación del goteo (85-95 % en la literatura)
+_AP_ML = 1.5                        # multiplicador de densidad de Allen-Pereira
+# Ancho de calle (m) por campo (dato REAL del usuario). Fallback por patrón si el campo no está.
+FIELD_ROW_SPACING_M = {
+    "Piedrona 2": 3.5, "Huertona": 3.75, "GY": 4.0,
+    "Los Pinos 1": 4.0, "Los Pinos 2": 4.0, "Los Pinos 3": 4.0, "Los Pinos 4": 4.0, "Los Pinos 5": 4.0,
+    "Sector 8": 4.5, "Sector 10-B": 4.5, "Sector 11": 4.5,
+    "Piedrona Rincón": 5.0, "Sector 7": 5.0,
+}
+ROOTSTOCK_ROW_SPACING_M = {"MM111": 6.0, "Franco": 7.0}   # fallback por patrón
+
+
+def _norm_rootstock(name):
+    n = str(name or "").upper().replace("-", "").replace(" ", "").replace(".", "")
+    if not n:
+        return ""
+    if n.startswith("M9"):
+        return "M9"
+    if n.startswith("M7"):
+        return "M7"
+    if "111" in n:
+        return "MM111"
+    if "109" in n:
+        return "MM109"
+    if "106" in n:
+        return "MM106"
+    if "FRANC" in n or "SEEDLING" in n:
+        return "Franco"
+    return str(name).strip()
+
+
+def allen_pereira_kd(fc, height_m):
+    """Coeficiente de densidad Kd (Allen & Pereira 2009) = min(1, ML·fc, fc^(1/(1+h)))."""
+    try:
+        fc = min(max(float(fc), 0.01), 0.99)
+        h = max(float(height_m), 0.1)
+        return float(min(1.0, _AP_ML * fc, fc ** (1.0 / (1.0 + h))))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def field_row_spacing_m(campo, rootstock=None):
+    rs = FIELD_ROW_SPACING_M.get(str(campo).strip())
+    if rs is None and rootstock:
+        rs = ROOTSTOCK_ROW_SPACING_M.get(_norm_rootstock(rootstock))
+    return rs
+
+
+def field_canopy_fc(campo, rootstock=None):
+    """Cobertura de copa fc ≈ (ancho_calle − pasillo)/ancho_calle. None si no hay ancho."""
+    rs = field_row_spacing_m(campo, rootstock)
+    if not rs or rs <= 0:
+        return None
+    return min(0.85, max(0.15, (rs - CANOPY_WORK_ALLEY_M) / rs))
+
+
+def field_density_kd(campo, rootstock):
+    """Kd del Modelo B (ETc×Kd). Sin ancho de calle conocido → 1.0 (= clásico, no penaliza)."""
+    fc = field_canopy_fc(campo, rootstock)
+    if fc is None:
+        return 1.0
+    h = ROOTSTOCK_HEIGHT_M.get(_norm_rootstock(rootstock), 3.0)
+    return allen_pereira_kd(fc, h)
+
+
+def field_root_depth_drip(rootstock, fallback_cm):
+    d = ROOTSTOCK_ROOT_DEPTH_CM_DRIP.get(_norm_rootstock(rootstock))
+    try:
+        return float(d) if d else float(fallback_cm)
+    except (TypeError, ValueError):
+        return 80.0
+
+
+def field_model_b_reserve(daily, pr, irr_by_date):
+    """Reserva % (hoy) del Modelo B para un campo: ETc×Kd (cobertura) + raíz profunda por
+    patrón + riego×eficiencia. `pr` = fila de soil_profiles_effective. Devuelve (reserva%, meta)."""
+    _pat = pr.get("Patrón", "")
+    _kd = field_density_kd(pr["Campo"], _pat)
+    _root_b = field_root_depth_drip(_pat, pr.get("Prof. raíz (cm)", 80))
+    _taw_b = taw_from_profile(pr.get("CC (%)"), pr.get("PMP (%)"), pr.get("Da (g/cm³)"), _root_b)
+    if not _taw_b or pd.isna(_taw_b):
+        return None, None
+    _irr_b = ({d: v * DRIP_APPLICATION_EFFICIENCY for d, v in irr_by_date.items()}
+              if irr_by_date else irr_by_date)
+    _df_b, _m_b = run_soil_depletion(daily, _taw_b, cover=_kd, irr_by_date=_irr_b)
+    return _df_b, _m_b
 
 
 def taw_from_profile(cc, pmp, da, prof_cm):
