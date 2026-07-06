@@ -8834,6 +8834,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                     pd.concat([_exist, _new_norm], ignore_index=True))
                 st.session_state.irrigation_log_df = _merged
                 autosave_irrigation_log_to_supabase()
+                save_irrigation_sync_at("Excel Agronic/Vegga")
                 _resumen = _new.groupby("Campo")["mm"].agg(["count", "sum"])
                 st.success("✅ Importado. Riego por campo: " + " · ".join(
                     f"**{c}** {int(row['count'])} días, {row['sum']:.0f} mm"
@@ -8874,6 +8875,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                     st.session_state.irrigation_log_df = normalize_irrigation_log_df(
                         pd.concat([_exist, _vnew], ignore_index=True))
                     autosave_irrigation_log_to_supabase()
+                    save_irrigation_sync_at("VEGGA (3 zonas)")
                     _vres = _vnew.groupby("Campo")["mm"].agg(["count", "sum"])
                     st.success("✅ Descargado de VEGGA: " + " · ".join(
                         f"**{c}** {int(row['count'])}d, {row['sum']:.0f}mm"
@@ -8929,6 +8931,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 st.session_state.irrigation_log_df = normalize_irrigation_log_df(
                     pd.concat([_other, _newf], ignore_index=True))
                 autosave_irrigation_log_to_supabase()
+                save_irrigation_sync_at("Manual motobomba")
                 _tt = float(_newf["mm"].sum()) if not _newf.empty else 0.0
                 st.success(f"✅ Guardado **{_mf}**: {len(_newf)} riego(s), "
                            f"**{_tt:.1f} mm** ({_tt * _mpm:.0f} min de campaña).")
@@ -8981,6 +8984,15 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
 
     # ── Estado hídrico por campo (hoy) ─────────────────────────────────────────
     st.markdown("##### 💧 Estado hídrico por campo (hoy)")
+    _sync_lbl = st.session_state.get("irrigation_synced_at")
+    _illog2 = normalize_irrigation_log_df(st.session_state.get("irrigation_log_df", pd.DataFrame()))
+    _last_data = _illog2["Fecha"].max() if not _illog2.empty else None
+    st.caption(
+        f"🔄 **Riego** — última actualización: **{_sync_lbl or '— (aún no registrada)'}**"
+        + (f" · datos de riego hasta **{pd.Timestamp(_last_data).strftime('%d/%m/%Y')}**"
+           if _last_data is not None else "")
+        + ". Se guarda solo en Supabase con cada descarga/carga."
+    )
     _rows, _n_regar, _n_vig = [], 0, 0
     _etc_recent = pd.to_numeric(daily.tail(7)["ETc"], errors="coerce").mean()
     for _, pr in eff.iterrows():
@@ -16569,6 +16581,44 @@ def autosave_irrigation_log_to_supabase():
         pass
 
 
+# ── Marca de "última actualización" del riego (persistida) ────────────────────
+SUPABASE_IRRIGATION_SYNC_FILE = "irrigation_synced_at.txt"
+
+
+def irrigation_sync_storage_url():
+    url, _ = get_supabase_credentials()
+    return f"{url.rstrip('/')}/storage/v1/object/climate-snapshots/{SUPABASE_IRRIGATION_SYNC_FILE}"
+
+
+def load_irrigation_sync_at():
+    if not supabase_is_configured():
+        return None
+    headers = supabase_headers(); headers.pop("Prefer", None)
+    try:
+        r = requests.get(irrigation_sync_storage_url(), headers=headers, timeout=30)
+        if r.status_code == 200 and r.text.strip():
+            return r.text.strip()
+    except Exception:
+        pass
+    return None
+
+
+def save_irrigation_sync_at(source="manual"):
+    """Guarda la fecha/hora de la última actualización del riego (sesión + Supabase)."""
+    stamp = f"{pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · {source}"
+    st.session_state["irrigation_synced_at"] = stamp
+    if not supabase_is_configured():
+        return
+    try:
+        headers = supabase_headers()
+        headers["Content-Type"] = "text/plain"
+        headers["x-upsert"] = "true"
+        requests.post(irrigation_sync_storage_url(), headers=headers,
+                      data=stamp.encode("utf-8"), timeout=30)
+    except Exception:
+        pass
+
+
 def field_irrigation_by_date(campo):
     """{fecha_normalizada: mm} del riego real de un campo (de irrigation_log_df)."""
     log = normalize_irrigation_log_df(st.session_state.get("irrigation_log_df", pd.DataFrame()))
@@ -16988,6 +17038,10 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         _ic_df, _ = load_irrigation_config_from_supabase()
         if _ic_df is not None and not _ic_df.empty:
             st.session_state.irrigation_config_df = normalize_irrigation_config_df(_ic_df)
+
+    # Fecha de última actualización del riego (para mostrar "cuán actualizado está")
+    if "irrigation_synced_at" not in st.session_state:
+        st.session_state["irrigation_synced_at"] = load_irrigation_sync_at()
 
     # Carpocapsa (capturas, biofix y daños)
     if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
