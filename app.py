@@ -20008,6 +20008,24 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             except (TypeError, ValueError, KeyError):
                 pass
 
+    # Eficacia por ENFERMEDAD de cada producto (para exigir que el fungicida sea VÁLIDO
+    # contra esa enfermedad, no solo estar en ventana temporal). Fuente: el catálogo de
+    # productos de la app (etiquetas/literatura, editable) → sin inventar. Umbral 50 % =
+    # cobertura válida (p.ej. el cobre ~25 % en oídio NO cubre oídio; los sistémicos 55-86 %
+    # sí). Producto no catalogado → 50 (neutro, no penaliza).
+    _EFF_THRESHOLD = 50.0
+    _eff_catalog = default_treatment_catalog_copy()
+
+    def _prod_disease_eff(prod_key):
+        _n = str(prod_key).lower()
+        for _tk, _ti in _eff_catalog.items():
+            if _tk.lower() in _n or any(_al in _n for _al in _ti.get("aliases", [])):
+                _e = _ti.get("eficacia", {})
+                return {"Moteado": float(_e.get("Moteado", 50)),
+                        "Monilia": float(_e.get("Monilia", 50)),
+                        "Oídio":   float(_e.get("Oídio", 50))}
+        return {"Moteado": 50.0, "Monilia": 50.0, "Oídio": 50.0}
+
     # Pre-process activities: solo fungicidas, con fecha válida
     acts_clean = pd.DataFrame()
     if not activities_df.empty and "Campos reconocidos" in activities_df.columns:
@@ -20024,12 +20042,14 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         )
         acts_clean = _acts[_mask_fung].copy()
 
-    def _evento_cubierto(ev_date, fung_passes):
-        """Un evento está cubierto si ALGÚN pase de fungicida lo tapa, usando la etiqueta
-        de ESE producto: dentro de SU persistencia si fue ANTES (preventivo), o dentro de
-        SU ventana curativa si fue DESPUÉS (rescate). `fung_passes` = lista de
-        (fecha_norm, persistencia_días, curativa_días) de cada aplicación del campo."""
-        for f, persist, curativa in fung_passes:
+    def _evento_cubierto(ev_date, fung_passes, disease):
+        """Un evento de `disease` está cubierto si ALGÚN pase lo tapa: (a) el producto es
+        VÁLIDO contra esa enfermedad (eficacia ≥ umbral) Y (b) está en ventana — dentro de SU
+        persistencia si fue ANTES (preventivo) o de SU curativa si fue DESPUÉS (rescate).
+        `fung_passes` = lista de (fecha, persistencia, curativa, eficacia_por_enfermedad)."""
+        for f, persist, curativa, eff in fung_passes:
+            if float(eff.get(disease, 50.0)) < _EFF_THRESHOLD:
+                continue                         # ese producto no vale para esta enfermedad
             if (f <= ev_date and (ev_date - f).days <= persist) or \
                (f >= ev_date and (f - ev_date).days <= curativa):
                 return True
@@ -20065,17 +20085,23 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             ]
             for _fd, _grp in _cy_acts.groupby(_cy_acts["Fecha_dt"].dt.normalize()):
                 _pers_day, _cur_day = [], []
+                _eff_day = {"Moteado": 0.0, "Monilia": 0.0, "Oídio": 0.0}
                 for _, _gr in _grp.iterrows():
                     for _ck in _normalize_product_to_catalog(_gr.get("Producto", "")):
                         if _ck in _persist_map:
                             _pers_day.append(_persist_map[_ck])
                         if _ck in _curative_map:
                             _cur_day.append(_curative_map[_ck])
+                        _e = _prod_disease_eff(_ck)   # caldo mixto → manda el más eficaz
+                        for _dis in _eff_day:
+                            _eff_day[_dis] = max(_eff_day[_dis], _e[_dis])
                 # Caldo mixto → manda el de mayor persistencia / mayor curativa. Si el
                 # producto no está catalogado, respaldo: persistencia global y curativa 4.
                 _p = max(_pers_day) if _pers_day else float(persistence_days)
                 _c = max(_cur_day) if _cur_day else 4.0
-                _field_fung_passes.append((_fd, _p, _c))
+                if all(v == 0.0 for v in _eff_day.values()):   # producto sin catalogar
+                    _eff_day = {"Moteado": 50.0, "Monilia": 50.0, "Oídio": 50.0}
+                _field_fung_passes.append((_fd, _p, _c, _eff_day))
             if not campo_acts_all.empty:
                 last_date = campo_acts_all.iloc[0]["Fecha_dt"].normalize()
                 # Todos los productos fungicidas del mismo día = misma pasada
@@ -20111,8 +20137,10 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         rain_since          = 0.0
         mills_events_since  = 0
         monilia_events_since = 0
-        eventos_infeccion_dias = 0   # DÍAS distintos con infección (moteado y/o monilia)
+        oidio_events_since  = 0
+        eventos_infeccion_dias = 0   # DÍAS distintos con infección (moteado, monilia u oídio)
         _infection_dates_since = []  # fechas de esos días-evento (para "Ev. sin cobertura")
+        _dates_by_disease = {"Moteado": [], "Monilia": [], "Oídio": []}
         max_mills_since     = 0.0
         max_monilia_since   = 0.0
 
@@ -20128,13 +20156,20 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             hist_risk = risk_df[(risk_df["Fecha"] >= ref_date) & (~risk_df["Es_prediccion"])]
             _mills_d   = hist_risk["Mills_valor"].fillna(0)   >= 100
             _monilia_d = hist_risk["Monilia_valor"].fillna(0) >= 100
+            _oidio_d   = hist_risk.get("Oidio_valor", pd.Series(0.0, index=hist_risk.index)).fillna(0) >= 100
             mills_events_since   = int(_mills_d.sum())
             monilia_events_since = int(_monilia_d.sum())
-            # Un día con moteado Y monilia = UN evento (mismo periodo de mojada), no dos.
-            _inf_mask = _mills_d | _monilia_d
+            oidio_events_since   = int(_oidio_d.sum())
+            # Un día con varias enfermedades = UN día-evento (mismo periodo), no varios.
+            _inf_mask = _mills_d | _monilia_d | _oidio_d
             eventos_infeccion_dias = int(_inf_mask.sum())
             _infection_dates_since = pd.to_datetime(
                 hist_risk.loc[_inf_mask, "Fecha"]).dt.normalize().tolist()
+            _dates_by_disease = {
+                "Moteado": pd.to_datetime(hist_risk.loc[_mills_d, "Fecha"]).dt.normalize().tolist(),
+                "Monilia": pd.to_datetime(hist_risk.loc[_monilia_d, "Fecha"]).dt.normalize().tolist(),
+                "Oídio":   pd.to_datetime(hist_risk.loc[_oidio_d, "Fecha"]).dt.normalize().tolist(),
+            }
             max_mills_since      = float(hist_risk["Mills_valor"].fillna(0).max())
             max_monilia_since    = float(hist_risk["Monilia_valor"].fillna(0).max())
 
@@ -20147,20 +20182,26 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
                            (risk_df["Fecha"] <= today)]
             if not _rec.empty:
                 recent_event = bool((_rec["Mills_valor"].fillna(0) >= 100).any() or
-                                    (_rec["Monilia_valor"].fillna(0) >= 100).any())
+                                    (_rec["Monilia_valor"].fillna(0) >= 100).any() or
+                                    (_rec.get("Oidio_valor", pd.Series(0.0, index=_rec.index)).fillna(0) >= 100).any())
 
         # De los eventos DESDE EL ÚLTIMO TRATAMIENTO (los mismos que cuenta "Eventos
         # infección"), cuántos quedaron SIN cobertura según el MISMO criterio de la app
         # (persistencia del producto + ventana curativa). Mismo reloj que "Eventos infección":
         # si tratas el día 1 y hay un evento el día 2 dentro de la persistencia → cubierto (0).
-        eventos_sin_cobertura = sum(
-            1 for _d in _infection_dates_since
-            if not _evento_cubierto(_d, _field_fung_passes)
-        )
+        # Por enfermedad: un día-evento queda SIN cobertura si el producto no la tapa (ventana)
+        # o no es válido contra ESA enfermedad (eficacia < umbral). Se cuentan DÍAS distintos.
+        _uncov_dates = set()
+        for _dis, _dts in _dates_by_disease.items():
+            for _d in _dts:
+                if not _evento_cubierto(_d, _field_fung_passes, _dis):
+                    _uncov_dates.add(pd.Timestamp(_d).normalize())
+        eventos_sin_cobertura = len(_uncov_dates)
 
         # ── Previsión 3 días ──────────────────────────────────────────────────
         fc_mills_max   = 0.0
         fc_monilia_max = 0.0
+        fc_oidio_max   = 0.0
         fc_rain        = 0.0
         if not risk_df.empty:
             fc = risk_df[
@@ -20171,6 +20212,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             if not fc.empty:
                 fc_mills_max   = float(fc["Mills_valor"].fillna(0).max())
                 fc_monilia_max = float(fc["Monilia_valor"].fillna(0).max())
+                fc_oidio_max   = float(fc.get("Oidio_valor", pd.Series(0.0, index=fc.index)).fillna(0).max())
                 fc_rain        = float(fc["Lluvia"].fillna(0).sum())
 
         # ── Lógica de decisión ────────────────────────────────────────────────
@@ -20185,8 +20227,9 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         # Si hay cobertura caducada + previsión → tratar ANTES de que llegue la lluvia.
         fc_mills_event   = fc_mills_max >= 100    # evento Mills confirmado en previsión
         fc_monilia_event = fc_monilia_max >= 100   # evento Monilia en previsión
+        fc_oidio_event   = fc_oidio_max >= 100     # evento Oídio en previsión
         fc_rain_alert    = fc_rain >= 15           # ≥15 mm previstos (umbral lavado + infección)
-        fc_alert = fc_mills_event or fc_monilia_event or fc_rain_alert
+        fc_alert = fc_mills_event or fc_monilia_event or fc_oidio_event or fc_rain_alert
 
         # EXPOSICIÓN ACUMULADA SIN COBERTURA: DÍAS con infección (moteado y/o monilia) desde
         # el último fungicida. Cada día-evento = período de infección completado (latencia
@@ -20241,6 +20284,8 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             dominant.append("Moteado")
         if fc_monilia_event or (monilia_events_since >= 1 and unprotected):
             dominant.append("Monilia")
+        if fc_oidio_event or (oidio_events_since >= 1 and unprotected):
+            dominant.append("Oídio")
         if not dominant and unprotected:
             # Sin riesgo específico confirmado pero sin cobertura → espectro amplio
             dominant = ["Moteado", "Monilia"]
@@ -22230,16 +22275,17 @@ def render_decisiones_panel():
             "- **Días protección** — persistencia real del producto aplicado (Luna 14, "
             "Folicur 11…). Si los *días sin tratar* la superan → cobertura caducada.\n"
             "- **Lluvia desde mm** — lluvia acumulada desde el tratamiento (lava el producto).\n"
-            "- **Eventos infección** — nº de **días con infección** (moteado y/o monilia) **desde "
-            "el último fungicida**. Un día con las dos cuenta **una vez** (mismo evento de mojada); "
-            "el desglose *X Mills + Y Monilia* está en el análisis detallado por campo.\n"
+            "- **Eventos infección** — nº de **días con infección** (moteado, monilia **u oídio**) "
+            "**desde el último fungicida**. Un día con varias cuenta **una vez** (mismo día-evento); "
+            "el desglose por enfermedad está en el análisis detallado por campo.\n"
             "- **Ev. sin cobertura** — de esos mismos **eventos desde el último fungicida**, "
-            "cuántos quedaron **sin cobertura** (se colaron sin protección). Mismo criterio de la "
-            "app: cubierto si un pase lo tapa por **persistencia** (antes) o **ventana curativa** "
-            "(después), **por etiqueta de cada producto** (editables en *Catálogo de fungicidas*). "
-            "Ej.: tratas el día 1 y hay evento el día 2 dentro de la persistencia → *Eventos "
-            "infección 1 · Ev. sin cobertura 0*. Si sale >0, la cobertura caducó y te entraron "
-            "infecciones.\n"
+            "cuántos quedaron **sin cobertura** (se colaron sin protección). Cubierto si un pase lo "
+            "tapa por **persistencia** (antes) o **ventana curativa** (después) **Y** el producto es "
+            "**válido contra esa enfermedad** (eficacia ≥ 50 % en el catálogo — p. ej. el cobre no "
+            "cubre oídio). Todo **por etiqueta de cada producto** (editable en *Catálogo de "
+            "fungicidas*). Ej.: tratas el día 1 y hay evento el día 2 dentro de la persistencia con "
+            "un producto eficaz → *Eventos infección 1 · Ev. sin cobertura 0*. Si sale >0, entraron "
+            "infecciones sin protección válida.\n"
             "- **Previsión Mills** — índice de riesgo de **moteado** (modelo Mills): "
             "**100 = evento de infección**.\n"
             "- **Pases campaña** — aplicaciones de cada fungicida esta campaña / **máximo "
