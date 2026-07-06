@@ -264,7 +264,7 @@ _DESKTOP_CHROME_JS = """
         var isSmall = win.innerWidth <= 768;
         fab.style.cssText =
           'position:fixed;' +
-          'bottom:' + (isSmall ? '72' : '28') + 'px;' +
+          'bottom:' + (isSmall ? '72' : '90') + 'px;' +   /* desktop: 90 para no tapar el "Manage app" de Streamlit */
           'right:18px;' +
           'width:46px;height:46px;border-radius:50%;' +
           'background:#1b6b35;color:#fff;' +
@@ -288,7 +288,7 @@ _DESKTOP_CHROME_JS = """
 
         /* Reajustar posición al redimensionar */
         win.addEventListener('resize', function () {
-          fab.style.bottom = win.innerWidth <= 768 ? '72px' : '28px';
+          fab.style.bottom = win.innerWidth <= 768 ? '72px' : '90px';
         });
 
         /* Active feedback */
