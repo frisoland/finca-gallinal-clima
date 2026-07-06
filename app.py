@@ -20176,14 +20176,16 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         # Evento REAL en los últimos 4 días (VENTANA CURATIVA): solo mientras esté
         # abierta tiene sentido el aviso reactivo (después, tratar no rescata nada).
         recent_event = False
+        recent_mills = recent_monilia = recent_oidio = False
         if not risk_df.empty:
             _rec = risk_df[(~risk_df["Es_prediccion"]) &
                            (risk_df["Fecha"] >= today - pd.Timedelta(days=4)) &
                            (risk_df["Fecha"] <= today)]
             if not _rec.empty:
-                recent_event = bool((_rec["Mills_valor"].fillna(0) >= 100).any() or
-                                    (_rec["Monilia_valor"].fillna(0) >= 100).any() or
-                                    (_rec.get("Oidio_valor", pd.Series(0.0, index=_rec.index)).fillna(0) >= 100).any())
+                recent_mills   = bool((_rec["Mills_valor"].fillna(0) >= 100).any())
+                recent_monilia = bool((_rec["Monilia_valor"].fillna(0) >= 100).any())
+                recent_oidio   = bool((_rec.get("Oidio_valor", pd.Series(0.0, index=_rec.index)).fillna(0) >= 100).any())
+                recent_event = recent_mills or recent_monilia or recent_oidio
 
         # De los eventos DESDE EL ÚLTIMO TRATAMIENTO (los mismos que cuenta "Eventos
         # infección"), cuántos quedaron SIN cobertura según el MISMO criterio de la app
@@ -20279,15 +20281,18 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
 
         # Riesgo dominante (para seleccionar producto)
         # Solo incluye patógenos con previsión activa o exposición acumulada relevante
+        # Riesgo principal = lo ACCIONABLE HOY: enfermedad con evento RECIENTE (≤4 días,
+        # ventana curativa) o PREVISTO (3 días). NO se listan enfermedades cuyos eventos ya
+        # pasaron su ventana (tratar hoy no los rescata), aunque sumen en "Eventos infección".
         dominant = []
-        if fc_mills_event or (mills_events_since >= 2 and unprotected):
+        if fc_mills_event or recent_mills:
             dominant.append("Moteado")
-        if fc_monilia_event or (monilia_events_since >= 1 and unprotected):
+        if fc_monilia_event or recent_monilia:
             dominant.append("Monilia")
-        if fc_oidio_event or (oidio_events_since >= 1 and unprotected):
+        if fc_oidio_event or recent_oidio:
             dominant.append("Oídio")
         if not dominant and unprotected:
-            # Sin riesgo específico confirmado pero sin cobertura → espectro amplio
+            # Sin cobertura y sin evento reciente/previsto concreto → espectro amplio preventivo.
             dominant = ["Moteado", "Monilia"]
         if not dominant:
             dominant = ["—"]
