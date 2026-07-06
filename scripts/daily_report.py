@@ -217,6 +217,50 @@ def refresh_sencrop_data(app, history):
         return history
 
 
+def refresh_vegga_irrigation(app):
+    """Login ROPC a VEGGA + descarga del historial de riego de los 3 cabezales y lo
+    fusiona (REEMPLAZANDO por Campo·Fecha) con el irrigation_log de Supabase. Silencioso:
+    ante cualquier fallo no tumba el informe."""
+    print("-" * 60)
+    print("DESCARGA AUTOMÁTICA DE RIEGO (VEGGA)")
+    try:
+        _user, _pass = app.vegga_credentials_from_secrets()
+        if not (_user and _pass):
+            print("  VEGGA no configurado (faltan VEGGA_USERNAME/VEGGA_PASSWORD). Se omite.")
+            return
+        token, err = app.vegga_get_token(_user, _pass)
+        if err or not token:
+            print(f"  No se pudo iniciar sesión en VEGGA: {err}. Se omite.")
+            return
+        today = pd.Timestamp.today().normalize().date()
+        start = today - pd.Timedelta(days=75)   # margen amplio; el merge reemplaza por fecha
+        new_df, warns = app.vegga_download_all_devices(
+            token, start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
+        if warns:
+            print(f"  Avisos VEGGA: {warns}")
+        if new_df is None or new_df.empty:
+            print("  VEGGA no devolvió datos de riego. Se conserva lo que había.")
+            return
+        _il, _ = app.load_irrigation_log_from_supabase()
+        exist = app.normalize_irrigation_log_df(_il if _il is not None else pd.DataFrame())
+        newn = app.normalize_irrigation_log_df(new_df)
+        if not exist.empty:
+            keys = set(map(tuple, newn[["Campo", "Fecha"]].to_numpy()))
+            exist = exist[~exist[["Campo", "Fecha"]].apply(tuple, axis=1).isin(keys)]
+        merged = app.normalize_irrigation_log_df(pd.concat([exist, newn], ignore_index=True))
+        ok, msg = app.upload_irrigation_log_to_supabase(merged)
+        print(f"  Riego VEGGA: {len(newn)} registros · log {len(merged)} filas · "
+              f"Supabase {'OK' if ok else 'FALLO'} · {msg}")
+        try:
+            app.save_irrigation_sync_at("VEGGA (cron diario)")
+        except Exception:
+            pass
+    except Exception as exc:
+        import traceback as _tb
+        print(f"  EXCEPCIÓN en la descarga de VEGGA: {exc}")
+        _tb.print_exc()
+
+
 def _send_telegram_document(zip_bytes, filename, caption):
     """Envía un archivo a Telegram (sendDocument) usando el bot del informe."""
     import requests
@@ -395,6 +439,9 @@ def main():
     # Descarga las horas nuevas desde la última registrada y guarda el snapshot
     # actualizado en Supabase, para que el informe use datos frescos.
     history = refresh_sencrop_data(app, history)
+
+    # ── Descarga automática de RIEGO desde VEGGA (actualiza irrigation_log) ────
+    refresh_vegga_irrigation(app)
 
     print(f"Datos finales → histórico: {len(history)} filas · "
           f"actuaciones: {len(activities)} · trampas: {len(traps)} · "
