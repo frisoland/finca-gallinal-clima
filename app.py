@@ -16448,9 +16448,9 @@ def parse_agronic_excel(uploaded_file):
 # es un device con (modelo, id). El token es COMÚN a los 3. Se replica ese GET.
 VEGGA_API_BASE = "https://vegga-prod.azure-api.net/irrigation-control-service"
 VEGGA_DEVICES = [
-    ("A2500", "788", "Zona Nave"),        # Sectores 10/10-B/11/12 + GY
-    ("A2500", "789", "Zona Contenedor"),  # Sectores 2/3/4/5/6/7/8/9 + Huertona (nombre por confirmar)
-    # ("A2500", "<id>", "Zona Río"),      # pendiente: cabezal de Los Pinos 1-5
+    ("A2500", "788",   "Zona Nave"),        # Sectores 10/10-B/11/12 + GY
+    ("A2500", "789",   "Zona Contenedor"),  # Sectores 2/3/4/5/6/7/8/9 + Huertona
+    ("A2500", "16636", "Zona Río"),         # Los Pinos 1-5
 ]
 
 
