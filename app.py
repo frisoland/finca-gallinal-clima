@@ -8846,44 +8846,62 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
 
     # ── Descargar riego directamente de VEGGA (API) ────────────────────────────
     with st.expander("⬇️ Descargar riego de VEGGA (automático, sin Excel)", expanded=False):
-        st.caption(
-            "Baja el historial de los cabezales de VEGGA **sin exportar Excel a mano**. Pega el "
-            "**token actual** de VEGGA (caduca a las ~2 h). Para copiarlo: en VEGGA, **F12 → Network "
-            "→ Fetch/XHR**, pulsa *Exportar*, clic en la petición **`export?...`** → pestaña "
-            "**Headers** → copia el valor de **`authorization`** (lo que va después de *Bearer *).")
-        _vtok = st.text_input("Token VEGGA (Bearer)", type="password", key="vegga_token",
-                              help="Solo el token; el 'Bearer ' sobra pero se admite.")
+        _dev_lbl = ", ".join(d[2] for d in VEGGA_DEVICES)
+        st.caption(f"Baja el historial de los cabezales de VEGGA sin exportar Excel a mano. "
+                   f"Cabezales: **{_dev_lbl}**.")
         _vc1, _vc2 = st.columns(2)
         _vfrom = _vc1.date_input("Desde", value=(pd.Timestamp.today() - pd.Timedelta(days=60)).date(),
                                  key="vegga_from")
         _vto = _vc2.date_input("Hasta", value=pd.Timestamp.today().date(), key="vegga_to")
-        _dev_lbl = ", ".join(d[2] for d in VEGGA_DEVICES)
-        st.caption(f"Cabezales configurados: **{_dev_lbl}**.")
-        if st.button("⬇️ Descargar de VEGGA", key="vegga_dl"):
+
+        def _vegga_apply_download(_token):
+            with st.spinner("Descargando de VEGGA…"):
+                _vnew, _vwarn = vegga_download_all_devices(
+                    _token, _vfrom.strftime("%Y-%m-%d"), _vto.strftime("%Y-%m-%d"))
+            if not _vnew.empty:
+                _exist = normalize_irrigation_log_df(st.session_state.irrigation_log_df)
+                if not _exist.empty:
+                    _keys = set(map(tuple, _vnew[["Campo", "Fecha"]].to_numpy()))
+                    _exist = _exist[~_exist[["Campo", "Fecha"]].apply(tuple, axis=1).isin(_keys)]
+                st.session_state.irrigation_log_df = normalize_irrigation_log_df(
+                    pd.concat([_exist, _vnew], ignore_index=True))
+                autosave_irrigation_log_to_supabase()
+                save_irrigation_sync_at("VEGGA (3 zonas)")
+                _vres = _vnew.groupby("Campo")["mm"].agg(["count", "sum"])
+                st.success("✅ Descargado de VEGGA: " + " · ".join(
+                    f"**{c}** {int(row['count'])}d, {row['sum']:.0f}mm"
+                    for c, row in _vres.iterrows()))
+            else:
+                st.error("No se descargó nada. Revisa el token/credenciales.")
+            if _vwarn:
+                st.warning("Avisos: " + " · ".join(_vwarn))
+
+        # OPCIÓN A — auto-login con usuario+contraseña de Secrets (para automatizar 24/7)
+        _vuser, _vpass = vegga_credentials_from_secrets()
+        if _vuser and _vpass:
+            st.success("🔐 Credenciales VEGGA detectadas en Secrets → login automático.")
+            if st.button("⬇️ Descargar de VEGGA (con mi usuario)", type="primary", key="vegga_dl_auto"):
+                with st.spinner("Iniciando sesión en VEGGA…"):
+                    _tok, _terr = vegga_get_token(_vuser, _vpass)
+                if _terr:
+                    st.error(_terr)
+                else:
+                    _vegga_apply_download(_tok)
+            st.divider()
+
+        # OPCIÓN B — pegar token a mano (si no hay credenciales o para una descarga puntual)
+        st.caption(
+            "**O pega un token** a mano (caduca ~2 h): en VEGGA, **F12 → Network → Fetch/XHR**, "
+            "pulsa *Exportar*, clic en la petición **`export?...`** → **Headers** → copia el valor de "
+            "**`authorization`** (lo de después de *Bearer *).")
+        _vtok = st.text_input("Token VEGGA (Bearer)", type="password", key="vegga_token",
+                              help="Solo el token; el 'Bearer ' sobra pero se admite.")
+        if st.button("⬇️ Descargar de VEGGA (con token pegado)", key="vegga_dl"):
             _tk = str(_vtok or "").replace("Bearer ", "").strip()
             if not _tk:
                 st.warning("Pega el token primero.")
             else:
-                with st.spinner("Descargando de VEGGA…"):
-                    _vnew, _vwarn = vegga_download_all_devices(
-                        _tk, _vfrom.strftime("%Y-%m-%d"), _vto.strftime("%Y-%m-%d"))
-                if not _vnew.empty:
-                    _exist = normalize_irrigation_log_df(st.session_state.irrigation_log_df)
-                    if not _exist.empty:
-                        _keys = set(map(tuple, _vnew[["Campo", "Fecha"]].to_numpy()))
-                        _exist = _exist[~_exist[["Campo", "Fecha"]].apply(tuple, axis=1).isin(_keys)]
-                    st.session_state.irrigation_log_df = normalize_irrigation_log_df(
-                        pd.concat([_exist, _vnew], ignore_index=True))
-                    autosave_irrigation_log_to_supabase()
-                    save_irrigation_sync_at("VEGGA (3 zonas)")
-                    _vres = _vnew.groupby("Campo")["mm"].agg(["count", "sum"])
-                    st.success("✅ Descargado de VEGGA: " + " · ".join(
-                        f"**{c}** {int(row['count'])}d, {row['sum']:.0f}mm"
-                        for c, row in _vres.iterrows()))
-                else:
-                    st.error("No se descargó nada. Revisa el token (quizá caducó).")
-                if _vwarn:
-                    st.warning("Avisos: " + " · ".join(_vwarn))
+                _vegga_apply_download(_tk)
 
     # ── Riego MANUAL (motobomba, sin Excel) ────────────────────────────────────
     with st.expander("🕹️ Riego manual (motobomba, sin Excel)", expanded=False):
@@ -16509,6 +16527,53 @@ def vegga_download_all_devices(token, from_date, to_date):
     combined = (normalize_irrigation_log_df(pd.concat(frames, ignore_index=True))
                 if frames else pd.DataFrame(columns=["Campo", "Fecha", "mm"]))
     return combined, warns
+
+
+# ── Login automático a VEGGA (Azure B2C, flujo ROPC usuario+contraseña) ────────
+# La política B2C de VEGGA admite grant_type=password (comprobado), así que con el
+# usuario y la contraseña se obtiene un token fresco sin navegador → automatización 24/7.
+VEGGA_B2C_TOKEN_URL = ("https://vegga.b2clogin.com/a3e45bbe-ac32-46c5-a91a-fe1b44289bba/"
+                       "b2c_1_b2c_vegga_root_api/oauth2/v2.0/token")
+VEGGA_CLIENT_ID = "70aa1ea0-8fdb-4edc-a80e-10a3da9b4146"
+
+
+def vegga_get_token(username, password):
+    """ROPC (B2C): usuario+contraseña → access token de VEGGA. Devuelve (token, error)."""
+    data = {
+        "grant_type": "password",
+        "username": str(username).strip(),
+        "password": str(password),
+        "client_id": VEGGA_CLIENT_ID,
+        "scope": f"openid {VEGGA_CLIENT_ID} offline_access",
+        "response_type": "token id_token",
+    }
+    try:
+        r = requests.post(VEGGA_B2C_TOKEN_URL, data=data, timeout=30)
+    except Exception as e:
+        return None, f"Error de conexión con el login de VEGGA: {e}"
+    if r.status_code != 200:
+        try:
+            j = r.json(); msg = j.get("error_description") or j.get("error") or r.text[:200]
+        except Exception:
+            msg = r.text[:200]
+        return None, f"Login VEGGA falló ({r.status_code}): {msg.splitlines()[0] if msg else ''}"
+    try:
+        tok = r.json().get("access_token")
+    except Exception:
+        tok = None
+    if not tok:
+        return None, "Login OK pero no devolvió access_token (revisar scope)."
+    return tok, None
+
+
+def vegga_credentials_from_secrets():
+    """(usuario, contraseña) de VEGGA desde Secrets, o (None, None)."""
+    try:
+        u = st.secrets.get("VEGGA_USERNAME", "")
+        p = st.secrets.get("VEGGA_PASSWORD", "")
+        return (u, p) if (u and p) else (None, None)
+    except Exception:
+        return (None, None)
 
 
 # ── Historial de RIEGO real (Campo · Fecha · mm) — persistido en Supabase ─────
