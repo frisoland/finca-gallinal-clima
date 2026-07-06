@@ -8843,6 +8843,46 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             _tot = _illog.groupby("Campo")["mm"].sum().round(0)
             st.caption("Historial cargado: " + " · ".join(f"{c} {v:.0f} mm" for c, v in _tot.items()))
 
+    # ── Descargar riego directamente de VEGGA (API) ────────────────────────────
+    with st.expander("⬇️ Descargar riego de VEGGA (automático, sin Excel)", expanded=False):
+        st.caption(
+            "Baja el historial de los cabezales de VEGGA **sin exportar Excel a mano**. Pega el "
+            "**token actual** de VEGGA (caduca a las ~2 h). Para copiarlo: en VEGGA, **F12 → Network "
+            "→ Fetch/XHR**, pulsa *Exportar*, clic en la petición **`export?...`** → pestaña "
+            "**Headers** → copia el valor de **`authorization`** (lo que va después de *Bearer *).")
+        _vtok = st.text_input("Token VEGGA (Bearer)", type="password", key="vegga_token",
+                              help="Solo el token; el 'Bearer ' sobra pero se admite.")
+        _vc1, _vc2 = st.columns(2)
+        _vfrom = _vc1.date_input("Desde", value=(pd.Timestamp.today() - pd.Timedelta(days=60)).date(),
+                                 key="vegga_from")
+        _vto = _vc2.date_input("Hasta", value=pd.Timestamp.today().date(), key="vegga_to")
+        _dev_lbl = ", ".join(d[2] for d in VEGGA_DEVICES)
+        st.caption(f"Cabezales configurados: **{_dev_lbl}**.")
+        if st.button("⬇️ Descargar de VEGGA", key="vegga_dl"):
+            _tk = str(_vtok or "").replace("Bearer ", "").strip()
+            if not _tk:
+                st.warning("Pega el token primero.")
+            else:
+                with st.spinner("Descargando de VEGGA…"):
+                    _vnew, _vwarn = vegga_download_all_devices(
+                        _tk, _vfrom.strftime("%Y-%m-%d"), _vto.strftime("%Y-%m-%d"))
+                if not _vnew.empty:
+                    _exist = normalize_irrigation_log_df(st.session_state.irrigation_log_df)
+                    if not _exist.empty:
+                        _keys = set(map(tuple, _vnew[["Campo", "Fecha"]].to_numpy()))
+                        _exist = _exist[~_exist[["Campo", "Fecha"]].apply(tuple, axis=1).isin(_keys)]
+                    st.session_state.irrigation_log_df = normalize_irrigation_log_df(
+                        pd.concat([_exist, _vnew], ignore_index=True))
+                    autosave_irrigation_log_to_supabase()
+                    _vres = _vnew.groupby("Campo")["mm"].agg(["count", "sum"])
+                    st.success("✅ Descargado de VEGGA: " + " · ".join(
+                        f"**{c}** {int(row['count'])}d, {row['sum']:.0f}mm"
+                        for c, row in _vres.iterrows()))
+                else:
+                    st.error("No se descargó nada. Revisa el token (quizá caducó).")
+                if _vwarn:
+                    st.warning("Avisos: " + " · ".join(_vwarn))
+
     # ── Riego MANUAL (motobomba, sin Excel) ────────────────────────────────────
     with st.expander("🕹️ Riego manual (motobomba, sin Excel)", expanded=False):
         st.caption(
@@ -16400,6 +16440,63 @@ def parse_agronic_excel(uploaded_file):
     out = (pd.DataFrame(rows).groupby(["Campo", "Fecha"], as_index=False)["mm"].sum())
     out["mm"] = out["mm"].round(2)
     return out
+
+
+# ── Descarga automática desde VEGGA (API de Progrés/Agrónic) ──────────────────
+# La web de VEGGA baja el "Historial de sectores" (mismo Excel que subimos a mano) con un GET
+# a su API pasando un token Bearer (JWT de Azure B2C, caduca ~2 h). Cada CABEZAL (programador)
+# es un device con (modelo, id). El token es COMÚN a los 3. Se replica ese GET.
+VEGGA_API_BASE = "https://vegga-prod.azure-api.net/irrigation-control-service"
+VEGGA_DEVICES = [
+    ("A2500", "788", "Zona Nave"),      # Sectores 10/10-B/11/12 + GY
+    # ("A2500", "<id>", "Zona Contenedor"),  # pendiente device id
+    # ("A2500", "<id>", "Zona Río"),         # pendiente device id
+]
+
+
+def vegga_download_sectors_excel(token, model, device_id, from_date, to_date):
+    """GET del 'Historial de sectores' (Excel) de un cabezal VEGGA. Devuelve (bytes, error)."""
+    url = (f"{VEGGA_API_BASE}/devices/{model}/{device_id}/history/sectors/export"
+           f"?from={from_date}&to={to_date}&grouping=DAY&language=es&sector=0")
+    headers = {
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+        "Origin": "https://app.veggadigital.com",
+        "Referer": "https://app.veggadigital.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "authorization": f"Bearer {str(token).strip()}",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=60)
+    except Exception as e:
+        return None, f"Error de conexión: {e}"
+    if r.status_code in (401, 403):
+        return None, "Token caducado o inválido (401/403). Vuelve a copiar el token de VEGGA."
+    if r.status_code != 200:
+        return None, f"Error {r.status_code}"
+    return r.content, None
+
+
+def vegga_download_all_devices(token, from_date, to_date):
+    """Descarga y parsea el historial de riego de TODOS los cabezales configurados.
+    Devuelve (DataFrame Campo·Fecha·mm combinado, lista de avisos)."""
+    frames, warns = [], []
+    for _model, _did, _label in VEGGA_DEVICES:
+        _bytes, _err = vegga_download_sectors_excel(token, _model, _did, from_date, to_date)
+        if _err:
+            warns.append(f"{_label}: {_err}")
+            continue
+        try:
+            _df = parse_agronic_excel(io.BytesIO(_bytes))
+            if _df is not None and not _df.empty:
+                frames.append(_df)
+            else:
+                warns.append(f"{_label}: sin datos reconocidos")
+        except Exception as e:
+            warns.append(f"{_label}: no se pudo leer ({e})")
+    combined = (normalize_irrigation_log_df(pd.concat(frames, ignore_index=True))
+                if frames else pd.DataFrame(columns=["Campo", "Fecha", "mm"]))
+    return combined, warns
 
 
 # ── Historial de RIEGO real (Campo · Fecha · mm) — persistido en Supabase ─────
