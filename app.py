@@ -22163,7 +22163,8 @@ def render_decisiones_panel():
                 sty = pd.DataFrame("", index=df.index, columns=df.columns)
                 n = len(df)
                 for prevc, realc in [("Moteado prev.", "Moteado real"),
-                                     ("Monilia prev.", "Monilia real")]:
+                                     ("Monilia prev.", "Monilia real"),
+                                     ("Oídio prev.", "Oídio real")]:
                     if prevc not in df.columns or realc not in df.columns:
                         continue
                     reals = [_num(df.iloc[i][realc]) for i in range(n)]
