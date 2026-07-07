@@ -256,6 +256,26 @@ def refresh_vegga_irrigation(app):
             _snip = "" if _isxlsx else repr(_body[:200])
             print(f"  [diag {_lbl}] HTTP {_rr.status_code} · ct={_rr.headers.get('content-type')} "
                   f"· len={len(_body)} · xlsx={_isxlsx} {_snip}")
+            # ¿Se puede LEER el Excel? ¿cuántas zonas mapea? ¿cuántas filas parsea?
+            import io as _io
+            try:
+                import openpyxl as _oxl; _hox = _oxl.__version__
+            except Exception as _e:
+                _hox = f"NO ({_e})"
+            try:
+                _sheets = pd.ExcelFile(_io.BytesIO(_body)).sheet_names
+            except Exception as _e:
+                _sheets = f"ERROR read_excel: {_e}"
+            try:
+                _zc = len(app.irrigation_zones_effective())
+            except Exception as _e:
+                _zc = f"ERROR zones: {_e}"
+            try:
+                _pr = app.parse_agronic_excel(_io.BytesIO(_body))
+                _prn = 0 if _pr is None else len(_pr)
+            except Exception as _e:
+                _prn = f"ERROR parse: {_e}"
+            print(f"  [diag parse] openpyxl={_hox} · zonas={_zc} · sheets={_sheets} · parse_filas={_prn}")
         except Exception as _de:
             print(f"  [diag] fallo: {_de}")
         new_df, warns = app.vegga_download_all_devices(
