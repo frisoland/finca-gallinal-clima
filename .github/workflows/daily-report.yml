@@ -31,4 +31,6 @@ jobs:
           SENCROP_APP_ID:     ${{ secrets.SENCROP_APP_ID }}
           SENCROP_APP_SECRET: ${{ secrets.SENCROP_APP_SECRET }}
           SENCROP_USER_ID:    ${{ secrets.SENCROP_USER_ID }}
+          VEGGA_USERNAME: ${{ secrets.VEGGA_USERNAME }}
+          VEGGA_PASSWORD: ${{ secrets.VEGGA_PASSWORD }}
         run: python scripts/daily_report.py
