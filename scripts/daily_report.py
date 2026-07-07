@@ -234,50 +234,6 @@ def refresh_vegga_irrigation(app):
             return
         today = pd.Timestamp.today().normalize().date()
         start = today - pd.Timedelta(days=45)   # rango seguro; el merge reemplaza por fecha.
-
-        # ── DIAGNÓSTICO temporal: token + respuesta cruda del primer cabezal ──
-        try:
-            import base64 as _b64, json as _js, requests as _rq
-            _p = token.split(".")[1]; _p += "=" * (-len(_p) % 4)
-            _cl = _js.loads(_b64.urlsafe_b64decode(_p))
-            print(f"  [diag token] aud={_cl.get('aud')} scp={_cl.get('scp')} "
-                  f"exp={_cl.get('exp')} len={len(token)}")
-            _m, _d, _lbl = app.VEGGA_DEVICES[0]
-            _url = (f"{app.VEGGA_API_BASE}/devices/{_m}/{_d}/history/sectors/export"
-                    f"?from={start.strftime('%Y-%m-%d')}&to={today.strftime('%Y-%m-%d')}"
-                    f"&grouping=DAY&language=es&sector=0")
-            _rr = _rq.get(_url, headers={
-                "Accept": "*/*", "Content-Type": "application/json",
-                "Origin": "https://app.veggadigital.com",
-                "Referer": "https://app.veggadigital.com/",
-                "User-Agent": "Mozilla/5.0", "authorization": f"Bearer {token}"}, timeout=60)
-            _body = _rr.content or b""
-            _isxlsx = _body[:2] == b"PK"
-            _snip = "" if _isxlsx else repr(_body[:200])
-            print(f"  [diag {_lbl}] HTTP {_rr.status_code} · ct={_rr.headers.get('content-type')} "
-                  f"· len={len(_body)} · xlsx={_isxlsx} {_snip}")
-            # ¿Se puede LEER el Excel? ¿cuántas zonas mapea? ¿cuántas filas parsea?
-            import io as _io
-            try:
-                import openpyxl as _oxl; _hox = _oxl.__version__
-            except Exception as _e:
-                _hox = f"NO ({_e})"
-            try:
-                _sheets = pd.ExcelFile(_io.BytesIO(_body)).sheet_names
-            except Exception as _e:
-                _sheets = f"ERROR read_excel: {_e}"
-            try:
-                _zc = len(app.irrigation_zones_effective())
-            except Exception as _e:
-                _zc = f"ERROR zones: {_e}"
-            try:
-                _pr = app.parse_agronic_excel(_io.BytesIO(_body))
-                _prn = 0 if _pr is None else len(_pr)
-            except Exception as _e:
-                _prn = f"ERROR parse: {_e}"
-            print(f"  [diag parse] openpyxl={_hox} · zonas={_zc} · sheets={_sheets} · parse_filas={_prn}")
-        except Exception as _de:
-            print(f"  [diag] fallo: {_de}")
         new_df, warns = app.vegga_download_all_devices(
             token, start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
         if warns:
