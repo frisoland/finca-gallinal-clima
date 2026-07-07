@@ -9122,7 +9122,6 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             # (reserva 25 % ↔ agotamiento Dr = 0.75·TAW). Si ya está por encima → 0.
             _dr_now = _mc.get("Dr")
             _deficit25 = max(0.0, (_dr_now - 0.75 * _taw)) if _dr_now is not None else 0.0
-            _l_25 = round(_deficit25 * _area) if _area else None
             _h_25 = round(_deficit25 * _dm["min_per_mm"] / 60.0, 1) if (_dm and _dm.get("min_per_mm")) else None
             _val_rows.append({
                 "Campo": pr["Campo"], "Riego real (mm)": round(_mc.get("riego_total", 0)),
@@ -9131,7 +9130,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 "Aporte riego (ptos)": f"+{_aporte}" if _aporte > 0 else str(_aporte),
                 "L/árbol temporada": _l_arbol,
                 "L/árbol por 60 min": _l_arbol_60,
-                "L para 25%": _l_25,
+                "mm para 25%": round(_deficit25, 1),
                 "Horas para 25%": _h_25,
                 "Lectura": _vd,
             })
@@ -9145,8 +9144,9 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 "llegó: >50 % holgado · 25-50 % justo · <25 % corto.  \n"
                 "**L/árbol temporada** = litros que ha recibido cada árbol desde que empezaste a regar. "
                 "**L/árbol por 60 min** = litros de media por árbol en un riego de 1 hora (caudal del "
-                "sistema ÷ nº de árboles). **L para 25 %** y **Horas para 25 %** = agua y tiempo de riego "
-                "que harían falta HOY para subir la reserva al 25 % (0 si ya está por encima); se "
+                "sistema ÷ nº de árboles). **mm para 25 %** y **Horas para 25 %** = agua (en mm, "
+                "1 mm = 1 L/m²) y tiempo de riego que harían falta HOY para subir la reserva al 25 % "
+                "(0 si ya está por encima); se "
                 "recalculan solos con el clima (ET, lluvia) y cada riego que registras. Si las horas "
                 "salen muy altas, tu goteo no puede reponer de golpe → es **suplementario**. El juez del "
                 "calibre es septiembre."
