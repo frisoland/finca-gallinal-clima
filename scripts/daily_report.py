@@ -233,7 +233,9 @@ def refresh_vegga_irrigation(app):
             print(f"  No se pudo iniciar sesión en VEGGA: {err}. Se omite.")
             return
         today = pd.Timestamp.today().normalize().date()
-        start = today - pd.Timedelta(days=75)   # margen amplio; el merge reemplaza por fecha
+        start = today - pd.Timedelta(days=45)   # rango seguro (el export de VEGGA limita el
+                                                # histórico; 75 d devolvía vacío). El merge
+                                                # reemplaza por fecha, 45 d cubre de sobra.
         new_df, warns = app.vegga_download_all_devices(
             token, start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
         if warns:
