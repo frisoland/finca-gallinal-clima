@@ -233,9 +233,31 @@ def refresh_vegga_irrigation(app):
             print(f"  No se pudo iniciar sesión en VEGGA: {err}. Se omite.")
             return
         today = pd.Timestamp.today().normalize().date()
-        start = today - pd.Timedelta(days=45)   # rango seguro (el export de VEGGA limita el
-                                                # histórico; 75 d devolvía vacío). El merge
-                                                # reemplaza por fecha, 45 d cubre de sobra.
+        start = today - pd.Timedelta(days=45)   # rango seguro; el merge reemplaza por fecha.
+
+        # ── DIAGNÓSTICO temporal: token + respuesta cruda del primer cabezal ──
+        try:
+            import base64 as _b64, json as _js, requests as _rq
+            _p = token.split(".")[1]; _p += "=" * (-len(_p) % 4)
+            _cl = _js.loads(_b64.urlsafe_b64decode(_p))
+            print(f"  [diag token] aud={_cl.get('aud')} scp={_cl.get('scp')} "
+                  f"exp={_cl.get('exp')} len={len(token)}")
+            _m, _d, _lbl = app.VEGGA_DEVICES[0]
+            _url = (f"{app.VEGGA_API_BASE}/devices/{_m}/{_d}/history/sectors/export"
+                    f"?from={start.strftime('%Y-%m-%d')}&to={today.strftime('%Y-%m-%d')}"
+                    f"&grouping=DAY&language=es&sector=0")
+            _rr = _rq.get(_url, headers={
+                "Accept": "*/*", "Content-Type": "application/json",
+                "Origin": "https://app.veggadigital.com",
+                "Referer": "https://app.veggadigital.com/",
+                "User-Agent": "Mozilla/5.0", "authorization": f"Bearer {token}"}, timeout=60)
+            _body = _rr.content or b""
+            _isxlsx = _body[:2] == b"PK"
+            _snip = "" if _isxlsx else repr(_body[:200])
+            print(f"  [diag {_lbl}] HTTP {_rr.status_code} · ct={_rr.headers.get('content-type')} "
+                  f"· len={len(_body)} · xlsx={_isxlsx} {_snip}")
+        except Exception as _de:
+            print(f"  [diag] fallo: {_de}")
         new_df, warns = app.vegga_download_all_devices(
             token, start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
         if warns:
