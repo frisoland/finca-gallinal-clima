@@ -22580,26 +22580,40 @@ def render_decisiones_panel():
             _comp = _rel_meta.get("comp")
             if _comp is not None and not _comp.empty:
                 _hz_rows = []
-                _hz_metrics = [("🍄 Moteado", "moteado_p", "moteado_r"),
-                               ("🟤 Monilia", "monilia_p", "monilia_r"),
-                               ("⚪ Oídio", "oidio_p", "oidio_r"),
-                               ("🌧️ Lluvia", "lluvia_p", "lluvia_r")]
+                _hz_metrics = [("🍄 Moteado", "moteado_p", "moteado_r", 1),
+                               ("🟤 Monilia", "monilia_p", "monilia_r", 1),
+                               ("⚪ Oídio", "oidio_p", "oidio_r", 1),
+                               ("🌧️ Lluvia", "lluvia_p", "lluvia_r", 0)]
+                _comp = _comp.copy()
+                _comp["_dt"] = pd.to_datetime(_comp["target_date"], errors="coerce").dt.normalize()
+                # Fechas con EVENTO REAL por enfermedad (la real no depende del horizonte) → para
+                # aplicar la MISMA tolerancia ±1 día que el resto del panel (un aviso "acierta" si
+                # hubo evento real ese día o en el de al lado; la lluvia va estricta, tol=0).
+                _real_dates = {_rc: set(_comp.loc[_comp[_rc], "_dt"].dropna())
+                               for _, _, _rc, _ in _hz_metrics}
                 for _lo, _hi, _lbl in [(1, 2, "1–2 días"), (3, 4, "3–4 días"), (5, 9, "5+ días")]:
                     _s = _comp[(_comp["horizon"] >= _lo) & (_comp["horizon"] <= _hi)]
                     if _s.empty:
                         continue
                     _row = {"Antelación": _lbl, "Avisos comprobados": len(_s)}
-                    for _nm, _pc, _rc in _hz_metrics:
-                        _av = int(_s[_pc].sum())
-                        _row[f"{_nm}: acierto %"] = (round(_s.loc[_s[_pc], _rc].mean() * 100, 0)
-                                                     if _av else "—")
+                    for _nm, _pc, _rc, _tol in _hz_metrics:
+                        _avisos = _s[_s[_pc]]
+                        _av = len(_avisos)
+                        if _av:
+                            _rd = _real_dates[_rc]
+                            _hit = sum(
+                                any((d + pd.Timedelta(days=k)) in _rd for k in range(-_tol, _tol + 1))
+                                for d in _avisos["_dt"] if pd.notna(d))
+                            _row[f"{_nm}: acierto %"] = round(_hit / _av * 100, 0)
+                        else:
+                            _row[f"{_nm}: acierto %"] = "—"
                     _hz_rows.append(_row)
                 if _hz_rows:
-                    st.markdown("**¿Cambia según la antelación?** — cuando avisa con X días de "
-                                "adelanto, qué % de esos avisos aciertan (normalmente, cuanto más "
-                                "lejos, menos fiable). *«Avisos comprobados» = nº de previsiones de "
-                                "ese plazo que ya se pueden comparar con la realidad; «—» = no avisó "
-                                "de nada a ese plazo:*")
+                    st.markdown("**¿Cambia según la antelación?** — de los días que avisó con X días "
+                                "de adelanto, qué % coincidieron con un **evento real** (a ±1 día, "
+                                "como el resto del panel; normalmente, cuanto más lejos, menos "
+                                "fiable). *«Avisos comprobados» = nº de previsiones de ese plazo ya "
+                                "comparables con la realidad; «—» = no avisó de nada a ese plazo:*")
                     st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
 
         # ── Detalle DÍA A DÍA: PREVISTO vs REAL (fuera del if: se muestra SIEMPRE,
