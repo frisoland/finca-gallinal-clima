@@ -22514,6 +22514,44 @@ def render_decisiones_panel():
                 st.info("Aún no hay predicciones archivadas que ya hayan pasado para comparar. "
                         "Entra al panel unos días seguidos y vuelve aquí (irá llenándose solo).")
         else:
+            # ── Frase-veredicto EN CRISTIANO (lo primero que se ve) ────────────
+            # Resume lo único que importa de un avisador: de las infecciones reales,
+            # ¿de cuántas avisó y cuántas se le escaparon? (solo enfermedades, no lluvia).
+            def _parse_pair(_s):
+                try:
+                    _pp = str(_s).split(" de ")
+                    return int(_pp[0].split()[-1]), int(_pp[1].split()[0])
+                except Exception:
+                    return (0, 0)
+            _tot_ev = _tot_av = _tot_esc = 0
+            _detalle = []
+            for _, _rr in _rel_df.iterrows():
+                _q = str(_rr.get("Qué", ""))
+                if "Lluvia" in _q:
+                    continue
+                _tp, _re = _parse_pair(_rr.get("Eventos avisados (lo que importa)", ""))
+                _fn, _ = _parse_pair(_rr.get("Se le escapó (no avisó, sí pasó)", ""))
+                _tot_ev += _re; _tot_av += _tp; _tot_esc += _fn
+                if _re > 0:
+                    _nom = _q.split(" ", 1)[-1] if " " in _q else _q
+                    _detalle.append(f"{_nom.lower()} {_tp}/{_re}")
+            _det = " · ".join(_detalle)
+            if _tot_ev == 0:
+                st.info("🟡 **Aún no ha habido infecciones reales verificadas** (o muy pocos datos). "
+                        "El veredicto llegará cuando el verano deje algún evento que comprobar.")
+            elif _tot_esc == 0:
+                st.success(
+                    f"✅ **De las {_tot_ev} infecciones reales de esta campaña, el modelo avisó de "
+                    f"TODAS** ({_det}). **No se le ha escapado ninguna.** "
+                    + ("Con pocos eventos aún, muy prometedor." if _tot_ev < 8
+                       else "Muestra ya sólida."))
+            else:
+                st.warning(
+                    f"⚠️ De **{_tot_ev}** infecciones reales avisó de **{_tot_av}** ({_det}); "
+                    f"**se le escaparon {_tot_esc}** (mira las filas en rojo).")
+            st.caption("👉 Esto es lo que importa de un avisador: **no perderse infecciones**. Lo "
+                       "demás (precisión con antelación) es detalle técnico, abajo en su desplegable.")
+
             # Resaltar lo que IMPORTA: "Eventos avisados" (verde si pilla todos, rojo si
             # se escapa alguno) y "Se le escapó" en rojo cuando es >0.
             _esc_col = "Se le escapó (no avisó, sí pasó)"
@@ -22576,9 +22614,12 @@ def render_decisiones_panel():
                 "🔴 **escapan eventos** · 🟡 sin eventos aún / promete con pocos datos · 🟢 buena "
                 "(pilla los eventos y hay muestra suficiente)."
             )
-            # Fiabilidad por antelación (la confianza baja al alejarse el horizonte).
+            # Detalle técnico OCULTO por defecto: precisión con antelación (el "20%" que
+            # confunde). No responde a "¿funciona?" (eso es la frase-veredicto de arriba), sino
+            # a "de los avisos con X días de adelanto, ¿cuántos caían en evento?".
             _comp = _rel_meta.get("comp")
             if _comp is not None and not _comp.empty:
+              with st.expander("🔬 Detalle técnico: precisión con antelación (avanzado)", expanded=False):
                 _hz_rows = []
                 _hz_metrics = [("🍄 Moteado", "moteado_p", "moteado_r", 1),
                                ("🟤 Monilia", "monilia_p", "monilia_r", 1),
@@ -22608,13 +22649,17 @@ def render_decisiones_panel():
                         else:
                             _row[f"{_nm}: acierto %"] = "—"
                     _hz_rows.append(_row)
+                st.caption(
+                    "⚠️ **Esto NO es «¿funciona?»** (eso es la frase verde de arriba: si no se le "
+                    "escapa ninguna infección). Esto mide la **precisión con antelación**: de los "
+                    "días que avisó con X días de adelanto, qué % coincidieron con un **evento "
+                    "real** (a ±1 día). Es más exigente y, **con pocos eventos, muy ruidosa** (un "
+                    "aviso de más y baja mucho). Un avisador prefiere pasarse (avisar de más) antes "
+                    "que perderse un evento, así que un % bajo aquí no es malo: es ir sobre seguro.")
                 if _hz_rows:
-                    st.markdown("**¿Cambia según la antelación?** — de los días que avisó con X días "
-                                "de adelanto, qué % coincidieron con un **evento real** (a ±1 día, "
-                                "como el resto del panel; normalmente, cuanto más lejos, menos "
-                                "fiable). *«Avisos comprobados» = nº de previsiones de ese plazo ya "
-                                "comparables con la realidad; «—» = no avisó de nada a ese plazo:*")
                     st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
+                    st.caption("*«Avisos comprobados» = nº de previsiones de ese plazo ya comparables "
+                               "con la realidad; «—» = no avisó de nada a ese plazo.*")
 
         # ── Detalle DÍA A DÍA: PREVISTO vs REAL (fuera del if: se muestra SIEMPRE,
         #    aunque el archivo esté vacío, para ver los días 🔮 futuros). ──────────
