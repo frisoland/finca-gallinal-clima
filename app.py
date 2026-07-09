@@ -22646,8 +22646,16 @@ def render_decisiones_panel():
                         settled = (rv is not None) and ("*" not in raw[i]) and ("—" not in raw[i])
                         css = ""
                         if isevt[i]:                                   # día de EVENTO real
-                            css = (_GRN2 if (pv is not None and pv >= _THR2)
-                                   else _AMB2 if (pv is not None and pv >= _NEAR2) else _RED2)
+                            if pv is not None and pv >= _THR2:
+                                css = _GRN2                            # anunció pleno (≥100)
+                            elif pv is not None and pv >= _NEAR2:
+                                css = _AMB2                            # casi-aviso ese día (≥90)
+                            else:
+                                # ±1 día: ¿avisó fuerte (≥90) el día de al lado? → cuenta como
+                                # avisado (ámbar), no escape. Coherente con el resumen.
+                                _adj_p = ((i > 0 and prevs[i - 1] is not None and prevs[i - 1] >= _NEAR2)
+                                          or (i < n - 1 and prevs[i + 1] is not None and prevs[i + 1] >= _NEAR2))
+                                css = _AMB2 if _adj_p else _RED2       # rojo solo si nadie avisó (±1 día)
                         elif settled and pv is not None and pv >= _THR2:
                             # avisó y no pasó: ¿pegado a un evento real (±1 día)? → cola, no falsa alarma
                             _adj = (i > 0 and isevt[i - 1]) or (i < n - 1 and isevt[i + 1])
@@ -22666,8 +22674,9 @@ def render_decisiones_panel():
                 "**asterisco (*)** = **infección EN CURSO**: la hoja sigue mojada y el valor es "
                 "**provisional** (sube hasta que se seca y el evento cierra). En un día de "
                 "**infección real (≥100)**: 🟢 = la previsión lo **anunció pleno** (≥100) · "
-                "🟡 = **casi-aviso** (llegó al 90–100 % del umbral → cuenta como avisado, pero se "
-                "quedó justo por debajo) · 🔴 = **se le escapó** (previsión <90). En un día "
+                "🟡 = **casi-aviso / avisado ±1 día** (llegó al 90–100 % del umbral ese día, **o** el "
+                "modelo avisó fuerte el día de al lado → cuenta como avisado) · 🔴 = **se le escapó** "
+                "(previsión <90 ese día **y** tampoco avisó en los días vecinos). En un día "
                 "**sin** infección: 🔵 = **falsa alarma** (avisó ≥100 y no pasó → tratarías de más, "
                 "pero sin riesgo) · ⚪ **gris** = **cola de evento**: avisó y no pasó, pero **pegado "
                 "a un día de infección real** (±1 día) → es el mismo episodio, el modelo lo vio pero "
