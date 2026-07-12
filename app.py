@@ -22749,6 +22749,7 @@ def render_decisiones_panel():
             _GRN2 = "background-color: rgba(0,150,60,0.16); color:#0a7a35; font-weight:700"
             _BLU2 = "background-color: rgba(40,110,210,0.15); color:#1a5fb4; font-weight:700"
             _GRY2 = "background-color: rgba(140,140,140,0.18); color:#555555; font-weight:700"
+            _PRV2 = "background-color: rgba(120,90,200,0.16); color:#5b3fa0; font-weight:700"  # avisado PROVISIONAL
             _THR2, _NEAR2 = 100.0, 90.0   # coherente con la banda "casi" del resumen (≥90%)
 
             def _num(v):
@@ -22773,10 +22774,16 @@ def render_decisiones_panel():
                     prevs = [_num(df.iloc[i][prevc]) for i in range(n)]
                     raw = [str(df.iloc[i][realc]) for i in range(n)]
                     isevt = [(reals[i] is not None and reals[i] >= _THR2) for i in range(n)]
+                    # ¿el REAL de cada día está CONSOLIDADO? (no en curso "*", no "—" pendiente).
+                    # Un rescate ±1 día que se apoya SOLO en un vecino sin consolidar es
+                    # PROVISIONAL: la previsión de ese vecino aún puede caer al llegar el día
+                    # (fue justo lo que pasó el 11/07: ámbar→escape). Se marca en violeta.
+                    settled_arr = [(reals[k] is not None) and ("*" not in raw[k]) and ("—" not in raw[k])
+                                   for k in range(n)]
                     ip, ir = df.columns.get_loc(prevc), df.columns.get_loc(realc)
                     for i in range(n):
                         rv, pv = reals[i], prevs[i]
-                        settled = (rv is not None) and ("*" not in raw[i]) and ("—" not in raw[i])
+                        settled = settled_arr[i]
                         css = ""
                         if isevt[i]:                                   # día de EVENTO real
                             if pv is not None and pv >= _THR2:
@@ -22784,11 +22791,17 @@ def render_decisiones_panel():
                             elif pv is not None and pv >= _NEAR2:
                                 css = _AMB2                            # casi-aviso ese día (≥90)
                             else:
-                                # ±1 día: ¿avisó fuerte (≥90) el día de al lado? → cuenta como
-                                # avisado (ámbar), no escape. Coherente con el resumen.
-                                _adj_p = ((i > 0 and prevs[i - 1] is not None and prevs[i - 1] >= _NEAR2)
-                                          or (i < n - 1 and prevs[i + 1] is not None and prevs[i + 1] >= _NEAR2))
-                                css = _AMB2 if _adj_p else _RED2       # rojo solo si nadie avisó (±1 día)
+                                # ±1 día: ¿avisó fuerte (≥90) un día vecino? Si el vecino que
+                                # rescata YA está consolidado → ámbar firme. Si SOLO lo sostiene
+                                # un vecino aún sin cerrar (futuro/en curso) → PROVISIONAL
+                                # (violeta): puede confirmarse o caer a escape. Si nadie avisó
+                                # → escape (rojo).
+                                _resc = [j for j in (i - 1, i + 1)
+                                         if 0 <= j < n and prevs[j] is not None and prevs[j] >= _NEAR2]
+                                if _resc:
+                                    css = _AMB2 if any(settled_arr[j] for j in _resc) else _PRV2
+                                else:
+                                    css = _RED2                        # rojo solo si nadie avisó (±1 día)
                         elif settled and pv is not None and pv >= _THR2:
                             # avisó y no pasó: ¿pegado a un evento real (±1 día)? → cola, no falsa alarma
                             _adj = (i > 0 and isevt[i - 1]) or (i < n - 1 and isevt[i + 1])
@@ -22808,7 +22821,10 @@ def render_decisiones_panel():
                 "**provisional** (sube hasta que se seca y el evento cierra). En un día de "
                 "**infección real (≥100)**: 🟢 = la previsión lo **anunció pleno** (≥100) · "
                 "🟡 = **casi-aviso / avisado ±1 día** (llegó al 90–100 % del umbral ese día, **o** el "
-                "modelo avisó fuerte el día de al lado → cuenta como avisado) · 🔴 = **se le escapó** "
+                "modelo avisó fuerte un día vecino **ya cerrado** → cuenta como avisado) · "
+                "🟣 = **avisado PROVISIONAL** (solo lo sostiene un día vecino **aún sin cerrar** — "
+                "futuro o en curso: si ese día se confirma pasa a 🟡, si no puede caer a 🔴; no te "
+                "fíes aún) · 🔴 = **se le escapó** "
                 "(previsión <90 ese día **y** tampoco avisó en los días vecinos). En un día "
                 "**sin** infección: 🔵 = **falsa alarma** (avisó ≥100 y no pasó → tratarías de más, "
                 "pero sin riesgo) · ⚪ **gris** = **cola de evento**: avisó y no pasó, pero **pegado "
