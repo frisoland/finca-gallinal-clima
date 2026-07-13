@@ -4618,6 +4618,30 @@ def render_agroptima_panel():
     st.success("✅ Credenciales Agroptima detectadas en Secrets.")
     st.caption("⚠️ Las cookies de sesión caducan. Si da error, renuévalas en Secrets.")
 
+    with st.expander("🔑 ¿Da error al descargar? Cómo renovar las cookies de Agroptima"):
+        st.markdown(
+            "**Qué significa el error** *«No se encontraron productos fitosanitarios… la sesión "
+            "haya caducado»*: la app pidió a Agroptima el **catálogo de productos de tu cuenta** "
+            "y volvió **vacío**. Como una cuenta con tratamientos **siempre** tiene productos, "
+            "eso quiere decir que Agroptima **no devolvió tus datos** — casi siempre porque las "
+            "**cookies de sesión han caducado** (Agroptima responde con la página de login, que "
+            "no tiene productos). **No** significa que no haya tratamientos en esas fechas: ni "
+            "llegó a mirarlas.\n\n"
+            "**Cómo renovarlas (2 minutos):**\n"
+            "1. Abre **app.agroptima.com** en el navegador y **entra con tu usuario**.\n"
+            "2. Pulsa **F12** → pestaña **Application** (o *Almacenamiento*) → **Cookies** → "
+            "`app.agroptima.com`.\n"
+            "3. Copia el valor **actual** de **`csrftoken`** y de **`sessionid`**.\n"
+            "4. En **Secrets** de Streamlit, actualiza:\n"
+            "   - `AGROPTIMA_CSRF_TOKEN` = (valor de csrftoken)\n"
+            "   - `AGROPTIMA_SESSION_ID` = (valor de sessionid)\n"
+            "5. **Reinicia** la app y vuelve a pulsar «Descargar».\n\n"
+            "**Mientras tanto**, puedes meter las actuaciones **subiendo el Excel XLSX** de "
+            "Agroptima (cuadro de abajo): eso **no** depende de las cookies.\n\n"
+            "**Si tras renovar las cookies sigue fallando**, entonces puede que Agroptima haya "
+            "cambiado su página web y haya que actualizar el extractor. En ese caso, avisa."
+        )
+
     today      = pd.Timestamp.today().date()
     year_start = pd.Timestamp(today.year, 1, 1).date()
 
