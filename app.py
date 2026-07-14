@@ -16256,6 +16256,8 @@ FIELD_ROOTSTOCK = {
                            # Producción le asignaba un patrón vigoroso → raíz demasiado
                            # profunda → reserva (modelo goteo) falsamente alta. Con esto
                            # baja a 90 cm como el resto de M9.
+    "Piedrona 2": "M9",    # M9 (confirmado por el usuario 2026-07-14). Mismo caso que S11:
+                           # faltaba aquí → Producción le daba raíz vigorosa. Corregido.
     "Sector 7": "MM111",   # vigoroso (raíz profunda)
 }
 
