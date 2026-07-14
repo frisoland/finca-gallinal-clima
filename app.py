@@ -16252,6 +16252,10 @@ FIELD_ROOTSTOCK = {
     "Los Pinos 1": "M9", "Los Pinos 2": "M9", "Los Pinos 3": "M9",
     "Los Pinos 4": "M9", "Los Pinos 5": "M9",
     "Sector 8": "M9", "Sector 10-B": "M9",
+    "Sector 11": "M9",     # M9 (confirmado por el usuario 2026-07-14). Faltaba aquí y
+                           # Producción le asignaba un patrón vigoroso → raíz demasiado
+                           # profunda → reserva (modelo goteo) falsamente alta. Con esto
+                           # baja a 90 cm como el resto de M9.
     "Sector 7": "MM111",   # vigoroso (raíz profunda)
 }
 
