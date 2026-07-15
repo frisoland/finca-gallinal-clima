@@ -9168,6 +9168,42 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 "**calibre**."
             )
 
+        with st.expander("📚 ¿Cuánta agua necesita un manzano? (literatura, por patrón)"):
+            st.markdown(
+                "Resumen de la **literatura científica** sobre las necesidades hídricas del manzano, "
+                "para tener una referencia de *cuánto* pide el árbol. **Aviso honesto:** casi toda la "
+                "investigación es de **manzana de mesa** (M9, alta densidad, clima seco); de **sidra "
+                "sobre franco en clima atlántico** hay muy poco, así que sirve como **orden de "
+                "magnitud**, no como receta exacta.\n\n"
+                "**1. Un manzano adulto, en pico de verano:**\n"
+                "- **~25-50 mm por semana** (≈ 4-7 mm/día de ETc). Un día caluroso ≈ 6 mm.\n"
+                "- Por árbol de ~4 m: **~150-200 L/semana** (≈ 21-29 L/día).\n"
+                "- **Temporada completa: ~500 mm** de necesidad total (en clima seco). El goteo suele "
+                "aportar 400-465 mm/ha; **el resto lo pone la lluvia**.\n"
+                "- Coeficiente de cultivo **Kc: ~0,6 (brotación) → ~1,1-1,2 (engorde de verano)**.\n\n"
+                "**2. El efecto del PATRÓN (lo importante):**\n"
+                "Un estudio midiendo árbol a árbol (*Scientific Reports*, manzano 'Rosy Glow') "
+                "encontró:\n"
+                "- **Patrón vigoroso (semivigoroso M793): ~995 mm/temporada** de transpiración.\n"
+                "- **Enano (M9): ~375 mm/temporada** → el vigoroso transpira **~2,6× más por árbol**.\n"
+                "- Bajo sequía, el vigoroso recorta su consumo un 31 % y el M9 solo un 17 %.\n"
+                "- **M9 = raíz somera → sensible a la sequía → necesita riego frecuente.** "
+                "**Franco/vigoroso = raíz profunda (2-4 m) → tolera la sequía** (tira de agua honda).\n\n"
+                "**3. El matiz clave — por árbol ≠ por hectárea:**\n"
+                "- **Por árbol**, un franco pide **mucho más** (copa grande). Traducido a la finca "
+                "(1 mm = 1 L/m² × superficie por árbol): un franco a 7×5 m ≈ **210 L/árbol/día** en "
+                "pico; un M9 a 1,5×4 m ≈ **36 L/árbol/día**.\n"
+                "- Pero el M9 se planta 3-4× más denso → **por hectárea el total casi se iguala**.\n"
+                "- Lo que de verdad distingue al M9 no es cuánta agua total, sino que **no tiene "
+                "colchón**: sin riego frecuente sufre. El franco aguanta las rachas secas.\n\n"
+                "**4. Cómo encaja con la finca:** esto **confirma** los supuestos del modelo (M9 raíz "
+                "somera ~90 cm / franco profunda) y explica que veas **las hojas plegándose antes en "
+                "M9**. En Asturias la **lluvia cubre casi todo el año**; tu riego es un **suplemento**. "
+                "El **calibre de septiembre** sigue siendo el árbitro final.\n\n"
+                "*Fuentes: Scientific Reports (transpiración por patrón), ScienceDirect (resistencia a "
+                "sequía por patrón), estudios de ETc en manzano de goteo mediterráneo (FAO-56 Kc).*"
+            )
+
         # ── ¿Tu riego real sostiene la reserva? (campos con riego cargado) ──────
         _val_rows = []
         for _, pr in eff.iterrows():
@@ -9231,6 +9267,63 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 "salen muy altas, tu goteo no puede reponer de golpe → es **suplementario**. El juez del "
                 "calibre es septiembre."
             )
+
+        # ── ¿Cuánto de la NECESIDAD (ETc) cubren lluvia + riego? ───────────────
+        _season_start = pd.Timestamp(pd.to_datetime(daily["Fecha"]).max().year, 4, 1)
+        _dsea = daily[pd.to_datetime(daily["Fecha"]) >= _season_start]
+        _etc_sea = float(pd.to_numeric(_dsea["ETc"], errors="coerce").sum())
+        _rain_sea = float(pd.to_numeric(_dsea["Lluvia"], errors="coerce").sum())
+        _cov_rows = []
+        for _, pr in eff.iterrows():
+            if not pr["TAW mm"] or pd.isna(pr["TAW mm"]):
+                continue
+            _irr = field_irrigation_by_date(pr["Campo"])
+            if not _irr:
+                continue
+            _riego_sea = float(sum(v for d, v in _irr.items()
+                                   if pd.Timestamp(d) >= _season_start))
+            _cub = _rain_sea + _riego_sea
+            _pct = round(_cub / _etc_sea * 100) if _etc_sea > 0 else None
+            _defi = max(0.0, _etc_sea - _cub)
+            if _pct is None:
+                _lec = "—"
+            elif _pct >= 100:
+                _lec = "🟢 Lluvia + riego igualan o superan el ETc de temporada."
+            elif _pct >= 80:
+                _lec = "🟠 Cerca; suelo y raíz cubren el resto en un año normal."
+            else:
+                _lec = "🔴 Por debajo del ETc de libro (clima húmedo + raíz + sidra lo compensan)."
+            _cov_rows.append({
+                "Campo": pr["Campo"],
+                "Riego (mm)": round(_riego_sea, 1),
+                "Cubierto lluvia+riego (mm)": round(_cub),
+                "Cobertura de la ETc %": _pct,
+                "Déficit vs ETc (mm)": round(_defi),
+                "Lectura": _lec,
+            })
+        if _cov_rows:
+            st.markdown("##### 💧🌧️ ¿Cuánto de la necesidad (ETc) cubres con lluvia + riego?")
+            st.caption(
+                f"**Necesidad de la temporada** (ETc del manzano, 1-abr → hoy): "
+                f"**{round(_etc_sea)} mm** · **Lluvia caída**: **{round(_rain_sea)} mm**. "
+                "La lluvia y el ETc son comunes a toda la finca (un solo sensor); lo que cambia por "
+                "campo es **tu riego**.")
+            st.dataframe(pd.DataFrame(_cov_rows), use_container_width=True, hide_index=True)
+            st.caption(
+                "**Qué es esto:** el **balance BRUTO** de la temporada — toda el agua que ha entrado "
+                "(**lluvia + tu riego**) frente a la que ha pedido el árbol (**ETc**). Responde a "
+                "*«¿cuánto de lejos estoy de la necesidad, contando la lluvia?»*.\n\n"
+                "⚠️ **Dos avisos (para leerlo honesto):**\n"
+                "- **No cuenta el MOMENTO.** La lluvia de abril no riega un julio seco. Un balance "
+                "positivo puede convivir con estar **corto HOY** en una racha → para eso está la "
+                "**Reserva %** de arriba, que sí lo cuenta día a día. Este cuadro y aquel se "
+                "complementan.\n"
+                "- La **ETc es la de libro** (plena cobertura, clima seco). Tu caso —**clima húmedo, "
+                "raíz profunda en franco, buen suelo, sidra (no mesa)**— necesita **menos**, por eso "
+                "los árboles prosperan aun cubriendo el 60-80 %. El **modelo goteo** estima esa "
+                "necesidad real más baja. **El calibre de septiembre es el juez.**"
+            )
+
         # ── Evolución anual de la reserva por campo (gráfica) ──────────────────
         st.markdown("##### 📈 Evolución de la reserva durante el año (por campo)")
         _campos_g = list(dict.fromkeys(str(c) for c in eff["Campo"].tolist()))
