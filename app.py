@@ -8949,7 +8949,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 save_irrigation_sync_at("VEGGA (3 zonas)")
                 _vres = _vnew.groupby("Campo")["mm"].agg(["count", "sum"])
                 st.success("✅ Descargado de VEGGA: " + " · ".join(
-                    f"**{c}** {int(row['count'])}d, {row['sum']:.0f}mm"
+                    f"**{c}** {int(row['count'])}d, {row['sum']:.1f}mm"
                     for c, row in _vres.iterrows()))
             else:
                 st.error("No se descargó nada. Revisa el token/credenciales.")
