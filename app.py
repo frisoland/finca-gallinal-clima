@@ -21122,7 +21122,7 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
             "Es_prediccion":  es_pred,
             "Mills_valor":    round(min(mills_by_day.get(d, 0.0), 150.0), 1),
             "Mills_evento":   mills_evt_by_day.get(d, ""),
-            "Monilia_valor":  round(min(monilia_by_day.get(d, 0.0), 100.0), 1),
+            "Monilia_valor":  round(min(monilia_by_day.get(d, 0.0), 150.0), 1),  # techo 150 como Mills (severidad por encima del umbral 100, coherente con moteado)
             "Monilia_evento": monilia_evt_by_day.get(d, ""),
             "Oidio_valor":    _dec_oidio_value(temp_med, hr_med, lluvia),
             "DD_dia":         round(dd_dia, 1),
