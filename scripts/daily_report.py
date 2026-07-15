@@ -451,11 +451,11 @@ def main():
     #    previsión"). Es idempotente: una vez por día de emisión, aunque también
     #    se haya abierto el panel en la app. Silencioso: nunca tumba el informe. ──
     try:
-        if forecast is not None and not forecast.empty:
-            app.archive_today_forecast(history, forecast)
-            print("Previsión de riesgo archivada para la fiabilidad del modelo.")
-        else:
-            print("Sin previsión Sencrop hoy: no se archiva (no afecta al informe).")
+        # Llamada SIEMPRE: si hay previsión Sencrop, archiva enfermedad + lluvia; si no,
+        # archiva al menos la lluvia del WRF9 (Windguru), que NO depende del forecast de
+        # Sencrop (lectura anónima). Idempotente: una vez por día de emisión.
+        app.archive_today_forecast(history, forecast if forecast is not None else pd.DataFrame())
+        print("Previsión de riesgo archivada (Sencrop si hay + lluvia WRF9).")
     except Exception as _e:
         print(f"  (archivado de previsión falló: {_e})")
 

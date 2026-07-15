@@ -21233,6 +21233,80 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
 
 # ── Fiabilidad de la previsión: archiva el riesgo previsto y lo compara con lo
 #    que de verdad pasó (confianza en el modelo para el triaje de parcelas). ──
+# ── Windguru WRF 9 km: 2ª opinión de lluvia (lectura anónima del iapi público) ──────
+# El WRF9 (id_model=21) es el modelo que el usuario lleva años viendo acertar en Trasona
+# (spot 501097). No hay API oficial gratis para ESE modelo → se lee su iapi PÚBLICO de forma
+# anónima (sin login), 1 vez/día, SOLO el dato gratuito (retraso ~6 h). Es una SEGUNDA columna
+# de lluvia para comparar con Sencrop; si MeteoGalicia da la clave (API oficial), esa gana.
+# Horizonte del WRF9 ≈ 3 días (modelo de corto plazo).
+WINDGURU_SPOT_ID = "501097"       # Trasona (estación más cercana a la finca)
+WINDGURU_WRF9_MODEL = 21          # "WRF 9 km (Europe)" en Windguru
+WINDGURU_TZ_OFFSET_H = 2          # UTC+2 (verano Asturias) para agrupar la lluvia por día local
+
+
+def windguru_wrf9_daily_rain(spot_id=WINDGURU_SPOT_ID, id_model=WINDGURU_WRF9_MODEL,
+                             tz_offset_h=WINDGURU_TZ_OFFSET_H):
+    """{fecha_normalizada: mm} de lluvia prevista por el WRF 9 km de Windguru (~3 días).
+    Anónimo y a prueba de fallos: devuelve {} si algo va mal (→ columna vacía, sin drama)."""
+    try:
+        from collections import defaultdict
+        from datetime import datetime, timezone, timedelta
+        _h = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                             "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"),
+              "Referer": f"https://www.windguru.cz/{spot_id}"}
+        # 1) rundef ACTUAL del modelo (cambia con cada pasada)
+        r1 = requests.get(f"https://www.windguru.cz/int/iapi.php?q=forecast_spot&id_spot={spot_id}",
+                          headers=_h, timeout=30)
+        if r1.status_code != 200:
+            return {}
+
+        def _find_run(o):
+            if isinstance(o, dict):
+                if o.get("id_model") == id_model and "rundef" in o:
+                    return o.get("rundef"), o.get("cachefix", "")
+                for v in o.values():
+                    f = _find_run(v)
+                    if f:
+                        return f
+            elif isinstance(o, list):
+                for it in o:
+                    f = _find_run(it)
+                    if f:
+                        return f
+            return None
+
+        _run = _find_run(r1.json())
+        if not _run:
+            return {}
+        rundef, cachefix = _run
+        # 2) forecast del WRF9 con ese rundef
+        u = (f"https://www.windguru.net/int/iapi.php?q=forecast&id_model={id_model}"
+             f"&rundef={rundef}&id_spot={spot_id}&WGCACHEABLE=21600&cachefix={cachefix}")
+        r2 = requests.get(u, headers=_h, timeout=30)
+        if r2.status_code != 200:
+            return {}
+        fc = r2.json().get("fcst", {})
+        apcp, hours, init = fc.get("APCP1"), fc.get("hours"), fc.get("initstamp")
+        if not apcp or not hours or init is None:
+            return {}
+        tz = timezone(timedelta(hours=tz_offset_h))
+        daily = defaultdict(float)
+        for _hh, _mm in zip(hours, apcp):
+            if _mm is None:
+                continue
+            _ts = datetime.fromtimestamp(int(init) + int(_hh) * 3600, tz)
+            daily[_ts.date()] += float(_mm)
+        return {pd.Timestamp(d).normalize(): round(v, 1) for d, v in daily.items()}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def windguru_wrf9_daily_rain_cached():
+    """Versión cacheada (1 h) para el panel — no golpear Windguru en cada rerun."""
+    return windguru_wrf9_daily_rain()
+
+
 SUPABASE_FORECAST_ARCHIVE_PATH = "forecast_risk_archive.parquet"
 
 
@@ -21316,49 +21390,62 @@ def purge_forecast_archive():
 
 
 def archive_today_forecast(history_df, forecast_df):
-    """Guarda (UNA vez al día) el riesgo PREVISTO por día, para luego compararlo con
-    lo que de verdad pase. Silencioso y a prueba de fallos: nunca rompe el panel."""
+    """Guarda (UNA vez al día) el riesgo PREVISTO por día — Sencrop (moteado/monilia/oídio/
+    lluvia) + la lluvia del WRF9 de Windguru — para compararlo luego con lo real. Silencioso
+    y a prueba de fallos. La parte WRF9 NO depende de forecast_df (se archiva aunque no haya
+    previsión Sencrop, p. ej. en el informe diario headless)."""
     try:
-        if forecast_df is None or forecast_df.empty or not supabase_is_configured():
+        if not supabase_is_configured():
             return
         today = pd.Timestamp.now().normalize()
         issue = today.strftime("%Y-%m-%d")
-        # Archivar la previsión de HOY SOBRESCRIBIENDO cualquier entrada previa del
-        # mismo día (p. ej. una del informe diario con previsión más vieja), para que
-        # el archivo refleje SIEMPRE la previsión que el usuario está viendo. Para no
-        # escribir en Supabase en cada render, se hace solo UNA vez por sesión. En
-        # headless (informe diario) no hay session_state → se archiva igualmente.
+        # Solo UNA vez por sesión (evita escribir en Supabase en cada render). En headless
+        # (informe diario) no hay session_state → salta el except y se archiva igualmente.
+        _has_session = True
         try:
             _flag = f"_fc_archived_{issue}"
             if st.session_state.get(_flag):
                 return
-            _has_session = True
         except Exception:
             _has_session = False
+        _by_date = {}   # target_date(str) -> {campos}
+        # --- Sencrop (moteado/monilia/oídio/lluvia): solo si hay forecast ---
+        # days_back=14 (NO 0): el detector de mojadura necesita histórico de contexto para
+        # que el valor archivado COINCIDA con el de la gráfica de Decisiones.
+        if forecast_df is not None and not forecast_df.empty:
+            risk = build_risk_timeline(history_df, forecast_df, days_back=14)
+            if not risk.empty and "Es_prediccion" in risk.columns:
+                for _, r in risk[risk["Es_prediccion"] == True].iterrows():
+                    d = pd.Timestamp(r["Fecha"]).normalize()
+                    _e = _by_date.setdefault(d.strftime("%Y-%m-%d"), {})
+                    _e["horizon"] = int((d - today).days)
+                    _e["pred_mills"] = float(r.get("Mills_valor", np.nan))
+                    _e["pred_monilia"] = float(r.get("Monilia_valor", np.nan))
+                    _e["pred_oidio"] = float(r.get("Oidio_valor", np.nan))
+                    _e["pred_rain"] = float(r.get("Lluvia", np.nan))
+        # --- Lluvia WRF9 (Windguru): independiente de forecast_df ---
+        try:
+            for d, mm in (windguru_wrf9_daily_rain() or {}).items():
+                d = pd.Timestamp(d).normalize()
+                if d < today:
+                    continue
+                _e = _by_date.setdefault(d.strftime("%Y-%m-%d"), {})
+                _e["horizon"] = int((d - today).days)
+                _e["pred_rain_wrf"] = float(mm)
+        except Exception:
+            pass
+        if not _by_date:
+            return
+        new = pd.DataFrame([{"issue_date": issue, "target_date": td, **v}
+                            for td, v in _by_date.items()])
         arch = load_forecast_archive()
-        # days_back=14 (NO 0): el detector de eventos de mojadura necesita histórico de
-        # contexto para que el valor archivado COINCIDA con el de la gráfica de Decisiones
-        # (con days_back=0 salían 0/valores raros que no cuadraban con lo que veía el usuario).
-        risk = build_risk_timeline(history_df, forecast_df, days_back=14)
-        if risk.empty or "Es_prediccion" not in risk.columns:
-            return
-        fut = risk[risk["Es_prediccion"] == True]
-        if fut.empty:
-            return
-        rows = []
-        for _, r in fut.iterrows():
-            d = pd.Timestamp(r["Fecha"]).normalize()
-            rows.append({"issue_date": issue, "target_date": d.strftime("%Y-%m-%d"),
-                         "horizon": int((d - today).days),
-                         "pred_mills": float(r.get("Mills_valor", np.nan)),
-                         "pred_monilia": float(r.get("Monilia_valor", np.nan)),
-                         "pred_oidio": float(r.get("Oidio_valor", np.nan)),
-                         "pred_rain": float(r.get("Lluvia", np.nan))})
-        new = pd.DataFrame(rows)
-        # `new` va DESPUÉS de `arch`: con keep="last", la previsión de hoy recién
-        # calculada SOBRESCRIBE cualquier entrada previa del mismo (issue, target).
-        out = pd.concat([arch, new], ignore_index=True) if not arch.empty else new
-        out = out.drop_duplicates(["issue_date", "target_date"], keep="last")
+        _K = ["issue_date", "target_date"]
+        if arch is not None and not arch.empty:
+            # combine_first: la fila NUEVA manda donde tiene dato; la vieja rellena huecos →
+            # una escritura solo-WRF no borra las pred. Sencrop del mismo día, y viceversa.
+            out = new.set_index(_K).combine_first(arch.set_index(_K)).reset_index()
+        else:
+            out = new
         if upload_forecast_archive(out):
             if _has_session:
                 try:
@@ -21406,6 +21493,8 @@ def forecast_reliability(history_df, archive_df=None):
             _op = float(r.get("pred_monilia", 0)); _omr = float(a.loc[td, "Monilia_valor"])
             _dp = float(r.get("pred_oidio", 0));   _dr = float(a.loc[td, "Oidio_valor"])
             _lp = float(r.get("pred_rain", 0));    _lr = float(a.loc[td, "Lluvia"])
+            _lwp = r.get("pred_rain_wrf", np.nan)
+            _lwp = float(_lwp) if pd.notna(_lwp) else np.nan
             recs.append({
                 "target_date": td,
                 "horizon": int(r.get("horizon", 0)),
@@ -21419,6 +21508,7 @@ def forecast_reliability(history_df, archive_df=None):
                 "monilia_pv": _op, "monilia_rv": _omr,
                 "oidio_pv":   _dp, "oidio_rv":   _dr,
                 "lluvia_pv":  _lp, "lluvia_rv":  _lr,
+                "lluvia_wrf_pv": _lwp,   # lluvia prevista por el WRF9 (Windguru); NaN si no archivada
             })
         comp = pd.DataFrame(recs)
         if comp.empty:
@@ -21437,15 +21527,20 @@ def forecast_reliability(history_df, archive_df=None):
                 ("🍄 Moteado", "moteado_pv", "moteado_rv", THR,  NEAR, 1),
                 ("🟤 Monilia", "monilia_pv", "monilia_rv", THR,  NEAR, 1),
                 ("⚪ Oídio",   "oidio_pv",   "oidio_rv",   THR,  NEAR, 1),
-                ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, 1.0, 0)]:
+                ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, 1.0, 0),
+                ("🌧️ Lluvia WRF9", "lluvia_wrf_pv", "lluvia_rv", RAIN, 1.0, 0)]:
             # Estado por día: (aviso_pleno ≥umbral, aviso_casi ≥90%, evento_real).
             _day = {}
             for _, _rw in comp_day.iterrows():
                 _d = _rw["_dt"]
                 if pd.isna(_d):
                     continue
-                _day[_d] = (float(_rw[pv]) >= thr, float(_rw[pv]) >= thr * near,
+                _pvv = _rw[pv]
+                if pd.isna(_pvv):   # ese día ESE modelo no predijo (p.ej. WRF9 antes de existir) → no cuenta
+                    continue
+                _day[_d] = (float(_pvv) >= thr, float(_pvv) >= thr * near,
                             float(_rw[rv]) >= thr)
+            _nd = len(_day)         # días que ESTE modelo predijo (su propio denominador)
 
             def _near(_d, _i, _day=_day, _tol=tol):
                 """¿Algún día en ±tol cumple la condición _i (0=aviso pleno,1=casi,2=evento)?"""
@@ -21471,7 +21566,7 @@ def forecast_reliability(history_df, archive_df=None):
                 _fiab = "🟡 Sin eventos aún"
             elif fn > 0:
                 _fiab = "🔴 Escapan eventos"
-            elif _n_dias < 7 or reales < 2:
+            elif _nd < 7 or reales < 2:
                 _fiab = "🟡 Promete (pocos datos)"
             else:
                 _fiab = "🟢 Buena"
@@ -21480,7 +21575,7 @@ def forecast_reliability(history_df, archive_df=None):
                 "Fiabilidad": _fiab,
                 "Eventos avisados (lo que importa)": (
                     f"{tp} de {reales} ({round(tp / reales * 100)}%)" if reales else "sin eventos aún"),
-                "Acertó (de los días)": f"{aciertos} de {_n_dias}",
+                "Acertó (de los días)": f"{aciertos} de {_nd}",
                 "Falsas alarmas (avisó, no pasó)": fp,
                 "Se le escapó (no avisó, sí pasó)": (f"{fn} de {reales}" if reales else "0"),
             })
@@ -21491,7 +21586,7 @@ def forecast_reliability(history_df, archive_df=None):
         return None, {"n": 0}
 
 
-def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, days=30, days_fwd=7):
+def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, days=30, days_fwd=7, wrf_rain=None):
     """Tabla día a día PREVISTO vs REAL. Incluye:
       · Días FUTUROS (🔮): la previsión EN VIVO de la gráfica (real aún pendiente).
       · Días PASADOS: lo que se PREDIJO entonces (archivo) vs lo REAL (sensor).
@@ -21549,7 +21644,9 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                     "Monilia prev.": _si(r.get("Monilia_valor")),
                     "Monilia real": (f"{int(_oo)}*" if _hoy_abierto else "—"),
                     "Oídio prev.": _si(r.get("Oidio_valor")),     "Oídio real": "—",
-                    "Lluvia prev.": _sr(r.get("Lluvia")),         "Lluvia real": "—",
+                    "Lluvia prev.": _sr(r.get("Lluvia")),
+                    "Lluvia WRF9": (_sr(wrf_rain.get(d)) if wrf_rain else "—"),
+                    "Lluvia real": "—",
                 })
             else:
                 pr = pred_map.get(td)
@@ -21563,6 +21660,7 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                     "Monilia prev.": _pp("pred_monilia"), "Monilia real": _si(r.get("Monilia_valor")),
                     "Oídio prev.": _pp("pred_oidio"),     "Oídio real": _si(r.get("Oidio_valor")),
                     "Lluvia prev.": (_sr(pr.get("pred_rain")) if pr is not None else "—"),
+                    "Lluvia WRF9": (_sr(pr.get("pred_rain_wrf")) if pr is not None else "—"),
                     "Lluvia real": _sr(r.get("Lluvia")),
                 })
         if not rows:
@@ -22860,12 +22958,17 @@ def render_decisiones_panel():
 
         # ── Detalle DÍA A DÍA: PREVISTO vs REAL (fuera del if: se muestra SIEMPRE,
         #    aunque el archivo esté vacío, para ver los días 🔮 futuros). ──────────
-        _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30, days_fwd=7)
+        _wrf_rain = windguru_wrf9_daily_rain_cached()   # 2ª opinión de lluvia (WRF9 Windguru)
+        _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30,
+                                            days_fwd=7, wrf_rain=_wrf_rain)
         if _daily is not None and not _daily.empty:
             st.markdown("**📋 Día a día: valor de infección previsto vs. real.** Arriba, los días "
                         "**🔮 futuros** con la previsión de hoy (el real aparecerá cuando llegue "
                         "el día). Abajo, los **pasados**: lo que se predijo vs. lo real (umbral "
-                        "grave = 100; «—» = sin dato).")
+                        "grave = 100; «—» = sin dato). La columna **«Lluvia WRF9»** es la 2ª opinión "
+                        "de lluvia del **WRF 9 km de Windguru** (solo ~3 días de horizonte) para "
+                        "comparar con **«Lluvia prev.»** (Sencrop) y **«Lluvia real»** — a ver cuál "
+                        "acierta más.")
             _dcols = list(_daily.columns)
             _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
             _AMB2 = "background-color: rgba(240,160,0,0.22); color:#9a6a00; font-weight:700"
