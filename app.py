@@ -15692,12 +15692,26 @@ def carpocapsa_tab(history):
                                 st.session_state.carpocapsa_biofix_df,
                                 st.session_state.get("carpocapsa_damage_df", pd.DataFrame()),
                             )
-                            if ok:
-                                st.success("💾 Guardado en Supabase (persistente).")
+                            # VERIFICAR DE VERDAD que el biofix quedó en Supabase: el "ok" puede
+                            # ser cierto por otras tablas aunque el biofix se saltara (bug: antes
+                            # decía "persistente" sin comprobarlo). Releemos y contamos.
+                            _v_t, _v_b, _v_d, _vmsg = load_carpocapsa_snapshot_from_supabase()
+                            _n_saved = 0
+                            if _v_b is not None and not _v_b.empty and "Campaña" in _v_b.columns:
+                                _n_saved = int((pd.to_numeric(_v_b["Campaña"], errors="coerce")
+                                                == int(campaign_year)).sum())
+                            if _n_saved >= len(_new_bf):
+                                st.success(f"💾 Guardado en Supabase y **verificado**: "
+                                           f"{_n_saved} biofix de {campaign_year} persistidos (sobrevive al reabrir).")
                             else:
-                                st.warning(f"Guardado en la sesión, pero NO en Supabase: {smsg}")
+                                st.error(
+                                    f"⚠️ **NO se guardó bien en Supabase.** Al releer solo hay "
+                                    f"**{_n_saved}** biofix de {campaign_year} (esperaba {len(_new_bf)}). "
+                                    f"Se conserva en ESTA sesión pero **se perderá al reabrir**. "
+                                    f"Cópiame este mensaje para que lo arregle de raíz. "
+                                    f"(upload: {smsg} · relectura: {_vmsg})")
                         except Exception as _e:
-                            st.warning(f"Guardado en la sesión, pero falló el guardado en Supabase: {_e}")
+                            st.warning(f"Guardado en la sesión, pero falló el guardado/verificación en Supabase: {_e}")
                     else:
                         st.info("Guardado en la sesión. ⚠️ Supabase no está configurado, así que se "
                                 "perderá si se reinicia la app. Usa el botón de guardar snapshot de "
