@@ -14909,40 +14909,49 @@ def carpocapsa_tab(history):
     if "carpocapsa_damage_df" not in st.session_state:
         st.session_state.carpocapsa_damage_df = carpocapsa_default_damage_df()
 
-    # ── Auto-recarga de REFUERZO desde Supabase ──────────────────────────────────
-    # BUG resuelto (2026-07-16): el guardado del biofix persistía bien (verificado), pero
-    # al reabrir aparecía vacío → la auto-carga GLOBAL del arranque no siempre lo traía
-    # (sesión reutilizada / varias pestañas). Aquí, al entrar al panel, si el biofix está
-    # vacío en sesión pero hay datos en Supabase, se cargan directamente. Un botón manual
-    # abajo permite forzarlo siempre.
-    if (st.session_state.carpocapsa_biofix_df.empty
-            and not st.session_state.get("_carpo_reload_tried")
-            and supabase_is_configured()):
-        st.session_state["_carpo_reload_tried"] = True
-        _rt, _rb, _rd, _ = load_carpocapsa_snapshot_from_supabase()
-        if _rb is not None and not _rb.empty:
-            st.session_state.carpocapsa_biofix_df = _rb
-        if _rt is not None and not _rt.empty and st.session_state.carpocapsa_traps_df.empty:
-            st.session_state.carpocapsa_traps_df = _rt
-        if _rd is not None and not _rd.empty and st.session_state.carpocapsa_damage_df.empty:
-            st.session_state.carpocapsa_damage_df = _rd
-        if not st.session_state.carpocapsa_biofix_df.empty:
-            st.caption(f"🔄 Recargados **{len(st.session_state.carpocapsa_biofix_df)}** biofix "
-                       "guardados desde Supabase.")
-
-    # Botón manual para forzar la recarga (garantía si algo se descuadra en la sesión)
-    if supabase_is_configured():
-        if st.button("🔄 Recargar datos de carpocapsa de Supabase", key="carpo_force_reload"):
-            _rt, _rb, _rd, _rmsg = load_carpocapsa_snapshot_from_supabase()
-            if _rt is not None and not _rt.empty:
+    # ── Auto-relleno de REFUERZO del biofix (una vez por sesión) ─────────────────
+    # El biofix debe estar disponible SIN pulsar "Fijar" cada vez. Si está vacío en sesión:
+    #   1) intentar cargarlo de Supabase;
+    #   2) si sigue vacío pero HAY capturas, CALCULARLO de ellas (las capturas sí persisten
+    #      con fiabilidad → fuente de verdad). Así la app siempre tiene biofix aunque el
+    #      archivo de biofix en Supabase falle (bug de persistencia que no se pudo localizar).
+    def _carpo_autofill_biofix(from_button=False):
+        # 1) Supabase
+        if supabase_is_configured():
+            _rt, _rb, _rd, _ = load_carpocapsa_snapshot_from_supabase()
+            if _rt is not None and not _rt.empty and (from_button or st.session_state.carpocapsa_traps_df.empty):
                 st.session_state.carpocapsa_traps_df = _rt
             if _rb is not None and not _rb.empty:
                 st.session_state.carpocapsa_biofix_df = _rb
-            if _rd is not None and not _rd.empty:
+            if _rd is not None and not _rd.empty and (from_button or st.session_state.carpocapsa_damage_df.empty):
                 st.session_state.carpocapsa_damage_df = _rd
-            _nb = 0 if _rb is None else len(_rb)
-            st.success(f"✅ Recargado de Supabase: {_nb} biofix. {_rmsg or ''}")
-            st.rerun()
+        # 2) Fallback: calcular de las capturas
+        if (st.session_state.carpocapsa_biofix_df.empty
+                and not st.session_state.carpocapsa_traps_df.empty):
+            _yr = carpocapsa_detect_year_from_df(st.session_state.carpocapsa_traps_df, "Fecha")
+            _yr = int(_yr) if _yr else pd.Timestamp.today().year
+            _auto_bf = carpocapsa_compute_biofix_by_field(
+                st.session_state.carpocapsa_traps_df, _yr, threshold=5)
+            if not _auto_bf.empty:
+                st.session_state.carpocapsa_biofix_df = _auto_bf
+                return "calculado"
+        return "cargado" if not st.session_state.carpocapsa_biofix_df.empty else "vacio"
+
+    if (st.session_state.carpocapsa_biofix_df.empty
+            and not st.session_state.get("_carpo_reload_tried")):
+        st.session_state["_carpo_reload_tried"] = True
+        _src = _carpo_autofill_biofix()
+        if not st.session_state.carpocapsa_biofix_df.empty:
+            _lbl = "calculado de tus capturas" if _src == "calculado" else "cargado de Supabase"
+            st.caption(f"🔄 Biofix disponible ({len(st.session_state.carpocapsa_biofix_df)} campos), "
+                       f"{_lbl}. Pulsa «Fijar» si quieres persistirlo tal cual.")
+
+    # Botón manual: recargar de Supabase o recalcular de las capturas
+    if st.button("🔄 Recargar / recalcular biofix", key="carpo_force_reload"):
+        _src = _carpo_autofill_biofix(from_button=True)
+        st.success(f"✅ Biofix: {len(st.session_state.carpocapsa_biofix_df)} campos disponibles "
+                   f"({'calculado de capturas' if _src == 'calculado' else 'cargado de Supabase' if _src == 'cargado' else 'sin datos'}).")
+        st.rerun()
 
     st.markdown("### 0. Importar / exportar datos de carpocapsa")
     with st.expander("Importar Excel de carpocapsa", expanded=True):
