@@ -14909,6 +14909,41 @@ def carpocapsa_tab(history):
     if "carpocapsa_damage_df" not in st.session_state:
         st.session_state.carpocapsa_damage_df = carpocapsa_default_damage_df()
 
+    # ── Auto-recarga de REFUERZO desde Supabase ──────────────────────────────────
+    # BUG resuelto (2026-07-16): el guardado del biofix persistía bien (verificado), pero
+    # al reabrir aparecía vacío → la auto-carga GLOBAL del arranque no siempre lo traía
+    # (sesión reutilizada / varias pestañas). Aquí, al entrar al panel, si el biofix está
+    # vacío en sesión pero hay datos en Supabase, se cargan directamente. Un botón manual
+    # abajo permite forzarlo siempre.
+    if (st.session_state.carpocapsa_biofix_df.empty
+            and not st.session_state.get("_carpo_reload_tried")
+            and supabase_is_configured()):
+        st.session_state["_carpo_reload_tried"] = True
+        _rt, _rb, _rd, _ = load_carpocapsa_snapshot_from_supabase()
+        if _rb is not None and not _rb.empty:
+            st.session_state.carpocapsa_biofix_df = _rb
+        if _rt is not None and not _rt.empty and st.session_state.carpocapsa_traps_df.empty:
+            st.session_state.carpocapsa_traps_df = _rt
+        if _rd is not None and not _rd.empty and st.session_state.carpocapsa_damage_df.empty:
+            st.session_state.carpocapsa_damage_df = _rd
+        if not st.session_state.carpocapsa_biofix_df.empty:
+            st.caption(f"🔄 Recargados **{len(st.session_state.carpocapsa_biofix_df)}** biofix "
+                       "guardados desde Supabase.")
+
+    # Botón manual para forzar la recarga (garantía si algo se descuadra en la sesión)
+    if supabase_is_configured():
+        if st.button("🔄 Recargar datos de carpocapsa de Supabase", key="carpo_force_reload"):
+            _rt, _rb, _rd, _rmsg = load_carpocapsa_snapshot_from_supabase()
+            if _rt is not None and not _rt.empty:
+                st.session_state.carpocapsa_traps_df = _rt
+            if _rb is not None and not _rb.empty:
+                st.session_state.carpocapsa_biofix_df = _rb
+            if _rd is not None and not _rd.empty:
+                st.session_state.carpocapsa_damage_df = _rd
+            _nb = 0 if _rb is None else len(_rb)
+            st.success(f"✅ Recargado de Supabase: {_nb} biofix. {_rmsg or ''}")
+            st.rerun()
+
     st.markdown("### 0. Importar / exportar datos de carpocapsa")
     with st.expander("Importar Excel de carpocapsa", expanded=True):
         st.caption(
