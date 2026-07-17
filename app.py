@@ -23861,6 +23861,14 @@ def render_decisiones_panel():
     st.divider()
 
     # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
+    st.caption("Favorece condiciones cálidas y secas (T 17-25°C, HR 50-80%). La lluvia intensa frena el riesgo.")
+    fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_all, chart_h, scale_max=105)
+    st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
+
+    st.divider()
+
+    # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("#### 🐛 Carpocapsa · *Cydia pomonella* — Grados-día desde biofix")
     st.caption("Línea roja = DD acumulados. Círculos azules = capturas en trampa (tamaño proporcional). Umbrales de generación marcados.")
     fig_c = _dec_carpocapsa_chart(
@@ -23870,14 +23878,6 @@ def render_decisiones_panel():
         history_df=history_df,
     )
     st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
-
-    st.divider()
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
-    st.caption("Favorece condiciones cálidas y secas (T 17-25°C, HR 50-80%). La lluvia intensa frena el riesgo.")
-    fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_all, chart_h, scale_max=105)
-    st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     # ── Leyenda explicativa ───────────────────────────────────────────────────
     with st.expander("📖 Cómo interpretar estas gráficas", expanded=False):
