@@ -22138,11 +22138,14 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                 tg = tf.groupby(tf["_fdt"].dt.normalize(), as_index=False)["_cap"].sum()
                 tg = tg[tg["_cap"] > 0]
                 if not tg.empty:
-                    dd_interp = np.interp(
-                        tg["_fdt"].astype(np.int64),
-                        pd.to_datetime(dates).astype(np.int64),
-                        dd_acum,
-                    )
+                    # DD acumulado en la fecha de CADA captura, por lookup exacto/cercano
+                    # (el np.interp anterior devolvía el mismo valor —el último— para todas
+                    #  las capturas, así que salían todas a la misma altura).
+                    _ddser = (plot_df_display.assign(
+                                  _d=pd.to_datetime(plot_df_display["Fecha"]).dt.normalize())
+                              .drop_duplicates("_d").set_index("_d")["DD_acumulado"].sort_index())
+                    _cap_d = pd.to_datetime(tg["_fdt"]).dt.normalize()
+                    dd_interp = _ddser.reindex(_cap_d, method="nearest").fillna(0).to_numpy()
                     fig.add_trace(go.Scatter(
                         x=tg["_fdt"].tolist(),
                         y=dd_interp.tolist(),
