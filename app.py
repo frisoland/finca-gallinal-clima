@@ -15798,13 +15798,20 @@ def carpocapsa_tab(history):
         _traps_one = (_traps_camp[_traps_camp["Campo/Zona"].astype(str) == _sel_cc].copy()
                       if (not _traps_camp.empty and "Campo/Zona" in _traps_camp.columns) else pd.DataFrame())
 
-        # 3) Tratamientos de CARPOCAPSA aplicados a ESE campo
+        # 3) Tratamientos de CARPOCAPSA aplicados a ESE campo. OJO: los biofix pueden ser
+        #    subcampos ("GY - Gallinal") mientras que Agroptima registra el campo padre
+        #    ("GY"). Emparejamos por igualdad o por prefijo en frontera de palabra (así "GY"
+        #    casa con "GY - Gallinal" pero "S5" NO casa con "S50").
         def _campo_en_trat(campos_str, target):
-            _lst = [c.strip().lower() for c in str(campos_str).split(",")]
+            _lst = [c.strip().lower() for c in str(campos_str).split(",") if c.strip()]
             _t = target.strip().lower()
-            if _t in _lst:
-                return True
-            return any((_t in c or c in _t) for c in _lst if len(c) >= 3)
+            for c in _lst:
+                if c == _t:
+                    return True
+                for a, b in ((c, _t), (_t, c)):
+                    if b.startswith(a) and len(b) > len(a) and b[len(a)] in (" ", "-", "_"):
+                        return True
+            return False
 
         _treats_one = pd.DataFrame()
         _acts_cc = st.session_state.get("activities_df", pd.DataFrame())
@@ -22021,8 +22028,15 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
         last_dd = _merge["DD_acum_full"].dropna().iloc[-1] if not _merge["DD_acum_full"].dropna().empty else 0.0
         for i in _merge.index:
             if pd.isna(_merge.at[i, "DD_acum_full"]):
-                last_dd = last_dd + _merge.at[i, "DD_dia"]
-                _merge.at[i, "DD_acum_full"] = round(last_dd, 1)
+                # Fechas ANTERIORES al biofix → 0 (aún no hay DD; NO arrastrar el acumulado
+                # final hacia atrás, que daba valores altísimos antes del biofix y rompía la
+                # interpolación de las capturas). Fechas de PREDICCIÓN (tras el último real)
+                # → extender el acumulado.
+                if biofix_date is not None and _merge.at[i, "Fecha"] < biofix_date:
+                    _merge.at[i, "DD_acum_full"] = 0.0
+                else:
+                    last_dd = last_dd + _merge.at[i, "DD_dia"]
+                    _merge.at[i, "DD_acum_full"] = round(last_dd, 1)
         plot_df = _merge.copy()
         plot_df["DD_acumulado"] = plot_df["DD_acum_full"]
     else:
