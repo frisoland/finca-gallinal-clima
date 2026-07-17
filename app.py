@@ -15772,6 +15772,80 @@ def carpocapsa_tab(history):
                 "vacíos) para que el resto de la app la use. El punto 6 funciona igual con o sin esto."
             )
 
+    # ── 📈 Gráfica DD POR CAMPO (biofix propio + tratamientos de ESE campo) ──────
+    st.markdown("### 📈 Gráfica de grados-día POR CAMPO")
+    st.caption(
+        "Como la gráfica de Decisiones, pero **de un solo campo**: usa el **biofix de ESE campo** "
+        "(no el general de la finca), muestra **sus** capturas, y **solo las líneas moradas de los "
+        "tratamientos de carpocapsa aplicados a ese campo**. Así ves, campo a campo, la relación "
+        "**capturas ↔ DD** de la literatura (eclosión activa 120–360 DD)."
+    )
+    _bf_camp = carpocapsa_filter_campaign(st.session_state.carpocapsa_biofix_df, campaign_year)
+    _campos_chart = (sorted(_bf_camp["Campo/Zona"].dropna().astype(str).unique())
+                     if (not _bf_camp.empty and "Campo/Zona" in _bf_camp.columns) else [])
+    if not _campos_chart:
+        st.info("Necesitas biofix por campo. Pulsa **«📌 Fijar estos biofix»** de arriba (o sube "
+                "capturas) y aquí aparecerá el selector de campo.")
+    elif history is None or history.empty:
+        st.info("Sin histórico climático suficiente para calcular los grados-día.")
+    else:
+        _sel_cc = st.selectbox("Campo", _campos_chart, key="carpo_field_chart_sel")
+        _base_cc, _upper_cc = 10.0, 31.1
+        # 1) Biofix del campo seleccionado (una fila)
+        _bf_one = _bf_camp[_bf_camp["Campo/Zona"].astype(str) == _sel_cc].copy()
+        # 2) Capturas de ESE campo
+        _traps_camp = carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, campaign_year)
+        _traps_one = (_traps_camp[_traps_camp["Campo/Zona"].astype(str) == _sel_cc].copy()
+                      if (not _traps_camp.empty and "Campo/Zona" in _traps_camp.columns) else pd.DataFrame())
+
+        # 3) Tratamientos de CARPOCAPSA aplicados a ESE campo
+        def _campo_en_trat(campos_str, target):
+            _lst = [c.strip().lower() for c in str(campos_str).split(",")]
+            _t = target.strip().lower()
+            if _t in _lst:
+                return True
+            return any((_t in c or c in _t) for c in _lst if len(c) >= 3)
+
+        _treats_one = pd.DataFrame()
+        _acts_cc = st.session_state.get("activities_df", pd.DataFrame())
+        if _acts_cc is not None and not _acts_cc.empty and "Fecha" in _acts_cc.columns:
+            _a = _acts_cc.copy()
+            _a["Fecha_dt"] = pd.to_datetime(_a["Fecha"], errors="coerce")
+            _a = _a.dropna(subset=["Fecha_dt"])
+            _a = _a[_a["Fecha_dt"].dt.year == int(campaign_year)]
+            _cc_cols = [c for c in ["Productos", "Producto", "Descripcion", "Comentarios", "Trabajo"]
+                        if c in _a.columns]
+            if _cc_cols and not _a.empty:   # solo pases con producto de carpocapsa
+                _txt_cc = _a[_cc_cols].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+                _a = _a[_txt_cc.apply(lambda x: any(kw in x for kw in CARPOCAPSA_TREATMENT_KEYWORDS))]
+            _fcol = next((c for c in ["Campos reconocidos", "Campos", "Campo"] if c in _a.columns), None)
+            if _fcol and not _a.empty:      # solo los que incluyen ESE campo
+                _a = _a[_a[_fcol].fillna("").apply(lambda s: _campo_en_trat(s, _sel_cc))]
+            _treats_one = _a
+
+        # 4) Serie de DD (finca; el DD diario es climático, común) + previsión de sesión
+        _bf_date_cc = pd.to_datetime(_bf_one["Fecha biofix"], errors="coerce").min() if not _bf_one.empty else None
+        _dback_disp = 100
+        if _bf_date_cc is not None and pd.notna(_bf_date_cc):
+            _dback_disp = min(140, max(45, (pd.Timestamp.now().normalize() - _bf_date_cc).days + 10))
+        _fc_cc = st.session_state.get("forecast_df", pd.DataFrame())
+        _risk_cc = build_risk_timeline(history, _fc_cc, days_back=150,
+                                       base_temp=_base_cc, upper_temp=_upper_cc)
+        if _risk_cc is None or _risk_cc.empty:
+            st.info("No se pudo construir la serie de grados-día.")
+        else:
+            _fig_cc = _dec_carpocapsa_chart(
+                _risk_cc, pd.Timestamp.now().normalize(), _bf_one, _traps_one, _treats_one,
+                _base_cc, _upper_cc, 340, days_back=_dback_disp, history_df=history)
+            st.plotly_chart(_fig_cc, use_container_width=True,
+                            config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
+            _bf_txt = (_bf_date_cc.strftime("%d/%m/%Y") if _bf_date_cc is not None and pd.notna(_bf_date_cc) else "—")
+            st.caption(
+                f"**{_sel_cc}** · biofix **{_bf_txt}** · **{len(_treats_one)}** tratamiento(s) de "
+                "carpocapsa en este campo (líneas moradas). Círculos azules = capturas de ESTE campo; "
+                "línea roja = sus DD acumulados desde SU biofix."
+            )
+
     st.caption("Registra muestreos posteriores a tratamiento o revisiones de foco. Objetivo orientativo: daño <1%.")
     damage_edit = st.data_editor(
         carpocapsa_filter_campaign(st.session_state.carpocapsa_damage_df, campaign_year).copy(),
