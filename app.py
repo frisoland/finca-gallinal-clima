@@ -22063,17 +22063,8 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
 
     fig = go.Figure()
 
-    # DD diarios (fondo) — línea (coherente con el item Carpocapsa, antes barras)
-    fig.add_trace(go.Scatter(
-        x=dates, y=dd_dia,
-        name="DD diarios",
-        mode="lines",
-        line=dict(color="rgba(255,100,50,0.75)", width=1.5),
-        fill="tozeroy",
-        fillcolor="rgba(255,100,50,0.10)",
-        yaxis="y2",
-        hovertemplate="%{x|%d/%m}<br>DD día: %{y:.1f}<extra></extra>",
-    ))
+    # (La traza "DD diarios" y su eje derecho (DD/día 0-70) se quitaron: metían ruido y
+    #  su escala confundía —parecía que se acumulaban 70 DD/día—; solo interesa el DD acumulado.)
 
     # DD acumulados — histórico
     hist_idx = [i for i, p in enumerate(es_pred) if not p]
@@ -22114,7 +22105,9 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     ymax    = max(max_dd * 1.15, _top_gen * 1.08, 400)
     _gen_colors = ["#2ca02c", "#ff7f0e", "#d62728", "#9467bd"]
     for (umbral, _lbl), color in zip(CARPOCAPSA_GEN_DD, _gen_colors):
-        label = f"{_lbl} ({umbral} DD)"
+        # Etiqueta corta para que quepa entera a la derecha (antes se cortaba el nº).
+        _short = _lbl.replace(" · inicio eclosión", " inicio").replace(" · pico eclosión", " pico")
+        label = f"{_short} ({umbral} DD)"
         if umbral <= ymax * 1.2:
             fig.add_hline(y=umbral, line_dash="dash", line_color=color, line_width=1, opacity=0.7,
                           annotation_text=label, annotation_position="right",
@@ -22158,8 +22151,10 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                             line=dict(color="white", width=1),
                         ),
                         text=tg["_cap"].astype(int).astype(str),
-                        textposition="top center",
-                        textfont=dict(size=9, color="rgba(0,80,160,1)"),
+                        # arriba-derecha: si coincide con una línea de tratamiento (vertical
+                        # en la x de la captura), el número no queda tapado por ella.
+                        textposition="top right",
+                        textfont=dict(size=10, color="rgba(0,80,160,1)"),
                         customdata=tg["_cap"].tolist(),
                         hovertemplate="%{x|%d/%m}<br>Capturas (finca): %{customdata}<br>DD: %{y:.0f}<extra></extra>",
                     ))
@@ -22217,15 +22212,12 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
 
     fig.update_layout(
         height=height,
-        margin=dict(l=0, r=110, t=30, b=30),
+        margin=dict(l=0, r=150, t=30, b=30),   # margen derecho amplio: etiquetas de generación legibles
         barmode="overlay",
         showlegend=True,
         dragmode=False,   # sin arrastre: deslizar sobre la gráfica no la mueve
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=11),
         yaxis=dict(title="DD acumulados", range=[0, ymax], gridcolor="rgba(200,200,200,0.3)", fixedrange=True),
-        yaxis2=dict(title="DD/día", overlaying="y", side="right",
-                    range=[0, max(max(dd_dia)*5, 15) if dd_dia else 15],
-                    showgrid=False, tickfont_color="rgba(255,100,50,0.8)", fixedrange=True),
         xaxis=dict(
             tickformat="%d/%m",
             gridcolor="rgba(200,200,200,0.2)",
