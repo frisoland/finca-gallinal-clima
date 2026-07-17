@@ -17324,7 +17324,8 @@ def resultado_sanitario_tab():
                 ("🌫️", "Oidio_valor", "Oídio"),
             ]:
                 st.markdown(f"**{_emoji} {_dname}**")
-                _fig_rs = _dec_disease_chart(_risk_rs, _vcol, _dname, _today_norm, _treats_rs, 250)
+                _fig_rs = _dec_disease_chart(_risk_rs, _vcol, _dname, _today_norm, _treats_rs, 250,
+                                             scale_max=(105 if _vcol == "Oidio_valor" else 160))
                 for _vd in _val_dates:
                     if _rs_min <= _vd <= _rs_max:
                         _fig_rs.add_vline(
@@ -21772,10 +21773,14 @@ def _dec_treatment_lines_trace(go, treats_df, x_min, x_max, ymax, color="rgba(15
     )
 
 
-def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, height=300):
+def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, height=300, scale_max=160):
     """
     Crea gráfico Plotly estilo RIMpro para una enfermedad.
     Barras coloreadas por nivel de riesgo + lluvia como fondo + zona predicción.
+    `scale_max` = tope del eje Y (160 por defecto: moteado/monilia llegan a 150). El
+    Oídio pasa 105 porque su índice de favorabilidad NUNCA supera 100 → así el eje no
+    desperdicia el tramo 100-160. Las franjas (Ligero 25 / Moderado 50 / Grave 100)
+    no cambian.
     """
     import plotly.graph_objects as go
 
@@ -21783,6 +21788,7 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
     values = risk_df[value_col].fillna(0).tolist()
     lluvia = risk_df["Lluvia"].fillna(0).tolist()
     es_pred = risk_df["Es_prediccion"].tolist()
+    _ymax = max(float(scale_max), max(values) * 1.05) if values else float(scale_max)
 
     fig = go.Figure()
 
@@ -21800,7 +21806,7 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         (0,   25,  "rgba(44,160,44,0.10)"),    # verde   — sin/ligero
         (25,  50,  "rgba(245,197,24,0.14)"),   # amarillo — ligero
         (50,  100, "rgba(255,127,14,0.14)"),   # naranja  — moderado
-        (100, 160, "rgba(214,39,40,0.14)"),    # rojo     — grave
+        (100, _ymax, "rgba(214,39,40,0.14)"),  # rojo     — grave (hasta el tope del eje)
     ]
     for _lo, _hi, _col in _zones:
         fig.add_hrect(y0=_lo, y1=_hi, fillcolor=_col, line_width=0, layer="below")
@@ -21868,7 +21874,7 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         )
 
     # Tratamientos — líneas verticales HOVERABLES (muestran los campos tratados ese día)
-    _ymax_d = max(160, max(values) * 1.1) if values else 160
+    _ymax_d = _ymax
     _tr_trace = _dec_treatment_lines_trace(
         go, treats_df, risk_df["Fecha"].min(), risk_df["Fecha"].max(), _ymax_d)
     if _tr_trace is not None:
@@ -21883,7 +21889,7 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         # (en el móvil deja pasar el scroll de la página; en PC no la desplaza).
         dragmode=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=11),
-        yaxis=dict(title="Valor de infección", range=[0, max(160, max(values)*1.1) if values else 160],
+        yaxis=dict(title="Valor de infección", range=[0, _ymax],
                    gridcolor="rgba(200,200,200,0.3)", fixedrange=True),
         yaxis2=dict(title="Lluvia (mm)", overlaying="y", side="right",
                     range=[0, max(max(lluvia)*4, 10) if lluvia else 10],
@@ -23870,7 +23876,7 @@ def render_decisiones_panel():
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
     st.caption("Favorece condiciones cálidas y secas (T 17-25°C, HR 50-80%). La lluvia intensa frena el riesgo.")
-    fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_all, chart_h)
+    fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_all, chart_h, scale_max=105)
     st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     # ── Leyenda explicativa ───────────────────────────────────────────────────
