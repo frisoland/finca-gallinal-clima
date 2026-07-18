@@ -23182,6 +23182,37 @@ def render_decisiones_panel():
                         if css:
                             sty.iloc[i, ip] = css
                             sty.iloc[i, ir] = css
+
+                # ── LLUVIA: acierto/fallo de cada previsión (Sencrop y WRF9) vs lluvia real.
+                #    Estricto, mismo día (sin tolerancia ±1). Se colorea SOLO la celda de
+                #    previsión (la real no, para no mezclar dos modelos en una celda). Los días
+                #    secos-acertados se dejan en blanco (no meter ruido verde en todo).
+                _RAIN = 0.2
+                if "Lluvia real" in df.columns:
+                    _reals_ll = [_num(df.iloc[i]["Lluvia real"]) for i in range(n)]
+                    _raw_ll = [str(df.iloc[i]["Lluvia real"]) for i in range(n)]
+                    for prevc in ("Lluvia prev.", "Lluvia WRF9"):
+                        if prevc not in df.columns:
+                            continue
+                        _ip_ll = df.columns.get_loc(prevc)
+                        for i in range(n):
+                            _rv = _reals_ll[i]
+                            if _rv is None or "—" in _raw_ll[i]:
+                                continue                       # real aún sin dato
+                            _pv = _num(df.iloc[i][prevc])
+                            if _pv is None:
+                                continue                       # ese modelo no predijo ese día
+                            _rained, _predrain = _rv >= _RAIN, _pv >= _RAIN
+                            if _rained and _predrain:
+                                _cll = _GRN2                   # acertó: llovió y lo predijo
+                            elif _rained and not _predrain:
+                                _cll = _RED2                   # se le escapó la lluvia
+                            elif _predrain:
+                                _cll = _BLU2                   # falsa alarma: predijo y no llovió
+                            else:
+                                _cll = ""                      # seco acertado → sin color
+                            if _cll:
+                                sty.iloc[i, _ip_ll] = _cll
                 return sty
             try:
                 st.dataframe(_daily.style.apply(_style_frame, axis=None),
@@ -23203,7 +23234,13 @@ def render_decisiones_panel():
                 "pero sin riesgo) · ⚪ **gris** = **cola de evento**: avisó y no pasó, pero **pegado "
                 "a un día de infección real** (±1 día) → es el mismo episodio, el modelo lo vio pero "
                 "no acertó la hora exacta de corte (no es un fallo real). El 🔴 (escape) es el error "
-                "peligroso; el 🔵 (falsa alarma), el molesto pero seguro."
+                "peligroso; el 🔵 (falsa alarma), el molesto pero seguro.\n\n"
+                "**🌧️ Lluvia (columnas «Lluvia prev.» de Sencrop y «Lluvia WRF9»):** se colorea cada "
+                "**previsión** según lo que llovió de verdad ese día (lluvia = ≥0,2 mm, mismo día, sin "
+                "tolerancia): 🟢 **acertó** (llovió y lo predijo) · 🔴 **se le escapó** (llovió y no lo "
+                "predijo) · 🔵 **falsa alarma** (predijo lluvia y no cayó). Los días **secos que "
+                "acertó** se dejan **en blanco** (para no llenar la tabla de color). Así comparas de un "
+                "vistazo quién acierta más, **Sencrop vs WRF9**."
             )
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
