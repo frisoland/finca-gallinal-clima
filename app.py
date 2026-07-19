@@ -15862,8 +15862,9 @@ def carpocapsa_tab(history):
             _bf_txt = (_bf_date_cc.strftime("%d/%m/%Y") if _bf_date_cc is not None and pd.notna(_bf_date_cc) else "—")
             st.caption(
                 f"**{_sel_cc}** · biofix **{_bf_txt}** · **{len(_treats_one)}** tratamiento(s) de "
-                "carpocapsa en este campo (líneas moradas). Círculos azules = capturas de ESTE campo; "
-                "línea roja = sus DD acumulados desde SU biofix."
+                "carpocapsa en este campo (líneas moradas). Círculos azules = capturas de ESTE campo "
+                "(tamaño y nº = capturas); **○ gris = lectura hecha sin capturas (0)** — así se ve que "
+                "la trampa SÍ se revisó aunque no cayera nada; línea roja = sus DD desde SU biofix."
             )
 
     st.caption("Registra muestreos posteriores a tratamiento o revisiones de foco. Objetivo orientativo: daño <1%.")
@@ -22141,15 +22142,15 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                         (tf["_fdt"] <= plot_df_display["Fecha"].max())]
             if not tf.empty:
                 tf["_cap"] = pd.to_numeric(tf[_ccol], errors="coerce").fillna(0)
-                tg = tf.groupby(tf["_fdt"].dt.normalize(), as_index=False)["_cap"].sum()
-                tg = tg[tg["_cap"] > 0]
+                tg_all = tf.groupby(tf["_fdt"].dt.normalize(), as_index=False)["_cap"].sum()
+                # DD acumulado en la fecha de CADA lectura, por lookup exacto/cercano (el
+                # np.interp anterior devolvía siempre el último valor → todas a la misma altura).
+                _ddser = (plot_df_display.assign(
+                              _d=pd.to_datetime(plot_df_display["Fecha"]).dt.normalize())
+                          .drop_duplicates("_d").set_index("_d")["DD_acumulado"].sort_index())
+                # Lecturas CON capturas: círculo azul (tamaño por nº) + número.
+                tg = tg_all[tg_all["_cap"] > 0]
                 if not tg.empty:
-                    # DD acumulado en la fecha de CADA captura, por lookup exacto/cercano
-                    # (el np.interp anterior devolvía el mismo valor —el último— para todas
-                    #  las capturas, así que salían todas a la misma altura).
-                    _ddser = (plot_df_display.assign(
-                                  _d=pd.to_datetime(plot_df_display["Fecha"]).dt.normalize())
-                              .drop_duplicates("_d").set_index("_d")["DD_acumulado"].sort_index())
                     _cap_d = pd.to_datetime(tg["_fdt"]).dt.normalize()
                     dd_interp = _ddser.reindex(_cap_d, method="nearest").fillna(0).to_numpy()
                     fig.add_trace(go.Scatter(
@@ -22169,7 +22170,23 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                         textposition="top right",
                         textfont=dict(size=10, color="rgba(0,80,160,1)"),
                         customdata=tg["_cap"].tolist(),
-                        hovertemplate="%{x|%d/%m}<br>Capturas (finca): %{customdata}<br>DD: %{y:.0f}<extra></extra>",
+                        hovertemplate="%{x|%d/%m}<br>Capturas: %{customdata}<br>DD: %{y:.0f}<extra></extra>",
+                    ))
+                # Lecturas SIN capturas (0): marcador pequeño hueco gris → deja claro que la
+                # trampa SÍ se revisó ese día aunque no cayera nada (antes se ocultaban y el
+                # hueco entre capturas parecía "no se hizo lectura").
+                tg0 = tg_all[tg_all["_cap"] <= 0]
+                if not tg0.empty:
+                    _cd0 = pd.to_datetime(tg0["_fdt"]).dt.normalize()
+                    _dd0 = _ddser.reindex(_cd0, method="nearest").fillna(0).to_numpy()
+                    fig.add_trace(go.Scatter(
+                        x=tg0["_fdt"].tolist(),
+                        y=_dd0.tolist(),
+                        mode="markers",
+                        name="Lectura sin capturas (0)",
+                        marker=dict(size=7, color="rgba(160,160,160,0.12)", symbol="circle-open",
+                                    line=dict(color="rgba(110,110,110,0.85)", width=1.3)),
+                        hovertemplate="%{x|%d/%m}<br>Lectura de trampa: 0 capturas<br>DD: %{y:.0f}<extra></extra>",
                     ))
 
     # Zona predicción
@@ -24003,7 +24020,8 @@ def render_decisiones_panel():
 
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("#### 🐛 Carpocapsa · *Cydia pomonella* — Grados-día desde biofix")
-    st.caption("Línea roja = DD acumulados. Círculos azules = capturas en trampa (tamaño proporcional). Umbrales de generación marcados.")
+    st.caption("Línea roja = DD acumulados. Círculos azules = capturas en trampa (tamaño proporcional). "
+               "○ gris = lectura sin capturas (0), para no confundir «revisé y 0» con «no revisé». Umbrales de generación marcados.")
     fig_c = _dec_carpocapsa_chart(
         risk_df, today, biofix_df, traps_df, treats_carpo,
         float(base_temp_d), float(upper_temp_d), chart_h + 30,
