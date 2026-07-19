@@ -22184,8 +22184,8 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                         y=_dd0.tolist(),
                         mode="markers",
                         name="Lectura sin capturas (0)",
-                        marker=dict(size=7, color="rgba(160,160,160,0.12)", symbol="circle-open",
-                                    line=dict(color="rgba(110,110,110,0.85)", width=1.3)),
+                        marker=dict(size=8, color="rgba(105,105,105,0.9)", symbol="circle",
+                                    line=dict(color="white", width=1.4)),
                         hovertemplate="%{x|%d/%m}<br>Lectura de trampa: 0 capturas<br>DD: %{y:.0f}<extra></extra>",
                     ))
 
