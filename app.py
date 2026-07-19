@@ -14601,6 +14601,11 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
     # Base 10 °C / techo 31,1 °C (= 50/88 °F, modelo estándar Cydia pomonella).
     # Referencias: Riedl/Croft/Howitt 1976; UC IPM; WSU.
     def _carpo_stage(dd):
+        # Fases alineadas con la literatura y con CARPOCAPSA_GEN_DD (única fuente de verdad
+        # de la gráfica): 1ª gen inicio ~130 · pico ~300 · 2ª gen inicio ~580 · pico ~750.
+        # Un ciclo completo de carpocapsa ≈ 550-620 DD, por eso los 360-580 DD son COLA de
+        # la 1ª / entre generaciones, NO 2ª gen (antes se etiquetaba mal "posible 2ª gen" a
+        # partir de 360, adelantándose ~220 DD).
         if dd is None or (isinstance(dd, float) and np.isnan(dd)):
             return "—"
         if dd < 50:
@@ -14610,12 +14615,16 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
         if dd < 120:
             return "Puesta→eclosión (100–120)"
         if dd < 140:
-            return "✅ Inicio eclosión / entradas fruto (120–140)"
+            return "✅ Inicio eclosión 1ª gen / entradas fruto (120–140)"
         if dd < 250:
-            return "Eclosión en curso (140–250)"
+            return "Eclosión 1ª gen en curso (140–250)"
         if dd < 360:
             return "Pico eclosión 1ª gen. (250–360)"
-        return "Tras pico / posible 2ª gen. (>360)"
+        if dd < 580:
+            return "Cola 1ª gen / entre generaciones (360–580)"
+        if dd < 750:
+            return "Eclosión 2ª gen (580–750)"
+        return "Tras pico 2ª gen (>750)"
 
     # ── Preparar tratamientos de carpocapsa ───────────────────────────────────
     treat = pd.DataFrame()
@@ -15669,11 +15678,15 @@ def carpocapsa_tab(history):
                 "🔬 **DD biofix→trat. (literatura)** = DD desde el biofix del campo (primera captura "
                 "**sostenida** ≥ umbral) hasta el tratamiento, y la **fase** en que caía:\n\n"
                 "• **<50** pre‑puesta · **50–100** inicio puesta de huevos · **100–120** transición · "
-                "**✅ 120–140 inicio de eclosión / primeras entradas en fruto (ventana ideal para "
-                "tratar)** · **140–250** eclosión en curso · **250–360** pico de eclosión 1ª gen. · "
-                "**>360** tras el pico.\n\n"
-                "Biofix marcado **«(no sost.)»** = no hubo lectura siguiente que confirmara el vuelo "
-                "(captura única); tómalo con cautela. Fuentes: *Riedl, Croft & Howitt 1976; UC IPM; WSU*."
+                "**✅ 120–140 inicio de eclosión 1ª gen / primeras entradas en fruto (ventana ideal "
+                "para tratar)** · **140–250** eclosión 1ª gen en curso · **250–360** pico de eclosión "
+                "1ª gen · **360–580** cola de 1ª gen / entre generaciones · **580–750** eclosión 2ª "
+                "gen · **>750** tras el pico de la 2ª.\n\n"
+                "Alineado con los umbrales de generación de la gráfica (130/300/580/750 DD): un ciclo "
+                "completo de carpocapsa ≈ 550-620 DD, así que **360–580 DD NO es 2ª generación, es la "
+                "cola de la 1ª / entre generaciones**. Biofix **«(no sost.)»** = no hubo lectura "
+                "siguiente que confirmara el vuelo (captura única); cautela. Fuentes: *Riedl, Croft & "
+                "Howitt 1976; UC IPM; WSU*."
             )
 
             # ── Resumen de puntería: % de tratamientos en la ventana ideal ────────
