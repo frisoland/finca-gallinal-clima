@@ -23931,6 +23931,7 @@ def render_decisiones_panel():
     # ── Tratamientos del período ──────────────────────────────────────────────
     treats_all   = pd.DataFrame()
     treats_carpo = pd.DataFrame()
+    treats_fungi = pd.DataFrame()
     if not activities_df.empty and "Fecha" in activities_df.columns:
         acts = activities_df.copy()
         acts["Fecha_dt"] = pd.to_datetime(acts["Fecha"], errors="coerce")
@@ -23938,31 +23939,38 @@ def render_decisiones_panel():
         t_mask = acts["Fecha_dt"] >= risk_df["Fecha"].min()
         if t_mask.any():
             treats_all = acts[t_mask].copy()
-            # Carpocapsa: combinar TODAS las columnas de producto/descr. (no parar en
-            # la primera) y buscar las palabras clave de carpocapsa (que ya incluyen
-            # todo el catálogo). Así una mezcla en cuba con un producto de carpocapsa
-            # se detecta, y un pase de solo fungicida NO.
-            _carpo_cols = [c for c in ["Productos", "Producto", "Descripcion",
-                                       "Comentarios", "Trabajo"] if c in treats_all.columns]
-            if _carpo_cols:
-                _carpo_txt = (treats_all[_carpo_cols].fillna("").astype(str)
-                              .agg(" ".join, axis=1).str.lower())
-                carpo_mask = _carpo_txt.apply(
+            # Texto combinado de TODAS las columnas de producto/descr. (no parar en la
+            # primera): así una mezcla en cuba se clasifica por todo lo que lleva.
+            _tcols = [c for c in ["Productos", "Producto", "Descripcion",
+                                  "Comentarios", "Trabajo"] if c in treats_all.columns]
+            if _tcols:
+                _txt = (treats_all[_tcols].fillna("").astype(str)
+                        .agg(" ".join, axis=1))
+                # Carpocapsa: pases con ≥1 producto de carpocapsa (para su gráfica).
+                # Un mixto fungicida+Bactur SÍ entra; un fungicida solo NO.
+                carpo_mask = _txt.str.lower().apply(
                     lambda x: any(kw in x for kw in CARPOCAPSA_TREATMENT_KEYWORDS))
                 if carpo_mask.any():
                     treats_carpo = treats_all[carpo_mask]
+                # Fungicidas: pases con ≥1 fungicida (para moteado/monilia/oídio). Un
+                # mixto fungicida+Bactur SÍ entra (lleva keyword fungicida); un Bactur
+                # solo NO (keyword de insecticida y ninguna de fungicida).
+                fungi_mask = _txt.apply(lambda x: is_fungicide_activity(x))
+                if fungi_mask.any():
+                    treats_fungi = treats_all[fungi_mask]
 
     chart_h = 290
 
-    # ── Info de tratamientos detectados ──────────────────────────────────────
-    n_treats = len(treats_all) if not treats_all.empty else 0
+    # ── Info de tratamientos detectados (solo FUNGICIDAS: son los que se pintan en
+    #    las gráficas de hongos; un pase de solo carpocapsa va en su propia gráfica) ─
+    n_treats = len(treats_fungi) if not treats_fungi.empty else 0
     if n_treats > 0:
         _t_dates_str = ", ".join(
-            pd.to_datetime(treats_all["Fecha_dt"]).dt.strftime("%d/%m").unique()[:8].tolist()
+            pd.to_datetime(treats_fungi["Fecha_dt"]).dt.strftime("%d/%m").unique()[:8].tolist()
         )
-        _treats_info = f"🟣 **{n_treats} tratamientos** en el período: {_t_dates_str}"
+        _treats_info = f"🟣 **{n_treats} tratamientos fungicidas** en el período: {_t_dates_str}"
     else:
-        _treats_info = "ℹ️ Sin tratamientos registrados en Agroptima para este período (comprueba que están cargados)."
+        _treats_info = "ℹ️ Sin fungicidas registrados en Agroptima para este período (comprueba que están cargados)."
 
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
@@ -23997,7 +24005,7 @@ def render_decisiones_panel():
         "calibran con tu sensor — por eso existe el panel de **fiabilidad**. En los días pasados, "
         "la mojada es **medida** por tu sensor."
     )
-    fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_all, chart_h)
+    fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_fungi, chart_h)
     st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     st.divider()
@@ -24005,7 +24013,7 @@ def render_decisiones_panel():
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("#### 🍑 Monilia · *Monilinia* spp.")
     st.caption("Umbral 50 = riesgo moderado · **100 = riesgo alto**. Requiere T>15°C + hoja mojada ≥3h o HR>85%.")
-    fig_mo = _dec_disease_chart(risk_df, "Monilia_valor", "Monilia", today, treats_all, chart_h)
+    fig_mo = _dec_disease_chart(risk_df, "Monilia_valor", "Monilia", today, treats_fungi, chart_h)
     st.plotly_chart(fig_mo, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     st.divider()
@@ -24013,7 +24021,7 @@ def render_decisiones_panel():
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
     st.caption("Favorece condiciones cálidas y secas (T 17-25°C, HR 50-80%). La lluvia intensa frena el riesgo.")
-    fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_all, chart_h, scale_max=105)
+    fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_fungi, chart_h, scale_max=105)
     st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     st.divider()
