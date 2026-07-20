@@ -7899,6 +7899,197 @@ def render_visual_comparison_report(cmp_df, title="Informe comparativo visual"):
 
 
 
+# ── Climatología mensual: media/total por mes y año, con anomalía vs otros años ──
+_CLIM_MESES_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun",
+                    "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+
+
+def _monthly_climatology(history):
+    """Por (año, mes) y por año: temperatura media (°C) y lluvia total (mm), con
+    marca de si el periodo tiene datos COMPLETOS (cobertura ≥80 % de las horas). Los
+    periodos incompletos se marcan y NO entran en promedios ni anomalías (un mes a
+    medias o un total de lluvia parcial falsearían la comparación)."""
+    import calendar
+    try:
+        df = history[["fecha_hora", "temp_media", "lluvia_mm"]].copy()
+    except Exception:
+        return None
+    df["fecha_hora"] = pd.to_datetime(df["fecha_hora"], errors="coerce")
+    df = df.dropna(subset=["fecha_hora"])
+    if df.empty:
+        return None
+    df["_y"] = df["fecha_hora"].dt.year
+    df["_m"] = df["fecha_hora"].dt.month
+    df["temp_media"] = pd.to_numeric(df["temp_media"], errors="coerce")
+    df["lluvia_mm"] = pd.to_numeric(df["lluvia_mm"], errors="coerce")
+
+    tv, rv, tcomp, rcomp = {}, {}, {}, {}
+    for (y, m), g in df.groupby(["_y", "_m"]):
+        y, m = int(y), int(m)
+        exp = calendar.monthrange(y, m)[1] * 24
+        t = g["temp_media"].dropna()
+        r = g["lluvia_mm"].dropna()
+        if exp > 0 and len(t) > 0:
+            tv[(y, m)] = float(t.mean());  tcomp[(y, m)] = (len(t) / exp) >= 0.8
+        if exp > 0 and len(r) > 0:
+            rv[(y, m)] = float(r.sum());   rcomp[(y, m)] = (len(r) / exp) >= 0.8
+
+    tav, rav, tacomp, racomp = {}, {}, {}, {}
+    for y, g in df.groupby("_y"):
+        y = int(y)
+        exp = (366 if calendar.isleap(y) else 365) * 24
+        t = g["temp_media"].dropna()
+        r = g["lluvia_mm"].dropna()
+        if len(t) > 0:
+            tav[y] = float(t.mean());  tacomp[y] = (len(t) / exp) >= 0.8
+        if len(r) > 0:
+            rav[y] = float(r.sum());   racomp[y] = (len(r) / exp) >= 0.8
+
+    return {"years": [int(v) for v in sorted(df["_y"].unique().tolist())],
+            "tv": tv, "rv": rv, "tcomp": tcomp, "rcomp": rcomp,
+            "tav": tav, "rav": rav, "tacomp": tacomp, "racomp": racomp}
+
+
+def _clim_tint(anom, metric):
+    """(bg_css, text_color) según signo/magnitud de la anomalía. Temp: 🔴 cálido /
+    🔵 frío. Lluvia: 🔵 más lluvia / 🟠 más seco."""
+    if anom is None:
+        return "", "#333"
+    if metric == "temp":
+        strong = min(abs(anom) / 3.0, 1.0)
+        rgb, txt = ("220,60,40", "#b00000") if anom > 0 else ("40,110,210", "#1a5fb4")
+    else:
+        strong = min(abs(anom) / 40.0, 1.0)
+        rgb, txt = ("40,110,210", "#1a5fb4") if anom > 0 else ("200,120,20", "#9a6a00")
+    return f"background:rgba({rgb},{0.06 + strong * 0.30:.2f});", txt
+
+
+def _clim_mean_others(vmap, cmap, y, m, years):
+    """Media del MISMO mes en los DEMÁS años (solo periodos completos)."""
+    vals = [vmap[(yy, m)] for yy in years
+            if yy != y and (yy, m) in vmap and cmap.get((yy, m), False)]
+    return (sum(vals) / len(vals)) if vals else None
+
+
+def _clim_mean_others_annual(avmap, acmap, y, years):
+    vals = [avmap[yy] for yy in years
+            if yy != y and yy in avmap and acmap.get(yy, False)]
+    return (sum(vals) / len(vals)) if vals else None
+
+
+def _clim_mean_all(vmap, cmap, m, years):
+    vals = [vmap[(yy, m)] for yy in years
+            if (yy, m) in vmap and cmap.get((yy, m), False)]
+    return (sum(vals) / len(vals)) if vals else None
+
+
+def _clim_mean_all_annual(avmap, acmap, years):
+    vals = [avmap[yy] for yy in years if yy in avmap and acmap.get(yy, False)]
+    return (sum(vals) / len(vals)) if vals else None
+
+
+def _render_clim_table(data, metric):
+    """Tabla HTML sticky: filas = años, columnas = 12 meses + Anual. Cada celda: valor
+    (media temp / total lluvia) y debajo su anomalía vs los demás años. Última fila =
+    Promedio (media climatológica de todos los años completos)."""
+    years = data["years"]
+    if metric == "temp":
+        vmap, cmap, avmap, acmap = data["tv"], data["tcomp"], data["tav"], data["tacomp"]
+        vfmt = lambda x: f"{x:.1f}";  afmt = lambda a: f"{a:+.1f}"
+    else:
+        vmap, cmap, avmap, acmap = data["rv"], data["rcomp"], data["rav"], data["racomp"]
+        vfmt = lambda x: f"{x:.0f}";  afmt = lambda a: f"{a:+.0f}"
+
+    th = ("background:#1a2e1e;color:white;padding:6px 8px;white-space:nowrap;"
+          "font-weight:600;font-size:12px;text-align:center;")
+    ths = "position:sticky;left:0;z-index:2;" + th
+    hdr = (f'<th style="{ths}">Año</th>'
+           + "".join(f'<th style="{th}">{mn}</th>' for mn in _CLIM_MESES_ABBR)
+           + f'<th style="{th}">Anual</th>')
+
+    def _cell(val, complete, anom, baseline=False):
+        td = ("padding:5px 8px;border-bottom:1px solid #eee;white-space:nowrap;"
+              "text-align:center;font-size:12px;")
+        if val is None:
+            return f'<td style="{td}background:#fafafa;color:#bbb;">—</td>'
+        if baseline:
+            return (f'<td style="{td}background:#eef2ee;">'
+                    f"<div style='font-weight:700;color:#1a2e1e;'>{vfmt(val)}</div>"
+                    f"<div style='font-size:10px;color:#888;'>media</div></td>")
+        bg, txt = _clim_tint(anom, metric)
+        star = "" if complete else "*"
+        vcolor = "#333" if complete else "#999"
+        if anom is not None and complete:
+            anom_html = f"<div style='font-size:10.5px;color:{txt};'>{afmt(anom)}</div>"
+        else:
+            anom_html = "<div style='font-size:10.5px;color:#ccc;'>·</div>"
+        return (f'<td style="{td}{bg}">'
+                f"<div style='font-weight:600;color:{vcolor};'>{vfmt(val)}{star}</div>"
+                f"{anom_html}</td>")
+
+    _ylab = ("position:sticky;left:0;z-index:1;padding:5px 10px;border-bottom:1px solid #eee;"
+             "white-space:nowrap;background:#eef2ee;font-weight:700;font-size:12px;text-align:center;")
+    body = ""
+    for y in years:
+        cells = f'<td style="{_ylab}">{y}</td>'
+        for m in range(1, 13):
+            if (y, m) in vmap:
+                val, comp = vmap[(y, m)], cmap.get((y, m), False)
+                ref = _clim_mean_others(vmap, cmap, y, m, years)
+                anom = (val - ref) if (comp and ref is not None) else None
+                cells += _cell(val, comp, anom)
+            else:
+                cells += _cell(None, True, None)
+        if y in avmap:
+            aval, acomp = avmap[y], acmap.get(y, False)
+            aref = _clim_mean_others_annual(avmap, acmap, y, years)
+            aanom = (aval - aref) if (acomp and aref is not None) else None
+            cells += _cell(aval, acomp, aanom)
+        else:
+            cells += _cell(None, True, None)
+        body += f"<tr>{cells}</tr>"
+
+    _plab = ("position:sticky;left:0;z-index:1;padding:5px 10px;border-top:2px solid #1a2e1e;"
+             "border-bottom:1px solid #eee;white-space:nowrap;background:#dfe7df;"
+             "font-weight:700;font-size:12px;text-align:center;")
+    prom = f'<td style="{_plab}">Promedio</td>'
+    for m in range(1, 13):
+        pv = _clim_mean_all(vmap, cmap, m, years)
+        prom += _cell(pv, True, None, baseline=(pv is not None))
+    pav = _clim_mean_all_annual(avmap, acmap, years)
+    prom += _cell(pav, True, None, baseline=(pav is not None))
+    body += f'<tr>{prom}</tr>'
+
+    return (f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:8px;'
+            f'border:1px solid #ddd;margin-bottom:0.6rem;">'
+            f'<table style="border-collapse:collapse;width:100%;">'
+            f'<thead><tr>{hdr}</tr></thead><tbody>{body}</tbody></table></div>')
+
+
+def _clim_to_csv(data, metric):
+    """CSV (año × mes + Anual + fila Promedio) con los VALORES del metric elegido."""
+    years = data["years"]
+    if metric == "temp":
+        vmap, cmap, avmap, acmap, nd = data["tv"], data["tcomp"], data["tav"], data["tacomp"], 2
+    else:
+        vmap, cmap, avmap, acmap, nd = data["rv"], data["rcomp"], data["rav"], data["racomp"], 1
+    rows = []
+    for y in years:
+        row = {"Año": y}
+        for m in range(1, 13):
+            row[_CLIM_MESES_ABBR[m - 1]] = round(vmap[(y, m)], nd) if (y, m) in vmap else None
+        row["Anual"] = round(avmap[y], nd) if y in avmap else None
+        rows.append(row)
+    prom = {"Año": "Promedio"}
+    for m in range(1, 13):
+        pv = _clim_mean_all(vmap, cmap, m, years)
+        prom[_CLIM_MESES_ABBR[m - 1]] = round(pv, nd) if pv is not None else None
+    pav = _clim_mean_all_annual(avmap, acmap, years)
+    prom["Anual"] = round(pav, nd) if pav is not None else None
+    rows.append(prom)
+    return pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
+
+
 def comparator_tab(history, soil_type, hoja_threshold):
     st.subheader("Comparador climático")
 
@@ -8208,6 +8399,36 @@ def comparator_tab(history, soil_type, hoja_threshold):
                     file_name=f"comparacion_semana_iso_{int(iso_week_cmp)}.csv",
                     mime="text/csv",
                 )
+
+    with st.expander("📅 Climatología mensual: temperatura y lluvia por mes y año (anomalías)", expanded=True):
+        st.caption(
+            "Temperatura **media** y lluvia **total** de **cada mes y año**, con su **anomalía** "
+            "debajo: la desviación respecto al promedio de ese **mismo mes en los demás años**. "
+            "En temperatura, 🔴 = más cálido de lo normal · 🔵 = más frío. En lluvia, 🔵 = más "
+            "lluvia · 🟠 = más seco. La fila **Promedio** es la media climatológica de todos los "
+            "años con datos completos. **`*`** marca un mes/año **incompleto** (cobertura de datos "
+            "<80 %): se muestra su valor pero **no** entra en promedios ni anomalías (un mes a "
+            "medias, p. ej. el mes en curso, falsearía la comparación — sobre todo en lluvia)."
+        )
+        _clim = _monthly_climatology(history)
+        if not _clim or not _clim["years"]:
+            st.info("No hay datos suficientes para la climatología mensual.")
+        else:
+            st.markdown("**🌡️ Temperatura media mensual (°C)**")
+            st.markdown(_render_clim_table(_clim, "temp"), unsafe_allow_html=True)
+            st.markdown("**🌧️ Lluvia total mensual (mm)**")
+            st.markdown(_render_clim_table(_clim, "rain"), unsafe_allow_html=True)
+            _dc1, _dc2 = st.columns(2)
+            with _dc1:
+                st.download_button(
+                    "⬇️ Temperatura (CSV)", _clim_to_csv(_clim, "temp"),
+                    file_name="climatologia_temperatura_mensual.csv", mime="text/csv",
+                    key="dl_clim_temp_v1", use_container_width=True)
+            with _dc2:
+                st.download_button(
+                    "⬇️ Lluvia (CSV)", _clim_to_csv(_clim, "rain"),
+                    file_name="climatologia_lluvia_mensual.csv", mime="text/csv",
+                    key="dl_clim_rain_v1", use_container_width=True)
 
 
 
