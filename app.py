@@ -21461,6 +21461,77 @@ def windguru_wrf9_daily_rain_cached():
     return windguru_wrf9_daily_rain()
 
 
+# ── MeteoGalicia WRF (API oficial MeteoSIX): 3ª opinión de lluvia ──────────────────
+# Fuente OFICIAL y gratuita (Xunta), consultada en el punto EXACTO de la finca y con
+# malla de 1 km (9× más fina que el WRF9 de Windguru). Horizonte ~3,5 días. La API_KEY
+# es un secreto (Streamlit secret / env var en headless) — NUNCA va en el código.
+# Doc: getNumericForecastInfo, coords en orden lon,lat; variable precipitation_amount
+# (l/m²=mm, horaria); modelo 'wrf'; malla 1km (probamos de fina a gruesa por si el punto
+# cayera fuera de la más fina). Verificado 2026-07-20: la finca cae dentro de la de 1 km.
+METEOSIX_URL    = "https://servizos.meteogalicia.gal/apiv5/getNumericForecastInfo"
+METEOSIX_COORDS = "-5.7985,43.481583"   # lon,lat de El Gallinal (Serín, Gijón)
+
+
+def _get_meteosix_key():
+    """API_KEY de MeteoSIX desde el secret de Streamlit o la variable de entorno
+    (informe diario headless en GitHub Actions). Nunca escrita en el código."""
+    try:
+        k = st.secrets.get("METEOSIX_API_KEY")
+        if k:
+            return str(k).strip()
+    except Exception:
+        pass
+    import os as _os
+    return (_os.environ.get("METEOSIX_API_KEY") or "").strip()
+
+
+def meteosix_wrf_daily_rain(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km")):
+    """{fecha_normalizada: mm} de lluvia prevista por el WRF de MeteoGalicia (~3,5 días,
+    malla 1 km oficial en el punto exacto de la finca). Prueba mallas de fina a gruesa
+    (si el punto cae fuera de la de 1 km, baja a 4 km, etc.). A prueba de fallos: devuelve
+    {} si no hay key, hay error o el punto cae fuera de todo → columna vacía, sin drama."""
+    key = _get_meteosix_key()
+    if not key:
+        return {}
+    try:
+        from collections import defaultdict
+        for grid in grids:
+            params = {"coords": coords, "variables": "precipitation_amount",
+                      "models": "wrf", "grids": grid, "API_KEY": key}
+            r = requests.get(METEOSIX_URL, params=params, timeout=30)
+            if r.status_code != 200:
+                continue
+            js = r.json()
+            if not isinstance(js, dict) or "exception" in js:
+                continue   # p. ej. el punto cae fuera de ESTA malla → probar la siguiente
+            daily = defaultdict(float)
+            got = False
+            for feat in js.get("features", []):
+                for day in feat.get("properties", {}).get("days", []):
+                    for var in day.get("variables", []):
+                        if var.get("name") != "precipitation_amount":
+                            continue
+                        for v in var.get("values", []):
+                            _val, _ti = v.get("value"), v.get("timeInstant")
+                            if _val is None or not _ti:
+                                continue
+                            # timeInstant ISO local ("...T11:00:00+02"): la fecha (10
+                            # primeros caracteres) ya es el día LOCAL de la finca.
+                            daily[pd.Timestamp(str(_ti)[:10])] += float(_val)
+                            got = True
+            if got:
+                return {pd.Timestamp(d).normalize(): round(v, 1) for d, v in daily.items()}
+        return {}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def meteosix_wrf_daily_rain_cached():
+    """Versión cacheada (1 h) para el panel — no golpear la API en cada rerun."""
+    return meteosix_wrf_daily_rain()
+
+
 SUPABASE_FORECAST_ARCHIVE_PATH = "forecast_risk_archive.parquet"
 
 
@@ -21588,6 +21659,17 @@ def archive_today_forecast(history_df, forecast_df):
                 _e["pred_rain_wrf"] = float(mm)
         except Exception:
             pass
+        # --- Lluvia WRF MeteoGalicia (1 km oficial): independiente de forecast_df ---
+        try:
+            for d, mm in (meteosix_wrf_daily_rain() or {}).items():
+                d = pd.Timestamp(d).normalize()
+                if d < today:
+                    continue
+                _e = _by_date.setdefault(d.strftime("%Y-%m-%d"), {})
+                _e["horizon"] = int((d - today).days)
+                _e["pred_rain_mg"] = float(mm)
+        except Exception:
+            pass
         if not _by_date:
             return
         new = pd.DataFrame([{"issue_date": issue, "target_date": td, **v}
@@ -21649,6 +21731,8 @@ def forecast_reliability(history_df, archive_df=None):
             _lp = float(r.get("pred_rain", 0));    _lr = float(a.loc[td, "Lluvia"])
             _lwp = r.get("pred_rain_wrf", np.nan)
             _lwp = float(_lwp) if pd.notna(_lwp) else np.nan
+            _lmg = r.get("pred_rain_mg", np.nan)
+            _lmg = float(_lmg) if pd.notna(_lmg) else np.nan
             recs.append({
                 "target_date": td,
                 "horizon": int(r.get("horizon", 0)),
@@ -21663,6 +21747,7 @@ def forecast_reliability(history_df, archive_df=None):
                 "oidio_pv":   _dp, "oidio_rv":   _dr,
                 "lluvia_pv":  _lp, "lluvia_rv":  _lr,
                 "lluvia_wrf_pv": _lwp,   # lluvia prevista por el WRF9 (Windguru); NaN si no archivada
+                "lluvia_mg_pv":  _lmg,   # lluvia prevista por el WRF 1 km (MeteoGalicia); NaN si no archivada
             })
         comp = pd.DataFrame(recs)
         if comp.empty:
@@ -21682,7 +21767,8 @@ def forecast_reliability(history_df, archive_df=None):
                 ("🟤 Monilia", "monilia_pv", "monilia_rv", THR,  NEAR, 1),
                 ("⚪ Oídio",   "oidio_pv",   "oidio_rv",   THR,  NEAR, 1),
                 ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, 1.0, 0),
-                ("🌧️ Lluvia WRF9", "lluvia_wrf_pv", "lluvia_rv", RAIN, 1.0, 0)]:
+                ("🌧️ Lluvia WRF9", "lluvia_wrf_pv", "lluvia_rv", RAIN, 1.0, 0),
+                ("🌧️ Lluvia MeteoGal.", "lluvia_mg_pv", "lluvia_rv", RAIN, 1.0, 0)]:
             # Estado por día: (aviso_pleno ≥umbral, aviso_casi ≥90%, evento_real).
             _day = {}
             for _, _rw in comp_day.iterrows():
@@ -21740,7 +21826,7 @@ def forecast_reliability(history_df, archive_df=None):
         return None, {"n": 0}
 
 
-def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, days=30, days_fwd=7, wrf_rain=None):
+def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, days=30, days_fwd=7, wrf_rain=None, mg_rain=None):
     """Tabla día a día PREVISTO vs REAL. Incluye:
       · Días FUTUROS (🔮): la previsión EN VIVO de la gráfica (real aún pendiente).
       · Días PASADOS: lo que se PREDIJO entonces (archivo) vs lo REAL (sensor).
@@ -21800,6 +21886,7 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                     "Oídio prev.": _si(r.get("Oidio_valor")),     "Oídio real": "—",
                     "Lluvia prev.": _sr(r.get("Lluvia")),
                     "Lluvia WRF9": (_sr(wrf_rain.get(d)) if wrf_rain else "—"),
+                    "Lluvia MG": (_sr(mg_rain.get(d)) if mg_rain else "—"),
                     "Lluvia real": "—",
                 })
             else:
@@ -21815,6 +21902,7 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                     "Oídio prev.": _pp("pred_oidio"),     "Oídio real": _si(r.get("Oidio_valor")),
                     "Lluvia prev.": (_sr(pr.get("pred_rain")) if pr is not None else "—"),
                     "Lluvia WRF9": (_sr(pr.get("pred_rain_wrf")) if pr is not None else "—"),
+                    "Lluvia MG": (_sr(pr.get("pred_rain_mg")) if pr is not None else "—"),
                     "Lluvia real": _sr(r.get("Lluvia")),
                 })
         if not rows:
@@ -23176,16 +23264,17 @@ def render_decisiones_panel():
         # ── Detalle DÍA A DÍA: PREVISTO vs REAL (fuera del if: se muestra SIEMPRE,
         #    aunque el archivo esté vacío, para ver los días 🔮 futuros). ──────────
         _wrf_rain = windguru_wrf9_daily_rain_cached()   # 2ª opinión de lluvia (WRF9 Windguru)
+        _mg_rain  = meteosix_wrf_daily_rain_cached()    # 3ª opinión (WRF 1 km MeteoGalicia, oficial)
         _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30,
-                                            days_fwd=7, wrf_rain=_wrf_rain)
+                                            days_fwd=7, wrf_rain=_wrf_rain, mg_rain=_mg_rain)
         if _daily is not None and not _daily.empty:
             st.markdown("**📋 Día a día: valor de infección previsto vs. real.** Arriba, los días "
                         "**🔮 futuros** con la previsión de hoy (el real aparecerá cuando llegue "
                         "el día). Abajo, los **pasados**: lo que se predijo vs. lo real (umbral "
-                        "grave = 100; «—» = sin dato). La columna **«Lluvia WRF9»** es la 2ª opinión "
-                        "de lluvia del **WRF 9 km de Windguru** (solo ~3 días de horizonte) para "
-                        "comparar con **«Lluvia prev.»** (Sencrop) y **«Lluvia real»** — a ver cuál "
-                        "acierta más.")
+                        "grave = 100; «—» = sin dato). Hay **tres fuentes de lluvia** para comparar "
+                        "contra **«Lluvia real»** — a ver cuál acierta más: **«Lluvia prev.»** "
+                        "(Sencrop), **«Lluvia WRF9»** (WRF 9 km de Windguru, ~3 días) y **«Lluvia MG»** "
+                        "(WRF **1 km oficial de MeteoGalicia**, en el punto exacto de la finca, ~3,5 días).")
             _dcols = list(_daily.columns)
             _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
             _AMB2 = "background-color: rgba(240,160,0,0.22); color:#9a6a00; font-weight:700"
@@ -23261,7 +23350,7 @@ def render_decisiones_panel():
                 if "Lluvia real" in df.columns:
                     _reals_ll = [_num(df.iloc[i]["Lluvia real"]) for i in range(n)]
                     _raw_ll = [str(df.iloc[i]["Lluvia real"]) for i in range(n)]
-                    for prevc in ("Lluvia prev.", "Lluvia WRF9"):
+                    for prevc in ("Lluvia prev.", "Lluvia WRF9", "Lluvia MG"):
                         if prevc not in df.columns:
                             continue
                         _ip_ll = df.columns.get_loc(prevc)
@@ -23305,12 +23394,13 @@ def render_decisiones_panel():
                 "a un día de infección real** (±1 día) → es el mismo episodio, el modelo lo vio pero "
                 "no acertó la hora exacta de corte (no es un fallo real). El 🔴 (escape) es el error "
                 "peligroso; el 🔵 (falsa alarma), el molesto pero seguro.\n\n"
-                "**🌧️ Lluvia (columnas «Lluvia prev.» de Sencrop y «Lluvia WRF9»):** se colorea cada "
-                "**previsión** según lo que llovió de verdad ese día (lluvia = ≥0,2 mm, mismo día, sin "
-                "tolerancia): 🟢 **acertó** (llovió y lo predijo) · 🔴 **se le escapó** (llovió y no lo "
-                "predijo) · 🔵 **falsa alarma** (predijo lluvia y no cayó). Los días **secos que "
-                "acertó** se dejan **en blanco** (para no llenar la tabla de color). Así comparas de un "
-                "vistazo quién acierta más, **Sencrop vs WRF9**."
+                "**🌧️ Lluvia (columnas «Lluvia prev.» de Sencrop, «Lluvia WRF9» y «Lluvia MG» de "
+                "MeteoGalicia):** se colorea cada **previsión** según lo que llovió de verdad ese día "
+                "(lluvia = ≥0,2 mm, mismo día, sin tolerancia): 🟢 **acertó** (llovió y lo predijo) · "
+                "🔴 **se le escapó** (llovió y no lo predijo) · 🔵 **falsa alarma** (predijo lluvia y no "
+                "cayó). Los días **secos que acertó** se dejan **en blanco** (para no llenar la tabla de "
+                "color). Así comparas de un vistazo quién acierta más, **Sencrop vs WRF9 vs MeteoGalicia "
+                "(1 km oficial)**."
             )
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
