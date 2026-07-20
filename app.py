@@ -7956,10 +7956,10 @@ def _clim_tint(anom, metric):
     if anom is None:
         return "", "#333"
     if metric == "temp":
-        strong = min(abs(anom) / 3.0, 1.0)
+        strong = min(abs(anom) / 15.0, 1.0)   # anom en % sobre la media del mes
         rgb, txt = ("220,60,40", "#b00000") if anom > 0 else ("40,110,210", "#1a5fb4")
     else:
-        strong = min(abs(anom) / 40.0, 1.0)
+        strong = min(abs(anom) / 60.0, 1.0)   # anom en % sobre la media del mes
         rgb, txt = ("40,110,210", "#1a5fb4") if anom > 0 else ("200,120,20", "#9a6a00")
     return f"background:rgba({rgb},{0.06 + strong * 0.30:.2f});", txt
 
@@ -7995,10 +7995,10 @@ def _render_clim_table(data, metric):
     years = data["years"]
     if metric == "temp":
         vmap, cmap, avmap, acmap = data["tv"], data["tcomp"], data["tav"], data["tacomp"]
-        vfmt = lambda x: f"{x:.1f}";  afmt = lambda a: f"{a:+.1f}"
+        vfmt = lambda x: f"{x:.1f}";  afmt = lambda a: f"{a:+.0f}%"
     else:
         vmap, cmap, avmap, acmap = data["rv"], data["rcomp"], data["rav"], data["racomp"]
-        vfmt = lambda x: f"{x:.0f}";  afmt = lambda a: f"{a:+.0f}"
+        vfmt = lambda x: f"{x:.0f}";  afmt = lambda a: f"{a:+.0f}%"
 
     th = ("background:#1a2e1e;color:white;padding:6px 8px;white-space:nowrap;"
           "font-weight:600;font-size:12px;text-align:center;")
@@ -8036,14 +8036,14 @@ def _render_clim_table(data, metric):
             if (y, m) in vmap:
                 val, comp = vmap[(y, m)], cmap.get((y, m), False)
                 ref = _clim_mean_others(vmap, cmap, y, m, years)
-                anom = (val - ref) if (comp and ref is not None) else None
+                anom = ((val - ref) / ref * 100.0) if (comp and ref is not None and abs(ref) >= 1.0) else None
                 cells += _cell(val, comp, anom)
             else:
                 cells += _cell(None, True, None)
         if y in avmap:
             aval, acomp = avmap[y], acmap.get(y, False)
             aref = _clim_mean_others_annual(avmap, acmap, y, years)
-            aanom = (aval - aref) if (acomp and aref is not None) else None
+            aanom = ((aval - aref) / aref * 100.0) if (acomp and aref is not None and abs(aref) >= 1.0) else None
             cells += _cell(aval, acomp, aanom)
         else:
             cells += _cell(None, True, None)
@@ -8403,7 +8403,8 @@ def comparator_tab(history, soil_type, hoja_threshold):
     with st.expander("📅 Climatología mensual: temperatura y lluvia por mes y año (anomalías)", expanded=True):
         st.caption(
             "Temperatura **media** y lluvia **total** de **cada mes y año**, con su **anomalía** "
-            "debajo: la desviación respecto al promedio de ese **mismo mes en los demás años**. "
+            "debajo **en %**: la desviación respecto al promedio de ese **mismo mes en los demás años** "
+            "(p. ej. −20 % en lluvia = llovió un 20 % menos que la media de ese mes). "
             "En temperatura, 🔴 = más cálido de lo normal · 🔵 = más frío. En lluvia, 🔵 = más "
             "lluvia · 🟠 = más seco. La fila **Promedio** es la media climatológica de todos los "
             "años con datos completos. **`*`** marca un mes/año **incompleto** (cobertura de datos "
