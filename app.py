@@ -22232,6 +22232,46 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
         if _tr_carpo is not None:
             fig.add_trace(_tr_carpo)
 
+    # ── Proyección: ¿cuándo se cruza el próximo umbral de generación? ─────────
+    # La curva DD ya se prolonga con la previsión de Sencrop (tramo punteado), pero
+    # el siguiente umbral (p. ej. 2ª gen) suele caer SEMANAS después, fuera de esa
+    # previsión corta. Estimamos la fecha extrapolando el DD acumulado actual al
+    # RITMO de DD/día de los últimos días reales. Es una estimación (temperaturas
+    # futuras reales mandan) → se rotula con «≈» y el ritmo usado, sin fingir certeza.
+    try:
+        if (biofix_date is not None and not plot_df.empty
+                and "DD_acumulado" in plot_df.columns and "DD_dia" in plot_df.columns):
+            _pf = plot_df.dropna(subset=["DD_acumulado"]).sort_values("Fecha")
+            _real = _pf[~_pf["Es_prediccion"]] if "Es_prediccion" in _pf.columns else _pf
+            if not _real.empty:
+                dd_now   = float(_real["DD_acumulado"].iloc[-1])
+                last_real = pd.Timestamp(_real["Fecha"].iloc[-1])
+                rate = float(pd.to_numeric(_real["DD_dia"].tail(10), errors="coerce")
+                             .dropna().mean())
+                _proj = []
+                if rate and rate > 0.3:
+                    for _um, _lb in CARPOCAPSA_GEN_DD:
+                        if _um > dd_now:
+                            _days = (_um - dd_now) / rate
+                            if _days <= 120:   # no proyectar más de ~4 meses
+                                _est = last_real + pd.Timedelta(days=float(_days))
+                                _sh = (_lb.replace(" · inicio eclosión", " inicio")
+                                          .replace(" · pico eclosión", " pico"))
+                                _proj.append(f"{_sh} ({int(_um)} DD) ≈ <b>{_est.strftime('%d/%m')}</b>")
+                if _proj:
+                    _proj_txt = (f"📅 Próxima eclosión estimada (~{rate:.1f} DD/día):<br>"
+                                 + "<br>".join(_proj[:2]))
+                    fig.add_annotation(
+                        x=0.01, y=0.97, xref="paper", yref="paper",
+                        text=_proj_txt, showarrow=False,
+                        xanchor="left", yanchor="top", align="left",
+                        font=dict(size=10, color="#4b2e83"),
+                        bgcolor="rgba(255,255,255,0.82)",
+                        bordercolor="rgba(120,80,160,0.5)", borderwidth=1, borderpad=4,
+                    )
+    except Exception:
+        pass
+
     # Calcular límites explícitos del eje X para que Plotly no los amplíe
     # aunque algún add_vline/add_annotation caiga fuera de los datos
     if not plot_df_display.empty:
@@ -24417,6 +24457,37 @@ if not _HEADLESS:
     # ── Contenido principal según página seleccionada ─────────────────────────────
     _page = st.session_state.get("nav_page", "hoy")
     _render_page_header(_page)
+
+    # ── Aviso de datos "viejos": si el sensor lleva sin datos nuevos más de lo normal
+    #    (la actualización diaria falló, cookie Sencrop caducada, corte de la tarea…),
+    #    avisar para no decidir sobre una foto desactualizada. Silencioso si está al día.
+    #    Cadencia normal = refresco diario, así que el pico sano ronda las 24-30 h.
+    try:
+        if history is None or history.empty or "fecha_hora" not in history.columns:
+            st.warning(
+                "⚠️ **Sin datos del sensor cargados.** No se pueden calcular las decisiones "
+                "hasta actualizar los datos (revisa **Actualizar datos** / conexión Sencrop).")
+        else:
+            _fh = pd.to_datetime(history["fecha_hora"], errors="coerce").dropna()
+            if not _fh.empty:
+                _last = _fh.max()
+                if getattr(_last, "tzinfo", None) is not None:
+                    _last = _last.tz_localize(None)
+                _age_h = (pd.Timestamp.now() - _last).total_seconds() / 3600.0
+                _stamp = _last.strftime("%d/%m %H:%M")
+                if _age_h > 90:
+                    st.error(
+                        f"🔴 **El sensor no trae datos nuevos desde hace {_age_h/24:.1f} días** "
+                        f"(última lectura: {_stamp}). La actualización diaria puede haberse roto "
+                        f"(cookie Sencrop caducada, corte de la tarea programada…). Revisa "
+                        f"**Actualizar datos**: las decisiones de hoy están usando una foto antigua.")
+                elif _age_h > 42:
+                    st.warning(
+                        f"⚠️ **Última lectura del sensor: hace {_age_h:.0f} h** ({_stamp}). "
+                        f"Puede que la actualización diaria aún no haya corrido hoy; si el retraso "
+                        f"sigue creciendo, revisa **Actualizar datos**.")
+    except Exception:
+        pass
 
     if _page == "hoy":
         home_today_tab(history, soil_type, hoja_threshold)
