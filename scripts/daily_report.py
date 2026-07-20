@@ -455,7 +455,15 @@ def main():
         # archiva al menos la lluvia del WRF9 (Windguru), que NO depende del forecast de
         # Sencrop (lectura anónima). Idempotente: una vez por día de emisión.
         app.archive_today_forecast(history, forecast if forecast is not None else pd.DataFrame())
-        print("Previsión de riesgo archivada (Sencrop si hay + lluvia WRF9).")
+        # Confirmación explícita de la 3ª fuente (WRF 1 km MeteoGalicia) en el log:
+        # así se ve de un vistazo si la API_KEY está presente y devolvió lluvia.
+        try:
+            _mg = app.meteosix_wrf_daily_rain() or {}
+            _mg_msg = (f"MeteoGalicia 1km: {len(_mg)} día(s)" if _mg
+                       else "MeteoGalicia 1km: SIN datos (¿falta METEOSIX_API_KEY o punto fuera?)")
+        except Exception:
+            _mg_msg = "MeteoGalicia 1km: error"
+        print(f"Previsión de riesgo archivada (Sencrop si hay + WRF9 Windguru + {_mg_msg}).")
     except Exception as _e:
         print(f"  (archivado de previsión falló: {_e})")
 
