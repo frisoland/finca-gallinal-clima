@@ -10342,7 +10342,9 @@ TREATMENT_PRODUCT_CATALOG = {
             "Monilia": 72,
             "Oídio": 74,
         },
-        "comentario": "DMI/triazol. Comparte FRAC 3 con Luna Experience.",
+        "comentario": "DMI/triazol (tebuconazol). ⚠️ EN RETIRADA 2026: sale de registro en "
+                      "manzano; sustituido por difenoconazol (mismo FRAC 3). Se mantiene solo "
+                      "para reconocer el histórico.",
     },
     "Luna Experience": {
         "aliases": ["luna experience", "luna", "fluopyram", "fluopiram"],
@@ -10354,7 +10356,8 @@ TREATMENT_PRODUCT_CATALOG = {
             "Monilia": 84,
             "Oídio": 86,
         },
-        "comentario": "Amplio espectro. Comparte FRAC 7 con Signum y FRAC 3 con Folicur.",
+        "comentario": "Amplio espectro (fluopyram + tebuconazol). ⚠️ EN RETIRADA 2026: "
+                      "contiene tebuconazol. Se mantiene solo para reconocer el histórico.",
     },
     "Flint": {
         "aliases": ["flint", "trifloxystrobin", "trifloxistrobin"],
@@ -10396,7 +10399,9 @@ def default_treatment_catalog_copy():
             "Monilia": 72,
             "Oídio": 74,
         },
-        "comentario": "DMI/triazol. Comparte FRAC 3 con Luna Experience.",
+        "comentario": "DMI/triazol (tebuconazol). ⚠️ EN RETIRADA 2026: sale de registro en "
+                      "manzano; sustituido por difenoconazol (mismo FRAC 3). Se mantiene solo "
+                      "para reconocer el histórico.",
     },
     "Luna Experience": {
         "aliases": ["luna experience", "luna", "fluopyram", "fluopiram"],
@@ -10408,7 +10413,8 @@ def default_treatment_catalog_copy():
             "Monilia": 84,
             "Oídio": 86,
         },
-        "comentario": "Amplio espectro. Comparte FRAC 7 con Signum y FRAC 3 con Folicur.",
+        "comentario": "Amplio espectro (fluopyram + tebuconazol). ⚠️ EN RETIRADA 2026: "
+                      "contiene tebuconazol. Se mantiene solo para reconocer el histórico.",
     },
     "Flint": {
         "aliases": ["flint", "trifloxystrobin", "trifloxistrobin"],
@@ -10447,6 +10453,52 @@ def default_treatment_catalog_copy():
         },
         "comentario": "Cobre de contacto (oxicloruro). Multisitio, sin riesgo de "
                       "resistencia (FRAC M1). Preventivo, típico antes de la brotación.",
+    },
+    "Difenoconazol": {
+        "aliases": ["difenoconazol", "score", "ceremonia", "mavita", "difcor",
+                    "evento", "difenoterra", "sico"],
+        "materias_activas": "difenoconazol",
+        "frac": ["3"],
+        "familia": "DMI / triazol",
+        "eficacia": {"Moteado": 76, "Monilia": 58, "Oídio": 72},
+        "comentario": "Difenoconazol (Score/Ceremonia/Mavita). DMI/triazol (FRAC 3), releva a "
+                      "Folicur/Luna. Comparte grupo con ellos → cuenta en el tope DMI combinado.",
+    },
+    "Switch": {
+        "aliases": ["switch", "ciprodinil", "cyprodinil", "fludioxonil"],
+        "materias_activas": "ciprodinil + fludioxonil",
+        "frac": ["9", "12"],
+        "familia": "Anilinopirimidina + Fenilpirrol",
+        "eficacia": {"Moteado": 55, "Monilia": 90, "Oídio": 20},
+        "comentario": "Ciprodinil + fludioxonil (FRAC 9+12). Muy eficaz en Monilia/podredumbre; "
+                      "grupos nuevos ideales para rotación y campos con Signum agotado.",
+    },
+    "Captan": {
+        "aliases": ["captan", "merpan", "malvin"],
+        "materias_activas": "captan",
+        "frac": ["M4"],
+        "familia": "Ftalimida / multisitio (contacto)",
+        "eficacia": {"Moteado": 70, "Monilia": 35, "Oídio": 10},
+        "comentario": "Multisitio de contacto (FRAC M4). Preventivo de moteado, sin resistencia. "
+                      "Base barata de rotación; confirmar plazo de seguridad en la etiqueta.",
+    },
+    "Dithianon": {
+        "aliases": ["dithianon", "ditianon", "delan"],
+        "materias_activas": "dithianon",
+        "frac": ["M9"],
+        "familia": "Quinona / multisitio (contacto)",
+        "eficacia": {"Moteado": 72, "Monilia": 20, "Oídio": 5},
+        "comentario": "Multisitio de contacto (FRAC M9). Alternativa al Captan como base "
+                      "preventiva de moteado; sin resistencia. Confirmar plazo en la etiqueta.",
+    },
+    "Teldor": {
+        "aliases": ["teldor", "fenhexamid", "fenhexamida"],
+        "materias_activas": "fenhexamid",
+        "frac": ["17"],
+        "familia": "Hidroxianilida (fenhexamid)",
+        "eficacia": {"Moteado": 10, "Monilia": 88, "Oídio": 5},
+        "comentario": "Fenhexamid (FRAC 17), específico de Monilia. Plazo corto (3 días): red "
+                      "de seguridad de monilia en precosecha.",
     },
 }
     return copy.deepcopy(base_catalog)
@@ -20199,19 +20251,21 @@ def _dec_bar_color(value):
 # Solo los productos disponibles en almacén. Columna "FRAC" para gestión de resistencias.
 DEFAULT_FUNGICIDE_CATALOG = [
     {
-        "Producto": "FOLICUR 25 WG",
+        "Producto": "DIFENOCONAZOL",
         "Objetivos": "Moteado, Oídio",
-        "Tipo": "Sistémico curativo",
-        "Plazo seguridad días": 7,
-        "Persistencia días": 11,
+        "Tipo": "Sistémico curativo + preventivo",
+        "Plazo seguridad días": 14,
+        "Persistencia días": 12,
         "Ventana curativa días": 3,
         "FRAC": "G1",
         "Familia": "Triazol (DMI)",
         "Notas": (
-            "Tebuconazol 25%. Inhibe la biosíntesis de ergosterol (FRAC G1). "
-            "Acción curativa eficaz hasta 72h post-infección en moteado (Venturia). "
-            "Redistribución sistémica acrópeta. Máx 3 aplicaciones/campaña para evitar resistencias. "
-            "Efecto secundario sobre raleo de fruto si se aplica en floración."
+            "Difenoconazol 250 g/L (Score, Ceremonia, Mavita y genéricos: mismo activo). "
+            "Inhibe la biosíntesis de ergosterol (FRAC G1 / grupo 3). Sistémico, acción "
+            "preventiva y curativa sobre moteado (Venturia) y oídio. RELEVA a Folicur y "
+            "Luna (tebuconazol, en retirada) — MISMO grupo FRAC, así que cuenta en el tope "
+            "DMI combinado. Máx 4 aplicaciones/campaña, plazo de seguridad 14 días. Alternar "
+            "o mezclar con un multisitio (Captan/Dithianon) para no quemar el grupo 3."
         ),
     },
     {
@@ -20249,48 +20303,72 @@ DEFAULT_FUNGICIDE_CATALOG = [
         ),
     },
     {
-        "Producto": "LUNA EXPERIENCE",
-        "Objetivos": "Monilia, Moteado, Oídio",
-        "Tipo": "Sistémico curativo + preventivo",
-        "Plazo seguridad días": 7,
-        "Persistencia días": 14,
-        "Ventana curativa días": 5,
-        "FRAC": "C2+G1",
-        "Familia": "SDHI + Triazol",
-        "Notas": (
-            "Fluopyram 200 g/L + Tebuconazol 200 g/L. SDHI (FRAC C2) + DMI triazol (FRAC G1). "
-            "Doble modo de acción sistémico con excelente actividad contra Monilia spp. "
-            "(M. laxa y M. fructigena), moteado y oídio. Acción curativa y de parada del "
-            "desarrollo miceliar hasta 96-120h post-infección. "
-            "Alta eficacia en condiciones de alta presión. Máx 2 aplicaciones/campaña; "
-            "no repetir consecutivamente con Folicur (ambos FRAC G1)."
-        ),
-    },
-]
-
-# Biblioteca de alternativas para rotación (productos no en almacén pero relevantes)
-ROTATION_ALTERNATIVES = [
-    {
         "Producto": "SWITCH 62.5 WG",
         "Objetivos": "Monilia",
+        "Tipo": "Sistémico local + contacto (preventivo/curativo)",
+        "Plazo seguridad días": 7,
+        "Persistencia días": 10,
+        "Ventana curativa días": 2,
         "FRAC": "D1+E2",
-        "Familia": "Anilinopirimidina + Fenilpirrole",
-        "Motivo rotación": "Grupo D1+E2 totalmente distinto a los usados en 2026. Ideal para romper ciclo de resistencia en Monilia.",
+        "Familia": "Anilinopirimidina (D1) + Fenilpirrol (E2)",
+        "Notas": (
+            "Ciprodinil 37,5% + Fludioxonil 25%. Dos modos de acción (FRAC 9 + 12) NO usados "
+            "esta campaña → excelente para romper resistencias y para campos con Signum "
+            "agotado. Muy eficaz en Monilia (M. laxa/fructigena) y podredumbres de precosecha; "
+            "actividad moderada sobre moteado. Máx 3 aplicaciones/campaña."
+        ),
     },
     {
         "Producto": "CAPTAN 80 WG",
         "Objetivos": "Moteado",
+        "Tipo": "Contacto multisitio (preventivo)",
+        "Plazo seguridad días": 21,
+        "Persistencia días": 7,
+        "Ventana curativa días": 0,
         "FRAC": "M4",
-        "Familia": "Multi-sitio (contacto)",
-        "Motivo rotación": "Grupo M (multi-sitio). Sin riesgo de resistencia. Alterna con sistémicos para reducir presión de selección.",
+        "Familia": "Ftalimida (multisitio de contacto)",
+        "Notas": (
+            "Captan 80%. Multisitio de contacto (FRAC M4): SIN riesgo de resistencia y NO en "
+            "retirada — el comodín de la rotación. Solo PREVENTIVO (no cura); base de moteado "
+            "que baja la presión sobre los sistémicos. No sistémico: mojar bien. Confirmar el "
+            "plazo de seguridad en la etiqueta del producto concreto."
+        ),
+    },
+    {
+        "Producto": "DITHIANON",
+        "Objetivos": "Moteado",
+        "Tipo": "Contacto multisitio (preventivo)",
+        "Plazo seguridad días": 28,
+        "Persistencia días": 8,
+        "Ventana curativa días": 0,
+        "FRAC": "M9",
+        "Familia": "Quinona (multisitio de contacto)",
+        "Notas": (
+            "Dithianon (Delan y genéricos). Multisitio de contacto (FRAC M9): sin resistencia, "
+            "no en retirada. Alternativa al Captan como base preventiva de moteado. Solo "
+            "preventivo, no sistémico. Confirmar el plazo de seguridad en la etiqueta."
+        ),
     },
     {
         "Producto": "TELDOR 500 SC",
         "Objetivos": "Monilia",
-        "FRAC": "E2",
-        "Familia": "Fenilpirrole",
-        "Motivo rotación": "Fenhexamid. Específico de Monilia. Grupo E2 no usado en 2026; muy recomendable para rotación.",
+        "Tipo": "Contacto/local (preventivo + curativo)",
+        "Plazo seguridad días": 3,
+        "Persistencia días": 10,
+        "Ventana curativa días": 2,
+        "FRAC": "17",
+        "Familia": "Hidroxianilida (fenhexamid)",
+        "Notas": (
+            "Fenhexamid (FRAC 17), específico de Monilia/podredumbre. Grupo propio no usado "
+            "esta campaña y PLAZO DE SEGURIDAD CORTO (3 días) → red de seguridad de monilia "
+            "en PRECOSECHA. No actúa sobre moteado ni oídio."
+        ),
     },
+]
+
+# Biblioteca de alternativas para rotación (productos no en almacén pero relevantes).
+# Switch, Captan y Teldor se movieron al ALMACÉN (DEFAULT_FUNGICIDE_CATALOG) → ya no aquí.
+ROTATION_ALTERNATIVES = [
     {
         "Producto": "THIRAM (Pomarsol)",
         "Objetivos": "Moteado",
@@ -20308,8 +20386,9 @@ ROTATION_ALTERNATIVES = [
 ]
 
 # Inicialización session_state del catálogo — versión 2 (fuerza reseteo si hay productos obsoletos)
-_CATALOG_VERSION = "v4_2026_curativa"
-_VALID_PRODUCTS_2026 = {"FOLICUR 25 WG", "SIGNUM", "FLINT 50 WG", "LUNA EXPERIENCE"}
+_CATALOG_VERSION = "v5_2026_difeno_multisitio"   # tebuconazol fuera; difeno + Switch + multisitios + Teldor
+_VALID_PRODUCTS_2026 = {"SIGNUM", "FLINT 50 WG", "DIFENOCONAZOL",
+                        "SWITCH 62.5 WG", "CAPTAN 80 WG", "DITHIANON", "TELDOR 500 SC"}
 _needs_reset = (
     "fungicide_catalog_df" not in st.session_state
     or st.session_state.get("fungicide_catalog_version") != _CATALOG_VERSION
@@ -20325,59 +20404,101 @@ if _needs_reset:
 # Podosphaera leucotricha, velocidad de acción curativa y persistencia residual.
 PRODUCT_EFFICACY_RANKING = {
     "Monilia": {
-        # Luna Experience: SDHI (C2) + DMI (G1) — doble modo de acción sistémico.
-        # Eficacia >90% contra M. laxa y M. fructigena (ensayos BASF 2018-2022).
-        "LUNA EXPERIENCE": 4,
+        # Switch: anilinopirimidina + fenilpirrol (9+12) — excelente en Monilia/podredumbre.
+        "SWITCH 62.5 WG":  4,
+        # Teldor: fenhexamid (17) — específico de Monilia, muy eficaz en precosecha.
+        "TELDOR 500 SC":   4,
         # Signum: SDHI (C2) + QoI (C3) — alta persistencia, excelente en floración.
         "SIGNUM":          3,
-        # Folicur: DMI (G1) — actividad curativa aceptable sobre Monilia, menor que SDHI.
-        "FOLICUR 25 WG":   2,
+        # Difenoconazol: DMI (G1) — actividad moderada sobre Monilia (secundaria en manzano).
+        "DIFENOCONAZOL":   2,
+        # Captan: multisitio de contacto — algo de efecto sobre podredumbres.
+        "CAPTAN 80 WG":    1,
         # Flint: QoI (C3) — actividad limitada sobre Monilia spp.
         "FLINT 50 WG":     1,
+        # Retirados (solo para reconocer el histórico; ya no se recomiendan):
+        "LUNA EXPERIENCE": 4,
+        "FOLICUR 25 WG":   2,
     },
     "Moteado": {
         # Flint: QoI (C3) — primera elección preventiva contra Venturia inaequalis.
-        # Excelente actividad de vapor-fase y traslaminar (Bayer CropScience).
         "FLINT 50 WG":     4,
-        # Folicur: DMI (G1) — acción curativa hasta 72h post-infección Mills.
-        "FOLICUR 25 WG":   3,
-        # Luna Experience: SDHI + DMI — amplio espectro, buen curativo.
-        "LUNA EXPERIENCE": 2,
+        # Difenoconazol: DMI (G1) — sistémico curativo/preventivo, buena base de moteado.
+        "DIFENOCONAZOL":   3,
+        # Captan / Dithianon: multisitios de contacto — excelente base preventiva de moteado.
+        "CAPTAN 80 WG":    3,
+        "DITHIANON":       3,
         # Signum: SDHI + QoI — buena actividad preventiva sobre Venturia.
         "SIGNUM":          2,
+        # Switch: ciprodinil aporta actividad moderada sobre moteado.
+        "SWITCH 62.5 WG":  2,
+        # Retirados (histórico):
+        "FOLICUR 25 WG":   3,
+        "LUNA EXPERIENCE": 2,
     },
     "Oídio": {
         # Flint: QoI — primera elección contra Podosphaera leucotricha.
         "FLINT 50 WG":     4,
-        # Folicur: DMI — buena eficacia sistémica sobre oídio.
-        "FOLICUR 25 WG":   3,
-        # Luna Experience: SDHI + DMI — eficaz sobre oídio por componente triazol.
-        "LUNA EXPERIENCE": 2,
+        # Difenoconazol: DMI — buena eficacia sistémica sobre oídio.
+        "DIFENOCONAZOL":   3,
         # Signum: actividad inferior sobre Podosphaera vs QoI puros.
         "SIGNUM":          1,
+        # Retirados (histórico):
+        "FOLICUR 25 WG":   3,
+        "LUNA EXPERIENCE": 2,
     },
 }
 
-# FRAC de cada producto del catálogo 2026 (para filtro de rotación)
+# FRAC de cada producto del catálogo 2026 (para filtro de rotación).
+# FOLICUR y LUNA se mantienen SOLO para reconocer/contar el histórico (llevan tebuconazol,
+# EN RETIRADA): ya no están en el almacén (DEFAULT_FUNGICIDE_CATALOG) → no se recomiendan,
+# pero sus grupos siguen contando en la rotación y en el tope DMI.
 PRODUCT_FRAC_MAP = {
-    "FOLICUR 25 WG":  ["G1"],
+    "FOLICUR 25 WG":  ["G1"],          # tebuconazol — EN RETIRADA (histórico)
+    "LUNA EXPERIENCE":["C2", "G1"],    # fluopyram + tebuconazol — EN RETIRADA (histórico)
     "SIGNUM":         ["C2", "C3"],
     "FLINT 50 WG":    ["C3"],
-    "LUNA EXPERIENCE":["C2", "G1"],
+    "DIFENOCONAZOL":  ["G1"],          # difenoconazol (Score/Ceremonia/Mavita)
+    "SWITCH 62.5 WG": ["D1", "E2"],    # ciprodinil (9) + fludioxonil (12)
+    "CAPTAN 80 WG":   ["M4"],          # multisitio de contacto
+    "DITHIANON":      ["M9"],          # multisitio de contacto
+    "TELDOR 500 SC":  ["17"],          # fenhexamid (grupo propio 17)
+}
+
+# Alias comerciales → clave de catálogo: reconoce marcas distintas del mismo activo en
+# Agroptima (p. ej. "Ceremonia"/"Score"/"Mavita" = difenoconazol, "Delan" = dithianon),
+# para que el contador y la rotación funcionen compres la marca que compres.
+PRODUCT_ALIASES = {
+    "DIFENOCONAZOL":  ["difenoconazol", "score", "ceremonia", "mavita", "difcor",
+                       "evento", "difenoterra", "sico"],
+    "DITHIANON":      ["dithianon", "ditianon", "delan"],
+    "CAPTAN 80 WG":   ["captan", "merpan", "malvin"],
+    "SWITCH 62.5 WG": ["switch", "ciprodinil", "cyprodinil", "fludioxonil"],
+    "TELDOR 500 SC":  ["teldor", "fenhexamid", "fenhexamida"],
 }
 
 # Límites de aplicación por campaña según registro MAPA + guías FRAC
 # Fuente: ficha registro MAPA, FRAC Code List 2024, fichas técnicas fabricante
 PRODUCT_MAX_APPLICATIONS = {
-    "FOLICUR 25 WG":  3,   # FRAC G1 (DMI): máx 3 en frutales. MAPA: 3 app/campaña.
+    "FOLICUR 25 WG":  3,   # (retirado) histórico
+    "LUNA EXPERIENCE":2,   # (retirado) histórico
     "SIGNUM":         2,   # FRAC C2 (SDHI): máx 2 estricto. FRAC recomienda ≤2 SDHI/campaña.
     "FLINT 50 WG":    2,   # FRAC C3 (QoI): máx 2 en manzano/peral. MAPA: 2 app/campaña.
-    "LUNA EXPERIENCE":2,   # FRAC C2+G1: componente SDHI marca límite en 2. BASF ficha técnica.
+    "DIFENOCONAZOL":  4,   # FRAC G1 (DMI): MAPA máx 4 app/campaña (Score/Ceremonia).
+    "SWITCH 62.5 WG": 3,   # FRAC 9+12: máx 3 app/campaña.
+    "CAPTAN 80 WG":   8,   # multisitio (M4): límite alto por residuos, sin resistencia.
+    "DITHIANON":      6,   # multisitio (M9).
+    "TELDOR 500 SC":  3,   # FRAC 17: máx 3 app/campaña.
 }
 
-# Límite combinado del grupo SDHI (C2): Signum + Luna Experience juntos ≤ 3 por campaña
+# Límite combinado del grupo SDHI (C2): Signum + (Luna, histórico) juntos ≤ 3 por campaña
 # para no agotar el grupo SDHI completo. (FRAC SDHI resistance risk guidelines, 2022)
 SDHI_GROUP_MAX_COMBINED = 3
+
+# Límite combinado del grupo DMI/triazol (G1): difenoconazol + (Folicur/Luna histórico)
+# cuentan JUNTOS ≤ 4 por campaña (guía FRAC moteado: máx 4 DMI/campaña, solos o en mezcla).
+# Es lo que evita "rotar de producto pero no de grupo".
+DMI_GROUP_MAX_COMBINED = 4
 
 
 def _campo_exact_in_list(campos_str, campo_name):
@@ -20403,12 +20524,15 @@ def _normalize_product_to_catalog(prod_raw):
     prod_up = str(prod_raw).strip().upper()
     matches = []
     for catalog_key in PRODUCT_MAX_APPLICATIONS:
-        first_word = catalog_key.split()[0].upper()   # "FOLICUR", "SIGNUM", "FLINT", "LUNA"
+        first_word = catalog_key.split()[0].upper()   # "SIGNUM", "FLINT", "DIFENOCONAZOL"…
         cat_up     = catalog_key.upper()
+        # También por alias comercial (p. ej. "CEREMONIA" → DIFENOCONAZOL, "DELAN" → DITHIANON).
+        alias_hit  = any(a.upper() in prod_up for a in PRODUCT_ALIASES.get(catalog_key, []))
         if (first_word in prod_up
                 or cat_up in prod_up
                 or prod_up in cat_up
-                or prod_up == first_word):
+                or prod_up == first_word
+                or alias_hit):
             matches.append(catalog_key)
     return matches  # lista vacía si no hay coincidencias
 
@@ -20513,6 +20637,10 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
     if app_counts is None:
         app_counts = {}
 
+    # Total de aplicaciones DMI/triazol (G1) de la campaña para ese campo: difenoconazol +
+    # Folicur/Luna del histórico comparten grupo → cuentan JUNTOS contra el tope DMI.
+    dmi_total = sum(n for p, n in app_counts.items() if "G1" in PRODUCT_FRAC_MAP.get(p, []))
+
     # ── Grupos FRAC de TODOS los productos de la última pasada → penalizar repetición ──
     # last_product puede ser "FLINT 50 WG + SIGNUM" si se mezclaron en el mismo caldo.
     # Recogemos los grupos FRAC de todos ellos para no repetir ninguno en la recomendación.
@@ -20528,8 +20656,9 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
                 _pk_norm  = prod_key.upper()
                 _pk_first = _pk_norm.split()[0]
                 _lp_first = _lp_norm.split()[0]
+                _alias_hit = any(a.upper() in _lp_norm for a in PRODUCT_ALIASES.get(prod_key, []))
                 if (_pk_norm in _lp_norm or _lp_norm in _pk_norm
-                        or _pk_first in _lp_norm or _lp_first in _pk_norm):
+                        or _pk_first in _lp_norm or _lp_first in _pk_norm or _alias_hit):
                     last_fracs.update(fracs)
                     if prod_key not in _last_names:
                         _last_names.append(prod_key)
@@ -20567,6 +20696,12 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
         if "C2" in prod_fracs and sdhi_total >= SDHI_GROUP_MAX_COMBINED:
             score -= 10
             limit_notes[prod] = limit_notes.get(prod, "") + " (grupo SDHI agotado)"
+
+        # 4b. Penalización DMI/triazol combinado: si difenoconazol + triazoles del histórico
+        #     ya suman el tope del grupo G1, penalizar cualquier G1 (evita quemar el grupo 3).
+        if "G1" in prod_fracs and dmi_total >= DMI_GROUP_MAX_COMBINED:
+            score -= 10
+            limit_notes[prod] = (limit_notes.get(prod, "") + " (grupo DMI/triazol agotado)").strip()
 
         if score > -10:   # mantener incluso penalizados para usarlos como alternativa informativa
             scores[prod] = score
@@ -20830,6 +20965,9 @@ _FUNGICIDE_KEYWORDS = {
     "chorus", "scala", "bellis", "cantus", "headline",
     "score", "sico", "bumper", "tilt",
     "delan", "syllit", "ventu",
+    # Marcas de difenoconazol (relevo del tebuconazol) y multisitios/monilia añadidos:
+    "ceremonia", "mavita", "difcor", "evento", "difenoterra", "malvin", "captan", "dithianon",
+    "difenoconazol",
     # ── Términos genéricos de tipo de trabajo ─────────────────────────────────
     "fungicida", "fungicide", "antifúngico", "fitosanitario fungicida",
     "tratamiento fungicida", "aplicacion fungicida",
@@ -22620,10 +22758,16 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
 # Fuente: Registro de productos fitosanitarios MAPA, fichas técnicas fabricante.
 PHYTOSANITARY_CATALOG = [
     # ── Fungicidas (catálogo propio 2026) ─────────────────────────────────────
-    {"Producto": "FOLICUR 25 WG",    "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Moteado, Oídio"},
+    {"Producto": "DIFENOCONAZOL",    "Tipo": "Fungicida",     "Plazo días": 14, "Objetivo": "Moteado, Oídio"},
     {"Producto": "SIGNUM",           "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Monilia, Moteado"},
     {"Producto": "FLINT 50 WG",      "Tipo": "Fungicida",     "Plazo días": 14, "Objetivo": "Moteado, Oídio"},
-    {"Producto": "LUNA EXPERIENCE",  "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Monilia, Moteado, Oídio"},
+    {"Producto": "SWITCH 62.5 WG",   "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Monilia"},
+    {"Producto": "CAPTAN 80 WG",     "Tipo": "Fungicida",     "Plazo días": 21, "Objetivo": "Moteado"},
+    {"Producto": "DITHIANON",        "Tipo": "Fungicida",     "Plazo días": 28, "Objetivo": "Moteado"},
+    {"Producto": "TELDOR 500 SC",    "Tipo": "Fungicida",     "Plazo días": 3,  "Objetivo": "Monilia"},
+    # Retirados (tebuconazol) — se mantienen para reconocer el histórico:
+    {"Producto": "FOLICUR 25 WG",    "Tipo": "Fungicida (retirado)", "Plazo días": 7,  "Objetivo": "Moteado, Oídio"},
+    {"Producto": "LUNA EXPERIENCE",  "Tipo": "Fungicida (retirado)", "Plazo días": 7,  "Objetivo": "Monilia, Moteado, Oídio"},
     # ── Insecticidas biológicos ────────────────────────────────────────────────
     {"Producto": "BACTUR",           "Tipo": "Insecticida biológico", "Plazo días": 0,  "Objetivo": "Carpocapsa, Tortrix, Orugas"},
     {"Producto": "XENTARI",          "Tipo": "Insecticida biológico", "Plazo días": 0,  "Objetivo": "Carpocapsa, Orugas"},
