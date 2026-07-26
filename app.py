@@ -20670,7 +20670,7 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
 
     for _, row in catalog_df.iterrows():
         prod = str(row.get("Producto", "")).strip()
-        if not prod:
+        if not prod or prod.lower() == "nan":   # ignora filas vacías del editor de catálogo
             continue
 
         # 1. Eficacia base
@@ -20910,13 +20910,13 @@ def build_rotation_advice(activities_df, catalog_df=None):
     if catalog_df is not None and not catalog_df.empty:
         # Estrobilurina usada más de 2 veces
         qoi_count = sum(v for k, v in used_products.items()
-                        if any(k.upper() in r.get("Producto","").upper() and "C3" in str(r.get("FRAC",""))
+                        if any(k.upper() in str(r.get("Producto","")).upper() and "C3" in str(r.get("FRAC",""))
                                for _, r in catalog_df.iterrows()))
         if qoi_count > 2:
             warnings.append("⚠️ Estrobilurinas (FRAC C3) usadas más de 2 veces en la campaña. Riesgo de resistencia en Moteado.")
         # Triazol acumulado
         g1_count = sum(v for k, v in used_products.items()
-                       if any(k.upper() in r.get("Producto","").upper() and "G1" in str(r.get("FRAC",""))
+                       if any(k.upper() in str(r.get("Producto","")).upper() and "G1" in str(r.get("FRAC",""))
                               for _, r in catalog_df.iterrows()))
         if g1_count > 3:
             warnings.append("⚠️ Triazoles (FRAC G1) usados >3 veces. Considera alternar con grupos D1 o E para Monilia.")
