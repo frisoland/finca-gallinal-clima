@@ -23885,8 +23885,11 @@ def render_decisiones_panel():
     # ══════════════════════════════════════════════════════════════════════════
     with st.expander("⚙️ Catálogo de fungicidas (campaña activa)", expanded=False):
         st.caption(
-            "Productos disponibles en almacén esta campaña. **Todas las columnas son editables** "
-            "(doble clic en la celda) — los cambios se usan al instante. Qué hace cada una:\n\n"
+            "Productos disponibles en almacén esta campaña. **Casi todas las columnas son "
+            "editables** (doble clic en la celda) — los cambios se usan al instante. La columna "
+            "**Producto** queda **fija** al hacer scroll horizontal. Qué hace cada una:\n\n"
+            "- **Eficacia Moteado/Monilia/Oídio (%)** — *solo informativa* (0-100): guía qué "
+            "producto se recomienda para cada enfermedad. Se calibra en el código, no en esta tabla.\n"
             "- **Objetivos** — guía las recomendaciones del panel diario.\n"
             "- **FRAC** — alimenta el asesor de rotación de la próxima campaña.\n"
             "- **Persistencia días** — cuántos días protege ANTES (preventivo). Define hasta "
@@ -23898,12 +23901,50 @@ def render_decisiones_panel():
             "si tu etiqueta dice otra cosa, sin tocar el código."
         )
         _catalog_key = "fungicide_catalog_editor_v2"
+        _eff_cols = ["Efic. Moteado", "Efic. Monilia", "Efic. Oídio"]
+
+        # Base = catálogo de almacén (sin columnas de eficacia, que se recalculan cada vez).
+        _base_df = st.session_state.get(
+            "fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG)).copy()
+        _base_df = _base_df.drop(columns=_eff_cols, errors="ignore")
+
+        # Eficacia por enfermedad (SOLO LECTURA) tirada del catálogo de eficacia canónico
+        # (default_treatment_catalog_copy) — el mismo que usa la cobertura del panel diario.
+        _eff_cat = default_treatment_catalog_copy()
+
+        def _eff_lookup(prod):
+            _n = str(prod).lower()
+            for _tk, _ti in _eff_cat.items():
+                if _tk.lower() in _n or any(_al in _n for _al in _ti.get("aliases", [])):
+                    _e = _ti.get("eficacia", {})
+                    return _e.get("Moteado"), _e.get("Monilia"), _e.get("Oídio")
+            return None, None, None
+
+        if "Producto" in _base_df.columns and not _base_df.empty:
+            _eff_vals = _base_df["Producto"].apply(
+                lambda p: pd.Series(_eff_lookup(p), index=_eff_cols))
+            _disp_df = pd.concat([_base_df, _eff_vals], axis=1)
+        else:
+            _disp_df = _base_df
+
+        _eff_num = lambda lbl: st.column_config.NumberColumn(
+            lbl, min_value=0, max_value=100, step=1, format="%d%%",
+            help="Eficacia estimada (0-100 %). Informativa: se calibra en el código, no aquí.")
+
         _catalog_edited = st.data_editor(
-            st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG)),
+            _disp_df,
             num_rows="dynamic",
             use_container_width=True,
             key=_catalog_key,
+            disabled=_eff_cols,   # las 3 columnas de eficacia son de solo lectura
+            column_order=["Producto", "Efic. Moteado", "Efic. Monilia", "Efic. Oídio",
+                          "Objetivos", "Tipo", "Plazo seguridad días", "Persistencia días",
+                          "Ventana curativa días", "FRAC", "Familia", "Notas"],
             column_config={
+                "Producto": st.column_config.Column("Producto", pinned=True),
+                "Efic. Moteado": _eff_num("Efic. Moteado"),
+                "Efic. Monilia": _eff_num("Efic. Monilia"),
+                "Efic. Oídio":   _eff_num("Efic. Oídio"),
                 "Persistencia días": st.column_config.NumberColumn(
                     "Persistencia días", min_value=0, max_value=60, step=1, format="%d",
                     help="Días de protección PREVENTIVA (antes del evento). Cuenta para "
@@ -23915,11 +23956,13 @@ def render_decisiones_panel():
                          "estrobilurinas poca. Cuenta para «Ev. sin cobertura»."),
             },
         )
+        # Guardar SIN las columnas de eficacia (son solo lectura, se recalculan cada render).
+        _to_save = _catalog_edited.drop(columns=_eff_cols, errors="ignore")
         try:
-            if not _catalog_edited.equals(st.session_state.get("fungicide_catalog_df", pd.DataFrame())):
-                st.session_state["fungicide_catalog_df"] = _catalog_edited
+            if not _to_save.equals(st.session_state.get("fungicide_catalog_df", pd.DataFrame())):
+                st.session_state["fungicide_catalog_df"] = _to_save
         except Exception:
-            st.session_state["fungicide_catalog_df"] = _catalog_edited
+            st.session_state["fungicide_catalog_df"] = _to_save
 
     with st.expander("🔄 Planificación de rotación — próxima campaña", expanded=False):
         st.markdown(
