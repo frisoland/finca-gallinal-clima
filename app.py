@@ -20877,29 +20877,30 @@ def build_treatment_narrative(days_since, rain_since, mills_events_since,
 # 'fracs' en notación FRAC estándar (números + M para multisitios). 'almacen'=ya lo tienes.
 ROTATION_CANDIDATES = [
     {"nombre": "Difenoconazol", "aliases": ["difenoconazol", "score", "ceremonia", "mavita", "difcor", "evento", "difenoterra", "sico"],
-     "fracs": ["3"], "enf": ["Moteado", "Oídio"], "familia": "Triazol (DMI)", "multisitio": False, "almacen": True},
-    {"nombre": "Signum", "aliases": ["signum"], "fracs": ["7", "11"], "enf": ["Moteado", "Monilia", "Oídio"],
-     "familia": "SDHI + estrobilurina", "multisitio": False, "almacen": True},
-    {"nombre": "Flint", "aliases": ["flint", "trifloxi"], "fracs": ["11"], "enf": ["Moteado", "Oídio"],
-     "familia": "Estrobilurina (QoI)", "multisitio": False, "almacen": True},
-    {"nombre": "Switch", "aliases": ["switch", "fludioxonil"], "fracs": ["9", "12"], "enf": ["Monilia"],
-     "familia": "Anilinopirimidina + fenilpirrol", "multisitio": False, "almacen": True},
-    {"nombre": "Captan", "aliases": ["captan", "merpan", "malvin"], "fracs": ["M4"], "enf": ["Moteado"],
-     "familia": "Ftalimida (multisitio)", "multisitio": True, "almacen": True},
-    {"nombre": "Dithianon", "aliases": ["dithianon", "ditianon", "delan"], "fracs": ["M9"], "enf": ["Moteado"],
-     "familia": "Quinona (multisitio)", "multisitio": True, "almacen": True},
-    {"nombre": "Teldor", "aliases": ["teldor", "fenhexamid"], "fracs": ["17"], "enf": ["Monilia"],
-     "familia": "Hidroxianilida", "multisitio": False, "almacen": True},
-    {"nombre": "Chorus", "aliases": ["chorus"], "fracs": ["9"], "enf": ["Moteado"],
-     "familia": "Anilinopirimidina", "multisitio": False, "almacen": False},
-    {"nombre": "Sercadis", "aliases": ["sercadis", "fluxapiroxad", "fluxapyroxad"], "fracs": ["7"], "enf": ["Moteado", "Oídio"],
-     "familia": "SDHI", "multisitio": False, "almacen": False},
-    {"nombre": "Thiram (Pomarsol)", "aliases": ["thiram", "tiram", "pomarsol"], "fracs": ["M3"], "enf": ["Moteado"],
-     "familia": "Multisitio (contacto)", "multisitio": True, "almacen": False},
-    {"nombre": "Azufre (Kumulus)", "aliases": ["kumulus", "azufre", "sulfur"], "fracs": ["M2"], "enf": ["Oídio"],
-     "familia": "Inorgánico (azufre)", "multisitio": True, "almacen": False},
-    {"nombre": "Cobre", "aliases": ["cobre", "oxicloruro", "hidroxido cal", "traxi", "procobre", "copper"], "fracs": ["M1"], "enf": ["Moteado"],
-     "familia": "Cobre (multisitio)", "multisitio": True, "almacen": False},
+     "fracs": ["3"], "familia": "Triazol (DMI)", "multisitio": False,
+     "efic": {"Moteado": 76, "Monilia": 58, "Oídio": 72}, "modo": "Sistémico · prev + curativo"},
+    {"nombre": "Signum", "aliases": ["signum"], "fracs": ["7", "11"], "familia": "SDHI + estrobilurina", "multisitio": False,
+     "efic": {"Moteado": 86, "Monilia": 78, "Oídio": 68}, "modo": "Sistémico · preventivo"},
+    {"nombre": "Flint", "aliases": ["flint", "trifloxi"], "fracs": ["11"], "familia": "Estrobilurina (QoI)", "multisitio": False,
+     "efic": {"Moteado": 74, "Monilia": 55, "Oídio": 82}, "modo": "Sistémico · prev + curativo corto"},
+    {"nombre": "Switch", "aliases": ["switch", "fludioxonil"], "fracs": ["9", "12"], "familia": "Anilinopirimidina + fenilpirrol", "multisitio": False,
+     "efic": {"Moteado": 55, "Monilia": 90, "Oídio": 20}, "modo": "Penetrante · prev + curativo"},
+    {"nombre": "Captan", "aliases": ["captan", "merpan", "malvin"], "fracs": ["M4"], "familia": "Ftalimida (multisitio)", "multisitio": True,
+     "efic": {"Moteado": 70, "Monilia": 35, "Oídio": 10}, "modo": "Contacto · preventivo"},
+    {"nombre": "Dithianon", "aliases": ["dithianon", "ditianon", "delan"], "fracs": ["M9"], "familia": "Quinona (multisitio)", "multisitio": True,
+     "efic": {"Moteado": 72, "Monilia": 20, "Oídio": 5}, "modo": "Contacto · preventivo"},
+    {"nombre": "Teldor", "aliases": ["teldor", "fenhexamid"], "fracs": ["17"], "familia": "Hidroxianilida", "multisitio": False,
+     "efic": {"Moteado": 10, "Monilia": 88, "Oídio": 5}, "modo": "Contacto/local · prev + curativo"},
+    {"nombre": "Chorus", "aliases": ["chorus"], "fracs": ["9"], "familia": "Anilinopirimidina", "multisitio": False,
+     "efic": {"Moteado": 70, "Monilia": 40, "Oídio": 10}, "modo": "Sistémico · prev + curativo (frío)"},
+    {"nombre": "Sercadis", "aliases": ["sercadis", "fluxapiroxad", "fluxapyroxad"], "fracs": ["7"], "familia": "SDHI", "multisitio": False,
+     "efic": {"Moteado": 80, "Monilia": 45, "Oídio": 78}, "modo": "Sistémico · prev + curativo"},
+    {"nombre": "Thiram (Pomarsol)", "aliases": ["thiram", "tiram", "pomarsol"], "fracs": ["M3"], "familia": "Multisitio (contacto)", "multisitio": True,
+     "efic": {"Moteado": 60, "Monilia": 30, "Oídio": 5}, "modo": "Contacto · preventivo"},
+    {"nombre": "Azufre (Kumulus)", "aliases": ["kumulus", "azufre", "sulfur"], "fracs": ["M2"], "familia": "Inorgánico (azufre)", "multisitio": True,
+     "efic": {"Moteado": 30, "Monilia": 5, "Oídio": 65}, "modo": "Contacto · preventivo"},
+    {"nombre": "Cobre", "aliases": ["cobre", "oxicloruro", "hidroxido cal", "traxi", "procobre", "copper"], "fracs": ["M1"], "familia": "Cobre (multisitio)", "multisitio": True,
+     "efic": {"Moteado": 55, "Monilia": 40, "Oídio": 25}, "modo": "Contacto · preventivo"},
 ]
 
 # Producto → FRAC (numérico) para el análisis de LO USADO esta campaña. Incluye
@@ -20958,10 +20959,19 @@ def build_rotation_advice(activities_df, catalog_df=None):
 
     # Ranking de la paleta: cuanto MENOS usado esté su grupo esta campaña, mejor; los
     # multisitios (M) suman por no generar resistencia. Cada uno con su explicación.
+    # ¿Usado esta campaña? = alguno de sus alias aparece en los fungicidas registrados
+    # en Agroptima este año. Así "Usado 2026 = Sí" refleja SOLO lo que de verdad aplicaste,
+    # no los productos nuevos que aún no has comprado.
+    _used_lc = [k.lower() for k in used_products]
+
+    def _is_used(cand):
+        return any(a in _k for a in cand["aliases"] for _k in _used_lc)
+
     ranked = []
     for c in ROTATION_CANDIDATES:
         min_p = min((group_pressure.get(f, 0) for f in c["fracs"]), default=0)
         score = max(0, 20 - min_p) + (8 if c["multisitio"] else 0)
+        usado = _is_used(c)
         fresh = [f for f in c["fracs"] if group_pressure.get(f, 0) == 0]
         low   = [f for f in c["fracs"] if 0 < group_pressure.get(f, 0) <= 5]
         reasons = []
@@ -20973,14 +20983,16 @@ def build_rotation_advice(activities_df, catalog_df=None):
             reasons.append(f"grupo {'+'.join(c['fracs'])} ya muy cargado — baja prioridad")
         if c["multisitio"]:
             reasons.append("multisitio: sin riesgo de resistencia")
-        reasons.append("cubre " + "/".join(c["enf"]))
-        reasons.append("ya en tu almacén" if c["almacen"] else "comprar (no en almacén)")
+        reasons.append("ya usado esta campaña" if usado else "aún no comprado")
+        _ef = c["efic"]
         ranked.append({
             "Producto": c["nombre"],
             "FRAC": "+".join(c["fracs"]),
-            "Para": ", ".join(c["enf"]),
-            "Familia": c["familia"],
-            "En almacén": "Sí" if c["almacen"] else "No",
+            "Moteado": f"{_ef.get('Moteado', 0)}%",
+            "Monilia": f"{_ef.get('Monilia', 0)}%",
+            "Oídio":   f"{_ef.get('Oídio', 0)}%",
+            "Acción":  c["modo"],
+            "Usado 2026": "Sí" if usado else "No",
             "Por qué (mejor→peor)": " · ".join(reasons),
             "_score": score,
         })
@@ -24062,12 +24074,14 @@ def render_decisiones_panel():
             st.caption(
                 "Todos los productos usables en manzano, ordenados por **valor de rotación**: "
                 "arriba, grupos FRAC frescos y multisitios (sin resistencia); abajo, los grupos que "
-                "ya has cargado esta campaña. **Sí** = ya lo tienes en almacén."
+                "ya has cargado esta campaña. Columnas: **eficacia %** por enfermedad, **Acción** "
+                "(sistémico/contacto · preventivo/curativo) y **Usado 2026 = Sí** solo si lo "
+                "aplicaste esta campaña (registrado en Agroptima)."
             )
             _th  = "background:#1a2e1e;color:white;padding:7px 10px;font-weight:600;font-size:12.5px;text-align:left;"
             _td  = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12.5px;white-space:nowrap;"
-            _tdw = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12px;white-space:normal;min-width:280px;"
-            _cols = ["Producto", "FRAC", "Para", "Familia", "En almacén", "Por qué (mejor→peor)"]
+            _tdw = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12px;white-space:normal;min-width:260px;"
+            _cols = ["Producto", "FRAC", "Moteado", "Monilia", "Oídio", "Acción", "Usado 2026", "Por qué (mejor→peor)"]
             _hdr = f'<th style="{_th}">#</th>' + "".join(f'<th style="{_th}">{c}</th>' for c in _cols)
             _body = ""
             for _i, _r in enumerate(_rot["ranked"], 1):
