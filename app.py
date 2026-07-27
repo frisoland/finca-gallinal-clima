@@ -11837,6 +11837,8 @@ def health_tab(history, soil_type, hoja_threshold):
         st.info("Carga primero el histórico.")
         return
 
+    render_fungicide_mode_help(key_suffix="_sani")
+
     # ── Análisis multi-año (no depende del periodo: usa el histórico completo) ──
     with st.expander("📅 Histórico de eventos de infección por año y fase (todos los años)",
                      expanded=False):
@@ -20928,6 +20930,46 @@ _FRAC_NAMES = {
 }
 
 
+def render_fungicide_mode_help(key_suffix=""):
+    """Desplegable explicativo: contacto vs sistémico y preventivo vs curativo son DOS
+    ejes distintos. Reutilizado en Decisiones y en Sanidad (junto a los productos)."""
+    with st.expander("📖 ¿Contacto vs sistémico? ¿Preventivo vs curativo? (son DOS cosas distintas)",
+                     expanded=False):
+        st.markdown(
+            "**No es lo mismo «dónde está» que «cuándo actúa».** Son **dos ejes independientes**, "
+            "y es normal confundirlos:\n\n"
+            "- **Eje A — DÓNDE (movilidad):** *contacto* = se queda en la **superficie** donde cayó "
+            "la gota; *sistémico/penetrante* = se **absorbe** y se mueve por el tejido.\n"
+            "- **Eje B — CUÁNDO (respecto a la infección):** *preventivo* = tiene que estar **ANTES** "
+            "de que la espora infecte; *curativo* = actúa **DESPUÉS**, dentro de una ventana de horas.\n\n"
+            "**Por eso «contacto + preventivo» NO es contradicción:** un contacto forma una barrera "
+            "en la superficie que mata la espora **antes de que penetre** (preventivo), pero **no "
+            "puede curar** — no llega al hongo que ya está dentro de la hoja.\n\n"
+            "**El sistémico puede ser preventivo Y curativo:** al entrar en el tejido alcanza al "
+            "hongo ya penetrado, dentro de una ventana (moteado: p. ej. dodina ~36 h, "
+            "miclobutanil ~96 h) = la **«ventana curativa días»** de la tabla.\n\n"
+            "**Ojo: «persistencia» es un TERCER concepto** (cuánto dura la protección). El contacto "
+            "persiste por fuera pero **se lava con la lluvia** y **no cubre la hoja nueva**; el "
+            "sistémico persiste por dentro, **resiste el lavado** y protege algo del brote nuevo."
+        )
+        st.markdown(
+            "| | **Contacto** (Captan, Dithianon, Cobre, Azufre) | **Sistémico** (Difenoconazol, Signum, Flint) |\n"
+            "|---|---|---|\n"
+            "| Dónde | Superficie | Dentro, se mueve |\n"
+            "| Preventivo | ✅ (barrera) | ✅ |\n"
+            "| Curativo | ❌ (no llega dentro) | ✅ (ventana 36-96 h) |\n"
+            "| Lluvia | Se lava | Resiste una vez absorbido |\n"
+            "| Hoja nueva | No la cubre | La protege algo |\n"
+            "| Resistencia | Muy baja (multisitio) | Mayor (sitio único) |"
+        )
+        st.caption(
+            "**Manejo:** los de **contacto** van ANTES de la lluvia, con buena mojadura, y se "
+            "**renuevan tras lluvia fuerte o brotación nueva** (no rescatan). Los **sistémicos** dan "
+            "margen de **rescate** (la ventana curativa) y aguantan mejor la lluvia. "
+            "Fuentes: FRAC · PNW Handbook · Michigan State Extension."
+        )
+
+
 def build_rotation_advice(activities_df, catalog_df=None):
     """Analiza los FUNGICIDAS usados esta campaña (presión por grupo FRAC) y RANKEA
     toda la paleta de candidatos de mejor a peor para la próxima campaña, con el porqué.
@@ -24034,6 +24076,8 @@ def render_decisiones_panel():
                 st.session_state["fungicide_catalog_df"] = _to_save
         except Exception:
             st.session_state["fungicide_catalog_df"] = _to_save
+
+    render_fungicide_mode_help(key_suffix="_dec")
 
     with st.expander("🔄 Planificación de rotación — próxima campaña", expanded=False):
         st.markdown(
