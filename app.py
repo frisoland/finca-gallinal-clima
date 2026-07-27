@@ -20873,74 +20873,133 @@ def build_treatment_narrative(days_since, rain_since, mills_events_since,
     return narrative
 
 
+# ── Asesor de rotación: paleta de candidatos (solo registrados/usables en manzano) ──
+# 'fracs' en notación FRAC estándar (números + M para multisitios). 'almacen'=ya lo tienes.
+ROTATION_CANDIDATES = [
+    {"nombre": "Difenoconazol", "aliases": ["difenoconazol", "score", "ceremonia", "mavita", "difcor", "evento", "difenoterra", "sico"],
+     "fracs": ["3"], "enf": ["Moteado", "Oídio"], "familia": "Triazol (DMI)", "multisitio": False, "almacen": True},
+    {"nombre": "Signum", "aliases": ["signum"], "fracs": ["7", "11"], "enf": ["Moteado", "Monilia", "Oídio"],
+     "familia": "SDHI + estrobilurina", "multisitio": False, "almacen": True},
+    {"nombre": "Flint", "aliases": ["flint", "trifloxi"], "fracs": ["11"], "enf": ["Moteado", "Oídio"],
+     "familia": "Estrobilurina (QoI)", "multisitio": False, "almacen": True},
+    {"nombre": "Switch", "aliases": ["switch", "fludioxonil"], "fracs": ["9", "12"], "enf": ["Monilia"],
+     "familia": "Anilinopirimidina + fenilpirrol", "multisitio": False, "almacen": True},
+    {"nombre": "Captan", "aliases": ["captan", "merpan", "malvin"], "fracs": ["M4"], "enf": ["Moteado"],
+     "familia": "Ftalimida (multisitio)", "multisitio": True, "almacen": True},
+    {"nombre": "Dithianon", "aliases": ["dithianon", "ditianon", "delan"], "fracs": ["M9"], "enf": ["Moteado"],
+     "familia": "Quinona (multisitio)", "multisitio": True, "almacen": True},
+    {"nombre": "Teldor", "aliases": ["teldor", "fenhexamid"], "fracs": ["17"], "enf": ["Monilia"],
+     "familia": "Hidroxianilida", "multisitio": False, "almacen": True},
+    {"nombre": "Chorus", "aliases": ["chorus"], "fracs": ["9"], "enf": ["Moteado"],
+     "familia": "Anilinopirimidina", "multisitio": False, "almacen": False},
+    {"nombre": "Sercadis", "aliases": ["sercadis", "fluxapiroxad", "fluxapyroxad"], "fracs": ["7"], "enf": ["Moteado", "Oídio"],
+     "familia": "SDHI", "multisitio": False, "almacen": False},
+    {"nombre": "Thiram (Pomarsol)", "aliases": ["thiram", "tiram", "pomarsol"], "fracs": ["M3"], "enf": ["Moteado"],
+     "familia": "Multisitio (contacto)", "multisitio": True, "almacen": False},
+    {"nombre": "Azufre (Kumulus)", "aliases": ["kumulus", "azufre", "sulfur"], "fracs": ["M2"], "enf": ["Oídio"],
+     "familia": "Inorgánico (azufre)", "multisitio": True, "almacen": False},
+    {"nombre": "Cobre", "aliases": ["cobre", "oxicloruro", "hidroxido cal", "traxi", "procobre", "copper"], "fracs": ["M1"], "enf": ["Moteado"],
+     "familia": "Cobre (multisitio)", "multisitio": True, "almacen": False},
+]
+
+# Producto → FRAC (numérico) para el análisis de LO USADO esta campaña. Incluye
+# RETIRADOS (tebuconazol) y cobre, que no están en la paleta pero sí en el histórico.
+_USED_FRAC_MAP = [
+    (["folicur", "tebuconazol"], ["3"]),
+    (["luna"], ["7", "3"]),
+    (["signum"], ["7", "11"]),
+    (["flint", "trifloxi"], ["11"]),
+    (["difenoconazol", "score", "ceremonia", "mavita", "difcor", "evento", "difenoterra"], ["3"]),
+    (["switch", "fludioxonil"], ["9", "12"]),
+    (["chorus"], ["9"]),
+    (["captan", "merpan"], ["M4"]),
+    (["dithianon", "delan"], ["M9"]),
+    (["teldor", "fenhexamid"], ["17"]),
+    (["thiram", "tiram", "pomarsol"], ["M3"]),
+    (["kumulus", "azufre"], ["M2"]),
+    (["traxi", "procobre", "cobre", "oxicloruro", "copper"], ["M1"]),
+    (["sercadis", "fluxapiroxad"], ["7"]),
+]
+_FRAC_NAMES = {
+    "3": "Triazol/DMI", "7": "SDHI", "9": "Anilinopirimidina", "11": "Estrobilurina/QoI",
+    "12": "Fenilpirrol", "17": "Hidroxianilida", "M1": "Cobre", "M2": "Azufre",
+    "M3": "Multisitio (thiram)", "M4": "Multisitio (captan)", "M9": "Multisitio (dithianon)",
+}
+
+
 def build_rotation_advice(activities_df, catalog_df=None):
-    """
-    Analiza los productos usados en la campaña actual y propone rotaciones
-    para la próxima campaña basándose en grupos FRAC.
-    Devuelve dict con:
-      - 'used_products': {producto: n_aplicaciones}
-      - 'used_fracs': set de grupos FRAC usados
-      - 'advice': lista de dicts con alternativas recomendadas
-      - 'warnings': lista de alertas (ej. mismo grupo repetido)
-    """
-    used_products = {}
-    used_fracs    = set()
-    warnings      = []
+    """Analiza los FUNGICIDAS usados esta campaña (presión por grupo FRAC) y RANKEA
+    toda la paleta de candidatos de mejor a peor para la próxima campaña, con el porqué.
+    Devuelve: used_products, group_pressure {frac:pases}, used_fracs, ranked, warnings."""
+    used_products  = {}
+    group_pressure = {}   # frac (numérico) → nº de pases de esa campaña
 
-    if not activities_df.empty and "Producto" in activities_df.columns:
-        current_year = pd.Timestamp.now().year
+    if activities_df is not None and not activities_df.empty and "Producto" in activities_df.columns:
+        year = pd.Timestamp.now().year
         acts = activities_df.copy()
-        acts["Fecha_dt"] = pd.to_datetime(acts.get("Fecha", pd.Series(dtype=str)), errors="coerce")
-        acts = acts[acts["Fecha_dt"].dt.year == current_year]
+        acts["_dt"] = pd.to_datetime(acts.get("Fecha", pd.Series(dtype=str)), errors="coerce")
+        acts = acts[acts["_dt"].dt.year == year]
         for _, r in acts.iterrows():
+            # SOLO fungicidas: fuera insecticidas (Bactur, Decis), aceites (Laincoil), etc.
+            if not is_fungicide_activity(r.get("Producto", ""), r.get("Trabajo", "")):
+                continue
             prod = str(r.get("Producto", "")).strip()
-            if prod and prod != "nan":
-                used_products[prod] = used_products.get(prod, 0) + 1
+            if not prod or prod.lower() == "nan":
+                continue
+            used_products[prod] = used_products.get(prod, 0) + 1
+            _pl = prod.lower()
+            for _al, _fr in _USED_FRAC_MAP:
+                if any(a in _pl for a in _al):
+                    for f in _fr:
+                        group_pressure[f] = group_pressure.get(f, 0) + 1
+                    break
 
-    # Mapear productos usados a sus grupos FRAC mediante el catálogo
-    if catalog_df is not None and not catalog_df.empty:
-        for _, r in catalog_df.iterrows():
-            prod = str(r.get("Producto", "")).strip()
-            frac = str(r.get("FRAC", "")).strip()
-            if prod in used_products and frac:
-                for f in frac.split("+"):
-                    used_fracs.add(f.strip())
+    used_fracs = set(group_pressure.keys())
 
-    # Advertencias de rotación dentro del catálogo actual
-    if catalog_df is not None and not catalog_df.empty:
-        # Estrobilurina usada más de 2 veces
-        qoi_count = sum(v for k, v in used_products.items()
-                        if any(k.upper() in str(r.get("Producto","")).upper() and "C3" in str(r.get("FRAC",""))
-                               for _, r in catalog_df.iterrows()))
-        if qoi_count > 2:
-            warnings.append("⚠️ Estrobilurinas (FRAC C3) usadas más de 2 veces en la campaña. Riesgo de resistencia en Moteado.")
-        # Triazol acumulado
-        g1_count = sum(v for k, v in used_products.items()
-                       if any(k.upper() in str(r.get("Producto","")).upper() and "G1" in str(r.get("FRAC",""))
-                              for _, r in catalog_df.iterrows()))
-        if g1_count > 3:
-            warnings.append("⚠️ Triazoles (FRAC G1) usados >3 veces. Considera alternar con grupos D1 o E para Monilia.")
+    # Ranking de la paleta: cuanto MENOS usado esté su grupo esta campaña, mejor; los
+    # multisitios (M) suman por no generar resistencia. Cada uno con su explicación.
+    ranked = []
+    for c in ROTATION_CANDIDATES:
+        min_p = min((group_pressure.get(f, 0) for f in c["fracs"]), default=0)
+        score = max(0, 20 - min_p) + (8 if c["multisitio"] else 0)
+        fresh = [f for f in c["fracs"] if group_pressure.get(f, 0) == 0]
+        low   = [f for f in c["fracs"] if 0 < group_pressure.get(f, 0) <= 5]
+        reasons = []
+        if fresh:
+            reasons.append(f"grupo {'+'.join(fresh)} SIN usar esta campaña")
+        elif low:
+            reasons.append(f"grupo {'+'.join(low)} poco usado")
+        else:
+            reasons.append(f"grupo {'+'.join(c['fracs'])} ya muy cargado — baja prioridad")
+        if c["multisitio"]:
+            reasons.append("multisitio: sin riesgo de resistencia")
+        reasons.append("cubre " + "/".join(c["enf"]))
+        reasons.append("ya en tu almacén" if c["almacen"] else "comprar (no en almacén)")
+        ranked.append({
+            "Producto": c["nombre"],
+            "FRAC": "+".join(c["fracs"]),
+            "Para": ", ".join(c["enf"]),
+            "Familia": c["familia"],
+            "En almacén": "Sí" if c["almacen"] else "No",
+            "Por qué (mejor→peor)": " · ".join(reasons),
+            "_score": score,
+        })
+    ranked.sort(key=lambda x: (-x["_score"], x["Producto"]))
 
-    # Alternativas recomendadas: productos de ROTATION_ALTERNATIVES cuyo FRAC no está en los usados
-    advice = []
-    for alt in ROTATION_ALTERNATIVES:
-        alt_fracs = {f.strip() for f in str(alt.get("FRAC","")).split("+")}
-        # Recomendar si al menos uno de sus grupos FRAC no está ya en el arsenal 2026
-        new_groups = alt_fracs - used_fracs - {"C2", "C3", "G1"}  # excluir grupos ya en almacén
-        if new_groups or alt_fracs.isdisjoint(used_fracs):
-            advice.append({
-                "Producto":       alt["Producto"],
-                "Para":           alt["Objetivos"],
-                "FRAC":           alt["FRAC"],
-                "Familia":        alt["Familia"],
-                "Por qué rotar":  alt["Motivo rotación"],
-            })
+    # Avisos de sobrepresión: grupos de riesgo (3/7/11) muy por encima del límite FRAC.
+    warnings = []
+    for f, n in sorted(group_pressure.items(), key=lambda x: -x[1]):
+        if f in ("3", "7", "11") and n > 4:
+            warnings.append(
+                f"⚠️ Grupo {f} ({_FRAC_NAMES.get(f, f)}) usado **{n} pases** esta campaña — "
+                f"muy por encima del máximo FRAC (~4). Prioriza rotar FUERA del grupo {f}.")
 
     return {
-        "used_products": used_products,
-        "used_fracs":    used_fracs,
-        "advice":        advice,
-        "warnings":      warnings,
+        "used_products":  used_products,
+        "group_pressure": group_pressure,
+        "used_fracs":     used_fracs,
+        "ranked":         ranked,
+        "warnings":       warnings,
     }
 
 
@@ -23966,59 +24025,85 @@ def render_decisiones_panel():
 
     with st.expander("🔄 Planificación de rotación — próxima campaña", expanded=False):
         st.markdown(
-            "Análisis de los grupos FRAC usados en la campaña actual y propuesta de alternativas "
-            "para **reducir el riesgo de resistencias** en la próxima temporada."
+            "La app analiza los **fungicidas** aplicados esta campaña (presión por grupo FRAC) y "
+            "**ordena TODA la paleta de mejor a peor** para la próxima, con el porqué. Objetivo: "
+            "**romper el ciclo de resistencias** rotando hacia grupos poco usados y multisitios."
         )
-        _rot_catalog = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
-        _rot = build_rotation_advice(activities_df, _rot_catalog)
+        _rot = build_rotation_advice(activities_df)
 
-        # ── Productos usados esta campaña ──────────────────────────────────────
-        if _rot["used_products"]:
+        if not _rot["used_products"]:
+            st.info("Carga las actuaciones de Agroptima para ver el análisis de uso.")
+        else:
+            # ── Fungicidas usados + presión por grupo FRAC ─────────────────────
             _col_u, _col_f = st.columns([2, 1])
             with _col_u:
-                st.markdown("**Productos aplicados esta campaña:**")
-                _up_rows = [{"Producto": k, "Aplicaciones": v} for k, v in sorted(_rot["used_products"].items(), key=lambda x: -x[1])]
-                _up_df   = pd.DataFrame(_up_rows)
+                st.markdown("**Fungicidas aplicados esta campaña** (solo fungicidas):")
+                _up_df = pd.DataFrame(
+                    [{"Producto": k, "Pases": v}
+                     for k, v in sorted(_rot["used_products"].items(), key=lambda x: -x[1])])
                 st.dataframe(_up_df, hide_index=True, use_container_width=True)
             with _col_f:
-                st.markdown("**Grupos FRAC activos:**")
-                for _f in sorted(_rot["used_fracs"]):
-                    st.markdown(f"- **{_f}**")
-        else:
-            st.info("Carga las actuaciones de Agroptima para ver el análisis de uso.")
+                st.markdown("**Presión por grupo FRAC:**")
+                _gp = _rot["group_pressure"]
+                if _gp:
+                    for _f, _n in sorted(_gp.items(), key=lambda x: -x[1]):
+                        _hot = "🔴" if _f in ("3", "7", "11") and _n > 4 else "•"
+                        st.markdown(f"{_hot} **Grupo {_f}** ({_FRAC_NAMES.get(_f, _f)}): {_n} pases")
+                else:
+                    st.caption("Sin fungicidas reconocidos.")
 
-        # ── Advertencias ───────────────────────────────────────────────────────
-        if _rot["warnings"]:
+            # ── Advertencias de sobrepresión ───────────────────────────────────
             for _w in _rot["warnings"]:
                 st.warning(_w)
 
-        # ── Alternativas recomendadas ──────────────────────────────────────────
-        if _rot["advice"]:
+            # ── Ranking de la paleta (mejor→peor) ──────────────────────────────
             st.markdown("---")
-            st.markdown("#### 💡 Alternativas recomendadas para la próxima campaña")
+            st.markdown("#### 💡 Alternativas para la próxima campaña — de mejor a peor")
             st.caption(
-                "Productos de grupos FRAC distintos a los usados en 2026. "
-                "Incorporarlos rompe el ciclo de selección de resistencias."
+                "Todos los productos usables en manzano, ordenados por **valor de rotación**: "
+                "arriba, grupos FRAC frescos y multisitios (sin resistencia); abajo, los grupos que "
+                "ya has cargado esta campaña. **Sí** = ya lo tienes en almacén."
             )
-            _adv_df = pd.DataFrame(_rot["advice"])
-            # Tabla HTML con encabezados verdes
-            _th = "background:#1a2e1e;color:white;padding:8px 12px;white-space:nowrap;font-weight:600;font-size:13px;"
-            _td_s = "padding:7px 12px;border-bottom:1px solid #e8e8e8;font-size:13px;white-space:nowrap;"
-            _hdr_rot = "".join(f'<th style="{_th}">{c}</th>' for c in _adv_df.columns)
-            _body_rot = ""
-            for _, _r in _adv_df.iterrows():
-                _cells = "".join(f'<td style="{_td_s}">{_r[c]}</td>' for c in _adv_df.columns)
-                _body_rot += f"<tr>{_cells}</tr>"
+            _th  = "background:#1a2e1e;color:white;padding:7px 10px;font-weight:600;font-size:12.5px;text-align:left;"
+            _td  = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12.5px;white-space:nowrap;"
+            _tdw = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12px;white-space:normal;min-width:280px;"
+            _cols = ["Producto", "FRAC", "Para", "Familia", "En almacén", "Por qué (mejor→peor)"]
+            _hdr = f'<th style="{_th}">#</th>' + "".join(f'<th style="{_th}">{c}</th>' for c in _cols)
+            _body = ""
+            for _i, _r in enumerate(_rot["ranked"], 1):
+                _rowbg = "background:rgba(27,107,53,0.06);" if _i <= 4 else ""
+                _cells = f'<td style="{_td}{_rowbg}"><b>{_i}</b></td>'
+                for _c in _cols:
+                    _style = _tdw if _c == "Por qué (mejor→peor)" else _td
+                    _cells += f'<td style="{_style}{_rowbg}">{_r[_c]}</td>'
+                _body += f"<tr>{_cells}</tr>"
             st.markdown(
-                f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #ddd;margin-top:0.5rem;">'
+                f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #ddd;margin-top:0.4rem;">'
                 f'<table style="border-collapse:collapse;width:100%;">'
-                f'<thead><tr>{_hdr_rot}</tr></thead>'
-                f'<tbody>{_body_rot}</tbody>'
-                f'</table></div>',
+                f'<thead><tr>{_hdr}</tr></thead><tbody>{_body}</tbody></table></div>',
                 unsafe_allow_html=True,
             )
-        else:
-            st.success("✅ El catálogo actual ya cubre una buena diversidad de grupos FRAC. Sin alternativas urgentes.")
+
+            # ── Existencias sobrantes: dónde gastarlas la próxima campaña ───────
+            st.markdown("---")
+            st.markdown("**📦 ¿Dónde gastar existencias sobrantes?**")
+            st.caption(
+                "Si te sobra producto (p. ej. Signum), gástalo la próxima campaña en los campos que "
+                "**menos lo recibieron** esta — así vacías almacén sin sobrecargar el mismo campo/grupo."
+            )
+            _stock_prods = [str(d["Producto"]).strip() for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Producto")]
+            _sel = st.selectbox("Producto del almacén", _stock_prods, key="rot_stock_sel")
+            _srows = []
+            for _fr in FIELDS_BASE_ROWS:
+                _campo = str(_fr.get("Campo", "")).strip()
+                if not _campo:
+                    continue
+                _cnt, _ = count_field_applications(activities_df, _campo)
+                _srows.append({"Campo": _campo, f"Pases {_sel} (esta campaña)": int(_cnt.get(_sel, 0))})
+            if _srows:
+                _sdf = pd.DataFrame(_srows).sort_values(f"Pases {_sel} (esta campaña)").reset_index(drop=True)
+                st.caption(f"Campos ordenados por MENOS uso de **{_sel}** — los de arriba son los mejores para gastar existencias:")
+                st.dataframe(_sdf, hide_index=True, use_container_width=True, height=260)
 
     st.markdown("### 📋 Panel de decisión diaria")
 
