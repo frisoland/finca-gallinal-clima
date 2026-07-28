@@ -11757,11 +11757,17 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
     _c3.metric("🟡 Vigilar",       int((dec["_priority"] == 3).sum()))
     _c4.metric("🟢 OK",            int((dec["_priority"] == 4).sum()))
 
-    _cols = ["Campo", "Fase", "🎯 Acción", "Riesgo principal", "1ª elección", "Alternativa",
+    _cols = ["Campo", "Fase", "🎯 Acción", "Momento", "Riesgo principal", "1ª elección", "Alternativa",
              "Último fungicida", "Días sin trat.", "Eventos infección", "Ev. sin cobertura",
              "Previsión Mills", "📋 Motivo"]
     _cols = [c for c in _cols if c in dec.columns]
     st.dataframe(dec.sort_values("_priority")[_cols], use_container_width=True, hide_index=True)
+    st.caption(
+        "**Columna «Momento»:** 🛡️ **Preventivo** = aún no hay infección que rescatar → vale "
+        "**contacto** (Captan/Dithianon/cobre) **o** sistémico. ⚕️ **Curativo** = la infección **ya "
+        "ocurrió** → **solo un sistémico** la rescata (difenoconazol/Signum/Flint/Switch); **el "
+        "contacto NO llega** al hongo dentro de la hoja. (Detalle en el desplegable de arriba.)"
+    )
     st.download_button(
         "Descargar recomendaciones por campo (CSV)",
         data=dec[_cols].to_csv(index=False).encode("utf-8-sig"),
@@ -20828,10 +20834,11 @@ def build_treatment_narrative(days_since, rain_since, mills_events_since,
         total_events >= 1 and days_since >= persistence_days and days_since <= persistence_days + 4)
     if _curativa:
         reasons.append(
-            "Ventana curativa activa: hay infección reciente o en curso. Los fungicidas DMI "
-            "(triazoles) y SDHI pueden detener infecciones incipientes hasta 48-96h post-evento "
-            "(Köller 2001; ficha Luna Experience). Preferir productos con acción curativa "
-            "(Folicur, Luna Experience)."
+            "Ventana curativa activa: hay infección reciente o en curso, así que queda algo que "
+            "RESCATAR. Solo un fungicida SISTÉMICO con acción curativa lo frena (difenoconazol, "
+            "Signum, Flint; para monilia, Switch), dentro de ~48-96 h post-evento (Köller 2001). "
+            "⚠️ Un fungicida de CONTACTO (Captan, Dithianon, cobre, azufre) NO rescata aquí: solo "
+            "protege por delante, no llega al hongo que ya entró en la hoja."
         )
         tipo = "Curativo + preventivo"
 
@@ -21574,8 +21581,18 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             infeccion_activa   = bool(_open_event or recent_event),
         )
 
+        # Momento del tratamiento (mismo criterio que la narrativa `_curativa`): si hay
+        # infección reciente/en curso o cobertura recién caducada con evento → CURATIVO
+        # (solo sistémico rescata); si no → PREVENTIVO (vale contacto o sistémico).
+        _curativa_moment = bool(_open_event or recent_event) or (
+            eventos_infeccion_dias >= 1 and days_since >= eff_persistence
+            and days_since <= eff_persistence + 4)
+        _momento = ("⚕️ Curativo — solo sistémico" if _curativa_moment
+                    else "🛡️ Preventivo — contacto o sistémico")
+
         rows.append({
             "Campo":              campo,
+            "Momento":            _momento,
             "Variedades":         variedades,
             "Último fungicida":  _last_label,
             "Días sin trat.":    (days_since if days_since < 999 else "—"),
@@ -24245,7 +24262,7 @@ def render_decisiones_panel():
         # Orden: columnas de acción inmediata primero (visible sin scroll),
         # recomendaciones en bloque central, combo cuba junto a la elección.
         _display_cols = [
-            "Campo", "Fase", "🎯 Acción",
+            "Campo", "Fase", "🎯 Acción", "Momento",
             "Último fungicida", "Días sin trat.", "Días protección",
             "Lluvia desde mm", "Eventos infección", "Ev. sin cobertura", "Previsión Mills",
             "Pases campaña", "Riesgo principal",
@@ -24396,6 +24413,14 @@ def render_decisiones_panel():
             "**Colores (acción de hoy):** 🔴 **Tratar hoy** (hay que actuar ya) · 🟠 **Tratar pronto** "
             "(mantener escudo, primavera) · 🟡 **Vigilar** (mirar cada mañana por si la previsión se "
             "cumple; si se cumple pasará a 🔴) · 🟢 **OK / sin eventos recientes**.\n\n"
+            "**Columna «Momento» (qué TIPO de producto sirve HOY):**\n"
+            "• 🛡️ **Preventivo — contacto o sistémico:** aún no hay infección que rescatar; el "
+            "producto solo tiene que estar **antes** del evento. Vale un **contacto** (Captan, "
+            "Dithianon, cobre) o un **sistémico**.\n"
+            "• ⚕️ **Curativo — solo sistémico:** la infección **ya ocurrió** (reciente o en curso) y "
+            "hay que **rescatarla**. Solo un **sistémico** con acción curativa llega al hongo dentro "
+            "de la hoja (difenoconazol, Signum, Flint, Switch). **Un contacto NO rescata** — se "
+            "queda fuera. (Ver el desplegable *«¿Contacto vs sistémico?»* de arriba.)\n\n"
             "**Columnas clave:** *Eventos infección* = **días con infección** (moteado y/o monilia) "
             "reales **desde tu último fungicida** (un día con las dos cuenta una vez). "
             "*Ev. sin cobertura* = de esos mismos eventos, cuántos quedaron **sin cobertura** "
