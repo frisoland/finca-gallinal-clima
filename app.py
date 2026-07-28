@@ -21391,6 +21391,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
 
         # ── Lluvia y eventos desde el último tratamiento ──────────────────────
         rain_since          = 0.0
+        _rain_hours         = 0     # nº de horas con lluvia desde el último tratamiento
         mills_events_since  = 0
         monilia_events_since = 0
         oidio_events_since  = 0
@@ -21406,20 +21407,31 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             h = history_df.copy()
             h["fecha_hora"] = pd.to_datetime(h["fecha_hora"])
             h_since = h[h["fecha_hora"] >= ref_date]
-            rain_since = round(float(pd.to_numeric(h_since["lluvia_mm"], errors="coerce").sum()), 1)
+            _ll_since = pd.to_numeric(h_since["lluvia_mm"], errors="coerce").fillna(0)
+            rain_since = round(float(_ll_since.sum()), 1)
+            _rain_hours = int((_ll_since > 0).sum())   # horas con lluvia (duración)
 
-        # ── Lavado por lluvia (fase 1) ────────────────────────────────────────
+        # ── Lavado por lluvia (fases 1+2) ─────────────────────────────────────
         # Un CONTACTO puro (ventana curativa 0) pierde cobertura con la lluvia caída
-        # desde que se aplicó: intacto <15 mm, pierde linealmente 15→50 mm, lavado ≥50 mm.
-        # Los SISTÉMICOS/penetrantes con curativa, una vez absorbidos, son a prueba de
-        # lluvia → NO se tocan. Reduce la persistencia efectiva y marca "posible lavado".
+        # desde que se aplicó, por DOS vías (se toma la MÁS restrictiva):
+        #  · mm totales: intacto <15 mm, decae 15→50 mm, lavado ≥50 mm.
+        #  · DURACIÓN (horas de lluvia): intacto <15 h, decae 15→55 h, lavado ≥55 h —
+        #    así un evento largo y suave (p. ej. 15 mm en 48 h) también lo erosiona,
+        #    aunque los mm no asusten. (Umbrales calibrables.)
+        # Los SISTÉMICOS/penetrantes con curativa, absorbidos, son a prueba de lluvia → NO.
         _last_curwins = [_curative_map.get(_pk) for _pk in last_products if _pk in _curative_map]
         _is_contact_pass = bool(_last_curwins) and max(_last_curwins) <= 0
         _posible_lavado = False
-        if _is_contact_pass and last_date is not None and rain_since >= 15.0:
-            _wf = 0.0 if rain_since >= 50.0 else (1.0 - (rain_since - 15.0) / 35.0)
-            eff_persistence = round(eff_persistence * _wf, 1)
-            _posible_lavado = True
+        _lav_txt = ""
+        if _is_contact_pass and last_date is not None:
+            _wf_mm = 1.0 if rain_since < 15 else (0.0 if rain_since >= 50 else 1.0 - (rain_since - 15.0) / 35.0)
+            _wf_h  = 1.0 if _rain_hours < 15 else (0.0 if _rain_hours >= 55 else 1.0 - (_rain_hours - 15.0) / 40.0)
+            _wf = min(_wf_mm, _wf_h)
+            if _wf < 1.0:
+                eff_persistence = round(eff_persistence * _wf, 1)
+                _posible_lavado = True
+                _lav_txt = (f"lluvia prolongada ({_rain_hours} h de lluvia)"
+                            if _wf_h <= _wf_mm else f"{rain_since:.0f} mm de lluvia")
 
         if not risk_df.empty:
             hist_risk = risk_df[(risk_df["Fecha"] >= ref_date) & (~risk_df["Es_prediccion"])]
@@ -21607,13 +21619,13 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             infeccion_activa   = bool(_open_event or recent_event),
         )
 
-        # Aviso de lavado: contacto reciente + lluvia relevante desde su aplicación.
+        # Aviso de lavado: contacto reciente + lluvia relevante (mm o duración) desde su aplicación.
         if _posible_lavado:
             _narrative = (
-                f"⚠️ POSIBLE LAVADO: el último pase fue un CONTACTO y han caído "
-                f"{rain_since:.0f} mm desde entonces → su protección se ha reducido "
-                f"(persistencia efectiva recortada). Renueva la cobertura — o pasa a un "
-                f"SISTÉMICO si ya hay infección en curso (el contacto no rescata).\n\n" + _narrative)
+                f"⚠️ POSIBLE LAVADO: el último pase fue un CONTACTO y ha recibido {_lav_txt} "
+                f"desde que se aplicó → su protección se ha reducido (persistencia efectiva "
+                f"recortada). Renueva la cobertura — o pasa a un SISTÉMICO si ya hay infección "
+                f"en curso (el contacto no rescata).\n\n" + _narrative)
 
         # Momento del tratamiento (mismo criterio que la narrativa `_curativa`): si hay
         # infección reciente/en curso o cobertura recién caducada con evento → CURATIVO
