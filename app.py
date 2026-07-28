@@ -11736,7 +11736,8 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
         _p, _a, _ = get_smart_recommendation(
             _r.get("_dominant_list", []), _catalog_df,
             last_product=str(_r.get("_last_product", "")),
-            app_counts=_r.get("_app_counts", {}), sdhi_total=int(_r.get("_sdhi_total", 0)))
+            app_counts=_r.get("_app_counts", {}), sdhi_total=int(_r.get("_sdhi_total", 0)),
+            curative_needed=bool(_r.get("_curativa_moment", False)))
         _prim.append(_p); _alt.append(_a)
     dec = dec.copy(); dec["1ª elección"] = _prim; dec["Alternativa"] = _alt
 
@@ -20624,16 +20625,19 @@ def count_field_applications(activities_df, campo, year=None):
 
 
 def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
-                              app_counts=None, sdhi_total=0):
+                              app_counts=None, sdhi_total=0, curative_needed=False):
     """
     Devuelve (producto_recomendado, alternativa, motivo) con lógica científica:
       1. Eficacia por patógeno (PRODUCT_EFFICACY_RANKING).
       2. Penalización por rotación FRAC (no repetir mismo grupo).
       3. Penalización por límite de aplicaciones alcanzado (PRODUCT_MAX_APPLICATIONS).
       4. Penalización por límite SDHI combinado (Signum + Luna ≤ 3/campaña).
+      5. Si curative_needed (momento ⚕️ Curativo): descarta los CONTACTOS puros
+         (ventana curativa 0) — no rescatan una infección ya producida.
 
     app_counts: dict {producto: n_aplicaciones_campaña} para el campo en cuestión.
     sdhi_total: total de aplicaciones de cualquier SDHI (C2) en la campaña para ese campo.
+    curative_needed: True si el campo está en momento curativo (hay que rescatar).
     """
     if catalog_df is None or catalog_df.empty:
         return "—", "—", "Sin catálogo"
@@ -20710,6 +20714,15 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
         if "G1" in prod_fracs and dmi_total >= DMI_GROUP_MAX_COMBINED:
             score -= 10
             limit_notes[prod] = (limit_notes.get(prod, "") + " (grupo DMI/triazol agotado)").strip()
+
+        # 5. Momento CURATIVO: un CONTACTO puro (ventana curativa 0) NO rescata una
+        #    infección ya producida → se descarta (penalización fuerte que lo saca del
+        #    ranking). Sistémicos y penetrantes con curativa (Teldor, Switch…) sí valen.
+        if curative_needed:
+            _cur_win = pd.to_numeric(row.get("Ventana curativa días"), errors="coerce")
+            if pd.notna(_cur_win) and _cur_win <= 0:
+                score -= 50
+                limit_notes[prod] = (limit_notes.get(prod, "") + " (contacto: no rescata en curativo)").strip()
 
         if score > -10:   # mantener incluso penalizados para usarlos como alternativa informativa
             scores[prod] = score
@@ -21615,6 +21628,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "_dominant_list":    dominant,
             "_app_counts":       _app_counts,
             "_sdhi_total":       _sdhi_total,
+            "_curativa_moment":  bool(_curativa_moment),
         })
 
     df = (pd.DataFrame(rows)
@@ -23387,7 +23401,8 @@ def build_daily_report_text(history_df, traps_df, activities_df,
             _p, _a, _ = get_smart_recommendation(
                 r.get("_dominant_list", []), _cat_fc,
                 last_product=str(r.get("_last_product", "")),
-                app_counts=r.get("_app_counts", {}), sdhi_total=int(r.get("_sdhi_total", 0)))
+                app_counts=r.get("_app_counts", {}), sdhi_total=int(r.get("_sdhi_total", 0)),
+                curative_needed=bool(r.get("_curativa_moment", False)))
             return _p
         except Exception:
             return "—"
@@ -24243,6 +24258,7 @@ def render_decisiones_panel():
             _p, _a, _m = get_smart_recommendation(
                 _dom, _catalog_df, last_product=_lp,
                 app_counts=_ac, sdhi_total=_sdhi,
+                curative_needed=bool(_r.get("_curativa_moment", False)),
             )
             _rec_primary.append(_p)
             _rec_alt.append(_a)
