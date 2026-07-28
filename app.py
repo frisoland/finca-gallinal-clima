@@ -21408,6 +21408,19 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             h_since = h[h["fecha_hora"] >= ref_date]
             rain_since = round(float(pd.to_numeric(h_since["lluvia_mm"], errors="coerce").sum()), 1)
 
+        # ── Lavado por lluvia (fase 1) ────────────────────────────────────────
+        # Un CONTACTO puro (ventana curativa 0) pierde cobertura con la lluvia caída
+        # desde que se aplicó: intacto <15 mm, pierde linealmente 15→50 mm, lavado ≥50 mm.
+        # Los SISTÉMICOS/penetrantes con curativa, una vez absorbidos, son a prueba de
+        # lluvia → NO se tocan. Reduce la persistencia efectiva y marca "posible lavado".
+        _last_curwins = [_curative_map.get(_pk) for _pk in last_products if _pk in _curative_map]
+        _is_contact_pass = bool(_last_curwins) and max(_last_curwins) <= 0
+        _posible_lavado = False
+        if _is_contact_pass and last_date is not None and rain_since >= 15.0:
+            _wf = 0.0 if rain_since >= 50.0 else (1.0 - (rain_since - 15.0) / 35.0)
+            eff_persistence = round(eff_persistence * _wf, 1)
+            _posible_lavado = True
+
         if not risk_df.empty:
             hist_risk = risk_df[(risk_df["Fecha"] >= ref_date) & (~risk_df["Es_prediccion"])]
             _mills_d   = hist_risk["Mills_valor"].fillna(0)   >= 100
@@ -21594,6 +21607,14 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             infeccion_activa   = bool(_open_event or recent_event),
         )
 
+        # Aviso de lavado: contacto reciente + lluvia relevante desde su aplicación.
+        if _posible_lavado:
+            _narrative = (
+                f"⚠️ POSIBLE LAVADO: el último pase fue un CONTACTO y han caído "
+                f"{rain_since:.0f} mm desde entonces → su protección se ha reducido "
+                f"(persistencia efectiva recortada). Renueva la cobertura — o pasa a un "
+                f"SISTÉMICO si ya hay infección en curso (el contacto no rescata).\n\n" + _narrative)
+
         # Momento del tratamiento (mismo criterio que la narrativa `_curativa`): si hay
         # infección reciente/en curso o cobertura recién caducada con evento → CURATIVO
         # (solo sistémico rescata); si no → PREVENTIVO (vale contacto o sistémico).
@@ -21629,6 +21650,7 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
             "_app_counts":       _app_counts,
             "_sdhi_total":       _sdhi_total,
             "_curativa_moment":  bool(_curativa_moment),
+            "_posible_lavado":   bool(_posible_lavado),
         })
 
     df = (pd.DataFrame(rows)
