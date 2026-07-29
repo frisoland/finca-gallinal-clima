@@ -11845,6 +11845,7 @@ def health_tab(history, soil_type, hoja_threshold):
         return
 
     render_fungicide_mode_help(key_suffix="_sani")
+    render_active_ingredient_reference(key_suffix="_sani")
 
     # ── Análisis multi-año (no depende del periodo: usa el histórico completo) ──
     with st.expander("📅 Histórico de eventos de infección por año y fase (todos los años)",
@@ -20990,6 +20991,83 @@ def render_fungicide_mode_help(key_suffix=""):
         )
 
 
+# Materia activa (lo que dice la app) → marcas comerciales habituales en manzano.
+# Orientativo: la lista oficial/actualizada está en el Registro de Fitosanitarios del MAPA.
+ACTIVE_INGREDIENT_BRANDS = [
+    {"activa": "Difenoconazol", "frac": "3",
+     "marcas": "Score 25 EC · Ceremonia 25 EC · Mavita 250 EC · Difcor · Evento 25 EC · Difenoterra (+ genéricos)",
+     "estado": "✅ En uso (relevo del tebuconazol)"},
+    {"activa": "Tebuconazol", "frac": "3",
+     "marcas": "Folicur 25 WG/EW (+ genéricos)", "estado": "⛔ En retirada en manzano"},
+    {"activa": "Fluopyram + tebuconazol", "frac": "7+3",
+     "marcas": "Luna Experience", "estado": "⛔ En retirada (lleva tebuconazol)"},
+    {"activa": "Boscalida + piraclostrobina", "frac": "7+11",
+     "marcas": "Signum · Bellis", "estado": "✅ En uso"},
+    {"activa": "Trifloxistrobina", "frac": "11",
+     "marcas": "Flint 50 WG", "estado": "✅ En uso"},
+    {"activa": "Ciprodinil + fludioxonil", "frac": "9+12",
+     "marcas": "Switch 62.5 WG", "estado": "✅ En uso (monilia)"},
+    {"activa": "Ciprodinil", "frac": "9",
+     "marcas": "Chorus 50 WG", "estado": "◻️ Alternativa (moteado en frío)"},
+    {"activa": "Fluxapiroxad", "frac": "7",
+     "marcas": "Sercadis", "estado": "◻️ Alternativa (SDHI)"},
+    {"activa": "Fenhexamid", "frac": "17",
+     "marcas": "Teldor 500 SC", "estado": "✅ En uso (monilia)"},
+    {"activa": "Captan", "frac": "M4",
+     "marcas": "Merpan 80 WDG · Malvin · Captan (genéricos)", "estado": "✅ Multisitio (contacto)"},
+    {"activa": "Dithianon", "frac": "M9",
+     "marcas": "Delan 700 WG (+ genéricos)", "estado": "✅ Multisitio (contacto)"},
+    {"activa": "Tiram", "frac": "M3",
+     "marcas": "Pomarsol · Thianosan", "estado": "◻️ Multisitio (contacto)"},
+    {"activa": "Azufre", "frac": "M2",
+     "marcas": "Kumulus DF · Thiovit · Microthiol (+ genéricos)", "estado": "◻️ Oídio (contacto)"},
+    {"activa": "Cobre (oxicloruro / hidróxido)", "frac": "M1",
+     "marcas": "Traxi · Procobre · Cuprocol · Nordox (+ genéricos)", "estado": "✅ Multisitio (contacto)"},
+]
+
+
+def render_active_ingredient_reference(key_suffix=""):
+    """Desplegable de referencia: materia activa ↔ marcas comerciales (con buscador).
+    Reutilizado en Decisiones y Sanidad para responder rápido «difenoconazol = ¿cuál?»."""
+    with st.expander("📖 ¿Qué producto comercial es cada materia activa? (difenoconazol = Score, Ceremonia…)",
+                     expanded=False):
+        st.caption(
+            "La app habla por **materia activa** (el principio que manda en eficacia, grupo FRAC y "
+            "resistencias). Aquí tienes las **marcas comerciales** habituales de cada una en manzano. "
+            "⚠️ Orientativo: la lista **oficial y al día** está en el **Registro de Productos "
+            "Fitosanitarios del MAPA** — confirma siempre que la marca concreta esté **registrada en "
+            "manzano** antes de comprar."
+        )
+        _q = st.text_input(
+            "Buscar materia activa o marca (p. ej. «difenoconazol» o «Score»)",
+            key=f"ai_search{key_suffix}").strip().lower()
+        _rows = ACTIVE_INGREDIENT_BRANDS
+        if _q:
+            _rows = [r for r in _rows if _q in r["activa"].lower() or _q in r["marcas"].lower()
+                     or _q in r["frac"].lower()]
+        if not _rows:
+            st.info("Sin coincidencias. Prueba con otra parte del nombre.")
+            return
+        _th  = "background:#1a2e1e;color:white;padding:7px 10px;font-weight:600;font-size:12.5px;text-align:left;white-space:nowrap;"
+        _td  = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12.5px;white-space:nowrap;"
+        _tdw = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12.5px;white-space:normal;min-width:260px;"
+        _hdr = (f'<th style="{_th}">Materia activa (lo que dice la app)</th>'
+                f'<th style="{_th}">FRAC</th><th style="{_th}">Marcas comerciales</th>'
+                f'<th style="{_th}">Estado</th>')
+        _body = ""
+        for _r in _rows:
+            _body += (f'<tr><td style="{_td}"><b>{_r["activa"]}</b></td>'
+                      f'<td style="{_td}">{_r["frac"]}</td>'
+                      f'<td style="{_tdw}">{_r["marcas"]}</td>'
+                      f'<td style="{_td}">{_r["estado"]}</td></tr>')
+        st.markdown(
+            f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #ddd;margin-top:0.3rem;">'
+            f'<table style="border-collapse:collapse;width:100%;">'
+            f'<thead><tr>{_hdr}</tr></thead><tbody>{_body}</tbody></table></div>',
+            unsafe_allow_html=True,
+        )
+
+
 def build_rotation_advice(activities_df, catalog_df=None):
     """Analiza los FUNGICIDAS usados esta campaña (presión por grupo FRAC) y RANKEA
     toda la paleta de candidatos de mejor a peor para la próxima campaña, con el porqué.
@@ -24144,6 +24222,7 @@ def render_decisiones_panel():
             st.session_state["fungicide_catalog_df"] = _to_save
 
     render_fungicide_mode_help(key_suffix="_dec")
+    render_active_ingredient_reference(key_suffix="_dec")
 
     with st.expander("🔄 Planificación de rotación — próxima campaña", expanded=False):
         st.markdown(
