@@ -10321,7 +10321,7 @@ def render_sanitary_semaphore(period_df, soil_type, hoja_threshold, start_ts=Non
 
 TREATMENT_PRODUCT_CATALOG = {
     "Signum": {
-        "aliases": ["signum", "sigmun"],
+        "aliases": ["signum", "sigmun", "bellis"],
         "materias_activas": "boscalida + piraclostrobin",
         "frac": ["7", "11"],
         "familia": "SDHI + QoI/estrobilurina",
@@ -10330,7 +10330,8 @@ TREATMENT_PRODUCT_CATALOG = {
             "Monilia": 78,
             "Oídio": 68,
         },
-        "comentario": "Producto amplio, pero comparte FRAC 7 con Luna Experience y FRAC 11 con Flint.",
+        "comentario": "Producto amplio, pero comparte FRAC 7 con Luna Experience y FRAC 11 con Flint. "
+                      "Signum NO está registrado en manzano; el equivalente en pepita es Bellis (mismos activos).",
     },
     "Folicur": {
         "aliases": ["folicur", "tebuconazol", "tebuconazole"],
@@ -10378,7 +10379,7 @@ def default_treatment_catalog_copy():
     """Devuelve una copia independiente del catálogo base, sin depender de variables globales."""
     base_catalog = {
     "Signum": {
-        "aliases": ["signum", "sigmun"],
+        "aliases": ["signum", "sigmun", "bellis"],
         "materias_activas": "boscalida + piraclostrobin",
         "frac": ["7", "11"],
         "familia": "SDHI + QoI/estrobilurina",
@@ -10387,7 +10388,8 @@ def default_treatment_catalog_copy():
             "Monilia": 78,
             "Oídio": 68,
         },
-        "comentario": "Producto amplio, pero comparte FRAC 7 con Luna Experience y FRAC 11 con Flint.",
+        "comentario": "Producto amplio, pero comparte FRAC 7 con Luna Experience y FRAC 11 con Flint. "
+                      "Signum NO está registrado en manzano; el equivalente en pepita es Bellis (mismos activos).",
     },
     "Folicur": {
         "aliases": ["folicur", "tebuconazol", "tebuconazole"],
@@ -20290,6 +20292,22 @@ DEFAULT_FUNGICIDE_CATALOG = [
         ),
     },
     {
+        "Producto": "BELLIS",
+        "Objetivos": "Moteado, Monilia, Oídio",
+        "Tipo": "Sistémico preventivo",
+        "Plazo seguridad días": 7,
+        "Persistencia días": 14,
+        "Ventana curativa días": 2,
+        "FRAC": "C2+C3",
+        "Familia": "SDHI + estrobilurina",
+        "Notas": (
+            "Boscalida 25,2% + Piraclostrobina 12,8%. MISMOS activos y grupo (FRAC 7+11 = C2+C3) "
+            "que Signum, pero REGISTRADO en manzano/peral (reg. 24447): moteado, oídio y MONILIA. "
+            "Máx 3 aplicaciones/campaña, plazo 7 días. Es el equivalente legal de Signum en pepita. "
+            "Cuenta JUNTO a Signum en el tope del grupo SDHI (no se acumulan)."
+        ),
+    },
+    {
         "Producto": "FLINT 50 WG",
         "Objetivos": "Moteado, Oídio",
         "Tipo": "Sistémico preventivo/curativo",
@@ -20359,8 +20377,8 @@ DEFAULT_FUNGICIDE_CATALOG = [
 #  de rotación, que ahora usa ROTATION_CANDIDATES. Además contenía Thiram, prohibido en la UE.)
 
 # Inicialización session_state del catálogo — versión 2 (fuerza reseteo si hay productos obsoletos)
-_CATALOG_VERSION = "v6_2026_registro_manzano"   # fuera Teldor (no reg. manzano); aviso Signum→Bellis
-_VALID_PRODUCTS_2026 = {"SIGNUM", "FLINT 50 WG", "DIFENOCONAZOL",
+_CATALOG_VERSION = "v7_2026_bellis"   # Bellis añadido (registrado en manzano) junto a Signum
+_VALID_PRODUCTS_2026 = {"SIGNUM", "BELLIS", "FLINT 50 WG", "DIFENOCONAZOL",
                         "SWITCH 62.5 WG", "CAPTAN 80 WG", "DITHIANON"}
 _needs_reset = (
     "fungicide_catalog_df" not in st.session_state
@@ -20381,6 +20399,7 @@ PRODUCT_EFFICACY_RANKING = {
         "SWITCH 62.5 WG":  4,
         # Signum: SDHI (C2) + QoI (C3) — alta persistencia, excelente en floración.
         "SIGNUM":          3,
+        "BELLIS":          3,   # mismos activos que Signum (registrado en manzano)
         # Difenoconazol: DMI (G1) — actividad moderada sobre Monilia (secundaria en manzano).
         "DIFENOCONAZOL":   2,
         # Captan: multisitio de contacto — algo de efecto sobre podredumbres.
@@ -20401,6 +20420,7 @@ PRODUCT_EFFICACY_RANKING = {
         "DITHIANON":       3,
         # Signum: SDHI + QoI — buena actividad preventiva sobre Venturia.
         "SIGNUM":          2,
+        "BELLIS":          2,
         # Switch: ciprodinil aporta actividad moderada sobre moteado.
         "SWITCH 62.5 WG":  2,
         # Retirados (histórico):
@@ -20414,6 +20434,7 @@ PRODUCT_EFFICACY_RANKING = {
         "DIFENOCONAZOL":   3,
         # Signum: actividad inferior sobre Podosphaera vs QoI puros.
         "SIGNUM":          1,
+        "BELLIS":          1,
         # Retirados (histórico):
         "FOLICUR 25 WG":   3,
         "LUNA EXPERIENCE": 2,
@@ -20428,6 +20449,7 @@ PRODUCT_FRAC_MAP = {
     "FOLICUR 25 WG":  ["G1"],          # tebuconazol — EN RETIRADA (histórico)
     "LUNA EXPERIENCE":["C2", "G1"],    # fluopyram + tebuconazol — EN RETIRADA (histórico)
     "SIGNUM":         ["C2", "C3"],
+    "BELLIS":         ["C2", "C3"],    # mismos activos que Signum, registrado en manzano
     "FLINT 50 WG":    ["C3"],
     "DIFENOCONAZOL":  ["G1"],          # difenoconazol (Score/Ceremonia/Mavita)
     "SWITCH 62.5 WG": ["D1", "E2"],    # ciprodinil (9) + fludioxonil (12)
@@ -20444,6 +20466,7 @@ PRODUCT_ALIASES = {
     "DITHIANON":      ["dithianon", "ditianon", "delan"],
     "CAPTAN 80 WG":   ["captan", "merpan", "malvin"],
     "SWITCH 62.5 WG": ["switch", "ciprodinil", "cyprodinil", "fludioxonil"],
+    "BELLIS":         ["bellis"],
 }
 
 # Límites de aplicación por campaña según registro MAPA + guías FRAC
@@ -20452,6 +20475,7 @@ PRODUCT_MAX_APPLICATIONS = {
     "FOLICUR 25 WG":  3,   # (retirado) histórico
     "LUNA EXPERIENCE":2,   # (retirado) histórico
     "SIGNUM":         2,   # FRAC C2 (SDHI): máx 2 estricto. FRAC recomienda ≤2 SDHI/campaña.
+    "BELLIS":         3,   # MAPA manzano: máx 3 app/campaña (comparte grupo SDHI con Signum).
     "FLINT 50 WG":    2,   # FRAC C3 (QoI): máx 2 en manzano/peral. MAPA: 2 app/campaña.
     "DIFENOCONAZOL":  4,   # FRAC G1 (DMI): MAPA máx 4 app/campaña (Score/Ceremonia).
     "SWITCH 62.5 WG": 3,   # FRAC 9+12: máx 3 app/campaña.
@@ -20862,6 +20886,8 @@ ROTATION_CANDIDATES = [
      "efic": {"Moteado": 76, "Monilia": 58, "Oídio": 72}, "modo": "Sistémico · prev + curativo"},
     {"nombre": "Signum", "aliases": ["signum"], "fracs": ["7", "11"], "familia": "SDHI + estrobilurina", "multisitio": False,
      "efic": {"Moteado": 86, "Monilia": 78, "Oídio": 68}, "modo": "Sistémico · preventivo"},
+    {"nombre": "Bellis", "aliases": ["bellis"], "fracs": ["7", "11"], "familia": "SDHI + estrobilurina", "multisitio": False,
+     "efic": {"Moteado": 86, "Monilia": 78, "Oídio": 68}, "modo": "Sistémico · preventivo"},
     {"nombre": "Flint", "aliases": ["flint", "trifloxi"], "fracs": ["11"], "familia": "Estrobilurina (QoI)", "multisitio": False,
      "efic": {"Moteado": 74, "Monilia": 55, "Oídio": 82}, "modo": "Sistémico · prev + curativo corto"},
     {"nombre": "Switch", "aliases": ["switch", "fludioxonil"], "fracs": ["9", "12"], "familia": "Anilinopirimidina + fenilpirrol", "multisitio": False,
@@ -20886,6 +20912,7 @@ _USED_FRAC_MAP = [
     (["folicur", "tebuconazol"], ["3"]),
     (["luna"], ["7", "3"]),
     (["signum"], ["7", "11"]),
+    (["bellis"], ["7", "11"]),
     (["flint", "trifloxi"], ["11"]),
     (["difenoconazol", "score", "ceremonia", "mavita", "difcor", "evento", "difenoterra"], ["3"]),
     (["switch", "fludioxonil"], ["9", "12"]),
@@ -22970,6 +22997,7 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
 PHYTOSANITARY_CATALOG = [
     # ── Fungicidas (catálogo propio 2026) ─────────────────────────────────────
     {"Producto": "DIFENOCONAZOL",    "Tipo": "Fungicida",     "Plazo días": 14, "Objetivo": "Moteado, Oídio"},
+    {"Producto": "BELLIS",           "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Moteado, Monilia, Oídio"},
     {"Producto": "SIGNUM",           "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Monilia, Moteado"},
     {"Producto": "FLINT 50 WG",      "Tipo": "Fungicida",     "Plazo días": 14, "Objetivo": "Moteado, Oídio"},
     {"Producto": "SWITCH 62.5 WG",   "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Monilia"},
