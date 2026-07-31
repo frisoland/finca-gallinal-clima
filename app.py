@@ -10491,15 +10491,6 @@ def default_treatment_catalog_copy():
         "comentario": "Multisitio de contacto (FRAC M9). Alternativa al Captan como base "
                       "preventiva de moteado; sin resistencia. Confirmar plazo en la etiqueta.",
     },
-    "Teldor": {
-        "aliases": ["teldor", "fenhexamid", "fenhexamida"],
-        "materias_activas": "fenhexamid",
-        "frac": ["17"],
-        "familia": "Hidroxianilida (fenhexamid)",
-        "eficacia": {"Moteado": 10, "Monilia": 88, "Oídio": 5},
-        "comentario": "Fenhexamid (FRAC 17), específico de Monilia. Plazo corto (3 días): red "
-                      "de seguridad de monilia en precosecha.",
-    },
 }
     return copy.deepcopy(base_catalog)
 
@@ -20292,7 +20283,10 @@ DEFAULT_FUNGICIDE_CATALOG = [
             "respiratoria mitocondrial en el complejo II (SDHI) y III (QoI). Alta actividad "
             "preventiva y larga persistencia (~14-21 días). Especialmente eficaz contra "
             "Monilia laxa en floración y Monilia fructigena en precosecha. "
-            "No mezclar ni alternar de forma consecutiva con Flint (ambos contienen FRAC C3)."
+            "No mezclar ni alternar de forma consecutiva con Flint (ambos contienen FRAC C3). "
+            "⚠️ REGISTRO: en España, Signum NO está autorizado en manzano (solo hueso/almendro/"
+            "hortícolas). El equivalente REGISTRADO en pepita con los mismos activos (boscalida + "
+            "piraclostrobina) es BELLIS. Verifícalo con tu técnico antes de aplicar en manzano."
         ),
     },
     {
@@ -20359,46 +20353,15 @@ DEFAULT_FUNGICIDE_CATALOG = [
             "preventivo, no sistémico. Confirmar el plazo de seguridad en la etiqueta."
         ),
     },
-    {
-        "Producto": "TELDOR 500 SC",
-        "Objetivos": "Monilia",
-        "Tipo": "Contacto/local (preventivo + curativo)",
-        "Plazo seguridad días": 3,
-        "Persistencia días": 10,
-        "Ventana curativa días": 2,
-        "FRAC": "17",
-        "Familia": "Hidroxianilida (fenhexamid)",
-        "Notas": (
-            "Fenhexamid (FRAC 17), específico de Monilia/podredumbre. Grupo propio no usado "
-            "esta campaña y PLAZO DE SEGURIDAD CORTO (3 días) → red de seguridad de monilia "
-            "en PRECOSECHA. No actúa sobre moteado ni oídio."
-        ),
-    },
 ]
 
-# Biblioteca de alternativas para rotación (productos no en almacén pero relevantes).
-# Switch, Captan y Teldor se movieron al ALMACÉN (DEFAULT_FUNGICIDE_CATALOG) → ya no aquí.
-ROTATION_ALTERNATIVES = [
-    {
-        "Producto": "THIRAM (Pomarsol)",
-        "Objetivos": "Moteado",
-        "FRAC": "M3",
-        "Familia": "Multi-sitio (contacto)",
-        "Motivo rotación": "Multi-sitio, sin riesgo de resistencia. Complemento de contacto para reducir dependencia de sistémicos.",
-    },
-    {
-        "Producto": "KUMULUS DF",
-        "Objetivos": "Oídio",
-        "FRAC": "M2",
-        "Familia": "Inorgánico (Azufre)",
-        "Motivo rotación": "Azufre. Grupo M2 sin resistencias conocidas. Solo preventivo. No usar con T>30°C.",
-    },
-]
+# (Antigua ROTATION_ALTERNATIVES eliminada: código muerto tras el rediseño del asesor
+#  de rotación, que ahora usa ROTATION_CANDIDATES. Además contenía Thiram, prohibido en la UE.)
 
 # Inicialización session_state del catálogo — versión 2 (fuerza reseteo si hay productos obsoletos)
-_CATALOG_VERSION = "v5_2026_difeno_multisitio"   # tebuconazol fuera; difeno + Switch + multisitios + Teldor
+_CATALOG_VERSION = "v6_2026_registro_manzano"   # fuera Teldor (no reg. manzano); aviso Signum→Bellis
 _VALID_PRODUCTS_2026 = {"SIGNUM", "FLINT 50 WG", "DIFENOCONAZOL",
-                        "SWITCH 62.5 WG", "CAPTAN 80 WG", "DITHIANON", "TELDOR 500 SC"}
+                        "SWITCH 62.5 WG", "CAPTAN 80 WG", "DITHIANON"}
 _needs_reset = (
     "fungicide_catalog_df" not in st.session_state
     or st.session_state.get("fungicide_catalog_version") != _CATALOG_VERSION
@@ -20416,8 +20379,6 @@ PRODUCT_EFFICACY_RANKING = {
     "Monilia": {
         # Switch: anilinopirimidina + fenilpirrol (9+12) — excelente en Monilia/podredumbre.
         "SWITCH 62.5 WG":  4,
-        # Teldor: fenhexamid (17) — específico de Monilia, muy eficaz en precosecha.
-        "TELDOR 500 SC":   4,
         # Signum: SDHI (C2) + QoI (C3) — alta persistencia, excelente en floración.
         "SIGNUM":          3,
         # Difenoconazol: DMI (G1) — actividad moderada sobre Monilia (secundaria en manzano).
@@ -20472,7 +20433,6 @@ PRODUCT_FRAC_MAP = {
     "SWITCH 62.5 WG": ["D1", "E2"],    # ciprodinil (9) + fludioxonil (12)
     "CAPTAN 80 WG":   ["M4"],          # multisitio de contacto
     "DITHIANON":      ["M9"],          # multisitio de contacto
-    "TELDOR 500 SC":  ["17"],          # fenhexamid (grupo propio 17)
 }
 
 # Alias comerciales → clave de catálogo: reconoce marcas distintas del mismo activo en
@@ -20484,7 +20444,6 @@ PRODUCT_ALIASES = {
     "DITHIANON":      ["dithianon", "ditianon", "delan"],
     "CAPTAN 80 WG":   ["captan", "merpan", "malvin"],
     "SWITCH 62.5 WG": ["switch", "ciprodinil", "cyprodinil", "fludioxonil"],
-    "TELDOR 500 SC":  ["teldor", "fenhexamid", "fenhexamida"],
 }
 
 # Límites de aplicación por campaña según registro MAPA + guías FRAC
@@ -20498,7 +20457,6 @@ PRODUCT_MAX_APPLICATIONS = {
     "SWITCH 62.5 WG": 3,   # FRAC 9+12: máx 3 app/campaña.
     "CAPTAN 80 WG":   8,   # multisitio (M4): límite alto por residuos, sin resistencia.
     "DITHIANON":      6,   # multisitio (M9).
-    "TELDOR 500 SC":  3,   # FRAC 17: máx 3 app/campaña.
 }
 
 # Límite combinado del grupo SDHI (C2): Signum + (Luna, histórico) juntos ≤ 3 por campaña
@@ -20718,7 +20676,7 @@ def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
 
         # 5. Momento CURATIVO: un CONTACTO puro (ventana curativa 0) NO rescata una
         #    infección ya producida → se descarta (penalización fuerte que lo saca del
-        #    ranking). Sistémicos y penetrantes con curativa (Teldor, Switch…) sí valen.
+        #    ranking). Sistémicos y penetrantes con curativa (Switch, difenoconazol…) sí valen.
         if curative_needed:
             _cur_win = pd.to_numeric(row.get("Ventana curativa días"), errors="coerce")
             if pd.notna(_cur_win) and _cur_win <= 0:
@@ -20912,14 +20870,10 @@ ROTATION_CANDIDATES = [
      "efic": {"Moteado": 70, "Monilia": 35, "Oídio": 10}, "modo": "Contacto · preventivo"},
     {"nombre": "Dithianon", "aliases": ["dithianon", "ditianon", "delan"], "fracs": ["M9"], "familia": "Quinona (multisitio)", "multisitio": True,
      "efic": {"Moteado": 72, "Monilia": 20, "Oídio": 5}, "modo": "Contacto · preventivo"},
-    {"nombre": "Teldor", "aliases": ["teldor", "fenhexamid"], "fracs": ["17"], "familia": "Hidroxianilida", "multisitio": False,
-     "efic": {"Moteado": 10, "Monilia": 88, "Oídio": 5}, "modo": "Contacto/local · prev + curativo"},
     {"nombre": "Chorus", "aliases": ["chorus"], "fracs": ["9"], "familia": "Anilinopirimidina", "multisitio": False,
      "efic": {"Moteado": 70, "Monilia": 40, "Oídio": 10}, "modo": "Sistémico · prev + curativo (frío)"},
     {"nombre": "Sercadis", "aliases": ["sercadis", "fluxapiroxad", "fluxapyroxad"], "fracs": ["7"], "familia": "SDHI", "multisitio": False,
      "efic": {"Moteado": 80, "Monilia": 45, "Oídio": 78}, "modo": "Sistémico · prev + curativo"},
-    {"nombre": "Thiram (Pomarsol)", "aliases": ["thiram", "tiram", "pomarsol"], "fracs": ["M3"], "familia": "Multisitio (contacto)", "multisitio": True,
-     "efic": {"Moteado": 60, "Monilia": 30, "Oídio": 5}, "modo": "Contacto · preventivo"},
     {"nombre": "Azufre (Kumulus)", "aliases": ["kumulus", "azufre", "sulfur"], "fracs": ["M2"], "familia": "Inorgánico (azufre)", "multisitio": True,
      "efic": {"Moteado": 30, "Monilia": 5, "Oídio": 65}, "modo": "Contacto · preventivo"},
     {"nombre": "Cobre", "aliases": ["cobre", "oxicloruro", "hidroxido cal", "traxi", "procobre", "copper"], "fracs": ["M1"], "familia": "Cobre (multisitio)", "multisitio": True,
@@ -21002,7 +20956,8 @@ ACTIVE_INGREDIENT_BRANDS = [
     {"activa": "Fluopyram + tebuconazol", "frac": "7+3",
      "marcas": "Luna Experience", "estado": "⛔ En retirada (lleva tebuconazol)"},
     {"activa": "Boscalida + piraclostrobina", "frac": "7+11",
-     "marcas": "Signum · Bellis", "estado": "✅ En uso"},
+     "marcas": "Bellis (manzano/peral) · Signum (solo hueso/almendro/hortícolas)",
+     "estado": "✅ Bellis en manzano · ⚠️ Signum NO registrado en manzano"},
     {"activa": "Trifloxistrobina", "frac": "11",
      "marcas": "Flint 50 WG", "estado": "✅ En uso"},
     {"activa": "Ciprodinil + fludioxonil", "frac": "9+12",
@@ -21012,13 +20967,13 @@ ACTIVE_INGREDIENT_BRANDS = [
     {"activa": "Fluxapiroxad", "frac": "7",
      "marcas": "Sercadis", "estado": "◻️ Alternativa (SDHI)"},
     {"activa": "Fenhexamid", "frac": "17",
-     "marcas": "Teldor 500 SC", "estado": "✅ En uso (monilia)"},
+     "marcas": "Teldor 500 SC", "estado": "❌ NO registrado en manzano (solo hueso)"},
     {"activa": "Captan", "frac": "M4",
      "marcas": "Merpan 80 WDG · Malvin · Captan (genéricos)", "estado": "✅ Multisitio (contacto)"},
     {"activa": "Dithianon", "frac": "M9",
      "marcas": "Delan 700 WG (+ genéricos)", "estado": "✅ Multisitio (contacto)"},
     {"activa": "Tiram", "frac": "M3",
-     "marcas": "Pomarsol · Thianosan", "estado": "◻️ Multisitio (contacto)"},
+     "marcas": "Pomarsol · Thianosan", "estado": "⛔ PROHIBIDO en la UE (no renovado, 2020)"},
     {"activa": "Azufre", "frac": "M2",
      "marcas": "Kumulus DF · Thiovit · Microthiol (+ genéricos)", "estado": "◻️ Oídio (contacto)"},
     {"activa": "Cobre (oxicloruro / hidróxido)", "frac": "M1",
@@ -23020,7 +22975,6 @@ PHYTOSANITARY_CATALOG = [
     {"Producto": "SWITCH 62.5 WG",   "Tipo": "Fungicida",     "Plazo días": 7,  "Objetivo": "Monilia"},
     {"Producto": "CAPTAN 80 WG",     "Tipo": "Fungicida",     "Plazo días": 21, "Objetivo": "Moteado"},
     {"Producto": "DITHIANON",        "Tipo": "Fungicida",     "Plazo días": 28, "Objetivo": "Moteado"},
-    {"Producto": "TELDOR 500 SC",    "Tipo": "Fungicida",     "Plazo días": 3,  "Objetivo": "Monilia"},
     # Retirados (tebuconazol) — se mantienen para reconocer el histórico:
     {"Producto": "FOLICUR 25 WG",    "Tipo": "Fungicida (retirado)", "Plazo días": 7,  "Objetivo": "Moteado, Oídio"},
     {"Producto": "LUNA EXPERIENCE",  "Tipo": "Fungicida (retirado)", "Plazo días": 7,  "Objetivo": "Monilia, Moteado, Oídio"},
