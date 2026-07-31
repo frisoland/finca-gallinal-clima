@@ -20975,36 +20975,36 @@ def render_fungicide_mode_help(key_suffix=""):
 # Materia activa (lo que dice la app) → marcas comerciales habituales en manzano.
 # Orientativo: la lista oficial/actualizada está en el Registro de Fitosanitarios del MAPA.
 ACTIVE_INGREDIENT_BRANDS = [
-    {"activa": "Difenoconazol", "frac": "3",
+    {"activa": "Difenoconazol", "frac": "3", "accion": "Sistémico · prev + curativo",
      "marcas": "Score 25 EC · Ceremonia 25 EC · Mavita 250 EC · Difcor · Evento 25 EC · Difenoterra (+ genéricos)",
      "estado": "✅ En uso (relevo del tebuconazol)"},
-    {"activa": "Tebuconazol", "frac": "3",
+    {"activa": "Tebuconazol", "frac": "3", "accion": "Sistémico · prev + curativo",
      "marcas": "Folicur 25 WG/EW (+ genéricos)", "estado": "⛔ En retirada en manzano"},
-    {"activa": "Fluopyram + tebuconazol", "frac": "7+3",
+    {"activa": "Fluopyram + tebuconazol", "frac": "7+3", "accion": "Sistémico · prev + curativo",
      "marcas": "Luna Experience", "estado": "⛔ En retirada (lleva tebuconazol)"},
-    {"activa": "Boscalida + piraclostrobina", "frac": "7+11",
+    {"activa": "Boscalida + piraclostrobina", "frac": "7+11", "accion": "Sistémico · preventivo",
      "marcas": "Bellis (manzano/peral) · Signum (solo hueso/almendro/hortícolas)",
      "estado": "✅ Bellis en manzano · ⚠️ Signum NO registrado en manzano"},
-    {"activa": "Trifloxistrobina", "frac": "11",
+    {"activa": "Trifloxistrobina", "frac": "11", "accion": "Penetrante/translaminar · prev + curativo corto",
      "marcas": "Flint 50 WG", "estado": "✅ En uso"},
-    {"activa": "Ciprodinil + fludioxonil", "frac": "9+12",
+    {"activa": "Ciprodinil + fludioxonil", "frac": "9+12", "accion": "Penetrante/local · prev + curativo",
      "marcas": "Switch 62.5 WG", "estado": "✅ En uso (monilia)"},
-    {"activa": "Ciprodinil", "frac": "9",
+    {"activa": "Ciprodinil", "frac": "9", "accion": "Sistémico · prev + curativo",
      "marcas": "Chorus 50 WG", "estado": "◻️ Alternativa (moteado en frío)"},
-    {"activa": "Fluxapiroxad", "frac": "7",
+    {"activa": "Fluxapiroxad", "frac": "7", "accion": "Sistémico · prev + curativo",
      "marcas": "Sercadis", "estado": "◻️ Alternativa (SDHI)"},
-    {"activa": "Fenhexamid", "frac": "17",
+    {"activa": "Fenhexamid", "frac": "17", "accion": "Contacto/local · prev + curativo",
      "marcas": "Teldor 500 SC", "estado": "❌ NO registrado en manzano (solo hueso)"},
-    {"activa": "Captan", "frac": "M4",
-     "marcas": "Merpan 80 WDG · Malvin · Captan (genéricos)", "estado": "✅ Multisitio (contacto)"},
-    {"activa": "Dithianon", "frac": "M9",
-     "marcas": "Delan 700 WG (+ genéricos)", "estado": "✅ Multisitio (contacto)"},
-    {"activa": "Tiram", "frac": "M3",
+    {"activa": "Captan", "frac": "M4", "accion": "Contacto · preventivo",
+     "marcas": "Merpan 80 WDG · Malvin · Captan (genéricos)", "estado": "✅ Registrado (multisitio)"},
+    {"activa": "Dithianon", "frac": "M9", "accion": "Contacto · preventivo",
+     "marcas": "Delan 700 WG (+ genéricos)", "estado": "✅ Registrado (multisitio)"},
+    {"activa": "Tiram", "frac": "M3", "accion": "Contacto · preventivo",
      "marcas": "Pomarsol · Thianosan", "estado": "⛔ PROHIBIDO en la UE (no renovado, 2020)"},
-    {"activa": "Azufre", "frac": "M2",
-     "marcas": "Kumulus DF · Thiovit · Microthiol (+ genéricos)", "estado": "◻️ Oídio (contacto)"},
-    {"activa": "Cobre (oxicloruro / hidróxido)", "frac": "M1",
-     "marcas": "Traxi · Procobre · Cuprocol · Nordox (+ genéricos)", "estado": "✅ Multisitio (contacto)"},
+    {"activa": "Azufre", "frac": "M2", "accion": "Contacto · preventivo",
+     "marcas": "Kumulus DF · Thiovit · Microthiol (+ genéricos)", "estado": "◻️ Registrado (oídio)"},
+    {"activa": "Cobre (oxicloruro / hidróxido)", "frac": "M1", "accion": "Contacto · preventivo",
+     "marcas": "Traxi · Procobre · Cuprocol · Nordox (+ genéricos)", "estado": "✅ Registrado (multisitio)"},
 ]
 
 
@@ -21026,20 +21026,27 @@ def render_active_ingredient_reference(key_suffix=""):
         _rows = ACTIVE_INGREDIENT_BRANDS
         if _q:
             _rows = [r for r in _rows if _q in r["activa"].lower() or _q in r["marcas"].lower()
-                     or _q in r["frac"].lower()]
+                     or _q in r["frac"].lower() or _q in r.get("accion", "").lower()]
         if not _rows:
             st.info("Sin coincidencias. Prueba con otra parte del nombre.")
             return
+        st.caption(
+            "**Acción:** *Sistémico* = se absorbe y se mueve (preventivo + curativo, resiste la "
+            "lluvia una vez dentro) · *Penetrante* = entra en la hoja pero se mueve poco · "
+            "*Contacto* = en superficie, solo preventivo, se lava con la lluvia. Es distinto del "
+            "**Estado** (registro)."
+        )
         _th  = "background:#1a2e1e;color:white;padding:7px 10px;font-weight:600;font-size:12.5px;text-align:left;white-space:nowrap;"
         _td  = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12.5px;white-space:nowrap;"
-        _tdw = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12.5px;white-space:normal;min-width:260px;"
+        _tdw = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12.5px;white-space:normal;min-width:240px;"
         _hdr = (f'<th style="{_th}">Materia activa (lo que dice la app)</th>'
-                f'<th style="{_th}">FRAC</th><th style="{_th}">Marcas comerciales</th>'
-                f'<th style="{_th}">Estado</th>')
+                f'<th style="{_th}">FRAC</th><th style="{_th}">Acción</th>'
+                f'<th style="{_th}">Marcas comerciales</th><th style="{_th}">Estado</th>')
         _body = ""
         for _r in _rows:
             _body += (f'<tr><td style="{_td}"><b>{_r["activa"]}</b></td>'
                       f'<td style="{_td}">{_r["frac"]}</td>'
+                      f'<td style="{_td}">{_r.get("accion", "—")}</td>'
                       f'<td style="{_tdw}">{_r["marcas"]}</td>'
                       f'<td style="{_td}">{_r["estado"]}</td></tr>')
         st.markdown(
