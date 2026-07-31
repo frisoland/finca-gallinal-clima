@@ -20990,7 +20990,7 @@ ACTIVE_INGREDIENT_BRANDS = [
     {"activa": "Ciprodinil + fludioxonil", "frac": "9+12", "accion": "Penetrante/local · prev + curativo",
      "marcas": "Switch 62.5 WG", "estado": "✅ En uso (monilia)"},
     {"activa": "Ciprodinil", "frac": "9", "accion": "Sistémico · prev + curativo",
-     "marcas": "Chorus 50 WG", "estado": "◻️ Alternativa (moteado en frío)"},
+     "marcas": "Chorus 50 WG", "estado": "◻️ Alternativa (moteado) · mejor en PRIMAVERA con frío (también válido en calor)"},
     {"activa": "Fluxapiroxad", "frac": "7", "accion": "Sistémico · prev + curativo",
      "marcas": "Sercadis", "estado": "◻️ Alternativa (SDHI)"},
     {"activa": "Fenhexamid", "frac": "17", "accion": "Contacto/local · prev + curativo",
