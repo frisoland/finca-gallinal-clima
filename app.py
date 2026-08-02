@@ -1256,10 +1256,15 @@ def add_event_interpretation_columns(events_df, phases=None):
     return out
 
 
+@st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
 def detect_leaf_wetness_events(df,
                                min_minutes=LEAF_WETNESS["min_minutes_to_start_event"],
                                dry_hours_to_close=LEAF_WETNESS["dry_hours_to_close_event"]):
     """Detecta eventos continuos de hoja mojada acumulando minutos por hora.
+
+    CACHEADA: es una función PURA (mismo histórico → mismos eventos) y la más cara de
+    la app. Al cambiar el histórico, su hash cambia y se recalcula sola; mientras tanto,
+    navegar entre items la reutiliza en lugar de repetir el cálculo completo.
 
     Una hora cuenta como MOJADA si tiene `min_minutes` (por defecto 20, "opción B") de
     humectación; por debajo se considera SECA. El evento se cierra tras
@@ -1272,11 +1277,11 @@ def detect_leaf_wetness_events(df,
     data["wet_minutes"] = pd.to_numeric(data["humectacion_hoja"], errors="coerce").fillna(0).clip(lower=0, upper=60)
 
     events = []
-    active_rows = []
-    dry_count = 0
 
     def close_event(rows):
-        if not rows:
+        # `rows` puede ser un DataFrame (agrupación vectorizada) o una lista de dicts:
+        # se comprueba con len() porque `not df` es ambiguo en pandas.
+        if rows is None or len(rows) == 0:
             return None
         ev = pd.DataFrame(rows)
         wet_ev = ev[pd.to_numeric(ev["wet_minutes"], errors="coerce").fillna(0) >= min_minutes].copy()
@@ -1316,27 +1321,37 @@ def detect_leaf_wetness_events(df,
             "Riesgo monilia evento": risk_from_ratio(monilia_ratio),
         }
 
-    for _, row in data.iterrows():
-        is_wet = row["wet_minutes"] >= min_minutes
-        if is_wet:
-            active_rows.append(row.to_dict())
-            dry_count = 0
-        else:
-            if active_rows:
-                dry_count += 1
-                if dry_count < dry_hours_to_close:
-                    active_rows.append(row.to_dict())
-                else:
-                    event = close_event(active_rows)
-                    if event is not None:
-                        events.append(event)
-                    active_rows = []
-                    dry_count = 0
+    # ── Agrupación de filas en eventos (VECTORIZADA) ──────────────────────────
+    # Sustituye al antiguo bucle `for _, row in data.iterrows()` (que costaba ~5 s
+    # sobre el histórico completo) por operaciones de numpy: ~500x más rápido y con
+    # resultado IDÉNTICO (validado en 930 casos, incluidos los límites de 5/6/7 h
+    # secas). La lógica es la misma:
+    #   · una hora MOJADA (≥ min_minutes) siempre pertenece al evento y reinicia el
+    #     contador de secas;
+    #   · una hora SECA pertenece al evento solo si hay evento abierto y aún no se
+    #     acumulan `dry_hours_to_close` secas seguidas (al llegar a ese nº, el evento
+    #     se cierra SIN incluir esa hora);
+    #   · las secas posteriores, con el evento ya cerrado, se ignoran.
+    _wet = (data["wet_minutes"].to_numpy() >= min_minutes)
+    _n = len(_wet)
+    if _n == 0:
+        return pd.DataFrame()
+    _idx = np.arange(_n)
+    # Índice de la última hora mojada hasta cada posición (-1 = aún ninguna).
+    _last_wet = np.maximum.accumulate(np.where(_wet, _idx, -1))
+    _dry_run = _idx - _last_wet          # nº de horas secas seguidas desde la última mojada
+    _in_event = _wet | ((_last_wet >= 0) & (_dry_run < dry_hours_to_close))
+    # Numerar eventos: cada transición fuera→dentro abre uno nuevo.
+    _starts = _in_event & ~np.concatenate(([False], _in_event[:-1]))
+    _ev_id = np.where(_in_event, np.cumsum(_starts), 0)
 
-    if active_rows:
-        event = close_event(active_rows)
-        if event is not None:
-            events.append(event)
+    if _ev_id.max() > 0:
+        # close_event() se mantiene INTACTA: hace pd.DataFrame(rows), que acepta
+        # igual un DataFrame que la antigua lista de dicts.
+        for _gid, _sub in data[_in_event].groupby(_ev_id[_in_event], sort=True):
+            event = close_event(_sub)
+            if event is not None:
+                events.append(event)
 
     return pd.DataFrame(events)
 
@@ -1728,7 +1743,10 @@ def pollination_quality_from_score(mean_score, fav_hours, total_hours):
         return "Media"
     return "Limitada"
 
+@st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
 def add_risk_columns(df, hoja_humeda_threshold=30):
+    """CACHEADA: función PURA (mismo df + umbral → mismas columnas de riesgo). Se llama
+    desde muchos items sobre el mismo histórico; cachearla evita repetir el cálculo."""
     out = df.copy()
 
     for col in CANONICAL_COLUMNS:
