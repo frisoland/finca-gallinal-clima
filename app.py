@@ -11245,9 +11245,6 @@ def health_tab(history, soil_type, hoja_threshold):
         end_ts=period_end,
     )
 
-    with st.expander("Plan de rotación FRAC para próxima campaña", expanded=False):
-        st.info("El plan de rotación FRAC está disponible en la pestaña **Actuaciones**, para evitar duplicar controles internos de Streamlit.")
-
     st.markdown("#### Eventos de humectación foliar")
     if has_sensor(period_df, "Humectación de hoja"):
         events_df = detect_leaf_wetness_events(period_df)
