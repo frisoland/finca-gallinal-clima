@@ -739,7 +739,6 @@ SOIL_PROFILES = {
 }
 
 
-
 # La estación entrega la radiación solar horaria en MJ/m².
 # Conversión: 1 kWh/m² = 3.6 MJ/m².
 MJ_TO_KWH = 1 / 3.6
@@ -1073,7 +1072,6 @@ def wet_periods_hours(series, threshold=30):
     return periods
 
 
-
 def scab_mills_threshold_hours(temp_c):
     """Umbral orientativo de horas húmedas equivalentes para moteado tipo Mills/LaPlante."""
     if pd.isna(temp_c):
@@ -1126,8 +1124,6 @@ def risk_from_ratio(ratio):
     if ratio >= 0.75:
         return "Medio"
     return "Bajo"
-
-
 
 
 def ratio_interpretation_text(ratio):
@@ -1488,13 +1484,6 @@ def growing_degree_hours(hour_temps, t_base=4.0, t_opt=25.0, t_crit=36.0):
     return gdh
 
 
-def winter_season_label(ts):
-    year = ts.year
-    if ts.month >= 11:
-        return f"{year}/{year + 1}"
-    return f"{year - 1}/{year}"
-
-
 # ── Periodo de acumulación de frío invernal: CRITERIO ÚNICO de toda la app ────
 # Fuente: SERIDA / Delgado, Dapena, Fernández & Luedeling (2021), estudio de la
 # sidra del NO de España (comarca de la sidra, variedades locales como 'Regona').
@@ -1667,7 +1656,6 @@ def available_chill_analysis_years(df):
             years.append(y)
 
     return years
-
 
 
 def pollination_score_row(row):
@@ -1872,17 +1860,6 @@ def get_daily_extreme(g, value_col, agg="mean", mode="max"):
     return round(float(daily.loc[idx]), 2), idx.strftime("%d/%m/%Y")
 
 
-def pollination_quality(fav, total):
-    if total == 0:
-        return "Fuera de ventana"
-    pct = fav / total * 100
-    if pct >= 55:
-        return "Buena"
-    if pct >= 30:
-        return "Media"
-    return "Limitada"
-
-
 def weekly_summary(df, soil_type):
     if df.empty:
         return pd.DataFrame()
@@ -2001,7 +1978,6 @@ def weekly_summary(df, soil_type):
         })
 
     return pd.DataFrame(rows)
-
 
 
 def period_summary(df, soil_type, start_ts, end_ts):
@@ -2303,16 +2279,6 @@ def chill_column_comparison(df, analysis_year):
     return pd.DataFrame(rows)
 
 
-def classify_index(value):
-    if pd.isna(value):
-        return "sin dato"
-    if value >= 60:
-        return "alto"
-    if value >= 40:
-        return "medio"
-    return "bajo"
-
-
 def render_interpreted_report(summary, availability, soil_type):
     """
     Informe interpretado en bloques visuales, no como un único párrafo.
@@ -2534,46 +2500,10 @@ def render_interpreted_report(summary, availability, soil_type):
                 st.write(f"- {msg}")
 
 
-
-
 def iso_week_period(year, week):
     start = pd.Timestamp.fromisocalendar(int(year), int(week), 1)
     end = pd.Timestamp.fromisocalendar(int(year), int(week), 7) + pd.Timedelta(hours=23)
     return start, end
-
-
-def add_numeric_deviation_table(df, base_label_col="Comparación", base_row_index=0):
-    if df.empty or len(df) < 2:
-        return pd.DataFrame()
-
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    if not numeric_cols:
-        return pd.DataFrame()
-
-    base = df.iloc[base_row_index][numeric_cols]
-    base_name = df.iloc[base_row_index].get(base_label_col, "Base")
-    rows = []
-
-    for i, row in df.iterrows():
-        if i == base_row_index:
-            continue
-        label = row.get(base_label_col, f"Fila {i}")
-        for col in numeric_cols:
-            base_val = base[col]
-            val = row[col]
-            if pd.isna(base_val) or pd.isna(val):
-                continue
-            rows.append({
-                "Comparado": label,
-                "Base": base_name,
-                "Variable": col,
-                "Valor comparado": round(float(val), 3),
-                "Valor base": round(float(base_val), 3),
-                "Diferencia": round(float(val - base_val), 3),
-                "Diferencia %": round(float((val - base_val) / base_val * 100), 2) if base_val != 0 else np.nan,
-            })
-
-    return pd.DataFrame(rows)
 
 
 def compare_chill_campaigns(history, years):
@@ -2594,7 +2524,6 @@ def compare_chill_campaigns(history, years):
             row["Año análisis"] = int(y)
             rows.append(row)
     return pd.DataFrame(rows)
-
 
 
 def monthly_chill_breakdown(history, years):
@@ -2698,17 +2627,6 @@ def compare_iso_weeks(history, years, week, soil_type, hoja_threshold):
         rows.append(row)
 
     return pd.DataFrame(rows)
-
-
-
-def pct_diff_text(base, val):
-    if pd.isna(base) or pd.isna(val):
-        return "sin dato comparable"
-    diff = val - base
-    if base == 0:
-        return f"{diff:+.2f} de diferencia"
-    pct = diff / base * 100
-    return f"{diff:+.2f} ({pct:+.1f} %)"
 
 
 def value_text(v, suffix=""):
@@ -3020,8 +2938,6 @@ def render_chill_comparison_explanation(cmp_df, monthly_df=None):
         )
 
 
-
-
 # Base limpia de campos revisada manualmente desde Agroptima.
 FIELDS_BASE_ROWS = [
     {"Campo": "Campazón", "Superficie ha": 1.99, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
@@ -3291,8 +3207,6 @@ def fields_tab():
     )
 
 
-
-
 ACTIVITY_COLUMNS = [
     "Fecha",
     "Campos",
@@ -3468,8 +3382,6 @@ def merge_activities_history(existing_df, new_df, mode):
 
     clean = merged.drop(columns=[c for c in ["_clave_fallback", "_clave_importacion"] if c in merged.columns])
     return clean, stats
-
-
 
 
 # Catálogo de productos específicos para carpocapsa
@@ -3774,7 +3686,6 @@ def render_activities_summaries(activities_df):
         st.success("Todos los campos del histórico se reconocen contra la base limpia.")
 
 
-
 def coverage_advice_from_post_treatment(rain_mm, max_scab_ratio, max_monilia_ratio, days_since):
     """Aviso orientativo simple según lluvia/eventos posteriores al último tratamiento."""
     rain_mm = 0.0 if pd.isna(rain_mm) else float(rain_mm)
@@ -3967,8 +3878,6 @@ def render_treatment_sanitary_cross():
                 f"máx ratio monilia: **{row['Máx ratio monilia posterior']}**. "
                 f"**{row['Aviso orientativo']}**"
             )
-
-
 
 
 def advisory_priority_label(text):
@@ -4189,8 +4098,6 @@ def render_field_sanitary_report():
         mime="text/csv",
         key="download_field_sanitary_report",
     )
-
-
 
 
 SUPABASE_ACTIVITIES_TABLE = "agroptima_activities"
@@ -4459,8 +4366,6 @@ def render_supabase_activities_panel():
                 st.success(msg)
             else:
                 st.error(msg)
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4854,32 +4759,6 @@ def activities_tab():
     render_field_sanitary_report()
 
 
-
-
-def parse_user_date(value, fallback, min_allowed, max_allowed):
-    """Acepta YYYY-MM-DD o DD/MM/YYYY."""
-    if value is None or str(value).strip() == "":
-        return pd.Timestamp(fallback).date(), None
-
-    txt = str(value).strip()
-    parsed = pd.to_datetime(txt, errors="coerce", dayfirst=False)
-    if pd.isna(parsed):
-        parsed = pd.to_datetime(txt, errors="coerce", dayfirst=True)
-
-    if pd.isna(parsed):
-        return pd.Timestamp(fallback).date(), f"No se pudo interpretar la fecha '{value}'. Usa YYYY-MM-DD o DD/MM/YYYY."
-
-    d = parsed.date()
-    if d < min_allowed:
-        return min_allowed, f"La fecha {d} es anterior al histórico. Se ha ajustado a {min_allowed}."
-    if d > max_allowed:
-        return max_allowed, f"La fecha {d} es posterior al histórico. Se ha ajustado a {max_allowed}."
-
-    return d, None
-
-
-
-
 SUPABASE_CLIMATE_TABLE = "climate_hourly"
 SUPABASE_SNAPSHOT_BUCKET = "climate-snapshots"
 SUPABASE_FULL_CLIMATE_SNAPSHOT = "historico_clima_completo.parquet"
@@ -5078,7 +4957,6 @@ def load_climate_from_supabase(page_size=1000, max_pages=500, use_cache=True):
     return df, msg
 
 
-
 def test_supabase_climate_connection():
     """Prueba simple de lectura contra la tabla climate_hourly."""
     if not supabase_is_configured():
@@ -5102,9 +4980,6 @@ def test_supabase_climate_connection():
         return True, "Conexión correcta con Supabase y tabla climate_hourly.", endpoint
 
     return False, f"Error de conexión: {response.status_code} · {response.text[:500]}", endpoint
-
-
-
 
 
 def climate_snapshot_storage_url(path=SUPABASE_FULL_CLIMATE_SNAPSHOT):
@@ -5364,7 +5239,6 @@ def render_climate_snapshot_panel():
                 st.rerun()
 
 
-
 def render_supabase_climate_panel():
     st.markdown("### Modo nube Supabase")
 
@@ -5463,8 +5337,6 @@ def render_supabase_climate_panel():
             st.success(msg)
         else:
             st.error(msg)
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -5701,112 +5573,6 @@ def _monilia_level_from_value(v):
     if m >= 50:  return "🟠 Riesgo moderado"
     if m >= 25:  return "🟡 Riesgo ligero"
     return "🟢 Sin riesgo"
-
-
-def _mills_risk(temp_c, horas_mojadura):
-    """Tabla de Mills simplificada: devuelve nivel de riesgo de infección primaria."""
-    if pd.isna(temp_c) or horas_mojadura == 0:
-        return "🟢 Sin riesgo"
-    t = float(temp_c)
-    h = int(horas_mojadura)
-    # Tabla Mills: (T °C) → horas mínimas de mojadura para infección ligera / moderada / grave
-    # Fuente: Mills & Laplante 1951, adaptación práctica
-    if t < 6 or t > 28:
-        return "🟢 Sin riesgo"
-    mills = [
-        (6,  28, 18),   # T ≥ 6°C: 28h ligera / 18h moderada   (ojo: poco probable con lluvia)
-        (7,  21, 14),
-        (8,  18, 12),
-        (9,  15, 11),
-        (10, 12, 9),
-        (11, 11, 8),
-        (12, 10, 7),
-        (13, 9,  6),
-        (14, 8,  6),
-        (15, 8,  5),
-        (16, 7,  5),
-        (17, 7,  5),
-        (18, 6,  5),
-        (19, 6,  4),
-        (20, 6,  4),
-        (21, 6,  4),
-        (22, 7,  4),
-        (23, 8,  5),
-        (24, 9,  6),
-        (25, 10, 7),
-        (26, 12, 8),
-        (27, 15, 10),
-    ]
-    row = next((r for r in mills if int(r[0]) == int(round(t))), None)
-    if row is None:
-        return "🟢 Sin riesgo"
-    _, h_ligera, h_grave = row
-    if h >= h_ligera:
-        return "🔴 Infección grave"
-    if h >= h_grave:
-        return "🟠 Infección moderada"
-    if h >= max(h_grave - 2, 1):
-        return "🟡 Riesgo ligero"
-    return "🟢 Sin riesgo"
-
-
-def _monilia_risk(temp_c, hr, lluvia_mm, horas_mojadura):
-    """Riesgo de monilia basado en temperatura, humedad y mojadura."""
-    if pd.isna(temp_c):
-        return "🟢 Sin riesgo"
-    t   = float(temp_c)
-    h   = float(hr)   if pd.notna(hr)       else 0.0
-    ll  = float(lluvia_mm) if pd.notna(lluvia_mm) else 0.0
-    hm  = int(horas_mojadura)
-
-    if t < 15 or t > 30:
-        return "🟢 Sin riesgo"
-    if h > 90 and hm >= 6 and 18 <= t <= 28:
-        return "🔴 Riesgo alto"
-    if (h > 85 and hm >= 3) or (ll > 3 and 18 <= t <= 28):
-        return "🟠 Riesgo moderado"
-    if h > 80 or ll > 0:
-        return "🟡 Riesgo ligero"
-    return "🟢 Sin riesgo"
-
-
-def forecast_cumulative_dd(forecast_df, history_df, biofix_date, base_temp=10.0, upper_temp=31.1):
-    """
-    Calcula DD acumulados desde biofix incluyendo la predicción.
-    Devuelve un DataFrame con Fecha y DD_acumulados para mostrar la evolución prevista.
-    """
-    if forecast_df is None or forecast_df.empty:
-        return pd.DataFrame()
-
-    # Histórico desde biofix
-    if history_df is not None and not history_df.empty and biofix_date is not None:
-        hist_desde_biofix = history_df[
-            pd.to_datetime(history_df["fecha_hora"]) >= pd.Timestamp(biofix_date)
-        ].copy()
-        combined = pd.concat([hist_desde_biofix, forecast_df], ignore_index=True)
-        combined = combined.drop_duplicates("fecha_hora", keep="last")
-    else:
-        combined = forecast_df.copy()
-
-    combined["fecha_hora"] = pd.to_datetime(combined["fecha_hora"])
-    combined["temp_media"] = pd.to_numeric(combined["temp_media"], errors="coerce")
-    combined["_fecha"] = combined["fecha_hora"].dt.date
-
-    daily = (
-        combined.groupby("_fecha")["temp_media"]
-        .mean()
-        .reset_index()
-        .rename(columns={"_fecha": "Fecha", "temp_media": "_T_media"})
-    )
-    daily["_T_media"] = daily["_T_media"].clip(upper=float(upper_temp))
-    daily["DD_dia"] = (daily["_T_media"] - base_temp).clip(lower=0)
-    daily["DD_acumulados"] = daily["DD_dia"].cumsum().round(1)
-
-    # Marcar qué días son predicción
-    today = pd.Timestamp.now().normalize().date()
-    daily["Tipo"] = daily["Fecha"].apply(lambda d: "Predicción" if d >= today else "Real")
-
-    return daily[["Fecha", "DD_dia", "DD_acumulados", "Tipo"]].copy()
 
 
 def sencrop_is_configured():
@@ -6080,7 +5846,6 @@ def render_sencrop_panel():
                     st.write(f"Error: {e}")
 
     st.info("ℹ️ Para descargar datos, ve a la pestaña **⬇️ Actualizar datos**.")
-
 
 
 def render_sencrop_forecast_panel():
@@ -6845,7 +6610,6 @@ def get_period_data(history, soil_type, hoja_threshold):
     return period, period_df, avail, summary, global_summary
 
 
-
 def instructions_tab():
     st.subheader("Instrucciones de uso · Finca Gallinal")
 
@@ -7050,7 +6814,6 @@ def instructions_tab():
         )
 
     st.caption("v8.9.7 · Finca Gallinal · Plataforma agroclimática")
-
 
 
 def home_today_tab(history, soil_type, hoja_threshold):
@@ -7601,8 +7364,6 @@ El modelo más avanzado y preciso para climas mediterráneos y subtropicales, de
                 """)
 
 
-
-
 MONTH_NAMES_ES = {
     1: "Enero",
     2: "Febrero",
@@ -7926,7 +7687,6 @@ def render_visual_comparison_report(cmp_df, title="Informe comparativo visual"):
         file_name="informe_comparativo_visual.csv",
         mime="text/csv",
     )
-
 
 
 # ── Climatología mensual: media/total por mes y año, con anomalía vs otros años ──
@@ -8462,10 +8222,6 @@ def comparator_tab(history, soil_type, hoja_threshold):
                     key="dl_clim_rain_v1", use_container_width=True)
 
 
-
-
-
-
 def first_existing_col(df, candidates):
     """Devuelve la primera columna existente entre varias opciones."""
     for c in candidates:
@@ -8889,20 +8645,6 @@ def run_soil_depletion(daily_df, taw_mm, p=APPLE_DEPLETION_P, cover=1.0, irr_by_
             "reserva_pct": 100 * (taw - Dr) / taw,
             "riego_mm": (round(Dr) if Dr >= raw else 0),
             "riego_total": round(riego_total, 1)}
-    return out, meta
-
-
-def soil_water_balance(history_df, soil_type, upto_ts, lat_deg=GALLINAL_LAT_DEG,
-                       root_depth_m=APPLE_ROOT_DEPTH_M, p=APPLE_DEPLETION_P):
-    """Compat: balance para un soil_type genérico (AWC por textura × prof.). Para el
-    balance POR PARCELA usa daily_et_frame + run_soil_depletion con el TAW de la parcela."""
-    daily, _met = daily_et_frame(history_df, upto_ts, lat_deg)
-    if daily is None or daily.empty:
-        return pd.DataFrame(), {}
-    taw = SOIL_AWC_MM_PER_M.get(soil_type, 150) * root_depth_m
-    out, meta = run_soil_depletion(daily, taw, p)
-    meta["AWC"] = SOIL_AWC_MM_PER_M.get(soil_type, 150)
-    meta["root_depth"] = root_depth_m
     return out, meta
 
 
@@ -9707,180 +9449,6 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
     )
 
 
-def render_irrigation_recommendation(period_df, soil_type, hoja_threshold, start_ts=None, end_ts=None):
-    st.subheader("Recomendación de riego orientativa")
-
-    if period_df is None or period_df.empty:
-        st.info("No hay datos suficientes para generar una recomendación de riego.")
-        return
-
-    df = period_df.copy()
-    if start_ts is None:
-        start_ts = df["fecha_hora"].min()
-    if end_ts is None:
-        end_ts = df["fecha_hora"].max()
-
-    cols = get_sensor_columns_safe(df)
-
-    phases = current_phenology_phase_for_period(pd.Timestamp(start_ts), pd.Timestamp(end_ts))
-    phases_text = ", ".join(phases) if phases else "sin fase fenológica registrada"
-
-    rain_s = get_numeric_series(df, [cols["rain"]]) if cols["rain"] else pd.Series(0.0, index=df.index)
-    temp_s = get_numeric_series(df, [cols["temp"]], default=np.nan) if cols["temp"] else pd.Series(np.nan, index=df.index)
-    hum_s = get_numeric_series(df, [cols["hum"]], default=np.nan) if cols["hum"] else pd.Series(np.nan, index=df.index)
-    rad_s = get_numeric_series(df, [cols["rad"]]) if cols["rad"] else pd.Series(0.0, index=df.index)
-    wind_s = get_numeric_series(df, [cols["wind"]], default=np.nan) if cols["wind"] else pd.Series(np.nan, index=df.index)
-
-    rain = float(rain_s.sum())
-    temp_mean = float(temp_s.mean()) if temp_s.notna().any() else float("nan")
-    temp_max = float(temp_s.max()) if temp_s.notna().any() else float("nan")
-    hr_mean = float(hum_s.mean()) if hum_s.notna().any() else float("nan")
-    rad_mj = float(rad_s.sum()) if rad_s.notna().any() else 0.0
-    wind_mean = float(wind_s.mean()) if wind_s.notna().any() else float("nan")
-
-    try:
-        tmp = df.copy()
-        evap_index = evaporation_index(tmp, soil_type)
-    except Exception:
-        evap_index = np.nan
-
-    if isinstance(evap_index, pd.Series):
-        evap_value = float(evap_index.mean())
-    else:
-        evap_value = float(evap_index) if pd.notna(evap_index) else np.nan
-
-    soil_lower = str(soil_type).lower()
-    fast_soil = any(w in soil_lower for w in ["aren", "franco-aren"])
-    heavy_soil = any(w in soil_lower for w in ["arcill"])
-
-    phase_lower = " ".join(phases).lower()
-    water_sensitive = any(w in phase_lower for w in ["cuaj", "fruto", "madur"])
-    low_sensitive = any(w in phase_lower for w in ["reposo", "caída"])
-
-    score = 0
-    reasons = []
-
-    if rain < 2:
-        score += 2
-        reasons.append(f"lluvia muy baja ({rain:.1f} mm)")
-    elif rain < 8:
-        score += 1
-        reasons.append(f"lluvia escasa ({rain:.1f} mm)")
-    elif rain >= 25:
-        score -= 2
-        reasons.append(f"lluvia suficiente/alta ({rain:.1f} mm)")
-    elif rain >= 12:
-        score -= 1
-        reasons.append(f"lluvia moderada ({rain:.1f} mm)")
-
-    if pd.notna(evap_value):
-        if evap_value >= 65:
-            score += 3
-            reasons.append(f"demanda evaporativa alta ({evap_value:.0f}/100)")
-        elif evap_value >= 45:
-            score += 2
-            reasons.append(f"demanda evaporativa media-alta ({evap_value:.0f}/100)")
-        elif evap_value >= 30:
-            score += 1
-            reasons.append(f"demanda evaporativa moderada ({evap_value:.0f}/100)")
-
-    if pd.notna(temp_max) and temp_max >= 30:
-        score += 1
-        reasons.append(f"temperatura máxima elevada ({temp_max:.1f} ºC)")
-    if pd.notna(hr_mean) and hr_mean < 55:
-        score += 1
-        reasons.append(f"humedad relativa media baja ({hr_mean:.0f} %)")
-
-    if rad_mj >= 120:
-        score += 1
-        reasons.append(f"radiación acumulada alta ({rad_mj:.1f} MJ/m²)")
-
-    if pd.notna(wind_mean) and wind_mean >= 15:
-        score += 1
-        reasons.append(f"viento medio relevante ({wind_mean:.1f})")
-
-    if fast_soil:
-        score += 1
-        reasons.append("suelo con menor retención de agua")
-    if heavy_soil and rain >= 12:
-        score -= 1
-        reasons.append("suelo con mayor retención y lluvia reciente")
-
-    if water_sensitive:
-        score += 1
-        reasons.append("fase sensible a estrés hídrico")
-    if low_sensitive:
-        score -= 1
-        reasons.append("fase de menor demanda hídrica")
-
-    if score >= 6:
-        need = "Alta"
-        box = st.error
-    elif score >= 3:
-        need = "Moderada"
-        box = st.warning
-    elif score >= 1:
-        need = "Baja-moderada"
-        box = st.info
-    else:
-        need = "Baja"
-        box = st.success
-
-    box(f"Necesidad orientativa de riego: **{need}**")
-
-    st.write(f"**Fase fenológica detectada:** {phases_text}.")
-    st.write(phase_sensitivity_text(phases))
-
-    if reasons:
-        st.write("**Motivos principales:** " + "; ".join(reasons) + ".")
-    else:
-        st.write("No se detecta una demanda hídrica relevante con los datos del periodo.")
-
-    missing = []
-    if not cols["rain"]:
-        missing.append("precipitación")
-    if not cols["temp"]:
-        missing.append("temperatura")
-    if not cols["hum"]:
-        missing.append("humedad relativa")
-    if not cols["rad"]:
-        missing.append("radiación")
-    if missing:
-        st.caption("Aviso: la recomendación de riego es más limitada porque faltan columnas de " + ", ".join(missing) + ".")
-
-    st.markdown("#### Recomendación práctica")
-
-    recs = []
-    if need == "Alta":
-        recs.append("Revisar humedad real del suelo cuanto antes y valorar riego si no hay lluvia prevista.")
-        recs.append("En suelos arenosos o franco-arenosos, priorizar riegos más cortos y repartidos para evitar pérdidas por drenaje.")
-        recs.append("Evitar estrés hídrico prolongado si el cultivo está en cuajado, crecimiento de fruto o maduración.")
-    elif need == "Moderada":
-        recs.append("Comprobar humedad del suelo antes de regar. Si el suelo está seco en profundidad útil, valorar un riego moderado.")
-        recs.append("Si hay previsión de lluvia próxima, puede ser preferible esperar o reducir dosis.")
-        recs.append("En crecimiento de fruto, evitar alternancia fuerte entre sequía y riegos abundantes.")
-    elif need == "Baja-moderada":
-        recs.append("No parece urgente regar, pero conviene vigilar si continúan días secos, soleados o con viento.")
-        recs.append("Revisar zonas más ligeras del suelo o árboles con más carga de fruto.")
-    else:
-        recs.append("No se aprecia necesidad clara de riego con los datos del periodo.")
-        recs.append("Mantener seguimiento normal y reevaluar si suben temperaturas, radiación o viento, o si pasan varios días sin lluvia.")
-
-    if heavy_soil:
-        recs.append("En suelo arcilloso o franco-arcilloso, evitar riegos largos si el perfil aún conserva humedad para no favorecer asfixia radicular o exceso de humedad.")
-    if fast_soil:
-        recs.append("En suelo arenoso o franco-arenoso, la reserva útil se agota antes; es mejor vigilar con más frecuencia.")
-
-    for rec in recs:
-        st.write(f"- {rec}")
-
-    st.caption(
-        "Recomendación orientativa basada en clima, tipo de suelo y fenología registrada. "
-        "Debe contrastarse con humedad real del suelo, previsión meteorológica y estado visual del cultivo."
-    )
-
-
-
 def sanitary_level_from_score(score):
     """Convierte una puntuación sanitaria en nivel y prioridad."""
     try:
@@ -9955,8 +9523,6 @@ def recent_treatment_context_for_period(start_ts, end_ts, disease_keywords=None,
         "producto": producto,
         "comentario": f"Última actuación localizada: {fecha_txt}. Días hasta fin del periodo: {days_since}.",
     }
-
-
 
 
 def sanitary_event_thresholds_text(temp_mean):
@@ -10094,20 +9660,6 @@ def explain_disease_climate_reason(disease, level, rain, wet_hours, hr90, temp_m
         return "\n".join(lines)
 
     return "- Lectura climática no disponible para este riesgo."
-
-
-def treatment_context_text_for_field(row):
-    """Texto claro sobre tratamiento/variedad a partir de última actuación de campo."""
-    if not row:
-        return "Sin tratamiento registrado para este campo."
-    fecha = pd.to_datetime(row.get("Fecha"), errors="coerce")
-    fecha_txt = fecha.strftime("%d/%m/%Y") if pd.notna(fecha) else "fecha no disponible"
-    prod = str(row.get("Producto", "") or "").strip() or "producto no especificado"
-    variedades = str(row.get("Variedades tratadas", "") or "").strip()
-    if not variedades:
-        variedades = "variedades no especificadas en Agroptima"
-    return f"{fecha_txt} · {prod} · {variedades}"
-
 
 
 def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_ts=None, end_ts=None):
@@ -10352,67 +9904,10 @@ def render_sanitary_semaphore(period_df, soil_type, hoja_threshold, start_ts=Non
     )
 
 
-
-
 # ---------------------------------------------------------------------------
 # Motor inicial de recomendación técnica de tratamientos.
 # No filtra por autorización legal del producto para manzano.
 # ---------------------------------------------------------------------------
-
-TREATMENT_PRODUCT_CATALOG = {
-    "Signum": {
-        "aliases": ["signum", "sigmun", "bellis"],
-        "materias_activas": "boscalida + piraclostrobin",
-        "frac": ["7", "11"],
-        "familia": "SDHI + QoI/estrobilurina",
-        "eficacia": {
-            "Moteado": 86,
-            "Monilia": 78,
-            "Oídio": 68,
-        },
-        "comentario": "Producto amplio, pero comparte FRAC 7 con Luna Experience y FRAC 11 con Flint. "
-                      "Signum NO está registrado en manzano; el equivalente en pepita es Bellis (mismos activos).",
-    },
-    "Folicur": {
-        "aliases": ["folicur", "tebuconazol", "tebuconazole"],
-        "materias_activas": "tebuconazol",
-        "frac": ["3"],
-        "familia": "DMI / triazol",
-        "eficacia": {
-            "Moteado": 58,
-            "Monilia": 72,
-            "Oídio": 74,
-        },
-        "comentario": "DMI/triazol (tebuconazol). ⚠️ EN RETIRADA 2026: sale de registro en "
-                      "manzano; sustituido por difenoconazol (mismo FRAC 3). Se mantiene solo "
-                      "para reconocer el histórico.",
-    },
-    "Luna Experience": {
-        "aliases": ["luna experience", "luna", "fluopyram", "fluopiram"],
-        "materias_activas": "fluopyram + tebuconazol",
-        "frac": ["7", "3"],
-        "familia": "SDHI + DMI/triazol",
-        "eficacia": {
-            "Moteado": 82,
-            "Monilia": 84,
-            "Oídio": 86,
-        },
-        "comentario": "Amplio espectro (fluopyram + tebuconazol). ⚠️ EN RETIRADA 2026: "
-                      "contiene tebuconazol. Se mantiene solo para reconocer el histórico.",
-    },
-    "Flint": {
-        "aliases": ["flint", "trifloxystrobin", "trifloxistrobin"],
-        "materias_activas": "trifloxistrobin",
-        "frac": ["11"],
-        "familia": "QoI / estrobilurina",
-        "eficacia": {
-            "Moteado": 74,
-            "Monilia": 55,
-            "Oídio": 82,
-        },
-        "comentario": "QoI/estrobilurina. Comparte FRAC 11 con Signum.",
-    },
-}
 
 
 def default_treatment_catalog_copy():
@@ -10608,7 +10103,6 @@ def dataframe_to_treatment_catalog(df):
     return catalog
 
 
-
 def treatment_catalog_dataframe_for_supabase(df):
     """Convierte el editor del catálogo al esquema de Supabase."""
     if df is None or df.empty:
@@ -10734,8 +10228,6 @@ def save_treatment_catalog_to_supabase(df):
     return True, f"Catálogo guardado en Supabase: {len(records)} productos."
 
 
-
-
 def reset_treatment_catalog_to_default():
     st.session_state.treatment_product_catalog = default_treatment_catalog_copy()
 
@@ -10841,13 +10333,6 @@ def treatment_usage_by_product_and_frac(activities_df, catalog=None):
         .sort_values(["Año", "Campo", "Número tratamientos"], ascending=[True, True, False])
     )
     return summary
-
-
-
-def frac_tokens_from_text(frac_text):
-    """Extrae grupos FRAC simples desde texto tipo '7+11'."""
-    txt = str(frac_text or "").replace(",", "+").replace("/", "+").replace(";", "+")
-    return [x.strip() for x in txt.split("+") if x.strip()]
 
 
 def build_frac_rotation_plan(activities_df, catalog=None, season_year=None):
@@ -11141,7 +10626,6 @@ def render_frac_rotation_plan(activities_df=None, key_suffix='main'):
             )
 
 
-
 def render_treatment_catalog_manager():
     """Panel editable para mantener catálogo de fungicidas y reconocer productos de Agroptima."""
     st.markdown("#### Catálogo ampliable de productos fitosanitarios")
@@ -11327,8 +10811,6 @@ using (true);
             )
 
 
-
-
 def normalize_product_name_for_recommendation(name):
     txt = str(name or "").lower().strip()
     if not txt:
@@ -11371,21 +10853,6 @@ def expand_activities_by_field_for_recommendation(activities_df):
     return pd.DataFrame(rows).sort_values(["Campo", "Fecha"])
 
 
-def field_product_use_counts(acts_expanded, field, campaign_start, campaign_end):
-    """Cuenta usos por producto y campo dentro de la campaña seleccionada."""
-    if acts_expanded is None or acts_expanded.empty:
-        return {}
-    data = acts_expanded[
-        (acts_expanded["Campo"].astype(str) == str(field)) &
-        (acts_expanded["Fecha"] >= pd.Timestamp(campaign_start)) &
-        (acts_expanded["Fecha"] <= pd.Timestamp(campaign_end))
-    ].copy()
-    counts = {}
-    for product in get_treatment_product_catalog().keys():
-        counts[product] = int((data["Producto normalizado"] == product).sum())
-    return counts
-
-
 def last_field_treatment(acts_expanded, field, end_ts=None):
     """Devuelve última actuación de un campo antes del final del periodo."""
     if acts_expanded is None or acts_expanded.empty:
@@ -11396,17 +10863,6 @@ def last_field_treatment(acts_expanded, field, end_ts=None):
     if data.empty:
         return None
     return data.sort_values("Fecha").iloc[-1].to_dict()
-
-
-def last_frac_use_for_field(acts_expanded, field, end_ts=None):
-    last = last_field_treatment(acts_expanded, field, end_ts=end_ts)
-    if not last:
-        return [], "", np.nan
-    product = normalize_product_name_for_recommendation(last.get("Producto normalizado") or last.get("Producto"))
-    info = get_treatment_product_catalog().get(product, {})
-    fracs = info.get("frac", [])
-    fecha = pd.to_datetime(last.get("Fecha"), errors="coerce")
-    return fracs, product, fecha
 
 
 def dominant_disease_from_semaphore(sem_df):
@@ -11436,37 +10892,6 @@ def treatment_need_from_level(level, score):
     if level == "Bajo-medio" or score >= 20:
         return "Observar / no tratar de entrada"
     return "No tratar / seguimiento normal"
-
-
-def score_product_for_field(product, disease, counts, last_product, last_fracs, days_since_last, min_interval_days=15):
-    """Puntúa un producto teniendo en cuenta eficacia, usos, alternancia y plazo entre tratamientos."""
-    info = get_treatment_product_catalog()[product]
-    score = float(info.get("eficacia", {}).get(disease, 50))
-    warnings = []
-    blocks = []
-
-    used = int(counts.get(product, 0))
-    if used >= 2:
-        score -= 100
-        blocks.append(f"ya usado {used} veces en la campaña")
-    elif used == 1:
-        score -= 12
-        warnings.append("ya usado 1 vez en la campaña")
-
-    if product == last_product and product:
-        score -= 30
-        warnings.append("evitar repetir el mismo producto consecutivamente")
-
-    overlap = sorted(set(info.get("frac", [])) & set(last_fracs or []))
-    if overlap:
-        score -= 25
-        warnings.append("comparte FRAC reciente: " + "+".join(overlap))
-
-    if pd.notna(days_since_last) and days_since_last < min_interval_days:
-        score -= 45
-        blocks.append(f"solo han pasado {int(days_since_last)} días desde el último tratamiento")
-
-    return score, warnings, blocks
 
 
 def recommend_products_for_field(field, disease, disease_level, disease_score, climate_explanation, acts_expanded, campaign_start, campaign_end, min_interval_days=15, activities_df=None, catalog_df=None, risk_tl=None, fc_mills_event=False, fc_monilia_event=False, persist_map=None):
@@ -11602,126 +11027,6 @@ def recommend_products_for_field(field, disease, disease_level, disease_score, c
     }
 
 
-def build_field_treatment_recommendations(history_df, activities_df, period_df, soil_type, hoja_threshold, start_ts=None, end_ts=None, min_interval_days=15):
-    """Genera tabla de recomendaciones técnicas por campo y producto."""
-    if period_df is None or period_df.empty:
-        return pd.DataFrame()
-
-    if start_ts is None:
-        start_ts = period_df["fecha_hora"].min()
-    if end_ts is None:
-        end_ts = period_df["fecha_hora"].max()
-
-    sem = build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_ts=start_ts, end_ts=end_ts)
-    disease, level, score = dominant_disease_from_semaphore(sem)
-    if sem is not None and not sem.empty and "Riesgo" in sem.columns:
-        match = sem[sem["Riesgo"].astype(str).str.lower() == str(disease).lower()]
-        climate_explanation = match.iloc[0].get("Explicación climática", "") if not match.empty else ""
-    else:
-        climate_explanation = ""
-
-    acts_expanded = expand_activities_by_field_for_recommendation(activities_df)
-    # ── UNIFICAR CRITERIO CON DECISIONES ──────────────────────────────────────
-    # La presión de este panel es FÚNGICA (moteado/monilia/oídio). Solo un FUNGICIDA
-    # protege contra hongos: un insecticida de carpocapsa (Bactur, Madex, Coragen…)
-    # NO debe contar como "tratamiento reciente" ni bajar la prioridad ni bloquear
-    # fungicidas. Se filtra con el MISMO is_fungicide_activity que usa Decisiones, de
-    # modo que "último tratamiento", "días desde…" y los bloqueos se refieren al
-    # último FUNGICIDA. (Antes un Bactur reciente marcaba el campo como protegido.)
-    if acts_expanded is not None and not acts_expanded.empty:
-        _fung_mask = acts_expanded.apply(
-            lambda r: is_fungicide_activity(r.get("Producto", ""), r.get("Trabajo", "")),
-            axis=1,
-        )
-        acts_expanded = acts_expanded[_fung_mask].copy()
-
-    fields_base = get_fields_base_df()
-    if fields_base is not None and not fields_base.empty and "Campo" in fields_base.columns:
-        fields = fields_base["Campo"].dropna().astype(str).sort_values().unique().tolist()
-    elif not acts_expanded.empty:
-        fields = acts_expanded["Campo"].dropna().astype(str).sort_values().unique().tolist()
-    else:
-        fields = []
-
-    if not fields:
-        return pd.DataFrame()
-
-    campaign_year = int(pd.Timestamp(end_ts).year)
-    campaign_start = pd.Timestamp(year=campaign_year, month=1, day=1)
-    # Usar siempre hasta hoy como límite de búsqueda de tratamientos,
-    # aunque los datos climáticos no lleguen tan lejos.
-    campaign_end = max(pd.Timestamp(end_ts), pd.Timestamp.now().normalize())
-
-    # Catálogo de fungicidas (mismo que Decisiones).
-    _catalog_df = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
-
-    # ── MISMA BASE DE RIESGO QUE DECISIONES (hoy + previsión 3 días) ──────────
-    # El usuario eligió unificar la recomendación de producto por esta vía. Se
-    # reconstruye la línea de riesgo real+previsión y los eventos de previsión, y
-    # cada campo calcula su riesgo dominante con la lógica de daily_treatment_decision.
-    _today = pd.Timestamp.now().normalize()
-    _fc_df = st.session_state.get("forecast_df", pd.DataFrame())
-    try:
-        _risk_tl = build_risk_timeline(history_df, _fc_df, days_back=120)
-    except Exception:
-        _risk_tl = pd.DataFrame()
-    _fc_mills_event = _fc_monilia_event = False
-    if _risk_tl is not None and not _risk_tl.empty:
-        _fcw = _risk_tl[_risk_tl["Es_prediccion"].astype(bool) &
-                        (_risk_tl["Fecha"] >= _today) &
-                        (_risk_tl["Fecha"] <= _today + pd.Timedelta(days=3))]
-        if not _fcw.empty:
-            _fc_mills_event   = float(pd.to_numeric(_fcw["Mills_valor"], errors="coerce").fillna(0).max()) >= 100
-            _fc_monilia_event = float(pd.to_numeric(_fcw["Monilia_valor"], errors="coerce").fillna(0).max()) >= 100
-
-    # Mapa de persistencia por producto (igual que Decisiones), para "sin cobertura".
-    _persist_map = {str(d["Producto"]).strip(): float(d["Persistencia días"])
-                    for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Persistencia días")}
-    _fcat = st.session_state.get("fungicide_catalog_df")
-    if isinstance(_fcat, pd.DataFrame) and "Persistencia días" in _fcat.columns:
-        for _, _fr in _fcat.iterrows():
-            try:
-                _pp = str(_fr["Producto"]).strip()
-                _pv = float(_fr["Persistencia días"])
-                if _pp and _pv > 0:
-                    _persist_map[_pp] = _pv
-            except (TypeError, ValueError, KeyError):
-                pass
-
-    rows = []
-    for field in fields:
-        rows.append(recommend_products_for_field(
-            field,
-            disease,
-            level,
-            score,
-            climate_explanation,
-            acts_expanded,
-            campaign_start,
-            campaign_end,
-            min_interval_days=int(min_interval_days),
-            activities_df=activities_df,
-            catalog_df=_catalog_df,
-            risk_tl=_risk_tl,
-            fc_mills_event=_fc_mills_event,
-            fc_monilia_event=_fc_monilia_event,
-            persist_map=_persist_map,
-        ))
-
-    out = pd.DataFrame(rows)
-    priority_order = {
-        "Aplicar si la revisión de campo lo confirma": 0,
-        "Revisar y valorar tratamiento": 1,
-        "Observar / no tratar de entrada": 2,
-        "No tratar / seguimiento normal": 3,
-    }
-    if not out.empty:
-        out["_orden"] = out["Decisión"].map(priority_order).fillna(9)
-        out["_sin_tratamiento"] = out["Último tratamiento"].astype(str).str.contains("Sin fungicida|Sin tratamiento", case=False, na=False).astype(int)
-        out = out.sort_values(["_orden", "_sin_tratamiento", "Campo"], ascending=[True, False, True]).drop(columns=["_orden", "_sin_tratamiento"]).reset_index(drop=True)
-    return out
-
-
 def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold, start_ts=None, end_ts=None):
     """Renderiza recomendación técnica por campo con productos disponibles."""
     st.markdown("#### Recomendación técnica de tratamiento por campo")
@@ -11807,7 +11112,6 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
         data=dec[_cols].to_csv(index=False).encode("utf-8-sig"),
         file_name="recomendaciones_sanidad.csv", mime="text/csv", use_container_width=True,
     )
-
 
 
 def _sanitary_phase_for_md(ts):
@@ -12049,8 +11353,6 @@ def irrigation_tab(history, soil_type, hoja_threshold):
         "Próximo salto: humedad real del suelo por parcela (sonda) para calibrar el balance, "
         "y traducir los mm a **tiempo de riego** según el caudal de tu goteo."
     )
-
-
 
 
 # ── Fenología v2: por Campo × Variedad ────────────────────────────────────────
@@ -12903,7 +12205,6 @@ def phenology_tab(history, soil_type, hoja_threshold):
             )
 
 
-
 def safe_num(series, func="sum"):
     vals = pd.to_numeric(series, errors="coerce").dropna()
     if vals.empty:
@@ -12927,7 +12228,6 @@ def first_available_numeric(df, candidates):
             if vals.notna().any():
                 return vals, col
     return pd.Series(dtype=float), None
-
 
 
 def build_weekly_priority_table_all_fields(hist, activities_df, period_df, start_ts, end_ts):
@@ -13070,7 +12370,6 @@ def build_weekly_priority_table_all_fields(hist, activities_df, period_df, start
     ).drop(columns=["_orden_prioridad", "_no_tratado"], errors="ignore").reset_index(drop=True)
 
     return out
-
 
 
 def build_weekly_executive_report(history_df, activities_df, start_date, end_date):
@@ -13222,9 +12521,6 @@ Este informe cruza el histórico climático, los tratamientos importados de Agro
 """
 
     return metrics, report_md, acts_period, priority_table
-
-
-
 
 
 def find_finca_logo_path():
@@ -13697,7 +12993,6 @@ def build_weekly_pdf_report(metrics, report_md, acts_period, priority_table):
     return pdf
 
 
-
 def weekly_report_tab(history, soil_type, hoja_threshold):
     st.subheader("Informe semanal")
 
@@ -13827,8 +13122,6 @@ def weekly_report_tab(history, soil_type, hoja_threshold):
             )
 
 
-
-
 CARPOCAPSA_DEFAULT_TRAP_COLUMNS = [
     "Fecha",
     "Campo/Zona",
@@ -13926,7 +13219,6 @@ def carpocapsa_prepare_damage_df(df):
     return out
 
 
-
 def carpocapsa_detect_year_from_df(df, date_col="Fecha"):
     """Detecta el año predominante a partir de una columna de fechas."""
     if df is None or df.empty or date_col not in df.columns:
@@ -14013,7 +13305,6 @@ def carpocapsa_history_campaign_message(history, campaign_year):
     if int(campaign_year) not in years:
         return f"No hay datos climáticos de {campaign_year}. Años disponibles en clima: {', '.join(map(str, years))}."
     return ""
-
 
 
 def carpocapsa_read_excel_sheet(uploaded_file, sheet_name, required_any=None):
@@ -14491,7 +13782,6 @@ def carpocapsa_status_from_dd(current_dd, recent_captures_per_day=0, rain_since_
     return "Cierre/seguimiento", ">1200 DD", "Seguimiento final, evaluación de daños y planificación de próxima campaña."
 
 
-
 def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp=31.1,
                                     capture_threshold=3, dd_active_start=80, dd_active_end=130,
                                     activities_df=None, campaign_year=None, cierre_aviso_dias=3):
@@ -14716,61 +14006,6 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
     df = pd.DataFrame(rows)
     df = df.sort_values(["_orden", "Campo/Zona", "Fecha lectura"]).drop(columns=["_orden"])
     return df
-
-def carpocapsa_build_status_table(history, traps_df, biofix_df, base_temp=10.0, upper_temp=31.1, method="horario"):
-    daily_dd = carpocapsa_daily_degree_days(history, base_temp=base_temp, upper_temp=upper_temp, method=method)
-    traps = carpocapsa_prepare_traps_df(traps_df)
-    biofix = carpocapsa_prepare_biofix_df(biofix_df)
-
-    rows = []
-    active = biofix[biofix["Activo"] == True].copy() if not biofix.empty else pd.DataFrame()
-    if active.empty:
-        return pd.DataFrame(), daily_dd
-
-    for _, row in active.iterrows():
-        zona = str(row.get("Campo/Zona", "") or "").strip()
-        bdate = pd.to_datetime(row.get("Fecha biofix"), errors="coerce")
-        if not zona or pd.isna(bdate):
-            continue
-
-        if traps.empty:
-            recent_pressure = 0.0
-            recent_captures = 0
-            last_trap_date = pd.NaT
-        else:
-            t = traps[traps["Campo/Zona"].astype(str).str.strip() == zona].copy()
-            if t.empty:
-                t = traps[traps["Campo/Zona"].astype(str).str.strip().str.lower().isin(["general", "finca", "toda la finca"])].copy()
-            last_trap_date = t["Fecha"].max() if not t.empty and t["Fecha"].notna().any() else pd.NaT
-            recent = t[t["Fecha"] >= (pd.Timestamp.today().normalize() - pd.Timedelta(days=14))].copy() if not t.empty else pd.DataFrame()
-            if recent.empty and not t.empty:
-                recent = t.sort_values("Fecha").tail(2)
-            recent_captures = int(pd.to_numeric(recent.get("Capturas machos", pd.Series(dtype=float)), errors="coerce").sum()) if not recent.empty else 0
-            recent_pressure = float(pd.to_numeric(recent.get("Capturas/trampa/día", pd.Series(dtype=float)), errors="coerce").max()) if not recent.empty else 0.0
-
-        _, current_dd = carpocapsa_date_for_dd(daily_dd, bdate, 90)
-        state, window, action = carpocapsa_status_from_dd(current_dd, recent_pressure)
-
-        target_info = {}
-        for target in [90, 110, 140, 250, 300, 460, 500, 540, 1200]:
-            d_est, kind = carpocapsa_estimated_date_for_dd(daily_dd, bdate, target)
-            target_info[f"{target} DD"] = d_est.strftime("%d/%m/%Y") if pd.notna(d_est) else ""
-            target_info[f"{target} DD tipo"] = kind
-
-        rows.append({
-            "Campo/Zona": zona,
-            "Biofix": bdate.strftime("%d/%m/%Y"),
-            "DD acumulados": round(float(current_dd), 1) if pd.notna(current_dd) else np.nan,
-            "Estado": state,
-            "Ventana": window,
-            "Capturas recientes": recent_captures,
-            "Máx capturas/trampa/día": round(recent_pressure, 2),
-            "Última lectura trampa": last_trap_date.strftime("%d/%m/%Y") if pd.notna(last_trap_date) else "",
-            "Acción orientativa": action,
-            **target_info,
-        })
-
-    return pd.DataFrame(rows), daily_dd
 
 
 def _carpocapsa_sustained_biofix(ct, threshold):
@@ -16232,7 +15467,6 @@ def carpocapsa_tab(history):
         )
 
 
-
 def settings_tab():
     st.subheader("Configuración")
     st.write("Configuración general de la sesión.")
@@ -16314,7 +15548,6 @@ def settings_tab():
     st.markdown("#### Versión")
     st.write("Finca Gallinal · App agroclimática v8.9.7")
     return soil_type, hoja_threshold
-
 
 
 # Safety session-state initialization before main layout.
@@ -20217,53 +19450,6 @@ def gallinal_tab(history):
 # DECISIONES · Panel de evolución de enfermedades y plagas (estilo RIMpro)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _dec_mills_value(temp_c, horas_mojadura):
-    """Valor numérico 0-150 para moteado (Mills). 100 = umbral de infección moderada."""
-    if pd.isna(temp_c) or horas_mojadura == 0:
-        return 0.0
-    t = float(temp_c)
-    h = int(horas_mojadura)
-    if t < 6 or t > 28:
-        return 0.0
-    mills = [
-        (6,28,18),(7,21,14),(8,18,12),(9,15,11),(10,12,9),
-        (11,11,8),(12,10,7),(13,9,6),(14,8,6),(15,8,5),
-        (16,7,5),(17,7,5),(18,6,5),(19,6,4),(20,6,4),
-        (21,6,4),(22,7,4),(23,8,5),(24,9,6),(25,10,7),
-        (26,12,8),(27,15,10),
-    ]
-    row = next((r for r in mills if int(r[0]) == int(round(t))), None)
-    if row is None:
-        return 0.0
-    _, h_ligera, h_grave = row
-    if h >= h_grave:
-        return min(h / h_grave * 100.0, 150.0)
-    if h >= max(h_grave - 2, 1):
-        return h / h_ligera * 50.0
-    return 0.0
-
-
-def _dec_monilia_value(temp_c, hr, lluvia_mm, horas_mojadura):
-    """Valor numérico 0-100 para monilia."""
-    if pd.isna(temp_c):
-        return 0.0
-    t = float(temp_c)
-    h = float(hr) if pd.notna(hr) else 0.0
-    ll = float(lluvia_mm) if pd.notna(lluvia_mm) else 0.0
-    hm = int(horas_mojadura)
-    if t < 15 or t > 30:
-        return 0.0
-    t_factor = 1.0 if 18 <= t <= 28 else ((t-15)/3 if t < 18 else max(0.0,(30-t)/2))
-    if hm >= 6 and h > 90:
-        hm_factor = 1.0
-    elif hm >= 3 or h > 85:
-        hm_factor = 0.6
-    elif ll > 1 or h > 80:
-        hm_factor = 0.3
-    else:
-        return 0.0
-    return min(t_factor * hm_factor * 100.0, 100.0)
-
 
 def _dec_oidio_value(temp_c, hr, lluvia_mm):
     """Valor numérico 0-100 para oídio (condiciones favorables secas y cálidas)."""
@@ -20418,8 +19604,6 @@ DEFAULT_FUNGICIDE_CATALOG = [
 
 # Inicialización session_state del catálogo — versión 2 (fuerza reseteo si hay productos obsoletos)
 _CATALOG_VERSION = "v7_2026_bellis"   # Bellis añadido (registrado en manzano) junto a Signum
-_VALID_PRODUCTS_2026 = {"SIGNUM", "BELLIS", "FLINT 50 WG", "DIFENOCONAZOL",
-                        "SWITCH 62.5 WG", "CAPTAN 80 WG", "DITHIANON"}
 _needs_reset = (
     "fungicide_catalog_df" not in st.session_state
     or st.session_state.get("fungicide_catalog_version") != _CATALOG_VERSION
