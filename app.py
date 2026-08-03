@@ -20625,6 +20625,25 @@ def count_field_applications(activities_df, campo, year=None):
     return counts, sdhi_total
 
 
+@st.cache_data(ttl=1800, max_entries=3, show_spinner=False)
+def _pases_por_campo_cached(activities_df):
+    """{campo: {producto: nº pases}} para TODOS los campos, en una sola pasada cacheada.
+
+    RENDIMIENTO: antes el panel llamaba a `count_field_applications` una vez por campo
+    (68 llamadas, cada una filtrando las actuaciones con un apply fila a fila) en CADA
+    render — unos 2,6 s, y encima aunque el desplegable estuviese cerrado, porque
+    Streamlit ejecuta igual el contenido de un expander. Cacheado se calcula una vez.
+    """
+    out = {}
+    for _fr in FIELDS_BASE_ROWS:
+        _campo = str(_fr.get("Campo", "")).strip()
+        if not _campo:
+            continue
+        _cnt, _ = count_field_applications(activities_df, _campo)
+        out[_campo] = _cnt
+    return out
+
+
 def get_smart_recommendation(dominant_risk_list, catalog_df, last_product=None,
                               app_counts=None, sdhi_total=0, curative_needed=False):
     """
@@ -21862,6 +21881,7 @@ def calibrate_leaf_wetness(history, sensor_min_minutes=30):
     return res, best
 
 
+@st.cache_data(ttl=1800, max_entries=12, show_spinner=False)
 def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, upper_temp=31.1,
                         window_start=None, window_end=None):
     """
@@ -21873,6 +21893,11 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
     y su ratio frente al umbral de Mills, NO de la suma diaria de horas húmedas (que
     sobreestimaba y pintaba casi todos los días como "grave"). Cada evento se asigna
     al día en que TERMINA (cuando se completa la infección).
+
+    CACHEADA (ttl 30 min): se invoca ~13 veces por render con distintas ventanas y es
+    de lo más caro de la app. Solo depende del DÍA (usa `now().normalize()`, no la hora),
+    así que el resultado es estable dentro de la jornada; el ttl cubre el cambio de día
+    y, si recargas datos, el hash del histórico cambia y se recalcula sola.
 
     Ventana: por defecto va anclada al presente (últimos `days_back` días + previsión).
     Si se pasan `window_start`/`window_end` (Timestamp/fecha), se construye en cambio
@@ -24303,12 +24328,13 @@ def render_decisiones_panel():
             )
             _stock_prods = [str(d["Producto"]).strip() for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Producto")]
             _sel = st.selectbox("Producto del almacén", _stock_prods, key="rot_stock_sel")
+            # Los pases por campo se calculan UNA vez (cacheado) para los 68 campos: antes
+            # se recorrían llamando a count_field_applications en cada render — incluso con
+            # este desplegable cerrado, porque Streamlit ejecuta igual el contenido — y
+            # costaba ~2,6 s cada vez. Ahora se reutiliza y cambiar de producto es inmediato.
+            _pases_campo = _pases_por_campo_cached(activities_df)
             _srows = []
-            for _fr in FIELDS_BASE_ROWS:
-                _campo = str(_fr.get("Campo", "")).strip()
-                if not _campo:
-                    continue
-                _cnt, _ = count_field_applications(activities_df, _campo)
+            for _campo, _cnt in _pases_campo.items():
                 _srows.append({"Campo": _campo, f"Pases {_sel} (esta campaña)": int(_cnt.get(_sel, 0))})
             if _srows:
                 _sdf = pd.DataFrame(_srows).sort_values(f"Pases {_sel} (esta campaña)").reset_index(drop=True)
