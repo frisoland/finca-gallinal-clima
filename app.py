@@ -11870,42 +11870,6 @@ def sanitary_events_history(history_df, start_year=2019):
     return pd.DataFrame(rows)
 
 
-_PERF_LOG = []   # [(bloque, segundos)] — diagnóstico temporal de rendimiento
-
-
-class _cron:
-    """Cronómetro de diagnóstico: mide un bloque y lo apunta en _PERF_LOG.
-    TEMPORAL: solo para localizar qué parte de un item se lleva el tiempo."""
-
-    def __init__(self, nombre):
-        self.nombre = nombre
-
-    def __enter__(self):
-        self._t0 = time.perf_counter()
-        return self
-
-    def __exit__(self, *exc):
-        _PERF_LOG.append((self.nombre, time.perf_counter() - self._t0))
-        return False
-
-
-def _render_perf_panel(titulo):
-    """Muestra los tiempos medidos en este render, de mayor a menor."""
-    if not _PERF_LOG:
-        return
-    _tot = sum(s for _, s in _PERF_LOG)
-    with st.expander(f"🔧 Diagnóstico de rendimiento · {titulo} ({_tot:.1f}s)", expanded=True):
-        st.caption("Tiempo de cada bloque en esta carga. Sirve para localizar qué optimizar; "
-                   "se quitará cuando terminemos de ajustar.")
-        _df = (pd.DataFrame(_PERF_LOG, columns=["Bloque", "Segundos"])
-               .groupby("Bloque", as_index=False)["Segundos"].sum()
-               .sort_values("Segundos", ascending=False))
-        _df["% del total"] = (_df["Segundos"] / _tot * 100).round(0).astype(int).astype(str) + " %"
-        _df["Segundos"] = _df["Segundos"].round(2)
-        st.dataframe(_df, hide_index=True, use_container_width=True)
-    _PERF_LOG.clear()
-
-
 def health_tab(history, soil_type, hoja_threshold):
     st.subheader("Sanidad vegetal")
 
@@ -11913,9 +11877,8 @@ def health_tab(history, soil_type, hoja_threshold):
         st.info("Carga primero el histórico.")
         return
 
-    with _cron("Ayudas (modo acción + materias activas)"):
-        render_fungicide_mode_help(key_suffix="_sani")
-        render_active_ingredient_reference(key_suffix="_sani")
+    render_fungicide_mode_help(key_suffix="_sani")
+    render_active_ingredient_reference(key_suffix="_sani")
 
     # ── Análisis multi-año (no depende del periodo: usa el histórico completo) ──
     with st.expander("📅 Histórico de eventos de infección por año y fase (todos los años)",
@@ -11948,8 +11911,7 @@ def health_tab(history, soil_type, hoja_threshold):
             st.caption("Ventanas regionales: **Brotación** 1–20 abr · **Floración** 21 abr–21 may · "
                        "**Cuajado** 22 may–15 jun. Oídio = días con índice ≥100 (cualitativo).")
 
-    with _cron("get_period_data (periodo + columnas riesgo)"):
-        period, period_df, avail, summary, global_summary = get_period_data(history, soil_type, hoja_threshold)
+    period, period_df, avail, summary, global_summary = get_period_data(history, soil_type, hoja_threshold)
     if period is None:
         st.info("Selecciona primero un periodo en la pestaña **Análisis**.")
         return
@@ -11961,39 +11923,34 @@ def health_tab(history, soil_type, hoja_threshold):
 
     period_start = period_df["fecha_hora"].min()
     period_end = period_df["fecha_hora"].max()
-    with _cron("Fenología del periodo"):
-        active_phases = current_phenology_phase_for_period(pd.Timestamp(period_start), pd.Timestamp(period_end))
+    active_phases = current_phenology_phase_for_period(pd.Timestamp(period_start), pd.Timestamp(period_end))
 
-    with _cron("Semáforo sanitario"):
-        render_sanitary_semaphore(
-            period_df,
-            soil_type,
-            hoja_threshold,
-            start_ts=period_start,
-            end_ts=period_end,
-        )
+    render_sanitary_semaphore(
+        period_df,
+        soil_type,
+        hoja_threshold,
+        start_ts=period_start,
+        end_ts=period_end,
+    )
 
-    with _cron("Recomendaciones por campo (motor)"):
-        render_field_treatment_recommendations(
-            period_df,
-            soil_type,
-            hoja_threshold,
-            start_ts=period_start,
-            end_ts=period_end,
-        )
+    render_field_treatment_recommendations(
+        period_df,
+        soil_type,
+        hoja_threshold,
+        start_ts=period_start,
+        end_ts=period_end,
+    )
 
     with st.expander("Plan de rotación FRAC para próxima campaña", expanded=False):
         st.info("El plan de rotación FRAC está disponible en la pestaña **Actuaciones**, para evitar duplicar controles internos de Streamlit.")
 
     st.markdown("#### Eventos de humectación foliar")
     if has_sensor(period_df, "Humectación de hoja"):
-        with _cron("Eventos hoja mojada (detect)"):
-            events_df = detect_leaf_wetness_events(period_df)
+        events_df = detect_leaf_wetness_events(period_df)
         if events_df.empty:
             st.info("No se han detectado eventos de hoja mojada en el periodo seleccionado.")
         else:
-            with _cron("Interpretación de eventos"):
-                events_explained = add_event_interpretation_columns(events_df, phases=active_phases)
+            events_explained = add_event_interpretation_columns(events_df, phases=active_phases)
             st.dataframe(events_explained, use_container_width=True)
             st.download_button(
                 "Descargar eventos de humectación foliar explicados",
@@ -12034,16 +11991,13 @@ def health_tab(history, soil_type, hoja_threshold):
     ]], use_container_width=True)
 
     st.divider()
-    with _cron("Recomendación sanitaria final"):
-        render_health_recommendation(
-            period_df,
-            soil_type,
-            hoja_threshold,
-            start_ts=period_df["fecha_hora"].min(),
-            end_ts=period_df["fecha_hora"].max(),
-        )
-
-    _render_perf_panel("Sanidad")
+    render_health_recommendation(
+        period_df,
+        soil_type,
+        hoja_threshold,
+        start_ts=period_df["fecha_hora"].min(),
+        end_ts=period_df["fecha_hora"].max(),
+    )
 
 
 def irrigation_tab(history, soil_type, hoja_threshold):
@@ -24003,13 +23957,10 @@ def render_decisiones_panel():
 
         # ── Detalle DÍA A DÍA: PREVISTO vs REAL (fuera del if: se muestra SIEMPRE,
         #    aunque el archivo esté vacío, para ver los días 🔮 futuros). ──────────
-        with _cron("Lluvia WRF9 (red: Windguru)"):
-            _wrf_rain = windguru_wrf9_daily_rain_cached()   # 2ª opinión de lluvia (WRF9 Windguru)
-        with _cron("Lluvia MeteoGalicia (red: MeteoSIX)"):
-            _mg_rain  = meteosix_wrf_daily_rain_cached()    # 3ª opinión (WRF 1 km MeteoGalicia, oficial)
-        with _cron("Tabla fiabilidad dia a dia"):
-            _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30,
-                                                days_fwd=7, wrf_rain=_wrf_rain, mg_rain=_mg_rain)
+        _wrf_rain = windguru_wrf9_daily_rain_cached()   # 2ª opinión de lluvia (WRF9 Windguru)
+        _mg_rain  = meteosix_wrf_daily_rain_cached()    # 3ª opinión (WRF 1 km MeteoGalicia, oficial)
+        _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30,
+                                            days_fwd=7, wrf_rain=_wrf_rain, mg_rain=_mg_rain)
         if _daily is not None and not _daily.empty:
             st.markdown("**📋 Día a día: valor de infección previsto vs. real.** Arriba, los días "
                         "**🔮 futuros** con la previsión de hoy (el real aparecerá cuando llegue "
@@ -24350,8 +24301,7 @@ def render_decisiones_panel():
             "**ordena TODA la paleta de mejor a peor** para la próxima, con el porqué. Objetivo: "
             "**romper el ciclo de resistencias** rotando hacia grupos poco usados y multisitios."
         )
-        with _cron("Asesor de rotación"):
-            _rot = build_rotation_advice(activities_df)
+        _rot = build_rotation_advice(activities_df)
 
         if not _rot["used_products"]:
             st.info("Carga las actuaciones de Agroptima para ver el análisis de uso.")
@@ -24442,12 +24392,10 @@ def render_decisiones_panel():
     )
 
     # Construir risk_df rápido (solo los últimos 60 días + forecast) para el panel
-    with _cron("build_risk_timeline (60 dias)"):
-        _risk_quick = build_risk_timeline(history_df, forecast_df, days_back=60)
+    _risk_quick = build_risk_timeline(history_df, forecast_df, days_back=60)
 
     _catalog_df = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
-    with _cron("Motor por campo (daily_treatment_decision)"):
-        _dec_df = daily_treatment_decision(history_df, activities_df, _risk_quick, persistence_days=_persist_days)
+    _dec_df = daily_treatment_decision(history_df, activities_df, _risk_quick, persistence_days=_persist_days)
 
     if _dec_df.empty:
         st.info("Carga el histórico y las actuaciones de Agroptima para generar el panel de decisión.")
@@ -25036,8 +24984,6 @@ def render_decisiones_panel():
 #### 📊 Lluvia (barras azul claro, eje derecho)
 Aparece en todos los gráficos como referencia. La lluvia genera hoja mojada (riesgo moteado/monilia) pero en cambio puede frenar el oídio.
         """)
-
-    _render_perf_panel("Decisiones")
 
 
 # ── Render de la interfaz: solo cuando NO estamos en modo headless ───────────
