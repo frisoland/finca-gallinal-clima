@@ -6800,6 +6800,23 @@ def period_selector(history):
     return st.session_state.applied_period
 
 
+@st.cache_data(ttl=1800, max_entries=6, show_spinner=False)
+def _period_data_heavy(history, start_ts, end_ts, soil_type, hoja_threshold):
+    """Parte PESADA y PURA de get_period_data (recorte del periodo + columnas de riesgo
+    + tablas resumen). Se separa para poder CACHEARLA: `get_period_data` en sí no puede
+    cachearse porque lee/escribe `st.session_state`, pero una vez resuelto el periodo el
+    cálculo depende solo de sus argumentos. Sanidad la invoca dos veces por render y
+    varios items usan el mismo periodo: con caché, solo se calcula la primera vez."""
+    period_df = history[(history["fecha_hora"] >= start_ts) & (history["fecha_hora"] <= end_ts)].copy()
+    if period_df.empty:
+        return period_df, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    period_df = add_risk_columns(period_df, hoja_humeda_threshold=hoja_threshold)
+    avail = availability_table(period_df, start_ts, end_ts)
+    summary = weekly_summary(period_df, soil_type)
+    global_summary = period_summary(period_df, soil_type, start_ts, end_ts)
+    return period_df, avail, summary, global_summary
+
+
 def get_period_data(history, soil_type, hoja_threshold):
     period = st.session_state.get("applied_period")
     # Auto-análisis por defecto: últimos 7 días disponibles. Antes esto solo se
@@ -6821,15 +6838,10 @@ def get_period_data(history, soil_type, hoja_threshold):
 
     start_ts = period["start_ts"]
     end_ts = period["end_ts"]
-
-    period_df = history[(history["fecha_hora"] >= start_ts) & (history["fecha_hora"] <= end_ts)].copy()
+    period_df, avail, summary, global_summary = _period_data_heavy(
+        history, start_ts, end_ts, soil_type, hoja_threshold)
     if period_df.empty:
         return period, period_df, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-    period_df = add_risk_columns(period_df, hoja_humeda_threshold=hoja_threshold)
-    avail = availability_table(period_df, start_ts, end_ts)
-    summary = weekly_summary(period_df, soil_type)
-    global_summary = period_summary(period_df, soil_type, start_ts, end_ts)
     return period, period_df, avail, summary, global_summary
 
 
@@ -21321,6 +21333,17 @@ def current_open_wet_event(history_df, lookback_days=5, gap_hours=6):
 
 
 def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16):
+    """Envoltorio: resuelve el catálogo de fungicidas desde `session_state` (única
+    dependencia de estado que tenía esta función) y delega en la versión CACHEADA.
+    Si editas el catálogo en la tabla, cambia su hash y se recalcula automáticamente."""
+    return _daily_treatment_decision_cached(
+        history_df, activities_df, risk_df, persistence_days,
+        st.session_state.get("fungicide_catalog_df"))
+
+
+@st.cache_data(ttl=900, max_entries=6, show_spinner=False)
+def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persistence_days,
+                                     fung_df):
     """
     Para cada campo de la finca, calcula el estado de protección FUNGICIDA y
     la acción recomendada para hoy.
@@ -21328,6 +21351,10 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
     La persistencia de la protección es la del ÚLTIMO producto aplicado (del catálogo
     de fungicidas, columna 'Persistencia días'); `persistence_days` queda como respaldo
     cuando ese producto no está catalogado.
+
+    CACHEADA (ttl 15 min): es el motor por campo que usan Decisiones y Sanidad — recorre
+    los 68 campos filtrando actuaciones, y era lo más caro de ambos items. Solo depende
+    del DÍA (`now().normalize()`) y del catálogo, que llega ya como argumento.
     """
     today = pd.Timestamp.now().normalize()
     rows  = []
@@ -21340,9 +21367,11 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         str(d["Producto"]).strip(): float(d["Persistencia días"])
         for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Persistencia días")
     }
-    _fung_df = st.session_state.get("fungicide_catalog_df")
-    if isinstance(_fung_df, pd.DataFrame) and "Persistencia días" in _fung_df.columns:
-        for _, _fr in _fung_df.iterrows():
+    # (fung_df llega ya como argumento desde el envoltorio, para poder cachear. OJO: el
+    #  nombre NO puede empezar por "_" o Streamlit lo excluiría de la clave del caché y
+    #  las ediciones del catálogo no surtirían efecto.)
+    if isinstance(fung_df, pd.DataFrame) and "Persistencia días" in fung_df.columns:
+        for _, _fr in fung_df.iterrows():
             try:
                 _pp = str(_fr["Producto"]).strip()
                 _pv = float(_fr["Persistencia días"])
@@ -21358,8 +21387,8 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         str(d["Producto"]).strip(): float(d["Ventana curativa días"])
         for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Ventana curativa días")
     }
-    if isinstance(_fung_df, pd.DataFrame) and "Ventana curativa días" in _fung_df.columns:
-        for _, _fr in _fung_df.iterrows():
+    if isinstance(fung_df, pd.DataFrame) and "Ventana curativa días" in fung_df.columns:
+        for _, _fr in fung_df.iterrows():
             try:
                 _pp = str(_fr["Producto"]).strip()
                 _cv = float(_fr["Ventana curativa días"])
