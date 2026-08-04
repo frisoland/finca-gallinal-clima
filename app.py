@@ -11300,6 +11300,240 @@ def health_tab(history, soil_type, hoja_threshold):
         end_ts=period_df["fecha_hora"].max(),
     )
 
+    # ── Gestión de fitosanitarios (movido desde Decisiones) ──────────────────
+    #    Decisiones es el panel DIARIO (qué es urgente hoy); esto es material de
+    #    CONSULTA y planificación, que encaja mejor aquí en Sanidad.
+    st.divider()
+    activities_df = st.session_state.get("activities_df", pd.DataFrame())
+
+    with st.expander("🔄 Planificación de rotación — próxima campaña", expanded=False):
+        st.markdown(
+            "La app analiza los **fungicidas** aplicados esta campaña (presión por grupo FRAC) y "
+            "**ordena TODA la paleta de mejor a peor** para la próxima, con el porqué. Objetivo: "
+            "**romper el ciclo de resistencias** rotando hacia grupos poco usados y multisitios."
+        )
+        _rot = build_rotation_advice(activities_df)
+
+        if not _rot["used_products"]:
+            st.info("Carga las actuaciones de Agroptima para ver el análisis de uso.")
+        else:
+            # ── Fungicidas usados + presión por grupo FRAC ─────────────────────
+            _col_u, _col_f = st.columns([2, 1])
+            with _col_u:
+                st.markdown("**Fungicidas aplicados esta campaña** (solo fungicidas):")
+                _up_df = pd.DataFrame(
+                    [{"Producto": k, "Pases": v}
+                     for k, v in sorted(_rot["used_products"].items(), key=lambda x: -x[1])])
+                st.dataframe(_up_df, hide_index=True, use_container_width=True)
+            with _col_f:
+                st.markdown("**Presión por grupo FRAC:**")
+                _gp = _rot["group_pressure"]
+                if _gp:
+                    for _f, _n in sorted(_gp.items(), key=lambda x: -x[1]):
+                        _hot = "🔴" if _f in ("3", "7", "11") and _n > 4 else "•"
+                        st.markdown(f"{_hot} **Grupo {_f}** ({_FRAC_NAMES.get(_f, _f)}): {_n} pases")
+                else:
+                    st.caption("Sin fungicidas reconocidos.")
+
+            # ── Advertencias de sobrepresión ───────────────────────────────────
+            for _w in _rot["warnings"]:
+                st.warning(_w)
+
+            # ── Ranking de la paleta (mejor→peor) ──────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 💡 Alternativas para la próxima campaña — de mejor a peor")
+            st.caption(
+                "Todos los productos usables en manzano, ordenados por **valor de rotación**: "
+                "arriba, grupos FRAC frescos y multisitios (sin resistencia); abajo, los grupos que "
+                "ya has cargado esta campaña. Columnas: **eficacia %** por enfermedad, **Acción** "
+                "(sistémico/contacto · preventivo/curativo) y **Usado 2026 = Sí** solo si lo "
+                "aplicaste esta campaña (registrado en Agroptima)."
+            )
+            _th  = "background:#1a2e1e;color:white;padding:7px 10px;font-weight:600;font-size:12.5px;text-align:left;"
+            _td  = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12.5px;white-space:nowrap;"
+            _tdw = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12px;white-space:normal;min-width:260px;"
+            _cols = ["Producto", "FRAC", "Moteado", "Monilia", "Oídio", "Acción", "Usado 2026", "Por qué (mejor→peor)"]
+            _hdr = f'<th style="{_th}">#</th>' + "".join(f'<th style="{_th}">{c}</th>' for c in _cols)
+            _body = ""
+            for _i, _r in enumerate(_rot["ranked"], 1):
+                _rowbg = "background:rgba(27,107,53,0.06);" if _i <= 4 else ""
+                _cells = f'<td style="{_td}{_rowbg}"><b>{_i}</b></td>'
+                for _c in _cols:
+                    _style = _tdw if _c == "Por qué (mejor→peor)" else _td
+                    _cells += f'<td style="{_style}{_rowbg}">{_r[_c]}</td>'
+                _body += f"<tr>{_cells}</tr>"
+            st.markdown(
+                f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #ddd;margin-top:0.4rem;">'
+                f'<table style="border-collapse:collapse;width:100%;">'
+                f'<thead><tr>{_hdr}</tr></thead><tbody>{_body}</tbody></table></div>',
+                unsafe_allow_html=True,
+            )
+
+            # ── Existencias sobrantes: dónde gastarlas la próxima campaña ───────
+            st.markdown("---")
+            st.markdown("**📦 ¿Dónde gastar existencias sobrantes?**")
+            st.caption(
+                "Si te sobra producto (p. ej. Signum), gástalo la próxima campaña en los campos que "
+                "**menos lo recibieron** esta — así vacías almacén sin sobrecargar el mismo campo/grupo."
+            )
+            _stock_prods = [str(d["Producto"]).strip() for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Producto")]
+            _sel = st.selectbox("Producto del almacén", _stock_prods, key="rot_stock_sel")
+            # Los pases por campo se calculan UNA vez (cacheado) para los 68 campos: antes
+            # se recorrían llamando a count_field_applications en cada render — incluso con
+            # este desplegable cerrado, porque Streamlit ejecuta igual el contenido — y
+            # costaba ~2,6 s cada vez. Ahora se reutiliza y cambiar de producto es inmediato.
+            _pases_campo = _pases_por_campo_cached(activities_df)
+            _srows = []
+            for _campo, _cnt in _pases_campo.items():
+                _srows.append({"Campo": _campo, f"Pases {_sel} (esta campaña)": int(_cnt.get(_sel, 0))})
+            if _srows:
+                _sdf = pd.DataFrame(_srows).sort_values(f"Pases {_sel} (esta campaña)").reset_index(drop=True)
+                st.caption(f"Campos ordenados por MENOS uso de **{_sel}** — los de arriba son los mejores para gastar existencias:")
+                st.dataframe(_sdf, hide_index=True, use_container_width=True, height=260)
+
+
+    st.markdown("### 📦 Seguimiento de fitosanitarios por campo")
+    st.caption(
+        "Todos los productos fitosanitarios aplicados esta campaña, agrupados por campo. "
+        "Incluye fungicidas, insecticidas, acaricidas y confusión sexual. "
+        "Permite controlar los pases por producto y verificar los plazos de seguridad antes de la recolección."
+    )
+
+    _phyto_df = build_phytosanitary_tracking(activities_df)
+
+    if _phyto_df.empty:
+        st.info("Carga las actuaciones de Agroptima para ver el seguimiento de fitosanitarios.")
+    else:
+        # ── Colores por tipo de producto ──────────────────────────────────────
+        _TYPE_COLORS = {
+            "Fungicida":             "#e8f5e9",  # verde claro
+            "Insecticida biológico": "#e3f2fd",  # azul claro
+            "Insecticida":           "#fff3e0",  # naranja claro
+            "Acaricida":             "#fce4ec",  # rosa claro
+            "Confusión sexual":      "#f3e5f5",  # lila claro
+            "No clasificado":        "#f5f5f5",  # gris claro
+        }
+        _TYPE_BADGES = {
+            "Fungicida":             "#2e7d32",
+            "Insecticida biológico": "#1565c0",
+            "Insecticida":           "#e65100",
+            "Acaricida":             "#880e4f",
+            "Confusión sexual":      "#6a1b9a",
+            "No clasificado":        "#616161",
+        }
+
+        # ── Tabla HTML con scroll y columna Campo fija ─────────────────────────
+        _PT_TH_BASE   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                         "font-weight:600;font-size:13px;white-space:nowrap;"
+                         "position:sticky;top:0;z-index:2;")
+        _PT_TH_CORNER = _PT_TH_BASE + "left:0;z-index:4;"
+        _PT_TD_STICKY = ("position:sticky;left:0;z-index:1;"
+                         "padding:7px 12px;border-bottom:1px solid #ddd;"
+                         "font-weight:600;font-size:13px;white-space:nowrap;"
+                         "border-right:2px solid #1a2e1e;")
+
+        _pt_display_cols = [
+            "Campo", "Producto", "Tipo", "Objetivo",
+            "Último uso", "Días desde uso", "Pases campaña",
+            "Plazo seg. días", "Estado plazo",
+        ]
+
+        # Cabecera — clases fg-th / fg-th-corner para que el CSS móvil pueda
+        # fijarlas por clase (robusto ante el reformateo de inline-styles)
+        _pt_hdr = ""
+        for _i, _c in enumerate(_pt_display_cols):
+            if _i == 0:
+                _pt_hdr += f'<th class="fg-th-corner" style="{_PT_TH_CORNER}">{_c}</th>'
+            else:
+                _pt_hdr += f'<th class="fg-th" style="{_PT_TH_BASE}">{_c}</th>'
+
+        # Filas
+        _pt_tbody = ""
+        _prev_campo = None
+        for _, _r in _phyto_df.iterrows():
+            _campo  = _r["Campo"]
+            _tipo   = _r["Tipo"]
+            _estado = _r["Estado plazo"]
+            _row_bg = _TYPE_COLORS.get(_tipo, "#f5f5f5")
+
+            # Badge de tipo con color
+            _badge_color = _TYPE_BADGES.get(_tipo, "#616161")
+            _tipo_badge  = (
+                f'<span style="background:{_badge_color};color:white;'
+                f'border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;">'
+                f'{_tipo}</span>'
+            )
+
+            # Estado plazo con color semáforo
+            if "⚠️" in str(_estado):
+                _estado_bg = "#fff3e0"; _estado_color = "#e65100"
+            elif "🔒" in str(_estado):
+                _estado_bg = "#e8f5e9"; _estado_color = "#2e7d32"
+            elif "✅" in str(_estado):
+                _estado_bg = "#f5f5f5"; _estado_color = "#616161"
+            else:
+                _estado_bg = "#f5f5f5"; _estado_color = "#616161"
+            _estado_styled = (
+                f'<span style="background:{_estado_bg};color:{_estado_color};'
+                f'border-radius:4px;padding:2px 7px;font-size:12px;">{_estado}</span>'
+            )
+
+            # Separador visual entre campos
+            _campo_display = _campo if _campo != _prev_campo else ""
+            _prev_campo = _campo
+
+            _pt_cells = ""
+            for _i, _c in enumerate(_pt_display_cols):
+                if _i == 0:
+                    _style = _PT_TD_STICKY + f"background:{_row_bg};"
+                    _val   = _campo_display
+                elif _c == "Tipo":
+                    _style = f"background:{_row_bg};padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;"
+                    _val   = _tipo_badge
+                elif _c == "Estado plazo":
+                    _style = f"background:{_row_bg};padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;"
+                    _val   = _estado_styled
+                else:
+                    _style = f"background:{_row_bg};padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;font-size:13px;"
+                    _val   = _r.get(_c, "—")
+                _pt_cells += f'<td style="{_style}">{_val}</td>'
+            _pt_tbody += f"<tr>{_pt_cells}</tr>"
+
+        st.markdown(
+            f'<div style="overflow-x:auto;overflow-y:auto;max-height:450px;'
+            f'border-radius:8px;border:1px solid #ccc;margin-bottom:1rem;">'
+            f'<table class="fg-fixedcol" style="border-collapse:separate;border-spacing:0;min-width:100%;">'
+            f'<thead><tr>{_pt_hdr}</tr></thead>'
+            f'<tbody>{_pt_tbody}</tbody>'
+            f'</table></div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── Leyenda de colores ─────────────────────────────────────────────────
+        _leg_parts = []
+        for _t, _bg in _TYPE_COLORS.items():
+            _bc = _TYPE_BADGES.get(_t, "#616161")
+            _leg_parts.append(
+                f'<span style="display:inline-flex;align-items:center;margin-right:14px;">'
+                f'<span style="width:12px;height:12px;background:{_bg};border:1px solid {_bc};'
+                f'border-radius:2px;display:inline-block;margin-right:5px;"></span>'
+                f'<span style="font-size:12px;color:#555;">{_t}</span></span>'
+            )
+        st.markdown(
+            f'<div style="margin-top:4px;margin-bottom:0.5rem;">{"".join(_leg_parts)}</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── Botón de descarga ──────────────────────────────────────────────────
+        with st.expander("⬇️ Descargar seguimiento fitosanitarios", expanded=False):
+            st.download_button(
+                "⬇️ Descargar (CSV)",
+                data=_phyto_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"fitosanitarios_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="dl_phyto_tracking",
+            )
+
 
 def irrigation_tab(history, soil_type, hoja_threshold):
     st.subheader("💧 Riego · Balance hídrico (FAO-56)")
@@ -23503,94 +23737,6 @@ def render_decisiones_panel():
         except Exception:
             st.session_state["fungicide_catalog_df"] = _to_save
 
-    render_fungicide_mode_help(key_suffix="_dec")
-    render_active_ingredient_reference(key_suffix="_dec")
-
-    with st.expander("🔄 Planificación de rotación — próxima campaña", expanded=False):
-        st.markdown(
-            "La app analiza los **fungicidas** aplicados esta campaña (presión por grupo FRAC) y "
-            "**ordena TODA la paleta de mejor a peor** para la próxima, con el porqué. Objetivo: "
-            "**romper el ciclo de resistencias** rotando hacia grupos poco usados y multisitios."
-        )
-        _rot = build_rotation_advice(activities_df)
-
-        if not _rot["used_products"]:
-            st.info("Carga las actuaciones de Agroptima para ver el análisis de uso.")
-        else:
-            # ── Fungicidas usados + presión por grupo FRAC ─────────────────────
-            _col_u, _col_f = st.columns([2, 1])
-            with _col_u:
-                st.markdown("**Fungicidas aplicados esta campaña** (solo fungicidas):")
-                _up_df = pd.DataFrame(
-                    [{"Producto": k, "Pases": v}
-                     for k, v in sorted(_rot["used_products"].items(), key=lambda x: -x[1])])
-                st.dataframe(_up_df, hide_index=True, use_container_width=True)
-            with _col_f:
-                st.markdown("**Presión por grupo FRAC:**")
-                _gp = _rot["group_pressure"]
-                if _gp:
-                    for _f, _n in sorted(_gp.items(), key=lambda x: -x[1]):
-                        _hot = "🔴" if _f in ("3", "7", "11") and _n > 4 else "•"
-                        st.markdown(f"{_hot} **Grupo {_f}** ({_FRAC_NAMES.get(_f, _f)}): {_n} pases")
-                else:
-                    st.caption("Sin fungicidas reconocidos.")
-
-            # ── Advertencias de sobrepresión ───────────────────────────────────
-            for _w in _rot["warnings"]:
-                st.warning(_w)
-
-            # ── Ranking de la paleta (mejor→peor) ──────────────────────────────
-            st.markdown("---")
-            st.markdown("#### 💡 Alternativas para la próxima campaña — de mejor a peor")
-            st.caption(
-                "Todos los productos usables en manzano, ordenados por **valor de rotación**: "
-                "arriba, grupos FRAC frescos y multisitios (sin resistencia); abajo, los grupos que "
-                "ya has cargado esta campaña. Columnas: **eficacia %** por enfermedad, **Acción** "
-                "(sistémico/contacto · preventivo/curativo) y **Usado 2026 = Sí** solo si lo "
-                "aplicaste esta campaña (registrado en Agroptima)."
-            )
-            _th  = "background:#1a2e1e;color:white;padding:7px 10px;font-weight:600;font-size:12.5px;text-align:left;"
-            _td  = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12.5px;white-space:nowrap;"
-            _tdw = "padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12px;white-space:normal;min-width:260px;"
-            _cols = ["Producto", "FRAC", "Moteado", "Monilia", "Oídio", "Acción", "Usado 2026", "Por qué (mejor→peor)"]
-            _hdr = f'<th style="{_th}">#</th>' + "".join(f'<th style="{_th}">{c}</th>' for c in _cols)
-            _body = ""
-            for _i, _r in enumerate(_rot["ranked"], 1):
-                _rowbg = "background:rgba(27,107,53,0.06);" if _i <= 4 else ""
-                _cells = f'<td style="{_td}{_rowbg}"><b>{_i}</b></td>'
-                for _c in _cols:
-                    _style = _tdw if _c == "Por qué (mejor→peor)" else _td
-                    _cells += f'<td style="{_style}{_rowbg}">{_r[_c]}</td>'
-                _body += f"<tr>{_cells}</tr>"
-            st.markdown(
-                f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #ddd;margin-top:0.4rem;">'
-                f'<table style="border-collapse:collapse;width:100%;">'
-                f'<thead><tr>{_hdr}</tr></thead><tbody>{_body}</tbody></table></div>',
-                unsafe_allow_html=True,
-            )
-
-            # ── Existencias sobrantes: dónde gastarlas la próxima campaña ───────
-            st.markdown("---")
-            st.markdown("**📦 ¿Dónde gastar existencias sobrantes?**")
-            st.caption(
-                "Si te sobra producto (p. ej. Signum), gástalo la próxima campaña en los campos que "
-                "**menos lo recibieron** esta — así vacías almacén sin sobrecargar el mismo campo/grupo."
-            )
-            _stock_prods = [str(d["Producto"]).strip() for d in DEFAULT_FUNGICIDE_CATALOG if d.get("Producto")]
-            _sel = st.selectbox("Producto del almacén", _stock_prods, key="rot_stock_sel")
-            # Los pases por campo se calculan UNA vez (cacheado) para los 68 campos: antes
-            # se recorrían llamando a count_field_applications en cada render — incluso con
-            # este desplegable cerrado, porque Streamlit ejecuta igual el contenido — y
-            # costaba ~2,6 s cada vez. Ahora se reutiliza y cambiar de producto es inmediato.
-            _pases_campo = _pases_por_campo_cached(activities_df)
-            _srows = []
-            for _campo, _cnt in _pases_campo.items():
-                _srows.append({"Campo": _campo, f"Pases {_sel} (esta campaña)": int(_cnt.get(_sel, 0))})
-            if _srows:
-                _sdf = pd.DataFrame(_srows).sort_values(f"Pases {_sel} (esta campaña)").reset_index(drop=True)
-                st.caption(f"Campos ordenados por MENOS uso de **{_sel}** — los de arriba son los mejores para gastar existencias:")
-                st.dataframe(_sdf, hide_index=True, use_container_width=True, height=260)
-
     st.markdown("### 📋 Panel de decisión diaria")
 
     _persist_days = st.slider(
@@ -23868,147 +24014,6 @@ def render_decisiones_panel():
     # ══════════════════════════════════════════════════════════════════════════
     # SEGUIMIENTO COMPLETO DE FITOSANITARIOS POR CAMPO
     # ══════════════════════════════════════════════════════════════════════════
-    st.markdown("### 📦 Seguimiento de fitosanitarios por campo")
-    st.caption(
-        "Todos los productos fitosanitarios aplicados esta campaña, agrupados por campo. "
-        "Incluye fungicidas, insecticidas, acaricidas y confusión sexual. "
-        "Permite controlar los pases por producto y verificar los plazos de seguridad antes de la recolección."
-    )
-
-    _phyto_df = build_phytosanitary_tracking(activities_df)
-
-    if _phyto_df.empty:
-        st.info("Carga las actuaciones de Agroptima para ver el seguimiento de fitosanitarios.")
-    else:
-        # ── Colores por tipo de producto ──────────────────────────────────────
-        _TYPE_COLORS = {
-            "Fungicida":             "#e8f5e9",  # verde claro
-            "Insecticida biológico": "#e3f2fd",  # azul claro
-            "Insecticida":           "#fff3e0",  # naranja claro
-            "Acaricida":             "#fce4ec",  # rosa claro
-            "Confusión sexual":      "#f3e5f5",  # lila claro
-            "No clasificado":        "#f5f5f5",  # gris claro
-        }
-        _TYPE_BADGES = {
-            "Fungicida":             "#2e7d32",
-            "Insecticida biológico": "#1565c0",
-            "Insecticida":           "#e65100",
-            "Acaricida":             "#880e4f",
-            "Confusión sexual":      "#6a1b9a",
-            "No clasificado":        "#616161",
-        }
-
-        # ── Tabla HTML con scroll y columna Campo fija ─────────────────────────
-        _PT_TH_BASE   = ("background:#1a2e1e;color:white;padding:8px 12px;"
-                         "font-weight:600;font-size:13px;white-space:nowrap;"
-                         "position:sticky;top:0;z-index:2;")
-        _PT_TH_CORNER = _PT_TH_BASE + "left:0;z-index:4;"
-        _PT_TD_STICKY = ("position:sticky;left:0;z-index:1;"
-                         "padding:7px 12px;border-bottom:1px solid #ddd;"
-                         "font-weight:600;font-size:13px;white-space:nowrap;"
-                         "border-right:2px solid #1a2e1e;")
-
-        _pt_display_cols = [
-            "Campo", "Producto", "Tipo", "Objetivo",
-            "Último uso", "Días desde uso", "Pases campaña",
-            "Plazo seg. días", "Estado plazo",
-        ]
-
-        # Cabecera — clases fg-th / fg-th-corner para que el CSS móvil pueda
-        # fijarlas por clase (robusto ante el reformateo de inline-styles)
-        _pt_hdr = ""
-        for _i, _c in enumerate(_pt_display_cols):
-            if _i == 0:
-                _pt_hdr += f'<th class="fg-th-corner" style="{_PT_TH_CORNER}">{_c}</th>'
-            else:
-                _pt_hdr += f'<th class="fg-th" style="{_PT_TH_BASE}">{_c}</th>'
-
-        # Filas
-        _pt_tbody = ""
-        _prev_campo = None
-        for _, _r in _phyto_df.iterrows():
-            _campo  = _r["Campo"]
-            _tipo   = _r["Tipo"]
-            _estado = _r["Estado plazo"]
-            _row_bg = _TYPE_COLORS.get(_tipo, "#f5f5f5")
-
-            # Badge de tipo con color
-            _badge_color = _TYPE_BADGES.get(_tipo, "#616161")
-            _tipo_badge  = (
-                f'<span style="background:{_badge_color};color:white;'
-                f'border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;">'
-                f'{_tipo}</span>'
-            )
-
-            # Estado plazo con color semáforo
-            if "⚠️" in str(_estado):
-                _estado_bg = "#fff3e0"; _estado_color = "#e65100"
-            elif "🔒" in str(_estado):
-                _estado_bg = "#e8f5e9"; _estado_color = "#2e7d32"
-            elif "✅" in str(_estado):
-                _estado_bg = "#f5f5f5"; _estado_color = "#616161"
-            else:
-                _estado_bg = "#f5f5f5"; _estado_color = "#616161"
-            _estado_styled = (
-                f'<span style="background:{_estado_bg};color:{_estado_color};'
-                f'border-radius:4px;padding:2px 7px;font-size:12px;">{_estado}</span>'
-            )
-
-            # Separador visual entre campos
-            _campo_display = _campo if _campo != _prev_campo else ""
-            _prev_campo = _campo
-
-            _pt_cells = ""
-            for _i, _c in enumerate(_pt_display_cols):
-                if _i == 0:
-                    _style = _PT_TD_STICKY + f"background:{_row_bg};"
-                    _val   = _campo_display
-                elif _c == "Tipo":
-                    _style = f"background:{_row_bg};padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;"
-                    _val   = _tipo_badge
-                elif _c == "Estado plazo":
-                    _style = f"background:{_row_bg};padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;"
-                    _val   = _estado_styled
-                else:
-                    _style = f"background:{_row_bg};padding:7px 12px;border-bottom:1px solid #ddd;white-space:nowrap;font-size:13px;"
-                    _val   = _r.get(_c, "—")
-                _pt_cells += f'<td style="{_style}">{_val}</td>'
-            _pt_tbody += f"<tr>{_pt_cells}</tr>"
-
-        st.markdown(
-            f'<div style="overflow-x:auto;overflow-y:auto;max-height:450px;'
-            f'border-radius:8px;border:1px solid #ccc;margin-bottom:1rem;">'
-            f'<table class="fg-fixedcol" style="border-collapse:separate;border-spacing:0;min-width:100%;">'
-            f'<thead><tr>{_pt_hdr}</tr></thead>'
-            f'<tbody>{_pt_tbody}</tbody>'
-            f'</table></div>',
-            unsafe_allow_html=True,
-        )
-
-        # ── Leyenda de colores ─────────────────────────────────────────────────
-        _leg_parts = []
-        for _t, _bg in _TYPE_COLORS.items():
-            _bc = _TYPE_BADGES.get(_t, "#616161")
-            _leg_parts.append(
-                f'<span style="display:inline-flex;align-items:center;margin-right:14px;">'
-                f'<span style="width:12px;height:12px;background:{_bg};border:1px solid {_bc};'
-                f'border-radius:2px;display:inline-block;margin-right:5px;"></span>'
-                f'<span style="font-size:12px;color:#555;">{_t}</span></span>'
-            )
-        st.markdown(
-            f'<div style="margin-top:4px;margin-bottom:0.5rem;">{"".join(_leg_parts)}</div>',
-            unsafe_allow_html=True,
-        )
-
-        # ── Botón de descarga ──────────────────────────────────────────────────
-        with st.expander("⬇️ Descargar seguimiento fitosanitarios", expanded=False):
-            st.download_button(
-                "⬇️ Descargar (CSV)",
-                data=_phyto_df.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"fitosanitarios_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                key="dl_phyto_tracking",
-            )
 
     st.markdown("---")
     st.markdown("### 📈 Gráficas de riesgo detalladas")
