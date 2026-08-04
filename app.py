@@ -21353,14 +21353,18 @@ def _get_meteosix_key():
     return (_os.environ.get("METEOSIX_API_KEY") or "").strip()
 
 
-def meteosix_wrf_daily_rain(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km")):
-    """{fecha_normalizada: mm} de lluvia prevista por el WRF de MeteoGalicia (~3,5 días,
-    malla 1 km oficial en el punto exacto de la finca). Prueba mallas de fina a gruesa
-    (si el punto cae fuera de la de 1 km, baja a 4 km, etc.). A prueba de fallos: devuelve
-    {} si no hay key, hay error o el punto cae fuera de todo → columna vacía, sin drama."""
+def meteosix_wrf_daily_rain_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km")):
+    """Igual que `meteosix_wrf_daily_rain` pero devuelve (datos, motivo_del_fallo).
+
+    Antes la función se callaba ante CUALQUIER error (key ausente, HTTP 4xx/5xx,
+    excepción de la API, red caída) y solo dejaba la columna vacía: imposible saber
+    qué pasaba. Ahora el motivo se propaga para poder avisar en el panel.
+    `motivo` = "" cuando todo fue bien.
+    """
     key = _get_meteosix_key()
     if not key:
-        return {}
+        return {}, "falta la API key (secret METEOSIX_API_KEY)"
+    _ultimo = ""
     try:
         from collections import defaultdict
         for grid in grids:
@@ -21368,10 +21372,17 @@ def meteosix_wrf_daily_rain(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km"
                       "models": "wrf", "grids": grid, "API_KEY": key}
             r = requests.get(METEOSIX_URL, params=params, timeout=30)
             if r.status_code != 200:
+                _ultimo = f"malla {grid}: HTTP {r.status_code}"
                 continue
             js = r.json()
-            if not isinstance(js, dict) or "exception" in js:
-                continue   # p. ej. el punto cae fuera de ESTA malla → probar la siguiente
+            if not isinstance(js, dict):
+                _ultimo = f"malla {grid}: respuesta inesperada"
+                continue
+            if "exception" in js:
+                # p. ej. el punto cae fuera de ESTA malla, o la key ya no vale (código 006)
+                _e = js.get("exception") or {}
+                _ultimo = f"malla {grid}: API {_e.get('code','?')} — {str(_e.get('message',''))[:110]}"
+                continue
             daily = defaultdict(float)
             got = False
             for feat in js.get("features", []):
@@ -21388,16 +21399,26 @@ def meteosix_wrf_daily_rain(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km"
                             daily[pd.Timestamp(str(_ti)[:10])] += float(_val)
                             got = True
             if got:
-                return {pd.Timestamp(d).normalize(): round(v, 1) for d, v in daily.items()}
-        return {}
-    except Exception:
-        return {}
+                return {pd.Timestamp(d).normalize(): round(v, 1) for d, v in daily.items()}, ""
+            _ultimo = f"malla {grid}: sin valores de lluvia"
+        return {}, (_ultimo or "sin datos")
+    except Exception as _ex:
+        return {}, f"{type(_ex).__name__}: {str(_ex)[:110]}"
+
+
+def meteosix_wrf_daily_rain(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km")):
+    """{fecha_normalizada: mm} de lluvia prevista por el WRF de MeteoGalicia (~3,5 días,
+    malla 1 km oficial en el punto exacto de la finca). Prueba mallas de fina a gruesa
+    (si el punto cae fuera de la de 1 km, baja a 4 km, etc.). A prueba de fallos: devuelve
+    {} si no hay key, hay error o el punto cae fuera de todo → columna vacía, sin drama."""
+    return meteosix_wrf_daily_rain_diag(coords, grids)[0]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def meteosix_wrf_daily_rain_cached():
-    """Versión cacheada (1 h) para el panel — no golpear la API en cada rerun."""
-    return meteosix_wrf_daily_rain()
+    """Versión cacheada (1 h) para el panel — no golpear la API en cada rerun.
+    Devuelve (datos, motivo) para poder mostrar por qué falla si viene vacío."""
+    return meteosix_wrf_daily_rain_diag()
 
 
 SUPABASE_FORECAST_ARCHIVE_PATH = "forecast_risk_archive.parquet"
@@ -23139,7 +23160,16 @@ def render_decisiones_panel():
         # ── Detalle DÍA A DÍA: PREVISTO vs REAL (fuera del if: se muestra SIEMPRE,
         #    aunque el archivo esté vacío, para ver los días 🔮 futuros). ──────────
         _wrf_rain = windguru_wrf9_daily_rain_cached()   # 2ª opinión de lluvia (WRF9 Windguru)
-        _mg_rain  = meteosix_wrf_daily_rain_cached()    # 3ª opinión (WRF 1 km MeteoGalicia, oficial)
+        _mg_rain, _mg_err = meteosix_wrf_daily_rain_cached()   # 3ª opinión (WRF 1 km MeteoGalicia)
+        if _mg_err:
+            # Fallo VISIBLE: antes la columna se quedaba vacía sin explicar por qué y
+            # podían pasar días hasta notarlo.
+            st.warning(
+                f"🌧️ **La previsión de lluvia de MeteoGalicia (columna «Lluvia MG») no responde** "
+                f"→ {_mg_err}. Las columnas de Sencrop y WRF9 siguen funcionando; los días ya "
+                f"archivados conservan su valor. Si el motivo menciona la *API key*, revisa el "
+                f"secret `METEOSIX_API_KEY` en Streamlit."
+            )
         _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30,
                                             days_fwd=7, wrf_rain=_wrf_rain, mg_rain=_mg_rain)
         if _daily is not None and not _daily.empty:
