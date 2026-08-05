@@ -3021,6 +3021,7 @@ def filter_only_fitosanitario(df):
     return df[mask].reset_index(drop=True)
 
 
+@st.cache_data(ttl=1800, max_entries=4, show_spinner=False)
 def detect_field_treatment_duplicates(df):
     """Detecta posibles duplicados de importación: un mismo CAMPO recibe el mismo
     PRODUCTO el mismo DÍA en más de un registro distinto (p. ej. una vez como
@@ -3706,10 +3707,17 @@ def coverage_advice_from_post_treatment(rain_mm, max_scab_ratio, max_monilia_rat
     return "Seguimiento normal: no se detectan eventos críticos posteriores en los datos cargados."
 
 
+@st.cache_data(ttl=1800, max_entries=4, show_spinner=False)
 def build_treatment_sanitary_cross(history_df, activities_df, soil_type=None, hoja_threshold=None):
     """
     Cruza último tratamiento reconocido por campo con lluvia y eventos sanitarios posteriores.
     Usa el histórico climático general como referencia para todos los campos.
+
+    CACHEADA: es una función PURA y la más cara del item Agroptima — recorre los últimos
+    tratamientos y por CADA uno llama a `detect_leaf_wetness_events` sobre un tramo
+    distinto del histórico, así que el caché de esa función interna no acierta nunca.
+    Además se invoca 3 veces por render (informe sanitario, cruce de tratamientos…).
+    Cacheándola entera, ese bucle se ejecuta una sola vez.
     """
     if activities_df is None or activities_df.empty:
         return pd.DataFrame()
@@ -10397,6 +10405,9 @@ def treatment_usage_by_product_and_frac(activities_df, catalog=None):
     return summary
 
 
+# NO se cachea: recibe el catálogo como dict y hacer que Streamlit calcule su huella
+# es un riesgo innecesario (si no puede, el item entero falla). Además se llama una
+# sola vez por render, así que el beneficio sería mínimo.
 def build_frac_rotation_plan(activities_df, catalog=None, season_year=None):
     """
     Genera un plan orientativo de rotación FRAC para la próxima campaña.
