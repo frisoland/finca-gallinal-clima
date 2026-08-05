@@ -6929,6 +6929,68 @@ def home_today_tab(history, soil_type, hoja_threshold):
             st.caption("Sin datos suficientes para el resumen de 7 días.")
 
     st.markdown("---")
+
+    # ── Envío manual del informe (movido desde Decisiones) ───────────────────
+    #    Encaja mejor aquí: Panel de hoy ES el resumen diario. El envío
+    #    automático de cada mañana lo hace scripts/daily_report.py; esto es solo
+    #    para mandarlo a mano si se quiere.
+    history_df    = history
+    traps_df      = traps
+    activities_df = activities
+    forecast_df   = st.session_state.get("forecast_df", pd.DataFrame())
+
+    with st.expander("📲 Enviar informe a Telegram", expanded=False):
+        if not telegram_is_configured():
+            st.info(
+                "Para activar el envío a Telegram, añade en **Secrets** de Streamlit:\n\n"
+                "```toml\n"
+                "TELEGRAM_BOT_TOKEN = \"tu_token_del_bot\"\n"
+                "TELEGRAM_CHAT_ID = \"tu_chat_id\"\n"
+                "```\n\n"
+                "El **token** te lo da @BotFather al crear el bot. "
+                "El **chat_id** lo descubres escribiendo un mensaje a tu bot y pulsando el botón de abajo."
+            )
+            try:
+                _tok = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "")).strip()
+            except Exception:
+                _tok = ""
+            if _tok:
+                if st.button("🔍 Descubrir mi chat_id", key="tg_discover"):
+                    _chats = telegram_discover_chats()
+                    if _chats:
+                        st.success("Chats que han escrito al bot:")
+                        for _cid, _nom in _chats.items():
+                            st.code(f'TELEGRAM_CHAT_ID = "{_cid}"   # {_nom}')
+                    else:
+                        st.warning(
+                            "No se detectó ningún chat. Escribe primero un mensaje a tu bot "
+                            "en Telegram (por ejemplo «hola») y vuelve a pulsar."
+                        )
+        else:
+            st.success("✅ Telegram configurado. La app puede enviar informes.")
+            _vista = st.checkbox("Ver el informe antes de enviar", value=True, key="tg_preview")
+            if _vista:
+                _preview = build_daily_report_text(
+                    history_df, traps_df, activities_df,
+                    forecast_df=forecast_df,
+                    persistence_days=st.session_state.get("dec_persist_days", 16),
+                )
+                # Mostrar como texto plano (quitar etiquetas HTML para la vista previa)
+                import re as _re_tg
+                _plain = _re_tg.sub(r"</?[^>]+>", "", _preview)
+                st.text(_plain)
+            if st.button("📤 Enviar informe ahora", type="primary", key="tg_send"):
+                _msg = build_daily_report_text(
+                    history_df, traps_df, activities_df,
+                    forecast_df=forecast_df,
+                    persistence_days=st.session_state.get("dec_persist_days", 16),
+                )
+                _ok, _detalle = telegram_send_message(_msg)
+                if _ok:
+                    st.success(f"✅ {_detalle}")
+                else:
+                    st.error(f"❌ {_detalle}")
+
     st.caption("Este panel **resume**; para ver el detalle y actuar, entra en el item "
                "correspondiente (Carpocapsa, Decisiones, Sanidad…).")
 
@@ -23601,57 +23663,6 @@ def render_decisiones_panel():
     # ══════════════════════════════════════════════════════════════════════════
     # INFORME A TELEGRAM
     # ══════════════════════════════════════════════════════════════════════════
-    with st.expander("📲 Enviar informe a Telegram", expanded=False):
-        if not telegram_is_configured():
-            st.info(
-                "Para activar el envío a Telegram, añade en **Secrets** de Streamlit:\n\n"
-                "```toml\n"
-                "TELEGRAM_BOT_TOKEN = \"tu_token_del_bot\"\n"
-                "TELEGRAM_CHAT_ID = \"tu_chat_id\"\n"
-                "```\n\n"
-                "El **token** te lo da @BotFather al crear el bot. "
-                "El **chat_id** lo descubres escribiendo un mensaje a tu bot y pulsando el botón de abajo."
-            )
-            try:
-                _tok = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "")).strip()
-            except Exception:
-                _tok = ""
-            if _tok:
-                if st.button("🔍 Descubrir mi chat_id", key="tg_discover"):
-                    _chats = telegram_discover_chats()
-                    if _chats:
-                        st.success("Chats que han escrito al bot:")
-                        for _cid, _nom in _chats.items():
-                            st.code(f'TELEGRAM_CHAT_ID = "{_cid}"   # {_nom}')
-                    else:
-                        st.warning(
-                            "No se detectó ningún chat. Escribe primero un mensaje a tu bot "
-                            "en Telegram (por ejemplo «hola») y vuelve a pulsar."
-                        )
-        else:
-            st.success("✅ Telegram configurado. La app puede enviar informes.")
-            _vista = st.checkbox("Ver el informe antes de enviar", value=True, key="tg_preview")
-            if _vista:
-                _preview = build_daily_report_text(
-                    history_df, traps_df, activities_df,
-                    forecast_df=forecast_df,
-                    persistence_days=st.session_state.get("dec_persist_days", 16),
-                )
-                # Mostrar como texto plano (quitar etiquetas HTML para la vista previa)
-                import re as _re_tg
-                _plain = _re_tg.sub(r"</?[^>]+>", "", _preview)
-                st.text(_plain)
-            if st.button("📤 Enviar informe ahora", type="primary", key="tg_send"):
-                _msg = build_daily_report_text(
-                    history_df, traps_df, activities_df,
-                    forecast_df=forecast_df,
-                    persistence_days=st.session_state.get("dec_persist_days", 16),
-                )
-                _ok, _detalle = telegram_send_message(_msg)
-                if _ok:
-                    st.success(f"✅ {_detalle}")
-                else:
-                    st.error(f"❌ {_detalle}")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PANEL DE DECISIÓN DIARIA
