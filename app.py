@@ -24107,71 +24107,90 @@ def render_decisiones_panel():
     else:
         _treats_info = "ℹ️ Sin fungicidas registrados en Agroptima para este período (comprueba que están cargados)."
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
-    st.caption(f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. Zona azul = predicción Sencrop. {_treats_info}")
-    st.caption(
-        "ℹ️ **¿Cómo se cuenta una infección?** El moteado necesita que la hoja esté mojada "
-        "durante un rato seguido. La app agrupa esas horas en un **«evento» de mojada**:\n\n"
-        "• **Un evento empieza** cuando la hoja se moja (lluvia, rocío o humedad muy alta) y "
-        "**no se da por terminado hasta que pasan más de 6 horas seguidas con la hoja seca.** "
-        "Ratos secos cortos (un claro a mediodía, una pausa de la lluvia) **no** lo cortan: "
-        "sigue siendo el mismo episodio.\n"
-        "• **¿Cuándo cuenta una hora como «mojada»?** Cuando la hoja lo estuvo **al menos "
-        "20 minutos** de esa hora. Con menos (una **condensación de traza** de 3–6 min) la "
-        "hora cuenta como **seca** — así una gota residual no mantiene el evento abierto "
-        "eternamente ni infla las horas de mojada.\n"
-        "• Por eso, p. ej., del **16 al 19** puede poner **«23 h mojadas»** aunque entre medias "
-        "pasen 72 horas de reloj: son las horas que la hoja estuvo **de verdad mojada** dentro de "
-        "ese episodio; el resto fueron ratos secos demasiado cortos para cerrarlo.\n"
-        "• El **valor de infección** se calcula con **todas** esas horas juntas y se apunta el día "
-        "en que el evento **acaba** (cuando la hoja por fin se seca). Por eso un día con muchas "
-        "horas mojadas puede salir **0** si la mojada **aún no había terminado**: el valor sale "
-        "el día que se seca.\n\n"
-        "👉 Pasa el ratón por un pico para ver el **periodo exacto** (inicio → fin · horas mojadas).\n\n"
-        "📚 **De dónde sale (no es inventado):** la relación temperatura × horas de mojada → "
-        "infección es ciencia publicada — **Mills & Laplante 1951**, revisada por **MacHardy & "
-        "Gadoury 1989** y **Stensvand et al. 1997** (base de los avisadores de moteado, p. ej. "
-        "RIMpro). Piezas de *ajuste práctico calibrable*, no ley exacta: el corte de **6 h "
-        "secas** para cerrar un evento (estándar MacHardy & Gadoury / NEWA; la literatura maneja "
-        "~4–8 h), el mínimo de **20 min/hora** para contar una hora como mojada (colapsa los "
-        "minutos del sensor a la hora binaria mojada/seca que asume el modelo de Mills) y, **en "
-        "la previsión**, las horas de mojada se **estiman** (Sencrop no trae sensor de hoja) y se "
-        "calibran con tu sensor — por eso existe el panel de **fiabilidad**. En los días pasados, "
-        "la mojada es **medida** por tu sensor."
-    )
-    fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_fungi, chart_h)
-    st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
-
-    st.divider()
+    # ── Selector de gráficas: se dibujan SOLO las que se piden ────────────────
+    # Cada gráfica Plotly es lo más caro de pintar del item (el navegador tiene que
+    # montar curva, barras de lluvia, franjas y una línea por tratamiento). Antes se
+    # generaban las 4 siempre; ahora se activan a demanda y Decisiones abre ligero.
+    # No afecta a NINGÚN dato: las figuras solo se dibujan, y el panel de decisión
+    # por campo usa su propio cálculo (_risk_quick), independiente de estas gráficas.
+    _gc1, _gc2, _gc3, _gc4 = st.columns(4)
+    _ver_moteado = _gc1.toggle("🍄 Moteado",    key="dec_ver_moteado")
+    _ver_monilia = _gc2.toggle("🍑 Monilia",    key="dec_ver_monilia")
+    _ver_oidio   = _gc3.toggle("🌫️ Oídio",      key="dec_ver_oidio")
+    _ver_carpo   = _gc4.toggle("🐛 Carpocapsa", key="dec_ver_carpo")
+    if not any([_ver_moteado, _ver_monilia, _ver_oidio, _ver_carpo]):
+        st.caption("👆 Activa las enfermedades cuya evolución quieras ver. "
+                   "Se dibujan solo las elegidas, para que el panel abra rápido.")
 
     # ═══════════════════════════════════════════════════════════════════════════
-    st.markdown("#### 🍑 Monilia · *Monilinia* spp.")
-    st.caption("Umbral 50 = riesgo moderado · **100 = riesgo alto**. Requiere T>15°C + hoja mojada ≥3h o HR>85%.")
-    fig_mo = _dec_disease_chart(risk_df, "Monilia_valor", "Monilia", today, treats_fungi, chart_h)
-    st.plotly_chart(fig_mo, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
+    if _ver_moteado:
+        st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
+        st.caption(f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. Zona azul = predicción Sencrop. {_treats_info}")
+        st.caption(
+            "ℹ️ **¿Cómo se cuenta una infección?** El moteado necesita que la hoja esté mojada "
+            "durante un rato seguido. La app agrupa esas horas en un **«evento» de mojada**:\n\n"
+            "• **Un evento empieza** cuando la hoja se moja (lluvia, rocío o humedad muy alta) y "
+            "**no se da por terminado hasta que pasan más de 6 horas seguidas con la hoja seca.** "
+            "Ratos secos cortos (un claro a mediodía, una pausa de la lluvia) **no** lo cortan: "
+            "sigue siendo el mismo episodio.\n"
+            "• **¿Cuándo cuenta una hora como «mojada»?** Cuando la hoja lo estuvo **al menos "
+            "20 minutos** de esa hora. Con menos (una **condensación de traza** de 3–6 min) la "
+            "hora cuenta como **seca** — así una gota residual no mantiene el evento abierto "
+            "eternamente ni infla las horas de mojada.\n"
+            "• Por eso, p. ej., del **16 al 19** puede poner **«23 h mojadas»** aunque entre medias "
+            "pasen 72 horas de reloj: son las horas que la hoja estuvo **de verdad mojada** dentro de "
+            "ese episodio; el resto fueron ratos secos demasiado cortos para cerrarlo.\n"
+            "• El **valor de infección** se calcula con **todas** esas horas juntas y se apunta el día "
+            "en que el evento **acaba** (cuando la hoja por fin se seca). Por eso un día con muchas "
+            "horas mojadas puede salir **0** si la mojada **aún no había terminado**: el valor sale "
+            "el día que se seca.\n\n"
+            "👉 Pasa el ratón por un pico para ver el **periodo exacto** (inicio → fin · horas mojadas).\n\n"
+            "📚 **De dónde sale (no es inventado):** la relación temperatura × horas de mojada → "
+            "infección es ciencia publicada — **Mills & Laplante 1951**, revisada por **MacHardy & "
+            "Gadoury 1989** y **Stensvand et al. 1997** (base de los avisadores de moteado, p. ej. "
+            "RIMpro). Piezas de *ajuste práctico calibrable*, no ley exacta: el corte de **6 h "
+            "secas** para cerrar un evento (estándar MacHardy & Gadoury / NEWA; la literatura maneja "
+            "~4–8 h), el mínimo de **20 min/hora** para contar una hora como mojada (colapsa los "
+            "minutos del sensor a la hora binaria mojada/seca que asume el modelo de Mills) y, **en "
+            "la previsión**, las horas de mojada se **estiman** (Sencrop no trae sensor de hoja) y se "
+            "calibran con tu sensor — por eso existe el panel de **fiabilidad**. En los días pasados, "
+            "la mojada es **medida** por tu sensor."
+        )
+        fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_fungi, chart_h)
+        st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
-    st.divider()
+        st.divider()
 
     # ═══════════════════════════════════════════════════════════════════════════
-    st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
-    st.caption("Favorece condiciones cálidas y secas (T 17-25°C, HR 50-80%). La lluvia intensa frena el riesgo.")
-    fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_fungi, chart_h, scale_max=105)
-    st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
+    if _ver_monilia:
+        st.markdown("#### 🍑 Monilia · *Monilinia* spp.")
+        st.caption("Umbral 50 = riesgo moderado · **100 = riesgo alto**. Requiere T>15°C + hoja mojada ≥3h o HR>85%.")
+        fig_mo = _dec_disease_chart(risk_df, "Monilia_valor", "Monilia", today, treats_fungi, chart_h)
+        st.plotly_chart(fig_mo, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
-    st.divider()
+        st.divider()
 
     # ═══════════════════════════════════════════════════════════════════════════
-    st.markdown("#### 🐛 Carpocapsa · *Cydia pomonella* — Grados-día desde biofix")
-    st.caption("Línea roja = DD acumulados. Círculos azules = capturas en trampa (tamaño proporcional). "
-               "○ gris = lectura sin capturas (0), para no confundir «revisé y 0» con «no revisé». Umbrales de generación marcados.")
-    fig_c = _dec_carpocapsa_chart(
-        risk_df, today, biofix_df, traps_df, treats_carpo,
-        float(base_temp_d), float(upper_temp_d), chart_h + 30,
-        days_back=int(days_back),
-        history_df=history_df,
-    )
-    st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
+    if _ver_oidio:
+        st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
+        st.caption("Favorece condiciones cálidas y secas (T 17-25°C, HR 50-80%). La lluvia intensa frena el riesgo.")
+        fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_fungi, chart_h, scale_max=105)
+        st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
+
+        st.divider()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    if _ver_carpo:
+        st.markdown("#### 🐛 Carpocapsa · *Cydia pomonella* — Grados-día desde biofix")
+        st.caption("Línea roja = DD acumulados. Círculos azules = capturas en trampa (tamaño proporcional). "
+                   "○ gris = lectura sin capturas (0), para no confundir «revisé y 0» con «no revisé». Umbrales de generación marcados.")
+        fig_c = _dec_carpocapsa_chart(
+            risk_df, today, biofix_df, traps_df, treats_carpo,
+            float(base_temp_d), float(upper_temp_d), chart_h + 30,
+            days_back=int(days_back),
+            history_df=history_df,
+        )
+        st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
     # ── Leyenda explicativa ───────────────────────────────────────────────────
     with st.expander("📖 Cómo interpretar estas gráficas", expanded=False):
