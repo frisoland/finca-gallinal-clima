@@ -236,20 +236,42 @@ _DESKTOP_CHROME_JS = """
         var win = window.parent;
         var doc = win.document;
 
-        /* ── En móvil, redirigir añadiendo ?movil=1 (activa la VISTA MÓVIL
-           simplificada y estable) y ?embed=true (oculta la barra de Streamlit
-           Cloud). Ambos son parámetros de URL; embed es oficial de Streamlit.
-           Se ejecuta una sola vez: si movil ya está, no redirige. ── */
-        if (win.innerWidth < 768) {
-          try {
-            var _url = new URL(win.location.href);
-            if (!_url.searchParams.has('movil')) {
-              _url.searchParams.set('movil', '1');
-              _url.searchParams.set('embed', 'true');
-              win.location.replace(_url.toString());
+        /* ── Auto-detección de MÓVIL ────────────────────────────────────────
+           Redirige añadiendo ?movil=1 (vista móvil simplificada) y ?embed=true
+           (oculta la barra de Streamlit Cloud).
+
+           OJO — este bloque corre en CADA rerun (cada vez que se navega a un
+           item), no una sola vez. Antes decidía solo con `innerWidth`, que
+           depende del layout y del MOMENTO en que se mide: al abrir la app por
+           la mañana (instancia dormida, primera carga lenta) o al re-montarse
+           el iframe podía leer un ancho transitorio pequeño y echar al usuario
+           de escritorio a la vista móvil. Ahora se exige:
+             · `screen.width`  → tamaño FÍSICO de la pantalla, estable: no
+               cambia con el layout ni con el tamaño de la ventana;
+             · que el dispositivo sea TÁCTIL;
+             · que la medida sea válida (>0), descartando lecturas prematuras;
+             · y se evalúa UNA sola vez por pestaña (sessionStorage), así una
+               navegación posterior nunca puede reexpulsar al usuario.
+           Con esto un PC no acaba en vista móvil aunque la ventana sea
+           estrecha o el iframe se mida antes de tiempo. ── */
+        try {
+          if (!win.sessionStorage.getItem('fg_movil_check')) {
+            win.sessionStorage.setItem('fg_movil_check', '1');
+            var _sw  = (win.screen && win.screen.width) ? win.screen.width : 0;
+            var _iw  = win.innerWidth || 0;
+            var _tac = ('ontouchstart' in win) ||
+                       (win.navigator && win.navigator.maxTouchPoints > 0);
+            var _esMovil = (_sw > 0 && _sw < 768) && (_iw > 0 && _iw < 768) && _tac;
+            if (_esMovil) {
+              var _url = new URL(win.location.href);
+              if (!_url.searchParams.has('movil')) {
+                _url.searchParams.set('movil', '1');
+                _url.searchParams.set('embed', 'true');
+                win.location.replace(_url.toString());
+              }
             }
-          } catch(e) {}
-        }
+          }
+        } catch(e) {}
 
         /* Eliminar instancia previa (re-renders de Streamlit) */
         var old = doc.getElementById('fg-scroll-fab');
