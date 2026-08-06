@@ -19876,22 +19876,11 @@ DEFAULT_FUNGICIDE_CATALOG = [
             "No aplicar junto a Signum (acumulación de presión selectiva sobre FRAC C3)."
         ),
     },
-    {
-        "Producto": "SWITCH 62.5 WG",
-        "Objetivos": "Monilia",
-        "Tipo": "Sistémico local + contacto (preventivo/curativo)",
-        "Plazo seguridad días": 7,
-        "Persistencia días": 10,
-        "Ventana curativa días": 2,
-        "FRAC": "D1+E2",
-        "Familia": "Anilinopirimidina (D1) + Fenilpirrol (E2)",
-        "Notas": (
-            "Ciprodinil 37,5% + Fludioxonil 25%. Dos modos de acción (FRAC 9 + 12) NO usados "
-            "esta campaña → excelente para romper resistencias y para campos con Signum "
-            "agotado. Muy eficaz en Monilia (M. laxa/fructigena) y podredumbres de precosecha; "
-            "actividad moderada sobre moteado. Máx 3 aplicaciones/campaña."
-        ),
-    },
+    # SWITCH 62.5 WG — FUERA DEL ALMACÉN (2026-08-06): precio prohibitivo esta campaña.
+    # Sigue en ROTATION_CANDIDATES como candidato de COMPRA para la próxima (es el mejor
+    # de monilia y aporta los grupos FRAC 9+12, sin usar aún), y en PRODUCT_FRAC_MAP /
+    # ALIASES / EFFICACY para reconocerlo si algún día se aplica. Al no estar aquí, la
+    # app deja de recomendarlo.
     {
         "Producto": "CAPTAN 80 WG",
         "Objetivos": "Moteado",
@@ -19929,7 +19918,7 @@ DEFAULT_FUNGICIDE_CATALOG = [
 #  de rotación, que ahora usa ROTATION_CANDIDATES. Además contenía Thiram, prohibido en la UE.)
 
 # Inicialización session_state del catálogo — versión 2 (fuerza reseteo si hay productos obsoletos)
-_CATALOG_VERSION = "v7_2026_bellis"   # Bellis añadido (registrado en manzano) junto a Signum
+_CATALOG_VERSION = "v8_2026_sin_switch"   # Switch fuera del almacén (precio); sigue como candidato
 _needs_reset = (
     "fungicide_catalog_df" not in st.session_state
     or st.session_state.get("fungicide_catalog_version") != _CATALOG_VERSION
@@ -20557,7 +20546,7 @@ ACTIVE_INGREDIENT_BRANDS = [
     {"activa": "Trifloxistrobina", "frac": "11", "accion": "Penetrante/translaminar · prev + curativo corto",
      "marcas": "Flint 50 WG", "estado": "✅ En uso"},
     {"activa": "Ciprodinil + fludioxonil", "frac": "9+12", "accion": "Penetrante/local · prev + curativo",
-     "marcas": "Switch 62.5 WG", "estado": "✅ En uso (monilia)"},
+     "marcas": "Switch 62.5 WG", "estado": "◻️ Candidato de compra (el mejor en monilia, pero caro)"},
     {"activa": "Ciprodinil", "frac": "9", "accion": "Sistémico · prev + curativo",
      "marcas": "Chorus 50 WG", "estado": "◻️ Alternativa (moteado) · mejor en PRIMAVERA con frío (también válido en calor)"},
     {"activa": "Fluxapiroxad", "frac": "7", "accion": "Sistémico · prev + curativo",
