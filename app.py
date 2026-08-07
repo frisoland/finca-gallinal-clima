@@ -21706,6 +21706,8 @@ def meteosix_wrf_daily_rain_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "
                 _ultimo = f"malla {grid}: API {_e.get('code','?')} — {str(_e.get('message',''))[:110]}"
                 continue
             daily = defaultdict(float)
+            _horas = defaultdict(int)   # nº de horas sumadas por día (control de sanidad)
+            _vistos = set()             # instantes ya contados → evita sumar dos veces
             got = False
             for feat in js.get("features", []):
                 for day in feat.get("properties", {}).get("days", []):
@@ -21716,11 +21718,26 @@ def meteosix_wrf_daily_rain_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "
                             _val, _ti = v.get("value"), v.get("timeInstant")
                             if _val is None or not _ti:
                                 continue
+                            # DEDUPLICAR por instante: la suma es acumulativa, así que si
+                            # la respuesta repitiera una hora (dos pasadas del modelo, o
+                            # solapamiento entre los bloques "days") el total del día se
+                            # inflaría. Cada hora cuenta UNA vez.
+                            if _ti in _vistos:
+                                continue
+                            _vistos.add(_ti)
                             # timeInstant ISO local ("...T11:00:00+02"): la fecha (10
                             # primeros caracteres) ya es el día LOCAL de la finca.
-                            daily[pd.Timestamp(str(_ti)[:10])] += float(_val)
+                            _d = pd.Timestamp(str(_ti)[:10])
+                            daily[_d] += float(_val)
+                            _horas[_d] += 1
                             got = True
             if got:
+                # Control de sanidad: un día no puede tener más de 24 horas. Si pasa,
+                # la respuesta traía series solapadas y el total no sería fiable.
+                _raros = [d.strftime("%d/%m") for d, h in _horas.items() if h > 24]
+                if _raros:
+                    return {}, ("respuesta con horas duplicadas en " + ", ".join(_raros) +
+                                " — total de lluvia no fiable, se descarta")
                 return {pd.Timestamp(d).normalize(): round(v, 1) for d, v in daily.items()}, ""
             _ultimo = f"malla {grid}: sin valores de lluvia"
         return {}, (_ultimo or "sin datos")
