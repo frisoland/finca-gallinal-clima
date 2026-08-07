@@ -22098,6 +22098,16 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                 # FUTURO/HOY: previsto = previsión EN VIVO; real aún no ha ocurrido,
                 # salvo que HOY haya un evento EN CURSO → valor provisional con "*".
                 _hoy_abierto = bool(_oab and d == today)
+                # Lluvia MeteoGalicia en días FUTUROS: se intenta el valor en vivo y, si
+                # no hay (Streamlit Cloud no consigue conectar con servizos.meteogalicia.gal
+                # — nos bloquea las IPs de centro de datos), se cae al valor ARCHIVADO.
+                # El informe diario corre en GitHub Actions, que SÍ conecta, y cada mañana
+                # archiva la previsión de MeteoGalicia para los próximos días: así la
+                # columna se rellena igual sin depender de la conexión de la app.
+                _mg_vivo = mg_rain.get(d) if mg_rain else None
+                _mg_arch = pred_map.get(td)
+                if _mg_vivo is None and _mg_arch is not None:
+                    _mg_vivo = _mg_arch.get("pred_rain_mg")
                 rows.append({
                     "_sort": d, "Fecha": d.strftime("%d/%m") + (" 🔄" if _hoy_abierto else " 🔮"),
                     "Moteado prev.": _si(r.get("Mills_valor")),
@@ -22107,7 +22117,7 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                     "Oídio prev.": _si(r.get("Oidio_valor")),     "Oídio real": "—",
                     "Lluvia prev.": _sr(r.get("Lluvia")),
                     "Lluvia WRF9": (_sr(wrf_rain.get(d)) if wrf_rain else "—"),
-                    "Lluvia MG": (_sr(mg_rain.get(d)) if mg_rain else "—"),
+                    "Lluvia MG": _sr(_mg_vivo),
                     "Lluvia real": "—",
                 })
             else:
@@ -23494,14 +23504,15 @@ def render_decisiones_panel():
         _wrf_rain = windguru_wrf9_daily_rain_cached()   # 2ª opinión de lluvia (WRF9 Windguru)
         _mg_rain, _mg_err = meteosix_wrf_daily_rain_cached()   # 3ª opinión (WRF 1 km MeteoGalicia)
         if _mg_err:
-            # Fallo VISIBLE: antes la columna se quedaba vacía sin explicar por qué y
-            # podían pasar días hasta notarlo.
-            st.warning(
-                f"🌧️ **La previsión de lluvia de MeteoGalicia (columna «Lluvia MG») no responde** "
-                f"→ {_mg_err}.\n\nSencrop y WRF9 siguen funcionando y los días ya archivados "
-                f"conservan su valor, así que **el panel sigue siendo válido**. Se reintenta solo "
-                f"cada hora. Solo si el motivo menciona la *API key* hay que revisar el secret "
-                f"`METEOSIX_API_KEY` en Streamlit."
+            # Aviso DISCRETO: desde que la columna cae al valor archivado por el informe
+            # diario (GitHub Actions sí conecta con MeteoGalicia; Streamlit Cloud no,
+            # nos bloquean las IPs de centro de datos), que la consulta en vivo falle ya
+            # NO deja la columna vacía. Es informativo, no un problema.
+            st.caption(
+                f"ℹ️ La consulta **en vivo** a MeteoGalicia no responde desde la app "
+                f"({_mg_err}). No afecta: la columna «Lluvia MG» usa el valor que **archiva "
+                f"el informe diario** cada mañana, que sí conecta. Solo habría que actuar si "
+                f"el motivo mencionara la *API key*."
             )
         _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30,
                                             days_fwd=7, wrf_rain=_wrf_rain, mg_rain=_mg_rain)
