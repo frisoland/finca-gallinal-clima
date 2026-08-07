@@ -21688,7 +21688,11 @@ def meteosix_wrf_daily_rain_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "
         for grid in grids:
             params = {"coords": coords, "variables": "precipitation_amount",
                       "models": "wrf", "grids": grid, "API_KEY": key}
-            r = requests.get(METEOSIX_URL, params=params, timeout=30)
+            # timeout=(conectar, leer): 5 s para establecer conexión y 15 para la
+            # respuesta. Antes eran 30 s únicos y, con el servidor de MeteoGalicia
+            # caído (pasa: 2 veces en 4 días), la app se quedaba 30 s bloqueada al
+            # abrir Decisiones. Si no conecta en 5 s, no va a conectar.
+            r = requests.get(METEOSIX_URL, params=params, timeout=(5, 15))
             if r.status_code != 200:
                 _ultimo = f"malla {grid}: HTTP {r.status_code}"
                 continue
@@ -21721,7 +21725,17 @@ def meteosix_wrf_daily_rain_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "
             _ultimo = f"malla {grid}: sin valores de lluvia"
         return {}, (_ultimo or "sin datos")
     except Exception as _ex:
-        return {}, f"{type(_ex).__name__}: {str(_ex)[:110]}"
+        # Traducir los fallos de red al castellano: el mensaje crudo de requests
+        # ("ConnectTimeout: HTTPSConnectionPool(host=…)") no dice nada al usuario.
+        _n = type(_ex).__name__
+        if _n in ("ConnectTimeout", "ConnectionError", "NewConnectionError", "MaxRetryError"):
+            return {}, ("el servidor de MeteoGalicia no responde (servicio caído o "
+                        "inaccesible). No es tu API key: se reintenta solo más tarde")
+        if "Timeout" in _n:
+            return {}, "el servidor de MeteoGalicia tardó demasiado en responder"
+        if _n == "SSLError":
+            return {}, "fallo de certificado al conectar con MeteoGalicia"
+        return {}, f"{_n}: {str(_ex)[:110]}"
 
 
 def meteosix_wrf_daily_rain(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km")):
@@ -23484,9 +23498,10 @@ def render_decisiones_panel():
             # podían pasar días hasta notarlo.
             st.warning(
                 f"🌧️ **La previsión de lluvia de MeteoGalicia (columna «Lluvia MG») no responde** "
-                f"→ {_mg_err}. Las columnas de Sencrop y WRF9 siguen funcionando; los días ya "
-                f"archivados conservan su valor. Si el motivo menciona la *API key*, revisa el "
-                f"secret `METEOSIX_API_KEY` en Streamlit."
+                f"→ {_mg_err}.\n\nSencrop y WRF9 siguen funcionando y los días ya archivados "
+                f"conservan su valor, así que **el panel sigue siendo válido**. Se reintenta solo "
+                f"cada hora. Solo si el motivo menciona la *API key* hay que revisar el secret "
+                f"`METEOSIX_API_KEY` en Streamlit."
             )
         _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30,
                                             days_fwd=7, wrf_rain=_wrf_rain, mg_rain=_mg_rain)
