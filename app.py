@@ -22,6 +22,11 @@ st.set_page_config(
     page_title="Finca Gallinal · Plataforma agroclimática",
     page_icon="🌿",
     layout="wide",
+    # Menú lateral SIEMPRE abierto al entrar. Antes se dejaba al criterio del
+    # navegador y un JS lo abría/cerraba siguiendo el ratón; ese hover acabó
+    # fallando y dejaba sin navegación al hacer scroll (el control nativo se va
+    # con la cabecera). Con el menú fijo no hay nada que pueda romperse.
+    initial_sidebar_state="expanded",
 )
 
 # ── Detección de vista móvil ─────────────────────────────────────────────────
@@ -579,51 +584,32 @@ _DESKTOP_CHROME_JS = """
         doc._fgExpandSidebar = fgExpandSidebar; /* expuesto para la barra móvil */
         function fgCollapseSidebar() { if (fgToggleSidebar(false)) doc._fgHoverOpened = false; }
 
-        /* ── mousemove: abrir al acercarse, cerrar al alejarse ──
-           Se reemplaza el handler en cada render para usar siempre el
-           código más reciente (evita handlers obsoletos en memoria). */
-        if (doc._fgMouseMoveHandler) win.removeEventListener('mousemove', doc._fgMouseMoveHandler);
-        doc._fgMouseMoveHandler = function (e) {
-          var x = e.clientX;
-          if (x < 60) {
-            if (doc._fgCloseTimer) { clearTimeout(doc._fgCloseTimer); doc._fgCloseTimer = null; }
-            if (!doc._fgHoverTimer) doc._fgHoverTimer = setTimeout(function () {
-              fgExpandSidebar(); doc._fgHoverTimer = null;
-            }, 250);
-          } else {
-            if (doc._fgHoverTimer) { clearTimeout(doc._fgHoverTimer); doc._fgHoverTimer = null; }
-            /* Cerrar SOLO cuando el ratón sale claramente del menú: se usa el borde
-               derecho REAL del sidebar + un margen, en vez de un x fijo (290) que
-               caía dentro del propio menú y lo hacía hipersensible al mover el ratón
-               hacia los items de la mitad derecha. */
-            var _sb = doc.querySelector('section[data-testid="stSidebar"]');
-            var _closeX = (_sb ? _sb.getBoundingClientRect().right : 300) + 60;
-            if (doc._fgHoverOpened && x > _closeX) {
-              if (!doc._fgCloseTimer) doc._fgCloseTimer = setTimeout(function () {
-                fgCollapseSidebar(); doc._fgCloseTimer = null;
-              }, 1200);
-            } else if (x <= _closeX && doc._fgCloseTimer) {
-              clearTimeout(doc._fgCloseTimer); doc._fgCloseTimer = null;
-            }
-          }
-        };
-        win.addEventListener('mousemove', doc._fgMouseMoveHandler);
+        /* ── HOVER DEL SIDEBAR: RETIRADO (2026-08-09) ─────────────────────────
+           Abría el menú al acercar el ratón al borde izquierdo y lo cerraba al
+           alejarlo. Dependía de encontrar los controles internos de Streamlit y
+           de pulsarlos por JS, y dio problemas repetidos: saltos a la vista móvil
+           al pulsar un botón equivocado, hover que dejó de responder, y quedarse
+           sin forma de abrir el menú tras hacer scroll (el botón nativo se va con
+           la cabecera). Ahora el menú queda SIEMPRE VISIBLE: sin JS peleando con
+           Streamlit no hay nada que se rompa, y siempre hay navegación a mano.
+           Quien quiera más espacio puede plegarlo con el control nativo.
+           Se elimina el handler previo si quedaba de un render anterior. */
+        if (doc._fgMouseMoveHandler) {
+          win.removeEventListener('mousemove', doc._fgMouseMoveHandler);
+          doc._fgMouseMoveHandler = null;
+        }
 
-        /* ── click: cerrar al navegar ── */
-        if (doc._fgClickHandler) doc.removeEventListener('click', doc._fgClickHandler);
-        doc._fgClickHandler = function (e) {
-          var sidebar = doc.querySelector('section[data-testid="stSidebar"]');
-          if (!sidebar) return;
-          var t = e.target;
-          while (t && t !== doc.body) {
-            if (t.tagName === 'BUTTON' && sidebar.contains(t)) {
-              var rect = t.getBoundingClientRect();
-              if (rect.top > 100) setTimeout(function () { fgCollapseSidebar(); }, 700);
-              break;
-            }
-            t = t.parentElement;
-          }
-        };
+        /* ── CIERRE AUTOMÁTICO AL NAVEGAR: RETIRADO (2026-08-09) ──────────────
+           Al pulsar un item del menú, este se cerraba solo a los 700 ms. Tenía
+           sentido cuando el hover lo reabría al acercar el ratón; sin hover
+           dejaba al usuario sin menú en cuanto navegaba (y el control nativo se
+           va con la cabecera al hacer scroll). Ahora el menú permanece abierto:
+           se pliega solo si el usuario lo decide con el control de Streamlit.
+           Se elimina el handler previo si quedaba de un render anterior. */
+        if (doc._fgClickHandler) {
+          doc.removeEventListener('click', doc._fgClickHandler);
+          doc._fgClickHandler = null;
+        }
         doc.addEventListener('click', doc._fgClickHandler);
 
         /* ── Móvil: el swipe desde el borde izquierdo se ELIMINA. En Chrome Android
