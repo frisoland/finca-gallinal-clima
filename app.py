@@ -538,9 +538,8 @@ _DESKTOP_CHROME_JS = """
         if (typeof doc._fgHoverTimer  === 'undefined') doc._fgHoverTimer  = null;
         if (typeof doc._fgCloseTimer  === 'undefined') doc._fgCloseTimer  = null;
 
-        /* Toggle sidebar por posición en pantalla */
+        /* Abre/cierra el sidebar usando SOLO los controles oficiales de Streamlit */
         function fgToggleSidebar(open) {
-          var halfW = win.innerWidth / 2;
           var semantic = open
             ? ['[data-testid="stSidebarCollapsedControl"] button',
                '[data-testid="collapsedControl"] button',
@@ -555,14 +554,15 @@ _DESKTOP_CHROME_JS = """
             var b = doc.querySelector(semantic[si]);
             if (b) { b.click(); return true; }
           }
-          var allBtns = doc.querySelectorAll('button');
-          for (var bi = 0; bi < allBtns.length; bi++) {
-            var r = allBtns[bi].getBoundingClientRect();
-            var match = open
-              ? (r.left < 100 && r.top < 120 && r.right < halfW)
-              : (r.left >= 50 && r.right < 310 && r.top < 100 && r.right < halfW);
-            if (match) { allBtns[bi].click(); return true; }
-          }
+          /* NO hay plan B. Antes, si no se encontraba el botón oficial de Streamlit,
+             se recorrían TODOS los botones de la página y se pulsaba el primero que
+             cayera en cierta zona de la pantalla. Eso podía pulsar CUALQUIER cosa —
+             entre otras el botón "📱 Vista móvil" del sidebar, que es justo lo que
+             echaba al usuario a la vista móvil al pasar el ratón por la izquierda.
+             Pulsar botones a ciegas por su posición es demasiado peligroso: si los
+             selectores oficiales cambian, es preferible que el hover del sidebar
+             deje de funcionar (molestia menor, se abre a mano) a que se dispare una
+             acción que el usuario no ha pedido. */
           return false;
         }
 
