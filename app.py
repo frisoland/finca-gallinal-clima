@@ -11404,6 +11404,98 @@ def render_wetness_audit(history):
                            mime="text/csv", key="dl_wetness_audit")
 
 
+def render_threshold_simulator(history):
+    """Simula qué habría pasado con otros umbrales de «hora mojada».
+
+    El umbral actual (20 min) es una decisión de diseño, no un valor calibrado.
+    Esta herramienta recalcula TODA la serie con varios umbrales y compara cuántos
+    eventos habrían alcanzado infección. No cambia nada: solo informa.
+    """
+    with st.expander("🧪 Simulador: ¿y si el umbral de «hora mojada» fuera otro?", expanded=False):
+        st.caption(
+            "Una hora cuenta como mojada a partir de **20 minutos**; por debajo se descarta "
+            "entera. Ese 20 es una **elección de diseño**, no un valor calibrado con tus datos. "
+            "Aquí se recalcula **toda la serie** con otros umbrales para ver cuántas infecciones "
+            "se habrían detectado con cada uno. **No cambia el modelo**: solo simula."
+        )
+        if history is None or history.empty or "humectacion_hoja" not in history.columns:
+            st.info("No hay datos de humectación en el histórico.")
+            return
+        _años = sorted(pd.to_datetime(history["fecha_hora"], errors="coerce").dt.year.dropna().unique())
+        _c1, _c2 = st.columns([1, 2])
+        with _c1:
+            _año = st.selectbox("Campaña", ["Todas"] + [int(a) for a in _años],
+                                index=len(_años), key="sim_umbral_año")
+        _h = history.copy()
+        _h["fecha_hora"] = pd.to_datetime(_h["fecha_hora"], errors="coerce")
+        if _año != "Todas":
+            _h = _h[_h["fecha_hora"].dt.year == int(_año)]
+        with _c2:
+            st.caption(f"Se analizarán **{len(_h):,}** registros horarios."
+                       .replace(",", "."))
+        if not st.button("🧪 Simular umbrales", key="btn_sim_umbral", type="primary"):
+            return
+        _filas = []
+        with st.spinner("Recalculando la serie con cada umbral…"):
+            for _u in (10, 15, 20, 25):
+                try:
+                    _ev = detect_leaf_wetness_events(_h, min_minutes=_u)
+                except Exception:
+                    _ev = pd.DataFrame()
+                if _ev is None or _ev.empty:
+                    _filas.append({"Umbral": f"{_u} min", "Eventos": 0,
+                                   "Infección moteado": 0, "Infección monilia": 0,
+                                   "Horas húmedas totales": 0.0})
+                    continue
+                _rm = pd.to_numeric(_ev.get("Ratio moteado"), errors="coerce").fillna(0)
+                _ro = pd.to_numeric(_ev.get("Ratio monilia"), errors="coerce").fillna(0)
+                _hh = pd.to_numeric(_ev.get("Horas húmedas equivalentes"), errors="coerce").fillna(0)
+                _filas.append({
+                    "Umbral": f"{_u} min" + (" ← actual" if _u == 20 else ""),
+                    "Eventos": len(_ev),
+                    "Infección moteado": int((_rm >= 1.0).sum()),
+                    "Infección monilia": int((_ro >= 1.0).sum()),
+                    "Horas húmedas totales": round(float(_hh.sum()), 1),
+                })
+        _sim = pd.DataFrame(_filas)
+        st.dataframe(_sim, hide_index=True, use_container_width=True)
+
+        # Lectura automática comparando contra el umbral actual (20 min)
+        try:
+            _act = _sim[_sim["Umbral"].str.startswith("20")].iloc[0]
+            _b15 = _sim[_sim["Umbral"].str.startswith("15")].iloc[0]
+            _dif = int(_b15["Infección moteado"]) - int(_act["Infección moteado"])
+            if _dif <= 0:
+                st.success(
+                    f"✅ Bajar el umbral a 15 min **no detectaría ninguna infección de moteado "
+                    f"adicional** ({_act['Infección moteado']} en ambos casos). El umbral actual "
+                    f"NO se está perdiendo eventos: cambiarlo solo añadiría ruido."
+                )
+            elif _dif <= 2:
+                st.info(
+                    f"ℹ️ Con 15 min se detectarían **{_dif} evento(s) de moteado más** "
+                    f"({_act['Infección moteado']} → {_b15['Infección moteado']}). Es una "
+                    f"diferencia pequeña: habría que comprobar en **Resultado sanitario** si esos "
+                    f"eventos se corresponden con daño real observado antes de cambiar nada."
+                )
+            else:
+                st.warning(
+                    f"⚠️ Con 15 min se detectarían **{_dif} eventos de moteado más** "
+                    f"({_act['Infección moteado']} → {_b15['Infección moteado']}). Es una "
+                    f"diferencia relevante: merece la pena contrastarla con el daño real de "
+                    f"**Resultado sanitario**. Si esos años tuviste moteado que la app no anunció, "
+                    f"el umbral de 20 min sería demasiado estricto para este sensor."
+                )
+        except Exception:
+            pass
+        st.caption(
+            "⚠️ **Más eventos detectados no significa mejor modelo**: podrían ser falsas alarmas. "
+            "La prueba de fuego es contrastar con el **daño real** que anotaste en *Resultado "
+            "sanitario*. Un umbral que anuncia infecciones que nunca produjeron daño solo haría "
+            "tratar de más."
+        )
+
+
 def health_tab(history, soil_type, hoja_threshold):
     st.subheader("Sanidad vegetal")
 
@@ -11491,6 +11583,7 @@ def health_tab(history, soil_type, hoja_threshold):
             )
 
             render_wetness_audit(history)
+            render_threshold_simulator(history)
 
             with st.expander("Resumen de actuación sugerida por evento", expanded=True):
                 for i, row in events_explained.iterrows():
