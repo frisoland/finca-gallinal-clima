@@ -11346,14 +11346,41 @@ def render_wetness_audit(history):
                         "queda fuera del cálculo.")
         if _min_desc > 0:
             _pct = _min_desc / max(_min_cont + _min_desc, 1) * 100
+            # DESGLOSE: no todo lo descartado es igual de relevante.
+            #   · traza (<10 min/h): condensación puntual, NO infecta -> bien descartada.
+            #   · 10-14 min: humedad menor, dudosa.
+            #   · 15-19 min: se queda a las puertas del umbral -> es la que de verdad
+            #     podría estar restando riesgo real (sobre todo si esa hora tuvo lluvia).
+            _d = _sub[(_sub["_moj"] > 0) & (_sub["_moj"] < 20)]
+            _t1 = float(_d.loc[_d["_moj"] < 10, "_moj"].sum())
+            _t2 = float(_d.loc[(_d["_moj"] >= 10) & (_d["_moj"] < 15), "_moj"].sum())
+            _t3 = float(_d.loc[_d["_moj"] >= 15, "_moj"].sum())
+            _t3_lluvia = float(_d.loc[(_d["_moj"] >= 15) & (_d["_ll"] >= 0.2), "_moj"].sum())
             st.caption(
-                f"ℹ️ De toda la mojada registrada en este rango, **{_min_desc:.0f} min "
-                f"({_min_desc/60:.1f} h, un {_pct:.0f} %)** cayeron en horas que no llegaron "
-                f"al umbral de 20 min y **no suman** al valor de infección. Es el precio de "
-                f"que el modelo de Mills razone en horas completas: una condensación de traza "
-                f"no infecta, pero si la lluvia queda repartida a caballo entre dos horas de "
-                f"reloj (p. ej. 15:50–16:20), esos minutos seguidos se pierden."
+                f"ℹ️ De toda la mojada registrada, **{_min_desc:.0f} min ({_min_desc/60:.1f} h, "
+                f"un {_pct:.0f} %)** cayeron en horas que no llegaron a 20 min y **no suman**. "
+                f"Pero no todo pesa igual:"
             )
+            st.markdown(
+                f"- **{_t1:.0f} min** en horas de **menos de 10 min** → *condensación de traza*: "
+                f"no moja la hoja de verdad y **no infecta**. Descartarlos es CORRECTO.\n"
+                f"- **{_t2:.0f} min** en horas de **10–14 min** → humedad menor, dudosa.\n"
+                f"- **{_t3:.0f} min** en horas de **15–19 min** → se quedan **a las puertas** del "
+                f"umbral; de ellos, **{_t3_lluvia:.0f} min con lluvia registrada**. Esta es la "
+                f"franja que de verdad podría estar restando riesgo real."
+            )
+            if _t3_lluvia > 60:
+                st.warning(
+                    f"⚠️ Hay **{_t3_lluvia:.0f} min** de mojada con LLUVIA que se quedaron entre "
+                    f"15 y 19 min y no contaron. Merece la pena revisar si el umbral de 20 min "
+                    f"es demasiado estricto para este sensor."
+                )
+            elif _t1 / max(_min_desc, 1) > 0.6:
+                st.success(
+                    "✅ La mayor parte de lo descartado son **trazas de menos de 10 min** "
+                    "(condensación puntual, sin lluvia). El umbral está filtrando bien: "
+                    "sumarlas inflaría el riesgo con humedad que no infecta."
+                )
 
         _tab = pd.DataFrame({
             "Hora": _sub["fecha_hora"].dt.strftime("%d/%m %H:%M"),
