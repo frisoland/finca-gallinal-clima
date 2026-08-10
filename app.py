@@ -11324,7 +11324,13 @@ def render_wetness_audit(history):
         _max_min    = float(_sub["_moj"].max()) if not _sub.empty else 0
         _horas_60   = int((_sub["_moj"] >= 60).sum())
 
-        _m1, _m2, _m3, _m4 = st.columns(4)
+        # Minutos que se PIERDEN: los de horas con mojada pero por debajo del umbral.
+        # El modelo de Mills razona en horas binarias (mojada/seca), así que una hora
+        # con <20 min se descarta ENTERA — esos minutos no suman al evento.
+        _min_desc  = float(_sub.loc[(_sub["_moj"] > 0) & (_sub["_moj"] < 20), "_moj"].sum())
+        _min_cont  = float(_sub.loc[_sub["_moj"] >= 20, "_moj"].sum())
+
+        _m1, _m2, _m3, _m4, _m5 = st.columns(5)
         _m1.metric("Horas con lluvia", _n_lluvia)
         _m2.metric("Horas que cuentan mojadas", _n_mojada)
         _m3.metric("Llueve y NO cuenta", _n_flag,
@@ -11333,6 +11339,21 @@ def render_wetness_audit(history):
         _m4.metric("Horas con los 60 min", _horas_60,
                    help=f"Máximo registrado en una hora: {_max_min:.0f} min. Si el sensor "
                         f"nunca llega a 60 ni lloviendo, conviene revisarlo.")
+        _m5.metric("Minutos DESCARTADOS", f"{_min_desc:.0f}",
+                   delta=f"{_min_desc/60:.1f} h que no cuentan", delta_color="inverse",
+                   help="Minutos de mojada registrados en horas que NO llegaron a 20 min: "
+                        "el modelo las descarta enteras. Aquí se ve cuánta humedad real "
+                        "queda fuera del cálculo.")
+        if _min_desc > 0:
+            _pct = _min_desc / max(_min_cont + _min_desc, 1) * 100
+            st.caption(
+                f"ℹ️ De toda la mojada registrada en este rango, **{_min_desc:.0f} min "
+                f"({_min_desc/60:.1f} h, un {_pct:.0f} %)** cayeron en horas que no llegaron "
+                f"al umbral de 20 min y **no suman** al valor de infección. Es el precio de "
+                f"que el modelo de Mills razone en horas completas: una condensación de traza "
+                f"no infecta, pero si la lluvia queda repartida a caballo entre dos horas de "
+                f"reloj (p. ej. 15:50–16:20), esos minutos seguidos se pierden."
+            )
 
         _tab = pd.DataFrame({
             "Hora": _sub["fecha_hora"].dt.strftime("%d/%m %H:%M"),
