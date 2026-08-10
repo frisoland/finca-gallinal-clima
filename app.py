@@ -11269,6 +11269,93 @@ def sanitary_events_history(history_df, start_year=2019):
     return pd.DataFrame(rows)
 
 
+def render_wetness_audit(history):
+    """Contraste HORA A HORA de lluvia registrada vs humectación detectada.
+
+    Nace de una duda del usuario (2026-08-10): tras una noche de lluvia, el evento
+    del 8-9/08 solo acumuló 7,2 h mojadas en 22 h de reloj, y el sensor nunca marcó
+    los 60 min en ninguna hora. Esta tabla permite comprobar, hora a hora, si el
+    sensor acompaña a la lluvia o se queda corto — sin depender de la memoria de
+    nadie. Es una herramienta de AUDITORÍA: no cambia ningún cálculo.
+    """
+    with st.expander("🔬 Auditoría: lluvia vs hoja mojada, hora a hora", expanded=False):
+        st.caption(
+            "Compara, hora a hora, la **lluvia registrada** con los **minutos de hoja "
+            "mojada** que marcó el sensor. Sirve para comprobar si el sensor acompaña a "
+            "la lluvia o se queda corto (lo que haría que los valores de infección salgan "
+            "por debajo de lo real). **Una hora cuenta como mojada a partir de 20 min.**"
+        )
+        if history is None or history.empty or "humectacion_hoja" not in history.columns:
+            st.info("No hay datos de humectación en el histórico.")
+            return
+        _h = history.copy()
+        _h["fecha_hora"] = pd.to_datetime(_h["fecha_hora"], errors="coerce")
+        _h = _h.dropna(subset=["fecha_hora"])
+        if _h.empty:
+            st.info("No hay datos con fecha válida.")
+            return
+        _maxd = _h["fecha_hora"].max().date()
+        _mind = _h["fecha_hora"].min().date()
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            _desde = st.date_input("Desde", value=max(_mind, _maxd - pd.Timedelta(days=3)),
+                                   min_value=_mind, max_value=_maxd, key="wa_desde")
+        with _c2:
+            _hasta = st.date_input("Hasta", value=_maxd, min_value=_mind, max_value=_maxd,
+                                   key="wa_hasta")
+        _sub = _h[(_h["fecha_hora"].dt.date >= _desde) & (_h["fecha_hora"].dt.date <= _hasta)].copy()
+        if _sub.empty:
+            st.info("Sin datos en ese rango.")
+            return
+        _sub = _sub.sort_values("fecha_hora")
+        _sub["_ll"]  = pd.to_numeric(_sub.get("lluvia_mm"), errors="coerce").fillna(0)
+        _sub["_moj"] = pd.to_numeric(_sub["humectacion_hoja"], errors="coerce").fillna(0).clip(0, 60)
+        _sub["_hr"]  = pd.to_numeric(_sub.get("hr_media"), errors="coerce")
+        _sub["_t"]   = pd.to_numeric(_sub.get("temp_media"), errors="coerce")
+
+        # Señal de posible infravaloración: llueve de verdad pero la hora NO cuenta como mojada
+        _sub["_flag"] = np.where(
+            (_sub["_ll"] >= 0.2) & (_sub["_moj"] < 20), "⚠️ llueve y NO cuenta",
+            np.where((_sub["_ll"] >= 0.2) & (_sub["_moj"] < 60), "llueve · hora incompleta",
+                     np.where(_sub["_moj"] >= 20, "mojada", "")))
+        _n_lluvia   = int((_sub["_ll"] >= 0.2).sum())
+        _n_flag     = int((_sub["_flag"] == "⚠️ llueve y NO cuenta").sum())
+        _n_mojada   = int((_sub["_moj"] >= 20).sum())
+        _max_min    = float(_sub["_moj"].max()) if not _sub.empty else 0
+        _horas_60   = int((_sub["_moj"] >= 60).sum())
+
+        _m1, _m2, _m3, _m4 = st.columns(4)
+        _m1.metric("Horas con lluvia", _n_lluvia)
+        _m2.metric("Horas que cuentan mojadas", _n_mojada)
+        _m3.metric("Llueve y NO cuenta", _n_flag,
+                   help="Horas con lluvia ≥0,2 mm en las que el sensor marcó <20 min. "
+                        "Si son muchas, el sensor podría estar quedándose corto.")
+        _m4.metric("Horas con los 60 min", _horas_60,
+                   help=f"Máximo registrado en una hora: {_max_min:.0f} min. Si el sensor "
+                        f"nunca llega a 60 ni lloviendo, conviene revisarlo.")
+
+        _tab = pd.DataFrame({
+            "Hora": _sub["fecha_hora"].dt.strftime("%d/%m %H:%M"),
+            "Lluvia mm": _sub["_ll"].round(1),
+            "Hoja mojada (min)": _sub["_moj"].round(0).astype(int),
+            "¿Cuenta?": np.where(_sub["_moj"] >= 20, "sí", "no"),
+            "HR %": _sub["_hr"].round(0),
+            "Temp °C": _sub["_t"].round(1),
+            "Observación": _sub["_flag"],
+        })
+        st.dataframe(_tab, hide_index=True, use_container_width=True, height=380)
+        st.caption(
+            "**Cómo leerlo:** si ves muchas horas con lluvia y pocos minutos de mojada, el "
+            "sensor se queda corto y los valores de infección salen bajos. Si el sensor "
+            "acompaña a la lluvia, entonces la mojada fue realmente intermitente y el "
+            "cálculo es fiel. Descarga los datos si quieres compararlos con Sencrop."
+        )
+        st.download_button("⬇️ Descargar esta auditoría (CSV)",
+                           data=_tab.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"auditoria_lluvia_vs_hoja_{_desde}_{_hasta}.csv",
+                           mime="text/csv", key="dl_wetness_audit")
+
+
 def health_tab(history, soil_type, hoja_threshold):
     st.subheader("Sanidad vegetal")
 
@@ -11354,6 +11441,8 @@ def health_tab(history, soil_type, hoja_threshold):
                 file_name="eventos_humectacion_foliar_explicados.csv",
                 mime="text/csv",
             )
+
+            render_wetness_audit(history)
 
             with st.expander("Resumen de actuación sugerida por evento", expanded=True):
                 for i, row in events_explained.iterrows():
