@@ -9803,6 +9803,22 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
     oidium_hours = float(df.get("riesgo_oidio", pd.Series(False, index=df.index)).sum()) if "riesgo_oidio" in df.columns else 0.0
     evap = float(df.get("indice_evaporativo_suelo", pd.Series(np.nan, index=df.index)).mean()) if "indice_evaporativo_suelo" in df.columns else np.nan
 
+    # PEOR EVENTO del periodo: ratio más alto alcanzado por un episodio de mojada,
+    # en % del umbral de infección. Sustituye a "Tratamiento reciente" (que inducía a
+    # error: mostraba CUALQUIER último pase, incluido un Bactur que no protege de
+    # hongos, y este panel es de finca entera mientras los campos se tratan uno a uno).
+    # Aquí el dato SÍ es de finca y dice lo que importa: cuán cerca se estuvo de infectar.
+    def _peor(col):
+        if events_exp is None or events_exp.empty or col not in events_exp.columns:
+            return "—"
+        _r = pd.to_numeric(events_exp[col], errors="coerce").dropna()
+        if _r.empty:
+            return "—"
+        _m = float(_r.max()) * 100
+        return f"{_m:.0f} % del umbral" + ("  ⚠️ infección" if _m >= 100 else "")
+    _peor_scab = _peor("Ratio moteado")
+    _peor_mon  = _peor("Ratio monilia")
+
     rows = []
 
     # Moteado
@@ -9831,7 +9847,6 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
         reasons.append("fase sensible")
 
     level, icon, action = sanitary_level_from_score(score)
-    treatment = recent_treatment_context_for_period(start_ts, end_ts, ["moteado", "folicur", "fungicida", "tebuconazol", "captan", "dodina", "cobre"])
     rows.append({
         "Semáforo": icon,
         "Riesgo": "Moteado",
@@ -9839,7 +9854,7 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
         "Puntuación": round(min(score, 100), 1),
         "Indicadores": "; ".join(reasons) if reasons else "sin señales relevantes",
         "Explicación climática": explain_disease_climate_reason("Moteado", level, rain, wet_hours, hr90, temp_mean, scab_events, scab_high, oidium_hours, phases),
-        "Tratamiento reciente": treatment["ultimo_tratamiento"],
+        "Peor evento del periodo": _peor_scab,
         "Acción orientativa": "Priorizar revisión de hoja joven y cobertura preventiva." if level in ["Alto", "Medio"] else "Seguimiento normal salvo nuevas lluvias.",
         "Prioridad": action,
     })
@@ -9867,7 +9882,6 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
         reasons.append("fase especialmente sensible")
 
     level, icon, action = sanitary_level_from_score(score)
-    treatment = recent_treatment_context_for_period(start_ts, end_ts, ["monilia", "folicur", "fungicida", "tebuconazol"])
     rows.append({
         "Semáforo": icon,
         "Riesgo": "Monilia",
@@ -9875,7 +9889,7 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
         "Puntuación": round(min(score, 100), 1),
         "Indicadores": "; ".join(reasons) if reasons else "sin señales relevantes",
         "Explicación climática": explain_disease_climate_reason("Monilia", level, rain, wet_hours, hr90, temp_mean, monilia_events, monilia_high, oidium_hours, phases),
-        "Tratamiento reciente": treatment["ultimo_tratamiento"],
+        "Peor evento del periodo": _peor_mon,
         "Acción orientativa": "Revisar flor/fruto y zonas húmedas si coincide con fase sensible." if level in ["Alto", "Medio"] else "Seguimiento normal.",
         "Prioridad": action,
     })
@@ -9903,7 +9917,6 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
         reasons.append("tejido activo/sensible")
 
     level, icon, action = sanitary_level_from_score(score)
-    treatment = recent_treatment_context_for_period(start_ts, end_ts, ["oidio", "oídio", "azufre", "folicur", "fungicida", "tebuconazol"])
     rows.append({
         "Semáforo": icon,
         "Riesgo": "Oídio",
@@ -9911,43 +9924,15 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
         "Puntuación": round(min(score, 100), 1),
         "Indicadores": "; ".join(reasons) if reasons else "sin señales relevantes",
         "Explicación climática": explain_disease_climate_reason("Oídio", level, rain, wet_hours, hr90, temp_mean, 0, 0, oidium_hours, phases),
-        "Tratamiento reciente": treatment["ultimo_tratamiento"],
+        "Peor evento del periodo": f"{oidium_hours:.0f} h favorables" if oidium_hours else "—",
         "Acción orientativa": "Vigilar brotes tiernos y variedades sensibles." if level in ["Alto", "Medio", "Bajo-medio"] else "Seguimiento normal.",
         "Prioridad": action,
     })
 
-    # Estrés hídrico / demanda evaporativa
-    score = 0
-    reasons = []
-    if pd.notna(evap):
-        if evap >= 70:
-            score += 45
-            reasons.append(f"índice evaporativo alto ({evap:.0f})")
-        elif evap >= 45:
-            score += 25
-            reasons.append(f"índice evaporativo medio ({evap:.0f})")
-    if rain < 2 and pd.notna(evap) and evap >= 45:
-        score += 20
-        reasons.append("poca lluvia en el periodo")
-    if pd.notna(temp_mean) and temp_mean >= 24:
-        score += 12
-        reasons.append(f"temperatura media elevada ({temp_mean:.1f} ºC)")
-    if any(w in phase_lower for w in ["fruto", "madur", "cuaj"]):
-        score += 8
-        reasons.append("fase con demanda hídrica relevante")
-
-    level, icon, action = sanitary_level_from_score(score)
-    rows.append({
-        "Semáforo": icon,
-        "Riesgo": "Estrés hídrico",
-        "Nivel": level,
-        "Puntuación": round(min(score, 100), 1),
-        "Indicadores": "; ".join(reasons) if reasons else "sin señales relevantes",
-        "Explicación climática": explain_disease_climate_reason("Estrés hídrico", level, rain, wet_hours, hr90, temp_mean, 0, 0, oidium_hours, phases),
-        "Tratamiento reciente": "No aplica",
-        "Acción orientativa": "Comprobar humedad real de suelo y evolución de demanda." if level in ["Alto", "Medio", "Bajo-medio"] else "Sin necesidad clara de actuación.",
-        "Prioridad": action,
-    })
+    # (ESTRÉS HÍDRICO retirado 2026-08-11: este semáforo es SANITARIO y el agua tiene
+    #  su propio item, Riego, con balance FAO-56 real por campo — reserva de suelo, ETc,
+    #  aportes. Aquí se calculaba con un índice evaporativo aproximado que no aportaba
+    #  nada sobre aquel y mezclaba dos cosas distintas en la misma tabla.)
 
     return pd.DataFrame(rows)
 
@@ -9970,12 +9955,15 @@ def render_sanitary_semaphore(period_df, soil_type, hoja_threshold, start_ts=Non
     c4.metric("Seguimiento normal", int((levels == "Bajo").sum()))
 
     st.caption(
-        "El semáforo valora el riesgo climático del periodo. El tratamiento reciente mostrado es contexto general de Agroptima, "
-        "no significa que todos los campos o todas las variedades estén cubiertos."
+        "Riesgo **climático** del periodo para el conjunto de la finca. **«Peor evento del "
+        "periodo»** indica hasta dónde llegó el episodio de mojada más fuerte, en % del umbral "
+        "de infección: un 80 % significa que se quedó cerca sin llegar; **≥100 % es infección "
+        "confirmada**. La cobertura fungicida real, campo por campo, está en **Decisiones**."
     )
 
     st.dataframe(
-        sem[["Semáforo", "Riesgo", "Nivel", "Puntuación", "Indicadores", "Tratamiento reciente", "Acción orientativa"]],
+        sem[["Semáforo", "Riesgo", "Nivel", "Puntuación", "Peor evento del periodo",
+             "Indicadores", "Acción orientativa"]],
         use_container_width=True,
         hide_index=True,
     )
@@ -9985,7 +9973,7 @@ def render_sanitary_semaphore(period_df, soil_type, hoja_threshold, start_ts=Non
             st.markdown(f"**{row['Semáforo']} {row['Riesgo']} · {row['Nivel']}**")
             st.write(f"- Indicadores: {row['Indicadores']}")
             st.markdown(str(row.get("Explicación climática", "")))
-            st.write(f"- Tratamiento reciente de contexto: {row['Tratamiento reciente']}")
+            st.write(f"- Peor evento del periodo: {row['Peor evento del periodo']}")
             st.write(f"- Acción: {row['Acción orientativa']}")
 
     st.download_button(
