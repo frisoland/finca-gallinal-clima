@@ -3416,6 +3416,17 @@ CARPOCAPSA_PRODUCTS_CATALOG = {
         "materia_activa": "Bacillus thuringiensis var. kurstaki",
         "comentario": "Biológico, actúa por ingestión. Ventana de acción 3-5 días. Sensible a lluvia.",
     },
+    "Delfin": {
+        "aliases": ["delfin", "delfin wg", "kurstaki sa-11", "sa-11"],
+        "tipo": "Biológico - Bt",
+        "materia_activa": "Bacillus thuringiensis kurstaki cepa SA-11 (85 %)",
+        "comentario": "MISMO activo que Bactur (Bt kurstaki) y mismo grupo a efectos de "
+                      "resistencias: sustituto directo. Reg. 19.159, dosis 0,5-0,75 kg/ha, "
+                      "PLAZO DE SEGURIDAD 0 días. Actúa por INGESTIÓN: debe estar en el fruto "
+                      "cuando nace la larva y antes de que entre. Poco persistente (se degrada "
+                      "con UV): aplicar al atardecer y repetir a los 7-8 días si la salida de "
+                      "larvas es escalonada. Apto en ecológico.",
+    },
     "Madex": {
         "aliases": ["madex", "granulosis", "granulovirus", "cydia pomonella granulovirus", "cpgv"],
         "tipo": "Biológico - Virus",
@@ -20953,7 +20964,7 @@ _FUNGICIDE_KEYWORDS = {
 # Y no contiene ninguna keyword fungicida, se descarta como tratamiento fúngico.
 _NON_FUNGICIDE_KEYWORDS = {
     # ── Insecticidas ──────────────────────────────────────────────────────────
-    "bactur", "bacillus", "thuringiensis", "xentari", "dipel",
+    "bactur", "bacillus", "thuringiensis", "xentari", "dipel", "delfin",
     "spinosad", "spintor", "tracer", "success",
     "karate", "lambda", "lambdacialotrina", "cipermetrin", "deltametrin",
     "chlorpyrifos", "clorpirifos", "dimethoate", "dimetoato",
@@ -22876,6 +22887,7 @@ PHYTOSANITARY_CATALOG = [
     {"Producto": "LUNA EXPERIENCE",  "Tipo": "Fungicida (retirado)", "Plazo días": 7,  "Objetivo": "Monilia, Moteado, Oídio"},
     # ── Insecticidas biológicos ────────────────────────────────────────────────
     {"Producto": "BACTUR",           "Tipo": "Insecticida biológico", "Plazo días": 0,  "Objetivo": "Carpocapsa, Tortrix, Orugas"},
+    {"Producto": "DELFIN",           "Tipo": "Insecticida biológico", "Plazo días": 0,  "Objetivo": "Carpocapsa, Orugas"},
     {"Producto": "XENTARI",          "Tipo": "Insecticida biológico", "Plazo días": 0,  "Objetivo": "Carpocapsa, Orugas"},
     {"Producto": "DIPEL",            "Tipo": "Insecticida biológico", "Plazo días": 0,  "Objetivo": "Carpocapsa, Orugas"},
     {"Producto": "SPINTOR",          "Tipo": "Insecticida biológico", "Plazo días": 7,  "Objetivo": "Carpocapsa, Trips"},
