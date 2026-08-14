@@ -14359,9 +14359,11 @@ def carpo_gen_label_short(lbl):
 # UC IPM ~728 y CARPOCAPSA_GEN_DD usa 750. Se pinta el rango de Utah por ser la
 # única fuente que publica el periodo completo; la línea de 750 sigue marcada
 # aparte, así que se ven las dos referencias a la vez.
+# Se dibujan RECORTADAS contra la curva de DD (relleno solo del área bajo la
+# curva que cae dentro del rango), no como franja horizontal completa.
 CARPOCAPSA_HATCH_BANDS = [
-    (122, 511, "Eclosión 1ª gen (1–99 %)", "rgba(44,160,44,0.10)"),
-    (611, 1167, "Eclosión 2ª gen (1–99 %)", "rgba(214,39,40,0.10)"),
+    (122, 511, "Eclosión 1ª gen (1–99 %)", "rgba(44,160,44,0.18)"),
+    (611, 1167, "Eclosión 2ª gen (1–99 %)", "rgba(214,39,40,0.18)"),
 ]
 
 # Umbral SOLO para fijar el biofix (arrancar el contador de DD). Es un dato
@@ -16043,11 +16045,15 @@ def carpocapsa_tab(history):
         "(no el general de la finca), muestra **sus** capturas, y **solo las líneas moradas de los "
         "tratamientos de carpocapsa aplicados a ese campo**. Así ves, campo a campo, dónde caen "
         "las capturas y los tratamientos dentro de las **bandas de eclosión**.\n\n"
-        "🟩🟥 **Las bandas de color son el periodo real de eclosión** (del 1 % al 99 % de los huevos): "
-        "verde la 1ª generación (**122–511 DD**), roja la 2ª (**611–1167 DD**). Ahí es donde hay "
-        "larvas naciendo y donde el tratamiento sirve — fíjate en que **duran semanas**, no son un "
-        "instante. Las líneas de puntos marcan hitos concretos dentro de esas bandas. "
-        "*Fuente: Utah State University Extension (Steffan), tablas de fenología de carpocapsa.*"
+        "🟩🟥 **Las zonas coloreadas bajo la curva son el periodo real de eclosión** (del 1 % al "
+        "99 % de los huevos): verde la 1ª generación (**122–511 DD**), roja la 2ª "
+        "(**611–1167 DD**). Mientras la línea roja atraviesa una zona coloreada **hay larvas "
+        "naciendo** y el tratamiento sirve; el hueco entre ambas es el paso de una generación a "
+        "otra. Fíjate en que **duran semanas**, no son un instante — por eso suele hacer falta "
+        "más de un pase por generación.\n\n"
+        "Una zona **cerrada** = esa fase ya pasó. Una zona que **llega hasta el borde derecho** = "
+        "la fase sigue en curso ahora mismo. Las líneas de puntos marcan hitos concretos dentro "
+        "de cada zona. *Fuente: Utah State University Extension (Steffan), tablas de fenología.*"
     )
     _bf_camp = carpocapsa_filter_campaign(st.session_state.carpocapsa_biofix_df, campaign_year)
     _campos_chart = (sorted(_bf_camp["Campo/Zona"].dropna().astype(str).unique())
@@ -22791,6 +22797,42 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
 
     fig = go.Figure()
 
+    # ── Bandas de eclosión (1–99 %), RECORTADAS A LA CURVA ────────────────────
+    # No es una franja horizontal que cruza el gráfico: se rellena solo el área
+    # BAJO la curva de DD que cae dentro del periodo de eclosión de cada
+    # generación. Así el relleno dibuja la fase real por la que pasó el campo, y
+    # se ve de un vistazo cuánto tiempo estuvo dentro de cada ventana.
+    # Se pintan ANTES que la curva y las capturas para quedar por debajo: plotly
+    # respeta el orden de los traces como z-order.
+    for _lo, _hi, _blbl, _bcol in CARPOCAPSA_HATCH_BANDS:
+        _yb, _yt = [], []          # borde inferior y superior del relleno
+        for _v in dd_acum:
+            # Solo mientras la curva esté DENTRO de la banda. Si se sigue pintando
+            # una vez superado el techo, el relleno se queda plano hasta el borde
+            # derecho y vuelve a parecer una franja horizontal.
+            _ok = (_v is not None and not (isinstance(_v, float) and np.isnan(_v))
+                   and _lo < _v <= _hi)
+            _yb.append(_lo if _ok else None)
+            _yt.append(_v if _ok else None)
+        if not any(v is not None for v in _yt):
+            continue               # la curva nunca llega a esta banda
+        fig.add_trace(go.Scatter(
+            x=dates, y=_yb, mode="lines", line=dict(width=0),
+            showlegend=False, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(
+            x=dates, y=_yt, mode="lines", line=dict(width=0),
+            fill="tonexty", fillcolor=_bcol,
+            showlegend=False, hoverinfo="skip"))
+        # Etiqueta DENTRO del relleno, centrada en el tramo cubierto. Se coloca a
+        # media altura de la zona rellena en ese punto, no en el borde.
+        _idx = [i for i, v in enumerate(_yt) if v is not None]
+        _mid = _idx[len(_idx) // 2]
+        _alto = _yt[_mid] - _lo
+        if _alto > 40:             # si la franja es muy fina la etiqueta no cabe
+            fig.add_annotation(
+                x=dates[_mid], y=_lo + _alto / 2, text=_blbl, showarrow=False,
+                font=dict(size=9, color="#4a4a4a"), opacity=0.85)
+
     # (La traza "DD diarios" y su eje derecho (DD/día 0-70) se quitaron: metían ruido y
     #  su escala confundía —parecía que se acumulaban 70 DD/día—; solo interesa el DD acumulado.)
 
@@ -22833,19 +22875,6 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     max_dd  = max(dd_acum) if dd_acum else 400
     _top_gen = max((t for t, _ in CARPOCAPSA_GEN_DD if t <= 750), default=750)
     ymax    = max(max_dd * 1.15, _top_gen * 1.08, 400)
-    # Bandas de eclosión (1–99 %): el PERIODO que hay que cubrir con producto, no
-    # solo el punto de inicio. Van por debajo de todo (layer="below") y con opacidad
-    # baja para no tapar la curva ni las capturas.
-    for _lo, _hi, _blbl, _bcol in CARPOCAPSA_HATCH_BANDS:
-        if _lo > ymax * 1.2:
-            continue                      # aún muy lejos: no la pintes
-        fig.add_hrect(
-            y0=_lo, y1=min(_hi, ymax * 1.2),
-            fillcolor=_bcol, opacity=1.0, layer="below", line_width=0,
-            annotation_text=_blbl, annotation_position="top left",
-            annotation_font_size=9, annotation_font_color="#666",
-        )
-
     _gen_colors = ["#2ca02c", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
     for (umbral, _lbl), color in zip(CARPOCAPSA_GEN_DD, _gen_colors):
         # Etiqueta corta para que quepa entera a la derecha (antes se cortaba el nº).
@@ -24679,10 +24708,13 @@ def render_decisiones_panel():
 - **Línea roja** = grados-día acumulados desde el biofix (inicio de vuelo); la parte punteada es la previsión.
 - **Área naranja (DD diarios)** = DD de cada día (cuánto calor útil acumuló ese día), eje derecho.
 - **Círculos azules** = capturas en trampa de toda la finca ese día (el tamaño y el número dentro son proporcionales al total de capturas).
-- **Bandas de color (verde y roja)** = **periodo real de eclosión**, del 1 % al 99 % de los huevos:
+- **Zonas coloreadas bajo la curva** = **periodo real de eclosión**, del 1 % al 99 % de los huevos:
   - 🟩 **122–511 DD** = eclosión de 1ª generación
   - 🟥 **611–1167 DD** = eclosión de 2ª generación
-  Mientras la línea roja esté dentro de una banda, **hay larvas naciendo** y el tratamiento sirve.
+  El relleno acompaña a la línea roja mientras está dentro del rango, así que **la forma de la zona
+  es el tiempo que el campo pasó en esa fase**. Zona cerrada = fase superada; zona que llega al
+  borde derecho = fase en curso. El hueco entre las dos es el paso de una generación a la otra.
+  Mientras la línea roja esté dentro de una zona, **hay larvas naciendo** y el tratamiento sirve.
   Fíjate en que cada banda dura **semanas**: la eclosión no es un día, es un periodo largo, y por eso
   suele hacer falta más de un pase por generación (con Bt, que dura ~7 días, aún más).
   *Fuente: Utah State University Extension (Steffan).*
