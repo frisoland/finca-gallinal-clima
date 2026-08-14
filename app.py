@@ -14366,6 +14366,63 @@ CARPOCAPSA_HATCH_BANDS = [
     (611, 1167, "Eclosión 2ª gen (1–99 %)", "rgba(214,39,40,0.18)"),
 ]
 
+
+# ── Grupos de campos para decidir en conjunto (EN PRUEBAS, campaña 2026) ──────
+# Motivación: el 54 % de la variación entre lecturas es ruido de muestreo puro
+# (índice de dispersión 5,25; solo el 16 % es efecto real de cada trampa). Una
+# lectura suelta de un dígito no distingue señal de ruido — el caso claro fue
+# Piedrona Rincón, que marcó 0 el 05/08 (y se quedó sin tratar) y 5 el 12/08.
+#
+# ⚠️ Los grupos NO salen de las correlaciones entre trampas. Se probó: un modelo
+# nulo sin ninguna estructura de grupo genera correlaciones MÁS altas que las
+# reales (p = 0,995 sobre los 2.024 tríos posibles). Ahí no hay señal que
+# encontrar. Los grupos los define el usuario por CONTIGÜIDAD y LOGÍSTICA de
+# tratamiento, que es lo que los datos no saben.
+#
+# Esta vista es ADITIVA: no sustituye ni altera la decisión por campo individual
+# de las secciones 4 y 6. Convive con ella durante la fase de estudio.
+CARPOCAPSA_GRUPOS = {
+    "Piedrona":         ["Piedrona 1", "Piedrona 2", "Piedrona Rincón"],
+    "Sectores 1-2-3":   ["Sector 1", "Sector 2", "Sector 3"],
+    "Sectores 4-5-9":   ["Sector 4", "Sector 5", "Sector 9"],
+    "GY + Sector 11":   ["GY - Gallinal", "GY - Amariega", "Sector 11"],
+    "Sector 12":        ["Sector 12"],
+    "Sector 10 + 10-B": ["Sector 10", "Sector 10-B"],
+    "Sector 6":         ["Sector 6"],
+    "Huertona + 7 + 8": ["Huertona", "Sector 7", "Sector 8"],
+    "Viaducto":         ["Viaducto"],
+    "Campazón + Pinos": ["Campazón", "Los Pinos 1", "Los Pinos 2", "Los Pinos 5"],
+}
+
+# Superficie por campo (ha). Los Pinos 3 y 4 no tienen trampa pero se tratan con
+# su grupo, así que cuentan para la superficie aunque no para la media.
+CARPOCAPSA_SUP_HA = {
+    "Piedrona 1": 1.01, "Piedrona 2": 0.15, "Piedrona Rincón": 0.95,
+    "Sector 1": 0.76, "Sector 2": 0.74, "Sector 3": 0.78,
+    "Sector 4": 1.74, "Sector 5": 1.25, "Sector 9": 0.28,
+    "GY - Gallinal": 1.20, "GY - Amariega": 0.52, "Sector 11": 0.75,
+    "Sector 12": 1.95, "Sector 10": 2.26, "Sector 10-B": 0.57,
+    "Sector 6": 1.94, "Huertona": 0.67, "Sector 7": 0.34, "Sector 8": 0.77,
+    "Viaducto": 1.09, "Campazón": 1.71,
+    "Los Pinos 1": 0.80, "Los Pinos 2": 0.68, "Los Pinos 5": 0.74,
+}
+# Campos SIN trampa que se tratan con un grupo: {campo: (grupo, ha)}. Cuentan para
+# la superficie del grupo pero no para la media (no hay lectura que promediar).
+CARPOCAPSA_SUP_SIN_TRAMPA = {
+    "Los Pinos 3": ("Campazón + Pinos", 0.20),
+    "Los Pinos 4": ("Campazón + Pinos", 0.52),
+}
+
+# Plantación EN FORMACIÓN: poca o ninguna manzana, así que su trampa no debe
+# arrastrar la decisión del grupo (una lectura alta ahí hacía tratar hectáreas
+# productivas sin capturas propias — pasó con Sector 10-B el 12/08: 10-B marcó 7
+# y Sector 10 marcó 0). Siguen monitorizándose: el histórico interesa y varias
+# entran en producción el año que viene, momento de sacarlas de esta lista.
+CARPOCAPSA_CAMPOS_EN_FORMACION = {
+    "Sector 11", "Sector 10-B", "Sector 8",
+    "Los Pinos 1", "Los Pinos 2", "Los Pinos 3", "Los Pinos 4", "Los Pinos 5",
+}
+
 # Umbral SOLO para fijar el biofix (arrancar el contador de DD). Es un dato
 # BIOLÓGICO — "aquí empezó el vuelo" — y NO debe confundirse con el umbral de
 # tratamiento (`carp_capture_threshold`), que es una decisión ECONÓMICA.
@@ -14703,6 +14760,152 @@ def carpocapsa_generation_biofixes(ct, threshold, daily_dd, min_gap_dd=450.0,
                 if pd.notna(gap) and gap >= min_gap_dd and _sustained(i):
                     last_bf = date; bios.append(date.date()); dipped = False
     return bios
+
+
+def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formacion=False):
+    """Resumen por GRUPO de campos para la última lectura de la campaña.
+
+    La media que decide se calcula SOLO con los campos en producción (salvo que
+    `incluir_formacion`), porque una trampa de plantación en formación puede
+    disparar —o diluir— la decisión de hectáreas productivas que no la piden.
+    Devuelve (DataFrame resumen, fecha de la última lectura, detalle por trampa).
+    """
+    vacio = (pd.DataFrame(), None, pd.DataFrame())
+    if traps_df is None or traps_df.empty or "Campo/Zona" not in traps_df.columns:
+        return vacio
+    t = carpocapsa_filter_campaign(traps_df, campaign_year)
+    if t.empty:
+        return vacio
+    t = t.copy()
+    t["Fecha"] = pd.to_datetime(t["Fecha"], errors="coerce")
+    t["_c"] = pd.to_numeric(t["Capturas machos"], errors="coerce")
+    t = t.dropna(subset=["Fecha", "_c"])
+    if t.empty:
+        return vacio
+    P = t.pivot_table(index="Fecha", columns="Campo/Zona", values="_c", aggfunc="sum")
+    ult = P.index.max()
+
+    filas, detalle = [], []
+    for grupo, campos in CARPOCAPSA_GRUPOS.items():
+        presentes = [c for c in campos if c in P.columns]
+        if not presentes:
+            continue
+        decide = presentes if incluir_formacion else [
+            c for c in presentes if c not in CARPOCAPSA_CAMPOS_EN_FORMACION]
+        if not decide:                      # grupo entero en formación
+            decide = presentes
+        ha_tot = sum(CARPOCAPSA_SUP_HA.get(c, 0.0) for c in campos)
+        ha_tot += sum(ha for g, ha in CARPOCAPSA_SUP_SIN_TRAMPA.values() if g == grupo)
+        ha_dec = sum(CARPOCAPSA_SUP_HA.get(c, 0.0) for c in decide)
+        fila_ult = P.loc[ult, decide]
+        media = float(fila_ult.mean())
+        maximo = float(fila_ult.max())
+        serie = P[decide].mean(axis=1)
+        if media >= umbral:
+            estado, orden = "🔴 Tratar el grupo", 0
+        elif maximo >= umbral:
+            estado, orden = "🟡 Revisar (una trampa alta)", 1
+        else:
+            estado, orden = "⚪ No tratar", 2
+        filas.append({
+            "Grupo": grupo,
+            "Estado": estado,
+            "Media": round(media, 2),
+            "Máx": int(maximo),
+            "Trampas que deciden": len(decide),
+            "ha que decide": round(ha_dec, 2),
+            "ha del grupo": round(ha_tot, 2),
+            "ha/trampa": round(ha_dec / len(decide), 2) if decide else np.nan,
+            "Ventanas ≥umbral": int((serie >= umbral).sum()),
+            "_orden": orden,
+        })
+        for c in presentes:
+            detalle.append({
+                "Grupo": grupo, "Campo": c,
+                "Capturas": int(P.loc[ult, c]) if pd.notna(P.loc[ult, c]) else 0,
+                "ha": CARPOCAPSA_SUP_HA.get(c, np.nan),
+                "Estado campo": ("🌱 en formación" if c in CARPOCAPSA_CAMPOS_EN_FORMACION
+                                 else "🍎 producción"),
+                "Decide": "no" if (c in CARPOCAPSA_CAMPOS_EN_FORMACION
+                                   and not incluir_formacion) else "sí",
+            })
+    if not filas:
+        return vacio
+    res = (pd.DataFrame(filas).sort_values(["_orden", "Media"], ascending=[True, False])
+           .drop(columns=["_orden"]).reset_index(drop=True))
+    return res, ult, pd.DataFrame(detalle)
+
+
+def render_carpocapsa_grupos(campaign_year):
+    """Vista por grupos de campos. ADITIVA: no altera la decisión por campo."""
+    st.markdown("### 🔗 Vista por grupos de campos · *en pruebas*")
+    st.caption(
+        "**No sustituye a nada.** Las secciones 4 y 6 siguen decidiendo campo a campo "
+        "igual que siempre; esto es una segunda lectura en paralelo para la fase de "
+        "estudio de esta campaña.\n\n"
+        "**Por qué agrupar:** el **54 %** de la variación entre lecturas es ruido de "
+        "muestreo puro y solo el **16 %** es efecto real de cada trampa. Con capturas de "
+        "un dígito, una lectura suelta no distingue una cosa de la otra — Piedrona Rincón "
+        "marcó **0** el 05/08 (y se quedó sin tratar) y **5** el 12/08, mientras su vecina "
+        "caía de 11 a 1. Promediar varias trampas ataca ese ruido.\n\n"
+        "**Los grupos no salen de los datos:** se probó y no hay estructura que encontrar "
+        "(un modelo sin grupos genera correlaciones *más* altas que las reales, p = 0,995). "
+        "Los defines tú por **contigüidad y logística** — que es justo lo que los datos no "
+        "saben y tú sí."
+    )
+    traps = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        umbral = st.number_input(
+            "Umbral del grupo", min_value=1, max_value=50, value=3, step=1,
+            key="carpo_grupos_umbral",
+            help="Capturas medias por trampa que abren ventana para el grupo. "
+                 "Independiente del umbral de la sección 4.")
+    with c2:
+        incluir = st.checkbox(
+            "Incluir plantación en formación en la media", value=False,
+            key="carpo_grupos_incluir_form",
+            help="Por defecto NO deciden: su trampa puede disparar el tratamiento de "
+                 "hectáreas productivas sin capturas propias (el 12/08, Sector 10-B marcó "
+                 "7 y Sector 10 marcó 0). Márcalo cuando esos campos entren en producción.")
+
+    res, ult, det = carpocapsa_grupos_resumen(traps, campaign_year, int(umbral), bool(incluir))
+    if res.empty:
+        st.info("Sin capturas de esta campaña para agrupar.")
+        return
+
+    st.markdown(f"**Última lectura: {ult:%d/%m/%Y}** · umbral ≥{int(umbral)} capturas de media")
+    st.dataframe(res, use_container_width=True, hide_index=True)
+
+    _tratar = res[res["Estado"].str.startswith("🔴")]
+    if not _tratar.empty:
+        st.success(
+            f"**{len(_tratar)} grupo(s) por encima del umbral · "
+            f"{_tratar['ha que decide'].sum():.2f} ha**: "
+            + " · ".join(f"{r['Grupo']} ({r['Media']:.2f})" for _, r in _tratar.iterrows()))
+    _rev = res[res["Estado"].str.startswith("🟡")]
+    if not _rev.empty:
+        st.warning(
+            "**Revisar** — la media no llega pero una trampa sí: "
+            + " · ".join(f"{r['Grupo']} (máx {r['Máx']})" for _, r in _rev.iterrows())
+            + ". Decide con el criterio de siempre: si la parcela de esa trampa es "
+              "contigua y entras con el tractor igual, suele salir a cuenta.")
+
+    with st.expander("Detalle por trampa de cada grupo", expanded=False):
+        st.dataframe(det, use_container_width=True, hide_index=True)
+        _f = det[det["Decide"] == "no"]
+        if not _f.empty:
+            st.caption(
+                f"🌱 **{len(_f)} trampa(s) en plantación en formación** no entran en la media "
+                f"({', '.join(_f['Campo'])}). Se siguen leyendo — el histórico interesa y "
+                "varias entran en producción pronto; cuando lo hagan, quítalas de "
+                "`CARPOCAPSA_CAMPOS_EN_FORMACION` o marca la casilla de arriba.")
+    st.download_button(
+        "⬇️ Descargar resumen por grupos (CSV)",
+        data=res.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"carpocapsa_grupos_{campaign_year}.csv", mime="text/csv",
+        key="carpo_grupos_dl")
+    st.divider()
 
 
 def carpocapsa_compute_biofix_by_field(traps_df, campaign_year,
@@ -15631,6 +15834,8 @@ def carpocapsa_tab(history):
                                  alt.Tooltip("Capturas machos:Q", title="Capturas")],
                     ).properties(height=400, title=f"Capturas por campo — campaña {campaign_year}")
                     st.altair_chart(chart2, use_container_width=True)
+
+    render_carpocapsa_grupos(campaign_year)
 
     st.markdown("### 4. Ventanas de tratamiento por campo")
     st.caption(
