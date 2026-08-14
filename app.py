@@ -14305,6 +14305,19 @@ CARPOCAPSA_GEN_DD = [
     (750, "2ª gen · pico eclosión"),
 ]
 
+# Umbral SOLO para fijar el biofix (arrancar el contador de DD). Es un dato
+# BIOLÓGICO — "aquí empezó el vuelo" — y NO debe confundirse con el umbral de
+# tratamiento (`carp_capture_threshold`), que es una decisión ECONÓMICA.
+# La literatura los separa: biofix = 1ª captura sostenida (>1 macho, con vuelo
+# que continúa); umbral de tratamiento = 5/trampa/semana en 1ª gen, 3 en 2ª
+# (NIAB; Knight/USDA; Riedl & Croft 1976).
+# Por qué importa: si el biofix usa el umbral de tratamiento, subirlo retrasa
+# el arranque del contador en los campos de poca población y desplaza TODA la
+# escala de DD de ese campo. En 2026, al pasar de 3 a 5, el biofix se retrasó
+# 63 días en Sector 6, 76 en Sector 12 y 87 en Sector 7 — campos que tenían
+# vuelo desde el 1 de mayo pero nunca llegaban a 5 capturas en una lectura.
+CARPOCAPSA_BIOFIX_THRESHOLD = 2
+
 
 def carpocapsa_status_from_dd(current_dd, recent_captures_per_day=0, rain_since_treatment=np.nan):
     if pd.isna(current_dd):
@@ -14582,13 +14595,20 @@ def _carpocapsa_sustained_biofix(ct, threshold):
     return ct.loc[ge_idx[0], "Fecha_dt"].date(), False
 
 
-def carpocapsa_generation_biofixes(ct, threshold, daily_dd, min_gap_dd=450.0):
+def carpocapsa_generation_biofixes(ct, threshold, daily_dd, min_gap_dd=450.0,
+                                   biofix_threshold=None):
     """Lista de biofix por GENERACIÓN de un campo (1ª, 2ª…). Un nuevo biofix se fija
     cuando, tras un DESCENSO por debajo del umbral, las capturas vuelven a subir de
     forma sostenida ≥ umbral Y han pasado al menos `min_gap_dd` DD desde el biofix
     anterior — para NO confundir un vuelo prolongado/bimodal de la 1ª gen con una 2ª
     (el 2º vuelo real aparece ~500 DD°C tras el 1º; UC IPM/WSU). `ct` necesita
-    'Fecha_dt' y '_capturas'. Devuelve lista de date (gen1, gen2, …)."""
+    'Fecha_dt' y '_capturas'. Devuelve lista de date (gen1, gen2, …).
+
+    `biofix_threshold` (CARPOCAPSA_BIOFIX_THRESHOLD por defecto) fija el PRIMER
+    biofix — el arranque del contador de DD, que es biológico. `threshold` (el de
+    tratamiento) se mantiene para detectar el valle y el repunte de las generaciones
+    siguientes: bajarlo ahí haría casi imposible el «dip» y se perderían generaciones."""
+    bf_thr = CARPOCAPSA_BIOFIX_THRESHOLD if biofix_threshold is None else biofix_threshold
     ct = ct.sort_values("Fecha_dt").reset_index(drop=True)
     n = len(ct)
 
@@ -14611,7 +14631,8 @@ def carpocapsa_generation_biofixes(ct, threshold, daily_dd, min_gap_dd=450.0):
         cap = cap if pd.notna(cap) else 0
         date = ct.loc[i, "Fecha_dt"]
         if last_bf is None:
-            if cap >= threshold and _sustained(i):
+            # Arranque del contador: umbral BIOLÓGICO, no el de tratamiento.
+            if cap >= bf_thr and _sustained(i):
                 last_bf = date; bios.append(date.date()); dipped = False
         else:
             if cap < threshold:
@@ -14623,10 +14644,15 @@ def carpocapsa_generation_biofixes(ct, threshold, daily_dd, min_gap_dd=450.0):
     return bios
 
 
-def carpocapsa_compute_biofix_by_field(traps_df, campaign_year, threshold=5):
-    """Calcula el biofix por campo (literatura: 1ª captura sostenida ≥ umbral) a
-    partir de las lecturas reales y devuelve un DataFrame con las columnas estándar
-    de biofix para la campaña indicada (uno por campo con al menos una lectura ≥ umbral)."""
+def carpocapsa_compute_biofix_by_field(traps_df, campaign_year,
+                                       biofix_threshold=CARPOCAPSA_BIOFIX_THRESHOLD):
+    """Calcula el biofix por campo (literatura: 1ª captura SOSTENIDA) a partir de las
+    lecturas reales y devuelve un DataFrame con las columnas estándar de biofix para la
+    campaña indicada.
+
+    OJO: usa `CARPOCAPSA_BIOFIX_THRESHOLD` (biológico), NO el umbral de tratamiento.
+    Ver el comentario de esa constante para el porqué."""
+    threshold = biofix_threshold
     empty = pd.DataFrame(columns=CARPOCAPSA_DEFAULT_BIOFIX_COLUMNS)
     if traps_df is None or traps_df.empty:
         return empty
@@ -14656,7 +14682,9 @@ def carpocapsa_compute_biofix_by_field(traps_df, campaign_year, threshold=5):
     return pd.DataFrame(rows, columns=CARPOCAPSA_DEFAULT_BIOFIX_COLUMNS)
 
 
-def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, campaign_year, threshold=5, min_days_gap=5):
+def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, campaign_year,
+                               threshold=5, min_days_gap=5,
+                               biofix_threshold=CARPOCAPSA_BIOFIX_THRESHOLD):
     """Para cada campo, busca cada lectura con capturas >= threshold,
     el siguiente tratamiento de carpocapsa posterior para ese mismo campo y los DD
     acumulados entre la fecha de captura y la fecha de tratamiento.
@@ -14752,9 +14780,10 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
         if high.empty:
             continue
 
-        # Biofix del campo (literatura): primera captura SOSTENIDA ≥ umbral. Único
-        # por campo: NO cambia entre filas.
-        bf_date, bf_sustained = _carpocapsa_sustained_biofix(campo_traps, threshold)
+        # Biofix del campo (literatura): primera captura SOSTENIDA. Único por campo:
+        # NO cambia entre filas. Usa el umbral BIOLÓGICO, no el de tratamiento —
+        # si no, subir el umbral por coste retrasaría el arranque de los DD.
+        bf_date, bf_sustained = _carpocapsa_sustained_biofix(campo_traps, biofix_threshold)
         if bf_date is None:
             bf_date = high.iloc[0]["Fecha_dt"].date()
             bf_sustained = False
@@ -14820,7 +14849,8 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
 
 
 def carpocapsa_treatment_timing_by_field(traps_df, treatments_df, daily_dd, campaign_year,
-                                         threshold=5, ideal_lo=120.0, ideal_hi=140.0, active_hi=360.0):
+                                         threshold=5, ideal_lo=120.0, ideal_hi=140.0, active_hi=360.0,
+                                         biofix_threshold=CARPOCAPSA_BIOFIX_THRESHOLD):
     """Resumen por campo de la PUNTERÍA de TODOS los tratamientos de carpocapsa.
     Es CONSCIENTE DE GENERACIONES: detecta el biofix de cada generación del campo
     (1ª, 2ª…) y mide cada tratamiento contra el biofix de SU generación. Clasifica:
@@ -14859,7 +14889,8 @@ def carpocapsa_treatment_timing_by_field(traps_df, treatments_df, daily_dd, camp
     rows = []
     for campo in sorted(t["Campo/Zona"].astype(str).unique()):
         ct = t[t["Campo/Zona"].astype(str) == campo]
-        bios = carpocapsa_generation_biofixes(ct, threshold, daily_dd)
+        bios = carpocapsa_generation_biofixes(ct, threshold, daily_dd,
+                                              biofix_threshold=biofix_threshold)
         if not bios:
             continue
         campo_base = campo.split(" - ")[0].strip() if " - " in campo else campo
@@ -14970,7 +15001,25 @@ def carpocapsa_tab(history):
             "de tratamiento** (abajo). Cada campo arranca su propio contador el día que la "
             "trampa detecta vuelo.\n\n"
             "El primero te dice *cómo va la campaña*; el segundo te dice *cuándo tratar cada "
-            "campo en concreto*."
+            "campo en concreto*.\n\n"
+            "---\n\n"
+            "**¿Cuándo arranca el contador? El biofix, y por qué tiene su propio umbral.**\n\n"
+            "Piensa en una carrera: el **biofix es pulsar el cronómetro** cuando salen los "
+            "corredores; el **umbral de capturas es la alarma** que suena cuando toca actuar. "
+            "Son dos cosas independientes, y la app las tiene **separadas a propósito**:\n\n"
+            f"- **Biofix** → primera captura **sostenida** con **≥{CARPOCAPSA_BIOFIX_THRESHOLD} "
+            f"capturas** (y vuelo que continúa en la lectura siguiente). Es un dato **biológico** "
+            f"— «aquí empezó el vuelo» — y **no se toca**.\n"
+            "- **Umbral de tratamiento** → el selector de arriba (3, 5…). Es una decisión "
+            "**económica**: cuántas capturas te compensan un pase.\n\n"
+            "**Por qué importa.** Si el biofix usara el umbral de tratamiento, subirlo para "
+            "gastar menos **retrasaría también el arranque del cronómetro** en los campos de "
+            "poca población — y con él toda la escala de DD de ese campo. Pasó en 2026 al subir "
+            "de 3 a 5: el biofix de Sector 7 se fue **87 días** tarde, el de Sector 12 **76** y "
+            "el de Sector 6 **63**, en campos que tenían vuelo desde el 1 de mayo pero nunca "
+            "llegaban a 5 capturas en una sola lectura. La app les decía «aún no has llegado a "
+            "la 2ª generación» cuando ya la habían pasado entera.\n\n"
+            "*Referencias: Riedl & Croft (1976); Knight (USDA-ARS); UC IPM; NIAB.*"
         )
 
     with st.expander("🎯 ¿Con qué criterio decide la app tratar un campo?"):
@@ -15047,7 +15096,7 @@ def carpocapsa_tab(history):
             _yr = carpocapsa_detect_year_from_df(st.session_state.carpocapsa_traps_df, "Fecha")
             _yr = int(_yr) if _yr else pd.Timestamp.today().year
             _auto_bf = carpocapsa_compute_biofix_by_field(
-                st.session_state.carpocapsa_traps_df, _yr, threshold=5)
+                st.session_state.carpocapsa_traps_df, _yr)
             if not _auto_bf.empty:
                 st.session_state.carpocapsa_biofix_df = _auto_bf
                 return "calculado"
@@ -15514,7 +15563,13 @@ def carpocapsa_tab(history):
                 "Umbral de capturas (≥ N abre ventana)",
                 min_value=1, max_value=50, value=3, step=1,
                 key="carp_capture_threshold",
-                help="Número mínimo de capturas totales en una lectura para abrir una ventana de tratamiento."
+                help="Capturas mínimas en una lectura para abrir una ventana de TRATAMIENTO. "
+                     "Es una decisión económica: súbelo para tratar menos, bájalo para tratar más. "
+                     "Referencia (NIAB): 5/trampa/semana en 1ª generación, 3 en 2ª — el fruto es "
+                     "más susceptible en agosto-septiembre.\n\n"
+                     f"NO afecta al biofix: el arranque del contador de grados-día usa un umbral "
+                     f"biológico fijo (≥{CARPOCAPSA_BIOFIX_THRESHOLD}, 1ª captura sostenida). "
+                     "Son dos cosas distintas y van separadas a propósito."
             )
         with col_thresh2:
             dd_active_start = st.number_input(
@@ -15834,21 +15889,24 @@ def carpocapsa_tab(history):
             if st.button(
                 f"📌 Fijar estos biofix por campo en la tabla ({campaign_year})",
                 use_container_width=True, key="carpo_fix_biofix_btn",
-                help="Guarda el biofix calculado (1ª captura sostenida ≥ umbral) de cada campo en "
-                     "la tabla de biofix de esta campaña, para que TODA la app lo use (no solo este "
-                     "punto). Rellena los campos que quedaron vacíos al importar el Excel. Reemplaza "
-                     "los biofix previos SOLO de esta campaña; otros años no se tocan.",
+                help=f"Guarda el biofix calculado de cada campo en la tabla de biofix de esta "
+                     f"campaña, para que TODA la app lo use (no solo este punto). Criterio: 1ª "
+                     f"captura SOSTENIDA con ≥{CARPOCAPSA_BIOFIX_THRESHOLD} capturas — un umbral "
+                     f"biológico fijo, INDEPENDIENTE del umbral de tratamiento que elijas arriba. "
+                     f"Rellena los campos que quedaron vacíos al importar el Excel. Reemplaza los "
+                     f"biofix previos SOLO de esta campaña; otros años no se tocan.",
             ):
                 _new_bf = carpocapsa_compute_biofix_by_field(
                     st.session_state.get("carpocapsa_traps_df", pd.DataFrame()),
-                    campaign_year, threshold=int(dd_threshold),
+                    campaign_year,
                 )
                 if _new_bf.empty:
                     st.warning("No se pudo calcular ningún biofix (sin lecturas ≥ umbral en esta campaña).")
                 else:
                     _cur = st.session_state.get("carpocapsa_biofix_df", carpocapsa_default_biofix_df())
                     st.session_state.carpocapsa_biofix_df = _carpocapsa_merge_by_year(_new_bf, _cur)
-                    st.success(f"✅ {len(_new_bf)} biofix por campo fijados para {campaign_year} (umbral ≥{int(dd_threshold)}).")
+                    st.success(f"✅ {len(_new_bf)} biofix por campo fijados para {campaign_year} "
+                               f"(1ª captura sostenida ≥{CARPOCAPSA_BIOFIX_THRESHOLD}).")
                     if supabase_is_configured():
                         try:
                             ok, smsg = upload_carpocapsa_snapshot_to_supabase(
