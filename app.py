@@ -14762,6 +14762,38 @@ def carpocapsa_generation_biofixes(ct, threshold, daily_dd, min_gap_dd=450.0,
     return bios
 
 
+def carpocapsa_campo_en_tratamiento(campos_str, target):
+    """¿El campo `target` está en la lista «Campos» de un tratamiento?
+
+    Iguala por nombre exacto o por prefijo en frontera de palabra, porque
+    Agroptima registra el campo padre («GY») mientras que las trampas usan el
+    subcampo («GY - Gallinal»). El corte en frontera evita que «S5» case con
+    «S50». Misma lógica que `_campo_en_trat` de la gráfica por campo."""
+    lst = [c.strip().lower() for c in str(campos_str).split(",") if c.strip()]
+    t = str(target).strip().lower()
+    for c in lst:
+        if c == t:
+            return True
+        for a, b in ((c, t), (t, c)):
+            if b.startswith(a) and len(b) > len(a) and b[len(a)] in (" ", "-", "_"):
+                return True
+    return False
+
+
+def carpocapsa_tratamientos_por_grupo(treats_df, campos):
+    """Nº de FECHAS distintas de tratamiento de carpocapsa que tocaron el grupo."""
+    if treats_df is None or treats_df.empty or "Campos" not in treats_df.columns:
+        return 0
+    t = treats_df.copy()
+    t["_f"] = pd.to_datetime(t.get("Fecha"), errors="coerce")
+    t = t.dropna(subset=["_f"])
+    if t.empty:
+        return 0
+    hit = t["Campos"].apply(
+        lambda s: any(carpocapsa_campo_en_tratamiento(s, c) for c in campos))
+    return int(t.loc[hit, "_f"].dt.date.nunique())
+
+
 def carpocapsa_intervalos_reales(fechas, por_defecto=7.0):
     """Días entre lecturas consecutivas, calculados de las FECHAS.
 
@@ -14795,7 +14827,7 @@ def carpocapsa_normalizar_7d(P, por_defecto=7.0):
 
 
 def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formacion=False,
-                              normalizar_7d=True):
+                              normalizar_7d=True, treats_df=None):
     """Resumen por GRUPO de campos para la última lectura de la campaña.
 
     La media que decide se calcula SOLO con los campos en producción (salvo que
@@ -14822,6 +14854,7 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
         P, _dias = P_bruto, carpocapsa_intervalos_reales(P_bruto.index)
     ult = P.index.max()
     dias_ult = _dias.get(ult, np.nan)
+    n_lecturas = len(P.index)
 
     filas, detalle = [], []
     for grupo, campos in CARPOCAPSA_GRUPOS.items():
@@ -14839,6 +14872,15 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
         media = float(fila_ult.mean())
         maximo = float(fila_ult.max())
         serie = P[decide].mean(axis=1)
+        _cruces = int((serie >= umbral).sum())
+        _trats = carpocapsa_tratamientos_por_grupo(treats_df, campos)
+        # % de las veces que el grupo pidió tratamiento y lo recibió. Se topa a
+        # 100: dar más pases que cruces no es "más del 100 % cubierto", es que se
+        # trató por otro criterio (calendario, proximidad, entrar con el tractor).
+        if _cruces:
+            _cobertura = round(min(100.0, 100.0 * _trats / _cruces), 0)
+        else:
+            _cobertura = np.nan          # nunca cruzó: el % no significa nada
         if media >= umbral:
             estado, orden = "🔴 Tratar el grupo", 0
         elif maximo >= umbral:
@@ -14858,7 +14900,11 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
             "ha que decide": round(ha_dec, 2),
             "ha del grupo": round(ha_tot, 2),
             "ha/trampa": round(ha_dec / len(decide), 2) if decide else np.nan,
-            "Ventanas ≥umbral": int((serie >= umbral).sum()),
+            # Recuento de CAMPAÑA, no de la lectura de hoy: cuántas de las N
+            # lecturas pidieron tratamiento, cuántos se dieron y qué % se cubrió.
+            f"Lecturas que cruzaron (de {n_lecturas})": _cruces,
+            "Tratamientos dados": _trats,
+            "Cobertura %": _cobertura,
             "_orden": orden,
         })
         for c in presentes:
@@ -14926,8 +14972,11 @@ def render_carpocapsa_grupos(campaign_year):
                  "hectáreas productivas sin capturas propias (el 12/08, Sector 10-B marcó "
                  "7 y Sector 10 marcó 0). Márcalo cuando esos campos entren en producción.")
 
+    _trt = carpocapsa_treatments_from_activities(
+        st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS)),
+        campaign_year)
     res, ult, det = carpocapsa_grupos_resumen(
-        traps, campaign_year, int(umbral), bool(incluir), bool(normalizar))
+        traps, campaign_year, int(umbral), bool(incluir), bool(normalizar), _trt)
     if res.empty:
         st.info("Sin capturas de esta campaña para agrupar.")
         return
