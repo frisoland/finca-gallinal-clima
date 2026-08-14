@@ -22964,12 +22964,16 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     if biofix_date is not None:
         if biofix_date >= display_start:
             fig.add_vline(x=biofix_date, line_color="rgba(0,160,0,0.8)", line_width=2, line_dash="dash")
+            # La etiqueta va a media altura de su línea, NO arriba del todo: el cuadro
+            # de "próxima eclosión" ocupa esa esquina y se solapaban. La línea del
+            # biofix es vertical, así que la etiqueta se lee igual a cualquier altura,
+            # y a media altura la curva aún va baja (acaba de arrancar) — queda libre.
             fig.add_annotation(
-                x=biofix_date, y=1, yref="paper",
+                x=biofix_date, y=0.62, yref="paper",
                 text=f"Biofix {biofix_date.strftime('%d/%m')}",
-                showarrow=False, xanchor="left",
+                showarrow=False, xanchor="left", yanchor="middle", xshift=3,
                 font=dict(color="green", size=11),
-                bgcolor="rgba(255,255,255,0.7)",
+                bgcolor="rgba(255,255,255,0.75)",
             )
         else:
             # Biofix fuera de la ventana: mostrar DD totales en subtítulo
