@@ -14850,6 +14850,10 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
             "Estado": estado,
             "Media": round(media, 2),
             "Máx": round(maximo, 1),
+            # Misma cifra en base diaria: es lo que publican algunos sistemas como
+            # «moths/trap/day». Se muestra junto a la semanal, no en su lugar: los
+            # umbrales verificados (NIAB 5 y 3) son semanales.
+            "Machos/trampa/día": round(media / 7.0, 2),
             "Trampas que deciden": len(decide),
             "ha que decide": round(ha_dec, 2),
             "ha del grupo": round(ha_tot, 2),
@@ -14864,6 +14868,9 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
                 "Grupo": grupo, "Campo": c,
                 "Capturas (bruto)": int(_br) if pd.notna(_br) else 0,
                 "Equiv. 7 días": round(float(_no), 1) if pd.notna(_no) else 0.0,
+                # machos/día = capturas brutas ÷ días REALES del intervalo (no ÷7)
+                "Machos/día": (round(float(_br) / dias_ult, 2)
+                               if pd.notna(_br) and dias_ult and dias_ult > 0 else 0.0),
                 "ha": CARPOCAPSA_SUP_HA.get(c, np.nan),
                 "Estado campo": ("🌱 en formación" if c in CARPOCAPSA_CAMPOS_EN_FORMACION
                                  else "🍎 producción"),
@@ -14934,6 +14941,13 @@ def render_carpocapsa_grupos(campaign_year):
                       f"×{7/_d:.2f} para dejarlas en base semanal")
     st.markdown(f"**Última lectura: {ult:%d/%m/%Y}** · umbral ≥{int(umbral)} "
                 f"{'(equiv. 7 días)' if normalizar else '(capturas brutas)'}{_dtxt}")
+    st.caption(
+        f"La columna **Media** está en capturas por trampa y **semana**, que es la unidad "
+        f"del umbral publicado (NIAB: 5 en 1ª generación, 3 en 2ª). **Machos/trampa/día** es "
+        f"esa misma cifra ÷ 7 — la unidad que usan algunos sistemas de aviso. Tu umbral de "
+        f"{int(umbral)}/semana equivale a **{int(umbral)/7:.2f} machos/trampa/día**. "
+        "No he encontrado ninguna fuente que publique umbrales en base diaria, así que la "
+        "decisión se toma con la semanal y la diaria se muestra solo como referencia.")
     if not normalizar:
         st.caption("⚠️ Sin normalizar: si el intervalo no fue de 7 días, esta comparación "
                    "contra el umbral semanal está sesgada.")
