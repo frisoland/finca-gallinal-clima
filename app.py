@@ -14298,12 +14298,44 @@ def carpocapsa_estimated_date_for_dd(daily_dd, biofix_date, target_dd):
 # Umbrales de generación de carpocapsa (DD °C desde biofix, base 10 / techo 31,1).
 # Set de literatura unificado (UC IPM/WSU convertido a °C; coherente con el punto 6).
 # ÚNICA fuente de verdad: úsala en CUALQUIER gráfica/etiqueta de generación.
+# Hitos de generación, base 10 °C / techo 31,1 °C (= 50/88 °F, modelo estándar).
+# ÚNICA fuente de verdad: úsala en CUALQUIER gráfica/etiqueta de generación.
+#
+# ⚠️ CORREGIDO 2026-08-14. Las etiquetas de 2ª generación estaban desplazadas UNA
+# FASE: 580 se rotulaba "inicio eclosión" y 750 "pico eclosión", cuando en la
+# literatura 580 es la EMERGENCIA DE ADULTOS (2º biofix) y 750 el INICIO DE
+# ECLOSIÓN. Los números eran correctos; el nombre, no. Contrastado con UC IPM
+# (Apple · Codling Moth), que en base 50 °F da:
+#   250 DD°F  → inicio eclosión 1ª gen          ÷1,8 = 139 °C   (aquí 130)
+#   1060 DD°F → 2º biofix = emergencia adultos  ÷1,8 = 589 °C   (aquí 580)
+#   +200-250  → inicio eclosión 2ª gen          ÷1,8 = 728 °C   (aquí 750)
+#   3er biofix = 1100-1200 DD°F tras el 2º      ÷1,8 = 1200-1256 °C
+#   +200-250  → inicio eclosión 3ª gen          ÷1,8 = ~1367 °C
+# Secuencia confirmada de forma independiente por OKSIR (emergencia y eclosión
+# como eventos SEPARADOS por generación) y por UC IPM Phenology Model Database
+# (modelo 4: 1ª generación 588 DD°C, 2ª y 3ª 657 DD°C cada una).
+#
+# NOTA sobre el 300: la literatura sitúa el PICO de eclosión de 1ª gen hacia
+# 656 DD°F ≈ 364 °C, no en 300. Se mantiene el valor histórico (no rompe series
+# de campañas anteriores) pero se rotula "eclosión plena", que sí es exacto.
+# NOTA sobre la 3ª gen: hay fuentes que adelantan el vuelo a 1920-1940 DD°F
+# (≈1070-1078 °C), unos 150 DD antes que UC IPM. Variación regional; se usa el
+# valor de UC IPM por coherencia con los otros tres hitos.
 CARPOCAPSA_GEN_DD = [
-    (130, "1ª gen · inicio eclosión"),
-    (300, "1ª gen · pico eclosión"),
-    (580, "2ª gen · inicio eclosión"),
-    (750, "2ª gen · pico eclosión"),
+    (130,  "1ª gen · inicio eclosión"),
+    (300,  "1ª gen · eclosión plena"),
+    (580,  "2ª gen · inicio vuelo"),
+    (750,  "2ª gen · inicio eclosión"),
+    (1230, "3ª gen · inicio vuelo"),
+    (1370, "3ª gen · inicio eclosión"),
 ]
+
+
+def carpo_gen_label_short(lbl):
+    """Etiqueta corta para gráficas (evita que se corte el número a la derecha)."""
+    return (lbl.replace(" · inicio eclosión", " eclosión")
+               .replace(" · eclosión plena", " plena")
+               .replace(" · inicio vuelo", " vuelo"))
 
 # Umbral SOLO para fijar el biofix (arrancar el contador de DD). Es un dato
 # BIOLÓGICO — "aquí empezó el vuelo" — y NO debe confundirse con el umbral de
@@ -14736,11 +14768,13 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
     # Base 10 °C / techo 31,1 °C (= 50/88 °F, modelo estándar Cydia pomonella).
     # Referencias: Riedl/Croft/Howitt 1976; UC IPM; WSU.
     def _carpo_stage(dd):
-        # Fases alineadas con la literatura y con CARPOCAPSA_GEN_DD (única fuente de verdad
-        # de la gráfica): 1ª gen inicio ~130 · pico ~300 · 2ª gen inicio ~580 · pico ~750.
-        # Un ciclo completo de carpocapsa ≈ 550-620 DD, por eso los 360-580 DD son COLA de
-        # la 1ª / entre generaciones, NO 2ª gen (antes se etiquetaba mal "posible 2ª gen" a
-        # partir de 360, adelantándose ~220 DD).
+        # Fases alineadas con CARPOCAPSA_GEN_DD (única fuente de verdad; ver el comentario
+        # de esa constante para la conversión desde UC IPM en base 50 °F).
+        # CORREGIDO 2026-08-14: antes 580–750 se llamaba "Eclosión 2ª gen" y >750 "Tras pico
+        # 2ª gen". Está desplazado una fase: 580 es la EMERGENCIA DE ADULTOS de la 2ª y 750
+        # el INICIO de su eclosión. Consecuencia del error: un campo a 900-1200 DD leía
+        # "tras pico, ya pasó" cuando estaba en PLENA eclosión de 2ª gen sobre fruta a punto
+        # de cosecha — la fase que más daño hace.
         if dd is None or (isinstance(dd, float) and np.isnan(dd)):
             return "—"
         if dd < 50:
@@ -14754,12 +14788,16 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
         if dd < 250:
             return "Eclosión 1ª gen en curso (140–250)"
         if dd < 360:
-            return "Pico eclosión 1ª gen. (250–360)"
+            return "Eclosión 1ª gen plena (250–360)"
         if dd < 580:
             return "Cola 1ª gen / entre generaciones (360–580)"
         if dd < 750:
-            return "Eclosión 2ª gen (580–750)"
-        return "Tras pico 2ª gen (>750)"
+            return "Vuelo 2ª gen: adultos emergiendo, aún NO eclosiona (580–750)"
+        if dd < 1230:
+            return "✅ Eclosión 2ª gen EN CURSO (750–1230)"
+        if dd < 1370:
+            return "Vuelo 3ª gen: adultos emergiendo (1230–1370)"
+        return "✅ Eclosión 3ª gen (>1370)"
 
     # ── Preparar tratamientos de carpocapsa ───────────────────────────────────
     treat = pd.DataFrame()
@@ -14994,9 +15032,16 @@ def carpocapsa_tab(history):
             "unos **12–16 DD**.\n\n"
             "**Hay DOS contadores de DD distintos (esto es clave para no liarse):**\n"
             "- 🐛 **Desde el *biofix*** (inicio del vuelo de la campaña): dice **en qué fase/"
-            "generación** está la plaga en general. Umbrales de literatura que usa la app: "
-            "**130 DD** = empieza a nacer la 1ª generación, **300** = pico de la 1ª, **580** = "
-            "empieza la 2ª, **750** = pico de la 2ª.\n"
+            "generación** está la plaga en general. Umbrales de literatura que usa la app "
+            "(UC IPM, base 50 °F pasada a °C): **130 DD** = empieza a nacer la 1ª generación · "
+            "**300** = 1ª generación en plena eclosión · **580** = **vuelo** de la 2ª (emergen "
+            "los adultos; suben las capturas pero aún no hay larvas) · **750** = **empieza a "
+            "nacer** la 2ª · **1230** = vuelo de la 3ª · **1370** = empieza a nacer la 3ª.\n"
+            "  ⚠️ Fíjate en que **vuelo y nacimiento van separados ~150-170 DD** en cada "
+            "generación. Ver capturas altas no significa que haya larvas todavía: significa que "
+            "las habrá en ~10 días. Y entre **750 y 1230 DD sigues en eclosión de 2ª "
+            "generación**, que es la fase que más daño hace porque la fruta ya está cerca de "
+            "cosecha y la larva que entra se queda dentro hasta que recoges.\n"
             "- 🎯 **Desde cada lectura de trampa con capturas**: es el que manda las **ventanas "
             "de tratamiento** (abajo). Cada campo arranca su propio contador el día que la "
             "trampa detecta vuelo.\n\n"
@@ -15221,9 +15266,20 @@ def carpocapsa_tab(history):
             """
             - **Biofix:** primera captura sostenida confirmada (inicio de vuelo).
             - **~130 DD:** inicio de eclosión 1ª gen (primeras entradas en fruto) → **primer pase**.
-            - **~300 DD:** pico de eclosión de 1ª generación → reforzar si capturas altas.
-            - **~580 DD:** inicio de 2ª generación → **segundo ciclo de tratamientos**.
-            - **~750 DD:** pico de eclosión de 2ª generación.
+            - **~300 DD:** eclosión de 1ª generación plena → reforzar si capturas altas.
+            - **~580 DD:** **vuelo** de 2ª gen — emergen los adultos. Verás subir las capturas,
+              pero **todavía no hay larvas**: aún no toca tratar.
+            - **~750 DD:** **inicio de eclosión de 2ª gen** → **segundo ciclo de tratamientos**.
+            - **~1230 DD:** **vuelo** de 3ª gen (solo en años cálidos).
+            - **~1370 DD:** inicio de eclosión de 3ª gen.
+
+            ⚠️ Ojo con el par **vuelo → eclosión**: van separados ~150-170 DD. Las capturas
+            avisan del vuelo; la larva llega después. Es la razón de tratar a **90 DD desde la
+            lectura** y no el mismo día.
+
+            *Umbrales de UC IPM (base 50 °F) convertidos a °C. Entre 750 y 1230 DD sigues en
+            eclosión de 2ª generación: es la fase que más daño hace, porque la fruta ya está
+            cerca de cosecha y la larva que entra se queda dentro.*
             """
         )
 
@@ -15841,14 +15897,17 @@ def carpocapsa_tab(history):
                 "**sostenida** ≥ umbral) hasta el tratamiento, y la **fase** en que caía:\n\n"
                 "• **<50** pre‑puesta · **50–100** inicio puesta de huevos · **100–120** transición · "
                 "**✅ 120–140 inicio de eclosión 1ª gen / primeras entradas en fruto (ventana ideal "
-                "para tratar)** · **140–250** eclosión 1ª gen en curso · **250–360** pico de eclosión "
-                "1ª gen · **360–580** cola de 1ª gen / entre generaciones · **580–750** eclosión 2ª "
-                "gen · **>750** tras el pico de la 2ª.\n\n"
-                "Alineado con los umbrales de generación de la gráfica (130/300/580/750 DD): un ciclo "
-                "completo de carpocapsa ≈ 550-620 DD, así que **360–580 DD NO es 2ª generación, es la "
-                "cola de la 1ª / entre generaciones**. Biofix **«(no sost.)»** = no hubo lectura "
+                "para tratar)** · **140–250** eclosión 1ª gen en curso · **250–360** eclosión 1ª gen "
+                "plena · **360–580** cola de 1ª gen / entre generaciones · **580–750 vuelo de 2ª gen** "
+                "(emergen los adultos, aún NO hay larvas) · **✅ 750–1230 eclosión de 2ª gen EN CURSO** "
+                "· **1230–1370** vuelo de 3ª gen · **✅ >1370** eclosión de 3ª gen.\n\n"
+                "Alineado con los umbrales de la gráfica (130/300/580/750/1230/1370 DD). **Ojo al par "
+                "vuelo → eclosión:** van separados ~150-170 DD, así que las capturas avisan del vuelo "
+                "y la larva llega después — de ahí tratar a ~90 DD de la lectura. Un ciclo completo "
+                "≈ 588 DD la 1ª generación y 657 la 2ª y 3ª (UC IPM), por eso **360–580 DD NO es 2ª "
+                "generación, es la cola de la 1ª**. Biofix **«(no sost.)»** = no hubo lectura "
                 "siguiente que confirmara el vuelo (captura única); cautela. Fuentes: *Riedl, Croft & "
-                "Howitt 1976; UC IPM; WSU*."
+                "Howitt 1976; UC IPM (Apple · Codling Moth y Phenology Model Database); WSU*."
             )
 
             # ── Resumen de puntería: % de tratamientos en la ventana ideal ────────
@@ -22734,16 +22793,18 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
             hovertemplate="%{x|%d/%m}<br>DD acum (prev): %{y:.0f}<extra></extra>",
         ))
 
-    # Umbrales de tratamiento. El eje llega SIEMPRE hasta el último umbral de
-    # generación (2ª gen pico) para que se vean las MISMAS 4 líneas que en la gráfica
-    # del item Carpocapsa, aunque los DD del año aún no hayan llegado ahí.
+    # Umbrales de tratamiento. El eje llega SIEMPRE al menos hasta el último umbral de
+    # 2ª generación (750) para que se vean las mismas líneas que en el item Carpocapsa,
+    # aunque los DD del año aún no hayan llegado ahí. Los hitos de 3ª gen (1230/1370)
+    # NO estiran el eje: solo aparecen si los DD reales se acercan — si no, aplastarían
+    # la curva contra el suelo durante toda la primavera.
     max_dd  = max(dd_acum) if dd_acum else 400
-    _top_gen = max(t for t, _ in CARPOCAPSA_GEN_DD)
+    _top_gen = max((t for t, _ in CARPOCAPSA_GEN_DD if t <= 750), default=750)
     ymax    = max(max_dd * 1.15, _top_gen * 1.08, 400)
-    _gen_colors = ["#2ca02c", "#ff7f0e", "#d62728", "#9467bd"]
+    _gen_colors = ["#2ca02c", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
     for (umbral, _lbl), color in zip(CARPOCAPSA_GEN_DD, _gen_colors):
         # Etiqueta corta para que quepa entera a la derecha (antes se cortaba el nº).
-        _short = _lbl.replace(" · inicio eclosión", " inicio").replace(" · pico eclosión", " pico")
+        _short = carpo_gen_label_short(_lbl)
         label = f"{_short} ({umbral} DD)"
         if umbral <= ymax * 1.2:
             fig.add_hline(y=umbral, line_dash="dash", line_color=color, line_width=1, opacity=0.7,
@@ -22878,8 +22939,7 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                             _days = (_um - dd_now) / rate
                             if _days <= 120:   # no proyectar más de ~4 meses
                                 _est = last_real + pd.Timedelta(days=float(_days))
-                                _sh = (_lb.replace(" · inicio eclosión", " inicio")
-                                          .replace(" · pico eclosión", " pico"))
+                                _sh = carpo_gen_label_short(_lb)
                                 _proj.append(f"{_sh} ({int(_um)} DD) ≈ <b>{_est.strftime('%d/%m')}</b>")
                 if _proj:
                     _proj_txt = (f"📅 Próxima eclosión estimada (~{rate:.1f} DD/día):<br>"
@@ -24576,9 +24636,16 @@ def render_decisiones_panel():
 - **Círculos azules** = capturas en trampa de toda la finca ese día (el tamaño y el número dentro son proporcionales al total de capturas).
 - **Líneas de umbral horizontales**:
   - 130 DD = inicio eclosión 1ª generación → **primer tratamiento**
-  - 300 DD = pico 1ª generación → reforzar si capturas altas
-  - 580 DD = inicio 2ª generación → **segundo ciclo de tratamientos**
-  - 750 DD = pico 2ª generación
+  - 300 DD = eclosión 1ª generación plena → reforzar si capturas altas
+  - 580 DD = **vuelo** de 2ª generación (emergen adultos; suben las capturas pero aún no hay larvas)
+  - 750 DD = **inicio de eclosión** de 2ª generación → **segundo ciclo de tratamientos**
+  - 1230 DD = **vuelo** de 3ª generación (solo años cálidos)
+  - 1370 DD = inicio de eclosión de 3ª generación
+
+  ⚠️ El **vuelo** y la **eclosión** de cada generación van separados ~150-170 DD. Las capturas
+  avisan del vuelo; la larva llega después. Por eso se trata a ~90 DD desde la lectura de trampa.
+  Entre 750 y 1230 DD **sigues en eclosión de 2ª generación** — es la fase que más daño hace,
+  con la fruta ya cerca de cosecha.
 
 #### 📊 Lluvia (barras azul claro, eje derecho)
 Aparece en todos los gráficos como referencia. La lluvia genera hoja mojada (riesgo moteado/monilia) pero en cambio puede frenar el oídio.
