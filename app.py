@@ -14762,7 +14762,40 @@ def carpocapsa_generation_biofixes(ct, threshold, daily_dd, min_gap_dd=450.0,
     return bios
 
 
-def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formacion=False):
+def carpocapsa_intervalos_reales(fechas, por_defecto=7.0):
+    """Días entre lecturas consecutivas, calculados de las FECHAS.
+
+    NO usa la columna «Días desde lectura anterior» del Excel: en la campaña 2026
+    esa columna decía 7 en 14 de las 16 lecturas cuando los intervalos reales
+    iban de 4 a 15 días. Al calcularlo de las fechas no depende de que se anote
+    bien en campo. La primera lectura no tiene anterior → `por_defecto`.
+    Devuelve {Timestamp: días}."""
+    f = sorted(pd.to_datetime(pd.Series(list(fechas))).dropna().unique())
+    out = {}
+    for i, d in enumerate(f):
+        d = pd.Timestamp(d)
+        out[d] = float((d - pd.Timestamp(f[i - 1])).days) if i else float(por_defecto)
+    return out
+
+
+def carpocapsa_normalizar_7d(P, por_defecto=7.0):
+    """Convierte capturas brutas en «capturas equivalentes por 7 días».
+
+    El umbral de la literatura es POR TRAMPA Y SEMANA (5 en 1ª generación, 3 en
+    2ª; NIAB). Si las lecturas no son semanales, comparar capturas brutas contra
+    ese umbral es incorrecto: 5 capturas en 4 días no son 5 en 15. Se normaliza a
+    7 días —y no a 1— para conservar la escala del umbral publicado.
+
+    Ojo: asume tasa de captura constante dentro del intervalo. Es mucho mejor que
+    no normalizar, pero un intervalo de 15 días no se arregla dividiendo.
+    Devuelve (DataFrame normalizado, dict de días por fecha)."""
+    dias = carpocapsa_intervalos_reales(P.index, por_defecto)
+    factor = pd.Series({k: (7.0 / v if v and v > 0 else 1.0) for k, v in dias.items()})
+    return P.mul(factor.reindex(P.index), axis=0), dias
+
+
+def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formacion=False,
+                              normalizar_7d=True):
     """Resumen por GRUPO de campos para la última lectura de la campaña.
 
     La media que decide se calcula SOLO con los campos en producción (salvo que
@@ -14782,8 +14815,13 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
     t = t.dropna(subset=["Fecha", "_c"])
     if t.empty:
         return vacio
-    P = t.pivot_table(index="Fecha", columns="Campo/Zona", values="_c", aggfunc="sum")
+    P_bruto = t.pivot_table(index="Fecha", columns="Campo/Zona", values="_c", aggfunc="sum")
+    if normalizar_7d:
+        P, _dias = carpocapsa_normalizar_7d(P_bruto)
+    else:
+        P, _dias = P_bruto, carpocapsa_intervalos_reales(P_bruto.index)
     ult = P.index.max()
+    dias_ult = _dias.get(ult, np.nan)
 
     filas, detalle = [], []
     for grupo, campos in CARPOCAPSA_GRUPOS.items():
@@ -14811,7 +14849,7 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
             "Grupo": grupo,
             "Estado": estado,
             "Media": round(media, 2),
-            "Máx": int(maximo),
+            "Máx": round(maximo, 1),
             "Trampas que deciden": len(decide),
             "ha que decide": round(ha_dec, 2),
             "ha del grupo": round(ha_tot, 2),
@@ -14820,9 +14858,12 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
             "_orden": orden,
         })
         for c in presentes:
+            _br = P_bruto.loc[ult, c]
+            _no = P.loc[ult, c]
             detalle.append({
                 "Grupo": grupo, "Campo": c,
-                "Capturas": int(P.loc[ult, c]) if pd.notna(P.loc[ult, c]) else 0,
+                "Capturas (bruto)": int(_br) if pd.notna(_br) else 0,
+                "Equiv. 7 días": round(float(_no), 1) if pd.notna(_no) else 0.0,
                 "ha": CARPOCAPSA_SUP_HA.get(c, np.nan),
                 "Estado campo": ("🌱 en formación" if c in CARPOCAPSA_CAMPOS_EN_FORMACION
                                  else "🍎 producción"),
@@ -14833,6 +14874,8 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
         return vacio
     res = (pd.DataFrame(filas).sort_values(["_orden", "Media"], ascending=[True, False])
            .drop(columns=["_orden"]).reset_index(drop=True))
+    res.attrs["dias_ultima_lectura"] = dias_ult
+    res.attrs["normalizado"] = bool(normalizar_7d)
     return res, ult, pd.DataFrame(detalle)
 
 
@@ -14854,27 +14897,46 @@ def render_carpocapsa_grupos(campaign_year):
         "saben y tú sí."
     )
     traps = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
-    c1, c2 = st.columns([1, 2])
+    c1, c2, c3 = st.columns([1, 1.4, 1.4])
     with c1:
         umbral = st.number_input(
             "Umbral del grupo", min_value=1, max_value=50, value=3, step=1,
             key="carpo_grupos_umbral",
-            help="Capturas medias por trampa que abren ventana para el grupo. "
+            help="Capturas medias por trampa y SEMANA que abren ventana para el grupo. "
                  "Independiente del umbral de la sección 4.")
     with c2:
+        normalizar = st.checkbox(
+            "Normalizar a 7 días", value=True, key="carpo_grupos_norm",
+            help="El umbral de la literatura es por trampa y SEMANA (NIAB: 5 en 1ª gen, "
+                 "3 en 2ª). Si entre lecturas no pasan 7 días exactos, comparar capturas "
+                 "brutas contra ese umbral es incorrecto: 5 capturas en 4 días no son 5 en "
+                 "15. Los días se calculan de las FECHAS, no de la columna del Excel.")
+    with c3:
         incluir = st.checkbox(
-            "Incluir plantación en formación en la media", value=False,
+            "Incluir plantación en formación", value=False,
             key="carpo_grupos_incluir_form",
             help="Por defecto NO deciden: su trampa puede disparar el tratamiento de "
                  "hectáreas productivas sin capturas propias (el 12/08, Sector 10-B marcó "
                  "7 y Sector 10 marcó 0). Márcalo cuando esos campos entren en producción.")
 
-    res, ult, det = carpocapsa_grupos_resumen(traps, campaign_year, int(umbral), bool(incluir))
+    res, ult, det = carpocapsa_grupos_resumen(
+        traps, campaign_year, int(umbral), bool(incluir), bool(normalizar))
     if res.empty:
         st.info("Sin capturas de esta campaña para agrupar.")
         return
 
-    st.markdown(f"**Última lectura: {ult:%d/%m/%Y}** · umbral ≥{int(umbral)} capturas de media")
+    _d = res.attrs.get("dias_ultima_lectura")
+    _dtxt = ""
+    if _d and pd.notna(_d):
+        _dtxt = f" · intervalo real de esta lectura: **{_d:.0f} días**"
+        if normalizar and abs(_d - 7) >= 1:
+            _dtxt += (f" → las capturas se han {'multiplicado' if _d < 7 else 'reducido'} "
+                      f"×{7/_d:.2f} para dejarlas en base semanal")
+    st.markdown(f"**Última lectura: {ult:%d/%m/%Y}** · umbral ≥{int(umbral)} "
+                f"{'(equiv. 7 días)' if normalizar else '(capturas brutas)'}{_dtxt}")
+    if not normalizar:
+        st.caption("⚠️ Sin normalizar: si el intervalo no fue de 7 días, esta comparación "
+                   "contra el umbral semanal está sesgada.")
     st.dataframe(res, use_container_width=True, hide_index=True)
 
     _tratar = res[res["Estado"].str.startswith("🔴")]
@@ -14900,6 +14962,35 @@ def render_carpocapsa_grupos(campaign_year):
                 f"({', '.join(_f['Campo'])}). Se siguen leyendo — el histórico interesa y "
                 "varias entran en producción pronto; cuando lo hagan, quítalas de "
                 "`CARPOCAPSA_CAMPOS_EN_FORMACION` o marca la casilla de arriba.")
+    with st.expander("Intervalos reales entre lecturas", expanded=False):
+        _t = carpocapsa_filter_campaign(traps, campaign_year).copy()
+        if not _t.empty:
+            _t["Fecha"] = pd.to_datetime(_t["Fecha"], errors="coerce")
+            _dias = carpocapsa_intervalos_reales(_t["Fecha"].dropna().unique())
+            _col = (_t.groupby("Fecha")["Días desde lectura anterior"].first()
+                    if "Días desde lectura anterior" in _t.columns else pd.Series(dtype=float))
+            _tot = _t.groupby("Fecha")["Capturas machos"].sum()
+            _rows = []
+            for _f, _dd in sorted(_dias.items()):
+                _c = _col.get(_f, np.nan)
+                _rows.append({
+                    "Lectura": _f.strftime("%d/%m"),
+                    "Días reales": int(_dd),
+                    "Columna del Excel": (int(_c) if pd.notna(_c) else "—"),
+                    "¿Coincide?": ("—" if pd.isna(_c) else ("sí" if abs(_dd - _c) < 0.5 else "❌ NO")),
+                    "Capturas finca": int(_tot.get(_f, 0)),
+                    "Equiv. 7 días": round(float(_tot.get(_f, 0)) * 7.0 / _dd, 1) if _dd else np.nan,
+                })
+            _di = pd.DataFrame(_rows)
+            st.dataframe(_di, use_container_width=True, hide_index=True)
+            _mal = int((_di["¿Coincide?"] == "❌ NO").sum())
+            st.caption(
+                f"La app calcula los días de las **fechas**, no de la columna del Excel. "
+                f"En esta campaña esa columna **no coincide en {_mal} de {len(_di)} lecturas**, "
+                "así que la columna «Capturas/trampa/día» del fichero también está mal. "
+                "Ejemplo real: el **27/07 solo pasaron 4 días** y se recogieron 129 capturas "
+                "en la finca — más intensidad diaria que el pico del 25/05 (209 en 7 días), "
+                "aunque en bruto parezca menos.")
     st.download_button(
         "⬇️ Descargar resumen por grupos (CSV)",
         data=res.to_csv(index=False).encode("utf-8-sig"),
