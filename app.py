@@ -14337,6 +14337,33 @@ def carpo_gen_label_short(lbl):
                .replace(" · eclosión plena", " plena")
                .replace(" · inicio vuelo", " vuelo"))
 
+
+# PERIODO COMPLETO de eclosión de cada generación (del 1 % al 99 % de huevos
+# eclosionados), no solo el punto de inicio. Es lo que de verdad hay que cubrir
+# con producto: la eclosión no es un instante, dura semanas.
+#
+# Fuente: Utah State University Extension (Shawn Steffan), "Codling Moth Biology
+# and Management", tablas de fenología de 1ª y 2ª generación. En base 50 °F da
+#   1ª gen:  220 DD (1 %)  →   920 DD (99 %)
+#   2ª gen: 1100 DD (1 %)  →  2100 DD (99 %)
+# convertidos aquí a °C (÷1,8). Biología subyacente del mismo documento: un
+# adulto recién emergido necesita ~58 DD°F para poner y cada huevo ~158 DD°F
+# para eclosionar → 216 DD°F ≈ 120 °C desde el inicio del vuelo hasta la 1ª
+# eclosión (la base física de la regla de ~90 DD desde la lectura de trampa).
+#
+# NO se incluye la 3ª generación: no hay periodo publicado que haya podido
+# verificar. Para la 3ª solo tenemos los hitos puntuales de UC IPM que están en
+# CARPOCAPSA_GEN_DD (1230/1370), y extrapolar una banda sería inventar.
+#
+# OJO a la dispersión entre fuentes para el arranque de la 2ª: Utah da 611 °C,
+# UC IPM ~728 y CARPOCAPSA_GEN_DD usa 750. Se pinta el rango de Utah por ser la
+# única fuente que publica el periodo completo; la línea de 750 sigue marcada
+# aparte, así que se ven las dos referencias a la vez.
+CARPOCAPSA_HATCH_BANDS = [
+    (122, 511, "Eclosión 1ª gen (1–99 %)", "rgba(44,160,44,0.10)"),
+    (611, 1167, "Eclosión 2ª gen (1–99 %)", "rgba(214,39,40,0.10)"),
+]
+
 # Umbral SOLO para fijar el biofix (arrancar el contador de DD). Es un dato
 # BIOLÓGICO — "aquí empezó el vuelo" — y NO debe confundirse con el umbral de
 # tratamiento (`carp_capture_threshold`), que es una decisión ECONÓMICA.
@@ -16014,8 +16041,13 @@ def carpocapsa_tab(history):
     st.caption(
         "Como la gráfica de Decisiones, pero **de un solo campo**: usa el **biofix de ESE campo** "
         "(no el general de la finca), muestra **sus** capturas, y **solo las líneas moradas de los "
-        "tratamientos de carpocapsa aplicados a ese campo**. Así ves, campo a campo, la relación "
-        "**capturas ↔ DD** de la literatura (eclosión activa 120–360 DD)."
+        "tratamientos de carpocapsa aplicados a ese campo**. Así ves, campo a campo, dónde caen "
+        "las capturas y los tratamientos dentro de las **bandas de eclosión**.\n\n"
+        "🟩🟥 **Las bandas de color son el periodo real de eclosión** (del 1 % al 99 % de los huevos): "
+        "verde la 1ª generación (**122–511 DD**), roja la 2ª (**611–1167 DD**). Ahí es donde hay "
+        "larvas naciendo y donde el tratamiento sirve — fíjate en que **duran semanas**, no son un "
+        "instante. Las líneas de puntos marcan hitos concretos dentro de esas bandas. "
+        "*Fuente: Utah State University Extension (Steffan), tablas de fenología de carpocapsa.*"
     )
     _bf_camp = carpocapsa_filter_campaign(st.session_state.carpocapsa_biofix_df, campaign_year)
     _campos_chart = (sorted(_bf_camp["Campo/Zona"].dropna().astype(str).unique())
@@ -22801,6 +22833,19 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
     max_dd  = max(dd_acum) if dd_acum else 400
     _top_gen = max((t for t, _ in CARPOCAPSA_GEN_DD if t <= 750), default=750)
     ymax    = max(max_dd * 1.15, _top_gen * 1.08, 400)
+    # Bandas de eclosión (1–99 %): el PERIODO que hay que cubrir con producto, no
+    # solo el punto de inicio. Van por debajo de todo (layer="below") y con opacidad
+    # baja para no tapar la curva ni las capturas.
+    for _lo, _hi, _blbl, _bcol in CARPOCAPSA_HATCH_BANDS:
+        if _lo > ymax * 1.2:
+            continue                      # aún muy lejos: no la pintes
+        fig.add_hrect(
+            y0=_lo, y1=min(_hi, ymax * 1.2),
+            fillcolor=_bcol, opacity=1.0, layer="below", line_width=0,
+            annotation_text=_blbl, annotation_position="top left",
+            annotation_font_size=9, annotation_font_color="#666",
+        )
+
     _gen_colors = ["#2ca02c", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
     for (umbral, _lbl), color in zip(CARPOCAPSA_GEN_DD, _gen_colors):
         # Etiqueta corta para que quepa entera a la derecha (antes se cortaba el nº).
@@ -24634,7 +24679,14 @@ def render_decisiones_panel():
 - **Línea roja** = grados-día acumulados desde el biofix (inicio de vuelo); la parte punteada es la previsión.
 - **Área naranja (DD diarios)** = DD de cada día (cuánto calor útil acumuló ese día), eje derecho.
 - **Círculos azules** = capturas en trampa de toda la finca ese día (el tamaño y el número dentro son proporcionales al total de capturas).
-- **Líneas de umbral horizontales**:
+- **Bandas de color (verde y roja)** = **periodo real de eclosión**, del 1 % al 99 % de los huevos:
+  - 🟩 **122–511 DD** = eclosión de 1ª generación
+  - 🟥 **611–1167 DD** = eclosión de 2ª generación
+  Mientras la línea roja esté dentro de una banda, **hay larvas naciendo** y el tratamiento sirve.
+  Fíjate en que cada banda dura **semanas**: la eclosión no es un día, es un periodo largo, y por eso
+  suele hacer falta más de un pase por generación (con Bt, que dura ~7 días, aún más).
+  *Fuente: Utah State University Extension (Steffan).*
+- **Líneas de umbral horizontales** (hitos puntuales dentro de esas bandas):
   - 130 DD = inicio eclosión 1ª generación → **primer tratamiento**
   - 300 DD = eclosión 1ª generación plena → reforzar si capturas altas
   - 580 DD = **vuelo** de 2ª generación (emergen adultos; suben las capturas pero aún no hay larvas)
