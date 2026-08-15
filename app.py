@@ -14905,6 +14905,11 @@ def carpocapsa_grupos_resumen(traps_df, campaign_year, umbral=3, incluir_formaci
             f"Lecturas que cruzaron (de {n_lecturas})": _cruces,
             "Tratamientos dados": _trats,
             "Cobertura %": _cobertura,
+            # Balance con signo: + = pases por encima de lo que pidió el umbral
+            # (calendario, proximidad, aprovechar que entra el tractor);
+            # − = veces que cruzó y no se trató. El umbral es una referencia, no
+            # una obligación: un balance positivo no es necesariamente sobrante.
+            "Balance pases": _trats - _cruces,
             "_orden": orden,
         })
         for c in presentes:
@@ -15000,7 +15005,27 @@ def render_carpocapsa_grupos(campaign_year):
     if not normalizar:
         st.caption("⚠️ Sin normalizar: si el intervalo no fue de 7 días, esta comparación "
                    "contra el umbral semanal está sesgada.")
-    st.dataframe(res, use_container_width=True, hide_index=True)
+    st.dataframe(
+        res, use_container_width=True, hide_index=True,
+        column_config={
+            # Fija la 1ª columna: la tabla es ancha y al hacer scroll lateral se
+            # perdía de vista a qué grupo pertenece cada fila.
+            "Grupo": st.column_config.Column("Grupo", pinned=True),
+            "Cobertura %": st.column_config.ProgressColumn(
+                "Cobertura %", format="%.0f%%", min_value=0, max_value=100,
+                help="Tratamientos dados ÷ lecturas que cruzaron el umbral, topado a 100 %."),
+            "Balance pases": st.column_config.NumberColumn(
+                "Balance pases", format="%+d",
+                help="Tratamientos dados − lecturas que cruzaron. Positivo = más pases de los "
+                     "que pidió el umbral (calendario, proximidad, aprovechar el tractor). "
+                     "Negativo = veces que cruzó y no se trató."),
+        })
+    st.caption(
+        "**Balance pases** compara lo que pidió el umbral con lo que hiciste. Ojo: el umbral "
+        "es una referencia, no una obligación — un balance positivo puede ser protección "
+        "deliberada, y uno negativo puede ser una decisión consciente de no gastar. Lo que sí "
+        "merece una mirada es un **negativo grande en un grupo con pocas trampas**: ahí no "
+        "estás decidiendo con información, estás decidiendo a ciegas.")
 
     _tratar = res[res["Estado"].str.startswith("🔴")]
     if not _tratar.empty:
