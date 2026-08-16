@@ -22719,7 +22719,13 @@ def forecast_reliability(history_df, archive_df=None):
         actual = actual.copy()
         actual["target_date"] = pd.to_datetime(actual["Fecha"]).dt.strftime("%Y-%m-%d")
         a = actual.drop_duplicates("target_date").set_index("target_date")
-        THR, RAIN = 100.0, 0.2  # lluvia: cualquier precipitación medible (≥0,2 mm/día)
+        THR, RAIN = 100.0, 0.2  # lluvia REAL: precipitación medible (≥0,2 mm/día)
+        # Umbral para considerar que un modelo ANUNCIÓ lluvia: cualquier cantidad > 0.
+        # Va aparte del umbral de lluvia real porque aquí se juzga el HECHO, no la
+        # cantidad. Con un solo umbral, una previsión de 0,1 mm contaba como «dijo que
+        # estaría seco» y se apuntaba como escape (MeteoGalicia el 15/08: previó 0,1 y
+        # cayeron 1,0). Mismo criterio que el coloreado de la tabla día a día.
+        RAIN_PRED = 0.05
         # Banda "casi" (jul-2026): en un día de evento real, una previsión que llega al
         # ≥90% del umbral (≥90 cuando el real ≥100) cuenta como AVISADA — el modelo sí
         # marcó riesgo alto; el corte exacto en 100 es demasiado brusco con muestras
@@ -22746,7 +22752,7 @@ def forecast_reliability(history_df, archive_df=None):
                 "moteado_p": _mp >= THR,  "moteado_r": _mr >= THR,
                 "monilia_p": _op >= THR,  "monilia_r": _omr >= THR,
                 "oidio_p":   _dp >= THR,  "oidio_r":   _dr >= THR,
-                "lluvia_p":  _lp >= RAIN, "lluvia_r":  _lr >= RAIN,
+                "lluvia_p":  _lp >= RAIN_PRED, "lluvia_r":  _lr >= RAIN,
                 # Numéricas — el resumen aplica sobre ellas la banda "casi".
                 "moteado_pv": _mp, "moteado_rv": _mr,
                 "monilia_pv": _op, "monilia_rv": _omr,
@@ -22768,13 +22774,16 @@ def forecast_reliability(history_df, archive_df=None):
         # `tol` = tolerancia temporal en días (±1 para infecciones: un aviso/evento a un día
         # de distancia = mismo episodio, el modelo no clava la hora de corte. La lluvia va
         # estricta, tol=0, porque es una medida diaria directa, no un episodio).
-        for label, pv, rv, thr, near, tol in [
-                ("🍄 Moteado", "moteado_pv", "moteado_rv", THR,  NEAR, 1),
-                ("🟤 Monilia", "monilia_pv", "monilia_rv", THR,  NEAR, 1),
-                ("⚪ Oídio",   "oidio_pv",   "oidio_rv",   THR,  NEAR, 1),
-                ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, 1.0, 0),
-                ("🌧️ Lluvia WRF9", "lluvia_wrf_pv", "lluvia_rv", RAIN, 1.0, 0),
-                ("🌧️ Lluvia MeteoGal.", "lluvia_mg_pv", "lluvia_rv", RAIN, 1.0, 0)]:
+        # `thr` = umbral del valor REAL (¿hubo evento?). `thr_p` = umbral de la PREVISIÓN
+        # (¿el modelo lo anunció?). En infecciones coinciden (100); en lluvia NO: real
+        # ≥0,2 mm, pero anunciar lluvia es cualquier cantidad > 0.
+        for label, pv, rv, thr, thr_p, near, tol in [
+                ("🍄 Moteado", "moteado_pv", "moteado_rv", THR,  THR,       NEAR, 1),
+                ("🟤 Monilia", "monilia_pv", "monilia_rv", THR,  THR,       NEAR, 1),
+                ("⚪ Oídio",   "oidio_pv",   "oidio_rv",   THR,  THR,       NEAR, 1),
+                ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, RAIN_PRED, 1.0, 0),
+                ("🌧️ Lluvia WRF9", "lluvia_wrf_pv", "lluvia_rv", RAIN, RAIN_PRED, 1.0, 0),
+                ("🌧️ Lluvia MeteoGal.", "lluvia_mg_pv", "lluvia_rv", RAIN, RAIN_PRED, 1.0, 0)]:
             # Estado por día: (aviso_pleno ≥umbral, aviso_casi ≥90%, evento_real).
             _day = {}
             for _, _rw in comp_day.iterrows():
@@ -22784,7 +22793,9 @@ def forecast_reliability(history_df, archive_df=None):
                 _pvv = _rw[pv]
                 if pd.isna(_pvv):   # ese día ESE modelo no predijo (p.ej. WRF9 antes de existir) → no cuenta
                     continue
-                _day[_d] = (float(_pvv) >= thr, float(_pvv) >= thr * near,
+                # (aviso pleno, aviso "casi", evento real). Los dos primeros se miden
+                # contra thr_p (umbral de la PREVISIÓN); el tercero contra thr (el REAL).
+                _day[_d] = (float(_pvv) >= thr_p, float(_pvv) >= thr_p * near,
                             float(_rw[rv]) >= thr)
             _nd = len(_day)         # días que ESTE modelo predijo (su propio denominador)
 
