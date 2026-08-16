@@ -22843,6 +22843,133 @@ def forecast_reliability(history_df, archive_df=None):
         return None, {"n": 0}
 
 
+def forecast_reliability_persistence(history_df, archive_df=None):
+    """Fiabilidad medida sobre TODAS las emisiones, no solo la última.
+
+    Mirar únicamente la previsión de horizonte más corto es la forma menos
+    informativa de juzgar un pronóstico: tira las emisiones anteriores. Un modelo
+    que avisa a 5, 4, 3 y 2 días y se desdice a 1 día **avisó** — y con antelación
+    de sobra para tratar. Uno que no dijo nada nunca, no.
+
+    Devuelve (por_evento, resumen, por_horizonte):
+      · por_evento    — un día real de evento por fila: cuántas emisiones lo
+                        avisaron, con cuánta antelación y qué decía la última.
+      · resumen       — por modelo: sostenidos / intermitentes / escapes totales.
+      · por_horizonte — acierto por días de antelación: ¿a cuántos días me fío?
+    """
+    vacio = (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    try:
+        if archive_df is None:
+            archive_df = load_forecast_archive()
+        if archive_df is None or archive_df.empty or history_df is None or history_df.empty:
+            return vacio
+        today = pd.Timestamp.now().normalize()
+        oldest = pd.to_datetime(archive_df.get("target_date"), errors="coerce").min()
+        days_back = 60 if pd.isna(oldest) else min(max(int((today - oldest).days) + 5, 15), 730)
+        actual = build_risk_timeline(history_df, pd.DataFrame(), days_back=days_back)
+        if actual is None or actual.empty:
+            return vacio
+        actual = actual.copy()
+        actual["_td"] = pd.to_datetime(actual["Fecha"]).dt.strftime("%Y-%m-%d")
+        a = actual.drop_duplicates("_td").set_index("_td")
+
+        ad = archive_df.copy()
+        ad["_td"] = pd.to_datetime(ad.get("target_date"), errors="coerce").dt.strftime("%Y-%m-%d")
+        ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce")
+        ad = ad.dropna(subset=["_td", "_h"])
+
+        # (etiqueta, col. archivo, col. real, umbral real, umbral previsión)
+        MODELOS = [
+            ("🍄 Moteado",          "pred_mills",    "Mills_valor",   100.0, 90.0),
+            ("🟤 Monilia",          "pred_monilia",  "Monilia_valor", 100.0, 90.0),
+            ("⚪ Oídio",            "pred_oidio",    "Oidio_valor",   100.0, 90.0),
+            ("🌧️ Lluvia Sencrop",  "pred_rain",     "Lluvia",          0.2,  0.05),
+            ("🌧️ Lluvia WRF9",     "pred_rain_wrf", "Lluvia",          0.2,  0.05),
+            ("🌧️ Lluvia MeteoGal.", "pred_rain_mg", "Lluvia",          0.2,  0.05),
+        ]
+        ev_rows, res_rows, hz_rows = [], [], []
+        for label, pcol, rcol, thr_r, thr_p in MODELOS:
+            if pcol not in ad.columns or rcol not in a.columns:
+                continue
+            sub = ad[["_td", "_h", pcol]].copy()
+            sub[pcol] = pd.to_numeric(sub[pcol], errors="coerce")
+            sub = sub.dropna(subset=[pcol])
+            if sub.empty:
+                continue
+            n_sost = n_int = n_esc = 0
+            antelaciones = []
+            for td, g in sub.groupby("_td"):
+                if td not in a.index:
+                    continue                       # día aún sin dato real
+                real = pd.to_numeric(a.loc[td, rcol], errors="coerce")
+                if pd.isna(real) or float(real) < thr_r:
+                    continue                       # solo días de EVENTO real
+                g = g.sort_values("_h")
+                avisos = g[g[pcol] >= thr_p]
+                n_em, n_av = len(g), len(avisos)
+                pct = 100.0 * n_av / n_em if n_em else 0.0
+                ante = int(avisos["_h"].max()) if n_av else 0
+                ultima = float(g.iloc[0][pcol])    # horizonte más corto
+                if n_av == 0:
+                    estado, n_esc = "🔴 Escape total (no avisó nunca)", n_esc + 1
+                elif pct >= 50:
+                    estado, n_sost = "🟢 Aviso sostenido", n_sost + 1
+                else:
+                    estado, n_int = "🟡 Aviso intermitente", n_int + 1
+                if n_av:
+                    antelaciones.append(ante)
+                ev_rows.append({
+                    "Día": pd.to_datetime(td).strftime("%d/%m"),
+                    "Qué": label, "Estado": estado,
+                    "Real": round(float(real), 1),
+                    "Avisaron": f"{n_av} de {n_em}",
+                    "% emisiones": round(pct),
+                    "Antelación máx (días)": ante,
+                    "Última previsión": round(ultima, 1),
+                })
+            n_ev = n_sost + n_int + n_esc
+            if n_ev:
+                res_rows.append({
+                    "Qué": label,
+                    "Eventos reales": n_ev,
+                    "🟢 Aviso sostenido": n_sost,
+                    "🟡 Intermitente": n_int,
+                    "🔴 Escape total": n_esc,
+                    "Avisados (algo)": f"{n_sost + n_int} de {n_ev} "
+                                       f"({round(100*(n_sost+n_int)/n_ev)}%)",
+                    "Antelación media (días)": (round(float(np.mean(antelaciones)), 1)
+                                                if antelaciones else 0.0),
+                })
+            # ── Acierto por horizonte: ¿a cuántos días vista me puedo fiar? ──
+            for h in range(1, 8):
+                gh = sub[sub["_h"] == h]
+                if gh.empty:
+                    continue
+                ok = tot = 0
+                for _, rw in gh.iterrows():
+                    if rw["_td"] not in a.index:
+                        continue
+                    real = pd.to_numeric(a.loc[rw["_td"], rcol], errors="coerce")
+                    if pd.isna(real) or float(real) < thr_r:
+                        continue
+                    tot += 1
+                    if float(rw[pcol]) >= thr_p:
+                        ok += 1
+                if tot:
+                    hz_rows.append({"Qué": label, "Antelación (días)": h,
+                                    "Eventos": tot, "Avisados": ok,
+                                    "% acierto": round(100.0 * ok / tot)})
+        por_evento = (pd.DataFrame(ev_rows).sort_values(["Día", "Qué"], ascending=[False, True])
+                      if ev_rows else pd.DataFrame())
+        resumen = pd.DataFrame(res_rows) if res_rows else pd.DataFrame()
+        por_hz = (pd.DataFrame(hz_rows).pivot(index="Antelación (días)", columns="Qué",
+                                              values="% acierto").reset_index()
+                  if hz_rows else pd.DataFrame())
+        return por_evento, resumen, por_hz
+    except Exception:
+        return vacio
+
+
 def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, days=30, days_fwd=7, wrf_rain=None, mg_rain=None):
     """Tabla día a día PREVISTO vs REAL. Incluye:
       · Días FUTUROS (🔮): la previsión EN VIVO de la gráfica (real aún pendiente).
@@ -24164,6 +24291,49 @@ def render_decisiones_panel():
                 _rd, _rm = forecast_reliability(history_df)
             st.session_state["forecast_reliab_df"] = _rd
             st.session_state["forecast_reliab_meta"] = _rm
+
+        with st.expander("🎯 Fiabilidad HONESTA: ¿avisó con antelación?", expanded=False):
+            st.caption(
+                "La métrica de arriba juzga cada día por **la última previsión**, la de "
+                "horizonte más corto. Es la forma menos informativa de evaluar un pronóstico: "
+                "tira a la basura todas las emisiones anteriores.\n\n"
+                "Si el modelo avisó a 5, 4, 3 y 2 días vista y se desdijo el último día, "
+                "**avisó** — y con tiempo de sobra para tratar, que es lo que importa. Un "
+                "modelo que no dijo nada nunca es otra cosa. Aquí se cuentan **todas** las "
+                "emisiones que cubrieron cada día de evento real.")
+            _ev, _res, _hz = forecast_reliability_persistence(history_df)
+            if _res is None or _res.empty:
+                st.info("Aún no hay días de evento real cubiertos por el archivo. "
+                        "Se irá llenando conforme pasen días con infección o lluvia.")
+            else:
+                st.markdown("**Resumen por modelo**")
+                st.dataframe(_res, use_container_width=True, hide_index=True,
+                             column_config={"Qué": st.column_config.Column("Qué", pinned=True)})
+                st.caption(
+                    "🟢 **Sostenido** = lo avisó en la mitad o más de las emisiones · "
+                    "🟡 **Intermitente** = avisó alguna vez pero de forma errática · "
+                    "🔴 **Escape total** = no lo vio en ninguna emisión, el fallo de verdad. "
+                    "**Antelación media** = días de margen que dio el primer aviso.")
+                if _hz is not None and not _hz.empty:
+                    st.markdown("**% de eventos avisados según los días de antelación**")
+                    st.dataframe(_hz, use_container_width=True, hide_index=True)
+                    st.caption(
+                        "Se lee por filas: *«de los eventos que tenían previsión a N días "
+                        "vista, qué porcentaje se avisó»*. Si el acierto **sube** al acercarse "
+                        "el día, el modelo se afina; si **baja**, se desdice justo cuando más "
+                        "falta hace. Con pocos datos cada celda vale poco — mira la tendencia.")
+                if _ev is not None and not _ev.empty:
+                    st.markdown("**Detalle: cada día de evento real**")
+                    st.dataframe(_ev, use_container_width=True, hide_index=True,
+                                 column_config={"Día": st.column_config.Column("Día", pinned=True),
+                                                "% emisiones": st.column_config.ProgressColumn(
+                                                    "% emisiones", format="%d%%",
+                                                    min_value=0, max_value=100)})
+                    st.download_button(
+                        "⬇️ Descargar detalle por evento (CSV)",
+                        data=_ev.to_csv(index=False).encode("utf-8-sig"),
+                        file_name="fiabilidad_por_evento.csv", mime="text/csv",
+                        key="reliab_persist_dl")
 
         with st.expander("🔍 Qué hay REALMENTE en el archivo (diagnóstico)"):
             st.caption(
