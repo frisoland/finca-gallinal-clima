@@ -24154,6 +24154,48 @@ def render_decisiones_panel():
             st.session_state["forecast_reliab_df"] = _rd
             st.session_state["forecast_reliab_meta"] = _rm
 
+        with st.expander("🔍 Qué hay REALMENTE en el archivo (diagnóstico)"):
+            st.caption(
+                "Filas crudas del archivo, sin procesar. Sirve para ver **desde qué horizonte** "
+                "se predijo cada día y con qué valor. Si «pred_mills» sale 0 mientras "
+                "«pred_oidio» trae valores, el archivo funciona y el problema está en el "
+                "modelo de moteado en previsión, no en el guardado.")
+            _arch_dbg = load_forecast_archive()
+            if _arch_dbg is None or _arch_dbg.empty:
+                st.info("El archivo está vacío: aún no se ha guardado ninguna previsión.")
+            else:
+                _a = _arch_dbg.copy()
+                for _c in ("issue_date", "target_date"):
+                    if _c in _a.columns:
+                        _a[_c] = pd.to_datetime(_a[_c], errors="coerce")
+                _a = _a.sort_values(["target_date", "horizon"], ascending=[False, True])
+                _cols_dbg = [c for c in ["issue_date", "target_date", "horizon", "pred_mills",
+                                         "pred_monilia", "pred_oidio", "pred_rain",
+                                         "pred_rain_wrf", "pred_rain_mg"] if c in _a.columns]
+                st.dataframe(_a[_cols_dbg].head(60), use_container_width=True, hide_index=True)
+                _n = len(_a)
+                _res_dbg = []
+                for _c in ("pred_mills", "pred_monilia", "pred_oidio", "pred_rain"):
+                    if _c not in _a.columns:
+                        continue
+                    _v = pd.to_numeric(_a[_c], errors="coerce")
+                    _res_dbg.append({
+                        "Columna": _c,
+                        "Filas con dato": int(_v.notna().sum()),
+                        "Vacías (NaN)": int(_v.isna().sum()),
+                        "Valen 0": int((_v == 0).sum()),
+                        "Valen > 0": int((_v > 0).sum()),
+                        "Máximo": (round(float(_v.max()), 1) if _v.notna().any() else "—"),
+                    })
+                st.markdown("**Resumen de todo el archivo**")
+                st.dataframe(pd.DataFrame(_res_dbg), use_container_width=True, hide_index=True)
+                st.caption(
+                    f"Total de filas archivadas: **{_n}**. ⚠️ Aviso conocido: el archivo se "
+                    "calcula con `build_risk_timeline(days_back=14)` y la tabla de arriba con "
+                    "`days_back=30`. Si el valor de moteado depende del contexto histórico, los "
+                    "dos números **no son comparables** y la comparación previsto-vs-real de "
+                    "moteado/monilia estaría sesgada. Pendiente de verificar con estos datos.")
+
         with st.expander("🗑️ Reiniciar archivo de fiabilidad (empezar de cero)"):
             st.caption(
                 "Borra TODO el archivo de previsiones guardado (incluidos los valores antiguos "
@@ -24422,7 +24464,15 @@ def render_decisiones_panel():
                 #    Estricto, mismo día (sin tolerancia ±1). Se colorea SOLO la celda de
                 #    previsión (la real no, para no mezclar dos modelos en una celda). Los días
                 #    secos-acertados se dejan en blanco (no meter ruido verde en todo).
+                # Umbrales SEPARADOS a propósito:
+                #  · _RAIN (real): ¿llovió de verdad? 0,2 mm filtra el ruido del pluviómetro.
+                #  · _PRED_MIN (previsión): ¿el modelo ANUNCIÓ lluvia? Cualquier cantidad > 0
+                #    ya es un anuncio. Aquí no se juzga si acierta la CANTIDAD, solo si
+                #    acierta el HECHO. Con el mismo umbral para los dos, una previsión de
+                #    0,1 mm contaba como «dijo que estaría seco» y se pintaba de rojo aunque
+                #    hubiera anunciado lluvia (MeteoGalicia el 15/08: previó 0,1, cayó 1,0).
                 _RAIN = 0.2
+                _PRED_MIN = 0.05
                 if "Lluvia real" in df.columns:
                     _reals_ll = [_num(df.iloc[i]["Lluvia real"]) for i in range(n)]
                     _raw_ll = [str(df.iloc[i]["Lluvia real"]) for i in range(n)]
@@ -24437,7 +24487,7 @@ def render_decisiones_panel():
                             _pv = _num(df.iloc[i][prevc])
                             if _pv is None:
                                 continue                       # ese modelo no predijo ese día
-                            _rained, _predrain = _rv >= _RAIN, _pv >= _RAIN
+                            _rained, _predrain = _rv >= _RAIN, _pv >= _PRED_MIN
                             if _rained and _predrain:
                                 _cll = _GRN2                   # acertó: llovió y lo predijo
                             elif _rained and not _predrain:
@@ -24471,11 +24521,15 @@ def render_decisiones_panel():
                 "no acertó la hora exacta de corte (no es un fallo real). El 🔴 (escape) es el error "
                 "peligroso; el 🔵 (falsa alarma), el molesto pero seguro.\n\n"
                 "**🌧️ Lluvia (columnas «Lluvia prev.» de Sencrop, «Lluvia WRF9» y «Lluvia MG» de "
-                "MeteoGalicia):** se colorea cada **previsión** según lo que llovió de verdad ese día "
-                "(lluvia = ≥0,2 mm, mismo día, sin tolerancia): 🟢 **acertó** (llovió y lo predijo) · "
-                "🔴 **se le escapó** (llovió y no lo predijo) · 🔵 **falsa alarma** (predijo lluvia y no "
-                "cayó). Los días **secos que acertó** se dejan **en blanco** (para no llenar la tabla de "
-                "color). Así comparas de un vistazo quién acierta más, **Sencrop vs WRF9 vs MeteoGalicia "
+                "MeteoGalicia):** se colorea cada **previsión** según lo que llovió de verdad ese día, "
+                "mismo día y sin tolerancia: 🟢 **acertó** (llovió y lo predijo) · 🔴 **se le escapó** "
+                "(llovió y no lo predijo) · 🔵 **falsa alarma** (predijo lluvia y no cayó). Los días "
+                "**secos que acertó** se dejan **en blanco** (para no llenar la tabla de color).\n\n"
+                "Aquí se juzga **el hecho, no la cantidad**, y por eso los dos umbrales son distintos: "
+                "*llovió de verdad* = **≥0,2 mm** (filtra el ruido del pluviómetro), pero *el modelo "
+                "anunció lluvia* = **cualquier cantidad > 0**. Una previsión de 0,1 mm está diciendo "
+                "que va a llover, poco pero llover — antes contaba como «dijo que estaría seco» y se "
+                "pintaba de rojo. Así comparas quién acierta más, **Sencrop vs WRF9 vs MeteoGalicia "
                 "(1 km oficial)**."
             )
 
