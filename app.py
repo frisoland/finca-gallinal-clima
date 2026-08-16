@@ -22162,8 +22162,15 @@ def calibrate_leaf_wetness(history, sensor_min_minutes=30):
     measured = (pd.to_numeric(h["humectacion_hoja"], errors="coerce").fillna(0) >= sensor_min_minutes).to_numpy()
     n = len(measured)
     rows = []
-    for rh_thr in (87, 88, 90, 92):
-        for dew in (1.0, 1.5, 2.0):
+    # Rejilla AMPLIADA (ago-2026). La anterior llegaba solo a HR 92 y rocío 1,0, y el
+    # óptimo salía justo en ese borde (HR≥92 · rocío≤1,5 · retardo 1) — señal de que el
+    # verdadero óptimo caía fuera de lo que se buscaba. Con esos parámetros el estimador
+    # daba 15.707 horas mojadas frente a las 8.554 del sensor: 1,84× de más, que es lo
+    # que infla las falsas alarmas de moteado (precisión ~43 %). Se extiende hasta HR 96
+    # y rocío 0,3 para llegar a la zona restrictiva de verdad.
+    _n_med = int(measured.sum())
+    for rh_thr in (87, 88, 90, 92, 93, 94, 95, 96):
+        for dew in (0.3, 0.5, 0.75, 1.0, 1.5, 2.0):
             for lag in (0, 1, 2, 3):
                 est = (estimate_leaf_wetness_minutes(
                     h, {"rh_thr": rh_thr, "dew_depr": dew, "dry_lag": lag}) >= 30).to_numpy()
@@ -22172,12 +22179,16 @@ def calibrate_leaf_wetness(history, sensor_min_minutes=30):
                 prec = tp / (tp + fp) if (tp + fp) else 0.0
                 rec  = tp / (tp + fn) if (tp + fn) else 0.0
                 f1   = (2 * prec * rec / (prec + rec)) if (prec + rec) else 0.0
+                _est_h = int(est.sum())
                 rows.append({"HR≥": rh_thr, "Rocío ≤": dew, "Retardo h": lag,
                              "Acierto %": round((tp + tn) / n * 100, 1),
                              "Precisión %": round(prec * 100, 1),
                              "Sensibilidad %": round(rec * 100, 1),
                              "F1": round(f1, 3),
-                             "h estim.": int(est.sum()), "h medidas": int(measured.sum())})
+                             "h estim.": _est_h, "h medidas": _n_med,
+                             # Cuánto infla (o recorta) las horas del sensor. 1,00 = clava
+                             # el total; >1 sobra mojadura; <1 se queda corto.
+                             "Ratio h est./med.": (round(_est_h / _n_med, 2) if _n_med else np.nan)})
     res = pd.DataFrame(rows).sort_values("F1", ascending=False).reset_index(drop=True)
     best = None
     if not res.empty:
@@ -24275,7 +24286,8 @@ def render_decisiones_panel():
             with _cc1:
                 if st.button("🎯 Calibrar con mi sensor de hoja", key="lw_calibrate",
                              use_container_width=True):
-                    with st.spinner("Comparando el estimador con tu sensor histórico…"):
+                    with st.spinner("Comparando el estimador con tu sensor histórico… "
+                                    "(192 combinaciones, puede tardar ~1 minuto)"):
                         try:
                             _res, _best = calibrate_leaf_wetness(history_df)
                         except Exception as _e:
@@ -24293,10 +24305,33 @@ def render_decisiones_panel():
                         st.session_state["lw_params"] = _best
                         st.success("Parámetros calibrados aplicados a la previsión.")
                         st.rerun()
-                st.dataframe(_res.head(8), use_container_width=True, hide_index=True)
-                st.caption("Ordenado por **F1** (equilibrio entre acertar las horas mojadas reales "
-                           "y no inventarlas). **h estim./medidas** = horas mojadas estimadas vs las "
-                           "del sensor. Aplica la fila de arriba o quédate con la actual.")
+                _t1, _t2 = st.tabs(["🏆 Mejor equilibrio (F1)", "⚖️ Las que clavan las horas"])
+                with _t1:
+                    st.dataframe(_res.head(10), use_container_width=True, hide_index=True)
+                    st.caption(
+                        "Ordenado por **F1** (equilibrio entre pillar las horas mojadas reales y no "
+                        "inventarlas). ⚠️ El F1 premia **no perderse horas**, así que tiende a elegir "
+                        "parámetros permisivos: fíjate en que el **Ratio** de estas filas suele estar "
+                        "muy por encima de 1, es decir, estiman bastantes más horas de las que mide "
+                        "el sensor. Para recortar falsas alarmas, mira la otra pestaña.")
+                with _t2:
+                    _r2 = _res.copy()
+                    if "Ratio h est./med." in _r2.columns:
+                        _r2["_dist"] = (pd.to_numeric(_r2["Ratio h est./med."],
+                                                      errors="coerce") - 1.0).abs()
+                        _r2 = _r2.sort_values("_dist").drop(columns=["_dist"])
+                    st.dataframe(_r2.head(10), use_container_width=True, hide_index=True)
+                    st.caption(
+                        "Ordenado por **Ratio más cercano a 1**: las combinaciones que reproducen el "
+                        "**total de horas** que mide tu sensor. Son las que menos falsas alarmas "
+                        "darían. **Mira la Sensibilidad antes de aplicar ninguna**: si baja mucho, el "
+                        "modelo empieza a perderse horas de mojadura reales y con ellas infecciones — "
+                        "y ahora mismo llevas 0 escapes en 15 eventos. Acertar el total de horas no "
+                        "sirve de nada si son las horas equivocadas.")
+                st.caption(
+                    f"Rejilla ampliada: **{len(_res)} combinaciones** (HR 87–96 · rocío 0,3–2,0 · "
+                    "retardo 0–3 h). El botón verde aplica siempre la fila de **mejor F1**; para "
+                    "usar otra, dímelo y la fijo a mano.")
             elif _res is not None:
                 st.info("No hay datos de sensor de hoja (humectacion_hoja) suficientes en el "
                         "histórico para calibrar. Se usan los parámetros estándar.")
