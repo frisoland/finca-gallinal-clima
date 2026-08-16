@@ -24549,7 +24549,11 @@ def render_decisiones_panel():
                     _s = _comp[(_comp["horizon"] >= _lo) & (_comp["horizon"] <= _hi)]
                     if _s.empty:
                         continue
-                    _row = {"Antelación": _lbl, "Avisos comprobados": len(_s)}
+                    # OJO: len(_s) son TODAS las previsiones de ese plazo, avisen o no.
+                    # Antes se etiquetaba "Avisos comprobados", que hacía pensar que el
+                    # % se calculaba sobre esa cifra. No: cada modelo avisa un nº de veces
+                    # distinto, así que el denominador real va en cada celda.
+                    _row = {"Antelación": _lbl, "Previsiones comprobadas": len(_s)}
                     for _nm, _pc, _rc, _tol in _hz_metrics:
                         _avisos = _s[_s[_pc]]
                         _av = len(_avisos)
@@ -24558,9 +24562,11 @@ def render_decisiones_panel():
                             _hit = sum(
                                 any((d + pd.Timedelta(days=k)) in _rd for k in range(-_tol, _tol + 1))
                                 for d in _avisos["_dt"] if pd.notna(d))
-                            _row[f"{_nm}: acierto %"] = round(_hit / _av * 100, 0)
+                            # "% (aciertos de avisos)": el denominador a la vista, para que
+                            # se vea si un 50 % sale de 1 de 2 o de 15 de 30.
+                            _row[f"{_nm}: acierto"] = f"{round(_hit / _av * 100)}% ({_hit} de {_av})"
                         else:
-                            _row[f"{_nm}: acierto %"] = "—"
+                            _row[f"{_nm}: acierto"] = "— (no avisó)"
                     _hz_rows.append(_row)
                 st.caption(
                     "⚠️ **Esto NO es «¿funciona?»** (eso es la frase verde de arriba: si no se le "
@@ -24571,8 +24577,14 @@ def render_decisiones_panel():
                     "que perderse un evento, así que un % bajo aquí no es malo: es ir sobre seguro.")
                 if _hz_rows:
                     st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
-                    st.caption("*«Avisos comprobados» = nº de previsiones de ese plazo ya comparables "
-                               "con la realidad; «—» = no avisó de nada a ese plazo.*")
+                    st.caption(
+                        "*«Previsiones comprobadas» = cuántas previsiones de ese plazo ya se "
+                        "pueden comparar con la realidad — **no** son los avisos. Cada modelo "
+                        "avisa un número distinto de veces, y ese denominador va dentro de su "
+                        "propia celda: «50 % (3 de 6)» significa que de 6 avisos acertó 3. Con "
+                        "denominadores pequeños el porcentaje se mueve muchísimo — míralo antes "
+                        "de sacar conclusiones. Estos datos ya excluyen el horizonte 0 (el día "
+                        "en curso, que no es una previsión).*")
 
         # ── Detalle DÍA A DÍA: PREVISTO vs REAL (fuera del if: se muestra SIEMPRE,
         #    aunque el archivo esté vacío, para ver los días 🔮 futuros). ──────────
