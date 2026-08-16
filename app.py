@@ -22648,8 +22648,22 @@ def archive_today_forecast(history_df, forecast_df):
             if not risk.empty and "Es_prediccion" in risk.columns:
                 for _, r in risk[risk["Es_prediccion"] == True].iterrows():
                     d = pd.Timestamp(r["Fecha"]).normalize()
+                    # NO archivar el día en curso (horizonte 0). build_risk_timeline marca
+                    # HOY como "predicción" porque el día mezcla horas reales (hasta ahora)
+                    # con previstas (el resto), pero eso NO es un pronóstico: es el día a
+                    # medias, capturado a la hora en que se abrió la app. Al evaluar se toma
+                    # siempre el horizonte más corto, así que ese registro se colaba como si
+                    # fuera "la última previsión" y falseaba todo:
+                    #   · lluvia — a las 8:00 llevaba 0 mm y la lluvia caía por la tarde
+                    #     → Sencrop salía con 0,0 "la víspera" en 10 de 18 eventos;
+                    #   · moteado/monilia — a esa hora el evento de mojadura de la noche aún
+                    #     no ha cerrado, así que Mills valía 0 y luego el día acababa en 138.
+                    # Se archiva solo desde mañana (horizonte ≥ 1), que sí es previsión.
+                    _hz = int((d - today).days)
+                    if _hz < 1:
+                        continue
                     _e = _by_date.setdefault(d.strftime("%Y-%m-%d"), {})
-                    _e["horizon"] = int((d - today).days)
+                    _e["horizon"] = _hz
                     _e["pred_mills"] = float(r.get("Mills_valor", np.nan))
                     _e["pred_monilia"] = float(r.get("Monilia_valor", np.nan))
                     _e["pred_oidio"] = float(r.get("Oidio_valor", np.nan))
@@ -22658,8 +22672,8 @@ def archive_today_forecast(history_df, forecast_df):
         try:
             for d, mm in (windguru_wrf9_daily_rain() or {}).items():
                 d = pd.Timestamp(d).normalize()
-                if d < today:
-                    continue
+                if d <= today:
+                    continue          # horizonte 0 fuera: ver comentario de Sencrop arriba
                 _e = _by_date.setdefault(d.strftime("%Y-%m-%d"), {})
                 _e["horizon"] = int((d - today).days)
                 _e["pred_rain_wrf"] = float(mm)
@@ -22669,8 +22683,8 @@ def archive_today_forecast(history_df, forecast_df):
         try:
             for d, mm in (meteosix_wrf_daily_rain() or {}).items():
                 d = pd.Timestamp(d).normalize()
-                if d < today:
-                    continue
+                if d <= today:
+                    continue          # horizonte 0 fuera: ver comentario de Sencrop arriba
                 _e = _by_date.setdefault(d.strftime("%Y-%m-%d"), {})
                 _e["horizon"] = int((d - today).days)
                 _e["pred_rain_mg"] = float(mm)
@@ -22736,6 +22750,11 @@ def forecast_reliability(history_df, archive_df=None):
         for _, r in archive_df.iterrows():
             td = str(r.get("target_date"))
             if td not in a.index:
+                continue
+            # Horizonte 0 fuera: día en curso a media mañana, no previsión (ver
+            # archive_today_forecast). Falseaba la métrica hacia el lado malo.
+            _hz_r = pd.to_numeric(r.get("horizon"), errors="coerce")
+            if pd.isna(_hz_r) or int(_hz_r) < 1:
                 continue
             _mp = float(r.get("pred_mills", 0));   _mr = float(a.loc[td, "Mills_valor"])
             _op = float(r.get("pred_monilia", 0)); _omr = float(a.loc[td, "Monilia_valor"])
@@ -22877,6 +22896,8 @@ def forecast_reliability_persistence(history_df, archive_df=None):
         ad["_td"] = pd.to_datetime(ad.get("target_date"), errors="coerce").dt.strftime("%Y-%m-%d")
         ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce")
         ad = ad.dropna(subset=["_td", "_h"])
+        # Horizonte 0 fuera: es el día en curso a media mañana, no una previsión.
+        ad = ad[ad["_h"] >= 1]
 
         # (etiqueta, col. archivo, col. real, umbral real, umbral previsión)
         MODELOS = [
@@ -22998,6 +23019,10 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
         if archive_df is not None and not archive_df.empty and "target_date" in archive_df.columns:
             ad = archive_df.copy()
             ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce").fillna(99)
+            # Descartar horizonte 0: es el día en curso capturado a media mañana, no una
+            # previsión (ver archive_today_forecast). Se archivó así hasta ago-2026 y como
+            # aquí se toma el horizonte MÁS CORTO, se colaba como "la última previsión".
+            ad = ad[ad["_h"] >= 1]
             ad = ad.sort_values("_h").drop_duplicates("target_date", keep="first")
             for _, r in ad.iterrows():
                 pred_map[str(r.get("target_date"))] = r
