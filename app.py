@@ -23148,93 +23148,6 @@ def forecast_bias_correction(history_df, archive_df=None, min_real=20.0):
         return vacio
 
 
-def forecast_threshold_sweep(history_df, archive_df=None, tol_dias=1):
-    """¿Cuál es el umbral de AVISO que menos trata sin perder infecciones?
-
-    El valor REAL de Mills marca infección en 100 (estándar). Pero la previsión
-    sobrestima de forma sistemática —el estimador de hoja mojada da ~1,84 veces
-    las horas que mide el sensor— así que exigirle también 100 dispara avisos de
-    más: ~2 falsas alarmas por acierto.
-
-    El umbral del REAL es física y no se toca. El umbral de la PREVISIÓN es una
-    decisión de operación: si infla, súbele el listón. Misma lógica que en la
-    lluvia, donde el umbral de previsión (>0) va aparte del real (≥0,2 mm), solo
-    que allí había que bajarlo y aquí subirlo.
-
-    Barre umbrales de aviso y devuelve, para cada uno, cuántas infecciones
-    reales se avisan y cuántos tratamientos se dispararían de más. Con `tol_dias`
-    de tolerancia (±1 día por defecto), coherente con el resto del panel: un
-    aviso pegado a un evento real es la cola del mismo episodio.
-    """
-    try:
-        if archive_df is None:
-            archive_df = load_forecast_archive()
-        if archive_df is None or archive_df.empty or history_df is None or history_df.empty:
-            return pd.DataFrame()
-        today = pd.Timestamp.now().normalize()
-        oldest = pd.to_datetime(archive_df.get("target_date"), errors="coerce").min()
-        days_back = 60 if pd.isna(oldest) else min(max(int((today - oldest).days) + 5, 15), 730)
-        actual = build_risk_timeline(history_df, pd.DataFrame(), days_back=days_back)
-        if actual is None or actual.empty:
-            return pd.DataFrame()
-        actual = actual.copy()
-        actual["_d"] = pd.to_datetime(actual["Fecha"]).dt.normalize()
-        a = actual.drop_duplicates("_d").set_index("_d")
-
-        ad = archive_df.copy()
-        ad["_d"] = pd.to_datetime(ad.get("target_date"), errors="coerce").dt.normalize()
-        ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce")
-        ad = ad.dropna(subset=["_d", "_h"])
-        ad = ad[ad["_h"] >= 1]
-        # Una fila por día: el aviso MÁS FUERTE de todas las emisiones que lo cubrieron.
-        # Es lo que de verdad decide — si cualquier previsión pasa el umbral, tratas.
-        filas = []
-        for etiqueta, pcol, rcol in [("🍄 Moteado", "pred_mills", "Mills_valor"),
-                                     ("🟤 Monilia", "pred_monilia", "Monilia_valor")]:
-            if pcol not in ad.columns or rcol not in a.columns:
-                continue
-            g = ad[["_d", pcol]].copy()
-            g[pcol] = pd.to_numeric(g[pcol], errors="coerce")
-            g = g.dropna(subset=[pcol]).groupby("_d")[pcol].max()
-            dias = [d for d in g.index if d in a.index]
-            if not dias:
-                continue
-            reales = {d: float(pd.to_numeric(a.loc[d, rcol], errors="coerce") or 0) for d in dias}
-            ev_dias = {d for d in dias if reales[d] >= 100.0}
-            for thr in (100, 110, 120, 130, 140, 150, 160, 175, 200):
-                avisados = esc = falsas = 0
-                for d in dias:
-                    aviso = float(g[d]) >= thr
-                    # ¿hay evento real en ±tol días? (mismo episodio)
-                    ev_cerca = any((d + pd.Timedelta(days=k)) in ev_dias
-                                   for k in range(-tol_dias, tol_dias + 1))
-                    if d in ev_dias:
-                        if aviso:
-                            avisados += 1
-                        else:
-                            # ¿lo rescata un aviso en un día vecino?
-                            if any(d + pd.Timedelta(days=k) in g.index
-                                   and float(g[d + pd.Timedelta(days=k)]) >= thr
-                                   for k in (-tol_dias, tol_dias)):
-                                avisados += 1
-                            else:
-                                esc += 1
-                    elif aviso and not ev_cerca:
-                        falsas += 1
-                n_ev = len(ev_dias)
-                filas.append({
-                    "Qué": etiqueta, "Umbral de aviso": thr,
-                    "Infecciones": n_ev,
-                    "Avisadas": avisados,
-                    "🔴 Escapes": esc,
-                    "Tratamientos de más": falsas,
-                    "Por cada acierto": (round(falsas / avisados, 1) if avisados else np.nan),
-                })
-        return pd.DataFrame(filas)
-    except Exception:
-        return pd.DataFrame()
-
-
 def forecast_reliability_persistence(history_df, archive_df=None):
     """Fiabilidad medida sobre TODAS las emisiones, no solo la última.
 
@@ -23634,7 +23547,14 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         yaxis2=dict(title="Lluvia (mm)", overlaying="y", side="right",
                     range=[0, max(max(lluvia)*4, 10) if lluvia else 10],
                     showgrid=False, tickfont_color="rgba(100,160,255,0.8)", fixedrange=True),
-        xaxis=dict(tickformat="%d/%m", gridcolor="rgba(200,200,200,0.2)", fixedrange=True),
+        # `tickmode="array"` con los ticks automáticos MÁS el último día: plotly
+        # reparte las marcas cada 7 días y deja fuera el final de la previsión, que es
+        # justo el dato que interesa saber — hasta dónde llega lo que estás mirando.
+        xaxis=dict(tickformat="%d/%m", gridcolor="rgba(200,200,200,0.2)", fixedrange=True,
+                   **({"tickmode": "array",
+                       "tickvals": (list(pd.date_range(dates[0], dates[-1], freq="7D"))
+                                    + [dates[-1]])}
+                      if dates else {})),
         plot_bgcolor="rgba(255,255,255,1)",
         paper_bgcolor="rgba(0,0,0,0)",
         bargap=0.1,
@@ -24856,83 +24776,6 @@ def render_decisiones_panel():
                         file_name="fiabilidad_por_evento.csv", mime="text/csv",
                         key="reliab_persist_dl")
 
-        with st.expander("💰 ¿Cuántos tratamientos me ahorro subiendo el listón?", expanded=False):
-            st.caption(
-                "El valor **real** de Mills marca infección en **100**: eso es física y no se "
-                "toca. Pero el umbral que dispara el **aviso** es una decisión de operación, y "
-                "no tiene por qué ser el mismo — porque **la previsión sobrestima**: el "
-                "estimador de hoja mojada da ~1,84 veces las horas que mide tu sensor.\n\n"
-                "Es la misma idea que ya aplicamos a la lluvia, donde el umbral de la previsión "
-                "va aparte del real. Allí había que **bajarlo**; aquí, **subirlo**.\n\n"
-                "Abajo, qué pasaría con cada umbral: cuántas infecciones seguirías avisando y "
-                "cuántos tratamientos te ahorrarías. **La columna que manda es «Escapes»** — "
-                "mientras siga en 0, subir el listón sale gratis.")
-            _sw = forecast_threshold_sweep(history_df)
-            if _sw is None or _sw.empty:
-                st.info("Aún no hay suficientes días archivados con infección real para barrer "
-                        "umbrales. Se irá llenando con la campaña.")
-            else:
-                for _q in _sw["Qué"].unique():
-                    _s = _sw[_sw["Qué"] == _q].drop(columns=["Qué"])
-                    st.markdown(f"**{_q}**")
-                    st.dataframe(
-                        _s, use_container_width=True, hide_index=True,
-                        column_config={
-                            "Umbral de aviso": st.column_config.Column("Umbral de aviso", pinned=True),
-                            "🔴 Escapes": st.column_config.NumberColumn(
-                                "🔴 Escapes", help="Infecciones reales que dejarías de avisar. "
-                                                   "Mientras sea 0, subir el umbral no tiene coste."),
-                            "Por cada acierto": st.column_config.NumberColumn(
-                                "Tratam. de más por acierto", format="%.1f")})
-                    _ok = _s[_s["🔴 Escapes"] == 0]
-                    if not _ok.empty:
-                        _mej = _ok.loc[_ok["Tratamientos de más"].idxmin()]
-                        _act = _s[_s["Umbral de aviso"] == 100]
-                        if not _act.empty and int(_mej["Umbral de aviso"]) != 100:
-                            _ahorro = int(_act.iloc[0]["Tratamientos de más"]) - int(_mej["Tratamientos de más"])
-                            if _ahorro > 0:
-                                st.success(
-                                    f"**Umbral {int(_mej['Umbral de aviso'])}**: sigue avisando "
-                                    f"las **{int(_mej['Avisadas'])} de {int(_mej['Infecciones'])}** "
-                                    f"infecciones (0 escapes) y se ahorra **{_ahorro} "
-                                    f"tratamiento(s)** frente al umbral 100.")
-                            else:
-                                st.info("Con estos datos, subir el umbral no ahorra tratamientos "
-                                        "sin empezar a perder infecciones.")
-                st.caption(
-                    "⚠️ Se cuenta el aviso **más fuerte** de todas las emisiones que cubrieron cada "
-                    "día: es lo que de verdad decide, porque si cualquier previsión pasa el umbral, "
-                    "tratas. Tolerancia ±1 día, igual que el resto del panel. **Con pocas "
-                    "infecciones esta tabla es frágil** — un evento nuevo puede cambiar el umbral "
-                    "recomendado, así que revísala cada pocas semanas antes de fiarte.")
-
-                st.divider()
-                st.markdown("**⚙️ Umbral de aviso en uso**")
-                st.caption(
-                    "Lo que la **previsión** tiene que superar para disparar un aviso de "
-                    "tratamiento. El umbral de infección **real** sigue siendo 100 y no cambia: "
-                    "esto solo afecta a cuándo la app te dice que trates.")
-                _wc1, _wc2, _wc3 = st.columns(3)
-                for _col, _key, _lbl, _hlp in [
-                        (_wc1, "mills", "🍄 Moteado",
-                         "Recomendado 140: mantiene las 4 de 4 infecciones y quita 16 de los 19 "
-                         "avisos falsos. A 150 ahorrarías 1 más, pero el modelo tiene techo en 150 "
-                         "y te quedarías sin margen."),
-                        (_wc2, "monilia", "🟤 Monilia",
-                         "Déjalo en 100: subir a 110 ya provoca 3 escapes de 5 infecciones."),
-                        (_wc3, "oidio", "⚪ Oídio",
-                         "Sin analizar todavía; se queda en 100 hasta tener datos.")]:
-                    with _col:
-                        st.number_input(
-                            _lbl, min_value=50, max_value=200, step=10,
-                            value=int(forecast_warn_threshold(_key)),
-                            key=f"warn_thr_{_key}", help=_hlp)
-                _dif = [k for k in ("mills", "monilia", "oidio")
-                        if forecast_warn_threshold(k) != FORECAST_WARN_THR_DEFAULTS[k]]
-                if _dif:
-                    st.info("Estás usando umbrales distintos de los recomendados en "
-                            + ", ".join(_dif) + ". Se aplican a toda la app.")
-
         with st.expander("🧮 ¿Y si corregimos el número en vez de subir el umbral?", expanded=False):
             st.caption(
                 "En vez de mover el punto de corte, **arreglar el número**: si la previsión "
@@ -24985,48 +24828,6 @@ def render_decisiones_panel():
                     "⚠️ Nada de esto está aplicado: es solo el análisis. Cambiar a corrección "
                     "de sesgo implicaría tocar el valor que se muestra en toda la app, así que "
                     "conviene decidirlo con la comparativa delante y con más días archivados.")
-
-        with st.expander("🔍 Qué hay REALMENTE en el archivo (diagnóstico)"):
-            st.caption(
-                "Filas crudas del archivo, sin procesar. Sirve para ver **desde qué horizonte** "
-                "se predijo cada día y con qué valor. Si «pred_mills» sale 0 mientras "
-                "«pred_oidio» trae valores, el archivo funciona y el problema está en el "
-                "modelo de moteado en previsión, no en el guardado.")
-            _arch_dbg = load_forecast_archive()
-            if _arch_dbg is None or _arch_dbg.empty:
-                st.info("El archivo está vacío: aún no se ha guardado ninguna previsión.")
-            else:
-                _a = _arch_dbg.copy()
-                for _c in ("issue_date", "target_date"):
-                    if _c in _a.columns:
-                        _a[_c] = pd.to_datetime(_a[_c], errors="coerce")
-                _a = _a.sort_values(["target_date", "horizon"], ascending=[False, True])
-                _cols_dbg = [c for c in ["issue_date", "target_date", "horizon", "pred_mills",
-                                         "pred_monilia", "pred_oidio", "pred_rain",
-                                         "pred_rain_wrf", "pred_rain_mg"] if c in _a.columns]
-                st.dataframe(_a[_cols_dbg].head(60), use_container_width=True, hide_index=True)
-                _n = len(_a)
-                _res_dbg = []
-                for _c in ("pred_mills", "pred_monilia", "pred_oidio", "pred_rain"):
-                    if _c not in _a.columns:
-                        continue
-                    _v = pd.to_numeric(_a[_c], errors="coerce")
-                    _res_dbg.append({
-                        "Columna": _c,
-                        "Filas con dato": int(_v.notna().sum()),
-                        "Vacías (NaN)": int(_v.isna().sum()),
-                        "Valen 0": int((_v == 0).sum()),
-                        "Valen > 0": int((_v > 0).sum()),
-                        "Máximo": (round(float(_v.max()), 1) if _v.notna().any() else "—"),
-                    })
-                st.markdown("**Resumen de todo el archivo**")
-                st.dataframe(pd.DataFrame(_res_dbg), use_container_width=True, hide_index=True)
-                st.caption(
-                    f"Total de filas archivadas: **{_n}**. ⚠️ Aviso conocido: el archivo se "
-                    "calcula con `build_risk_timeline(days_back=14)` y la tabla de arriba con "
-                    "`days_back=30`. Si el valor de moteado depende del contexto histórico, los "
-                    "dos números **no son comparables** y la comparación previsto-vs-real de "
-                    "moteado/monilia estaría sesgada. Pendiente de verificar con estos datos.")
 
         with st.expander("🗑️ Reiniciar archivo de fiabilidad (empezar de cero)"):
             st.caption(
