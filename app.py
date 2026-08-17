@@ -14437,6 +14437,42 @@ CARPOCAPSA_CAMPOS_EN_FORMACION = {
 CARPOCAPSA_BIOFIX_THRESHOLD = 2
 
 
+# ── Umbral de AVISO sobre la PREVISIÓN, por enfermedad ───────────────────────
+# NO es el umbral de infección real (100, Mills & Laplante 1951): ese es física
+# medida con el sensor y no se toca. Este es el listón que la PREVISIÓN tiene que
+# pasar para disparar un aviso de tratamiento, y va aparte porque la previsión
+# sobrestima: el estimador de hoja mojada da ~1,84 veces las horas que mide el
+# sensor, y apretar sus parámetros no lo arregla (192 combinaciones probadas, la
+# precisión no pasa del 48 %).
+#
+# Valores del barrido sobre el archivo de fiabilidad (ago-2026):
+#   MOTEADO — umbral 100: 4/4 infecciones avisadas, 19 avisos falsos.
+#             umbral 140: 4/4 avisadas, 0 escapes, 3 avisos falsos → 16 menos.
+#             umbral 150 ahorraría 1 más, pero el modelo tiene techo en 150 y ahí
+#             no queda colchón: una infección que diera 145 se escaparía. 140 deja
+#             10 puntos de margen y se lleva casi todo el ahorro.
+#   MONILIA — no hay margen: subir a 110 ya provoca 3 escapes de 5. Se queda en 100.
+#   OÍDIO   — sin analizar todavía; se queda en 100.
+#
+# ⚠️ Calculado con 4 y 5 infecciones. Revisar el barrido («¿Cuántos tratamientos
+# me ahorro subiendo el listón?») cada pocas semanas: un evento nuevo puede mover
+# el umbral recomendado.
+FORECAST_WARN_THR_DEFAULTS = {"mills": 140.0, "monilia": 100.0, "oidio": 100.0}
+
+
+def forecast_warn_threshold(enfermedad):
+    """Umbral que la PREVISIÓN debe superar para avisar (ver constante de arriba).
+    Ajustable en vivo desde el panel de fiabilidad; cae al valor por defecto en
+    contexto headless (informe diario), donde no hay session_state."""
+    try:
+        v = st.session_state.get(f"warn_thr_{enfermedad}")
+        if v is not None and float(v) > 0:
+            return float(v)
+    except Exception:
+        pass
+    return float(FORECAST_WARN_THR_DEFAULTS.get(enfermedad, 100.0))
+
+
 def carpocapsa_status_from_dd(current_dd, recent_captures_per_day=0, rain_since_treatment=np.nan):
     if pd.isna(current_dd):
         return "Sin dato", "Sin grados-día suficientes", "Completar histórico climático o fijar biofix."
@@ -21089,7 +21125,10 @@ def build_treatment_narrative(days_since, rain_since, mills_events_since,
     last_date_str = (last_date.strftime("%d/%m") if last_date is not None else "fecha desconocida")
 
     # ── 1. Previsión de infección (razón más urgente) ──────────────────────────
-    if fc_mills_max >= 100:
+    # Umbral de AVISO por enfermedad (≠ umbral de infección real). Ver
+    # FORECAST_WARN_THR_DEFAULTS: la previsión sobrestima y se le pide más.
+    _thr_mi, _thr_mo = forecast_warn_threshold("mills"), forecast_warn_threshold("monilia")
+    if fc_mills_max >= _thr_mi:
         reasons.append(
             f"Evento Mills previsto (índice {int(fc_mills_max)}): "
             f"temperatura + mojadura foliar superan umbral de infección de Venturia inaequalis "
@@ -21097,7 +21136,7 @@ def build_treatment_narrative(days_since, rain_since, mills_events_since,
         )
         tipo = "Preventivo urgente"
 
-    if fc_monilia_max >= 100:
+    if fc_monilia_max >= _thr_mo:
         reasons.append(
             f"Condiciones óptimas para Monilia spp. previstas (índice {int(fc_monilia_max)}): "
             f"temperatura y humedad en rango de máxima infección (20-25°C, HR >90%). "
@@ -21106,7 +21145,7 @@ def build_treatment_narrative(days_since, rain_since, mills_events_since,
         if not tipo:
             tipo = "Preventivo urgente"
 
-    if fc_rain >= 15 and not fc_mills_max >= 100:
+    if fc_rain >= 15 and not fc_mills_max >= _thr_mi:
         reasons.append(
             f"Lluvia prevista de {fc_rain:.0f} mm en los próximos 3 días: "
             f"favorece mojadura foliar y puede coincidir con el fin de la cobertura actual."
@@ -21918,9 +21957,12 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
 
         # PREVISIÓN DE INFECCIÓN (próximos 3 días) — el factor más urgente.
         # Si hay cobertura caducada + previsión → tratar ANTES de que llegue la lluvia.
-        fc_mills_event   = fc_mills_max >= 100    # evento Mills confirmado en previsión
-        fc_monilia_event = fc_monilia_max >= 100   # evento Monilia en previsión
-        fc_oidio_event   = fc_oidio_max >= 100     # evento Oídio en previsión
+        # Umbral de AVISO por enfermedad, distinto del umbral de infección REAL (100).
+        # La previsión sobrestima, así que se le pide más listón — ver
+        # FORECAST_WARN_THR_DEFAULTS. Moteado 140, monilia y oídio 100.
+        fc_mills_event   = fc_mills_max   >= forecast_warn_threshold("mills")
+        fc_monilia_event = fc_monilia_max >= forecast_warn_threshold("monilia")
+        fc_oidio_event   = fc_oidio_max   >= forecast_warn_threshold("oidio")
         fc_rain_alert    = fc_rain >= 15           # ≥15 mm previstos (umbral lavado + infección)
         fc_alert = fc_mills_event or fc_monilia_event or fc_oidio_event or fc_rain_alert
 
@@ -24531,6 +24573,33 @@ def render_decisiones_panel():
                     "tratas. Tolerancia ±1 día, igual que el resto del panel. **Con pocas "
                     "infecciones esta tabla es frágil** — un evento nuevo puede cambiar el umbral "
                     "recomendado, así que revísala cada pocas semanas antes de fiarte.")
+
+                st.divider()
+                st.markdown("**⚙️ Umbral de aviso en uso**")
+                st.caption(
+                    "Lo que la **previsión** tiene que superar para disparar un aviso de "
+                    "tratamiento. El umbral de infección **real** sigue siendo 100 y no cambia: "
+                    "esto solo afecta a cuándo la app te dice que trates.")
+                _wc1, _wc2, _wc3 = st.columns(3)
+                for _col, _key, _lbl, _hlp in [
+                        (_wc1, "mills", "🍄 Moteado",
+                         "Recomendado 140: mantiene las 4 de 4 infecciones y quita 16 de los 19 "
+                         "avisos falsos. A 150 ahorrarías 1 más, pero el modelo tiene techo en 150 "
+                         "y te quedarías sin margen."),
+                        (_wc2, "monilia", "🟤 Monilia",
+                         "Déjalo en 100: subir a 110 ya provoca 3 escapes de 5 infecciones."),
+                        (_wc3, "oidio", "⚪ Oídio",
+                         "Sin analizar todavía; se queda en 100 hasta tener datos.")]:
+                    with _col:
+                        st.number_input(
+                            _lbl, min_value=50, max_value=200, step=10,
+                            value=int(forecast_warn_threshold(_key)),
+                            key=f"warn_thr_{_key}", help=_hlp)
+                _dif = [k for k in ("mills", "monilia", "oidio")
+                        if forecast_warn_threshold(k) != FORECAST_WARN_THR_DEFAULTS[k]]
+                if _dif:
+                    st.info("Estás usando umbrales distintos de los recomendados en "
+                            + ", ".join(_dif) + ". Se aplican a toda la app.")
 
         with st.expander("🔍 Qué hay REALMENTE en el archivo (diagnóstico)"):
             st.caption(
