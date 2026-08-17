@@ -22182,6 +22182,38 @@ def _lw_model_params():
     return model, params
 
 
+def mg_rain_disponible():
+    """Lluvia diaria de MeteoGalicia: en vivo si responde y, si no, del ARCHIVO.
+
+    Streamlit Cloud no puede consultar servizos.meteogalicia.gal — nos bloquea las
+    IPs de centro de datos. El informe diario corre en GitHub Actions, que sí
+    conecta, y archiva cada mañana la previsión de MG para los próximos días. Sin
+    este fallback la mezcla de lluvia no se aplicaba NUNCA desde la app: pedía el
+    dato en vivo, recibía vacío y se quedaba con Sencrop en silencio.
+    Devuelve {Timestamp: mm}."""
+    try:
+        vivo, _ = meteosix_wrf_daily_rain_cached()
+        if vivo:
+            return {pd.Timestamp(k).normalize(): float(v) for k, v in vivo.items()
+                    if v is not None and pd.notna(v)}
+    except Exception:
+        pass
+    try:
+        arch = load_forecast_archive()
+        if arch is None or arch.empty or "pred_rain_mg" not in arch.columns:
+            return {}
+        a = arch.copy()
+        a["_d"] = pd.to_datetime(a.get("target_date"), errors="coerce").dt.normalize()
+        a["_h"] = pd.to_numeric(a.get("horizon"), errors="coerce").fillna(99)
+        a["_v"] = pd.to_numeric(a["pred_rain_mg"], errors="coerce")
+        a = a.dropna(subset=["_d", "_v"])
+        # De cada día, la emisión más reciente (horizonte más corto disponible).
+        a = a.sort_values("_h").drop_duplicates("_d", keep="first")
+        return {pd.Timestamp(d): float(v) for d, v in zip(a["_d"], a["_v"])}
+    except Exception:
+        return {}
+
+
 def forecast_merge_rain_mg(forecast_df, mg_rain, modo="max"):
     """Mete la lluvia diaria de MeteoGalicia en la previsión HORARIA de Sencrop.
 
@@ -24457,14 +24489,19 @@ def render_decisiones_panel():
     # el archivo, frente a 2 de 9 de MG). Ver forecast_merge_rain_mg para el reparto
     # horario y sus asunciones. El selector está en el expander de abajo; en el primer
     # render aún no existe y se usa el valor recomendado ("max").
-    _rain_src = st.session_state.get("lw_rain_source", "max")
+    _rain_src = st.session_state.get("lw_rain_source", "mg")
+    _mg_aplicada = False
     if _rain_src != "sencrop" and forecast_df is not None and not forecast_df.empty:
         try:
-            _mg_now, _ = meteosix_wrf_daily_rain_cached()
+            # mg_rain_disponible() cae al ARCHIVO si la consulta en vivo falla, que es
+            # lo normal desde Streamlit Cloud (MeteoGalicia bloquea IPs de datacenter).
+            _mg_now = mg_rain_disponible()
             if _mg_now:
                 forecast_df = forecast_merge_rain_mg(forecast_df, _mg_now, _rain_src)
+                _mg_aplicada = True
         except Exception:
             pass
+    st.session_state["_lw_mg_aplicada"] = _mg_aplicada
 
     st.markdown(
         "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
@@ -24490,24 +24527,39 @@ def render_decisiones_panel():
             "**MeteoGalicia acierta 7 de 9** (78 %). La muestra de MG es corta para "
             "certificarla, pero la de Sencrop sobra para descartarla.")
         _rain_opts = {
-            "max": "La mayor de las dos (recomendado)",
-            "mg": "Solo MeteoGalicia (1 km oficial)",
+            "mg": "MeteoGalicia manda (recomendado)",
+            "max": "La mayor de las dos",
             "sencrop": "Solo Sencrop (como antes)",
         }
-        _cur_rain = st.session_state.get("lw_rain_source", "max")
+        _cur_rain = st.session_state.get("lw_rain_source", "mg")
         _sel_rain = st.radio(
             "Fuente", list(_rain_opts.values()), horizontal=True,
             index=list(_rain_opts).index(_cur_rain) if _cur_rain in _rain_opts else 0,
             key="lw_rain_radio",
-            help="«La mayor de las dos» no pierde episodios: si cualquiera de las fuentes ve "
-                 "lluvia, se cuenta. Es lo que conviene a un avisador. MeteoGalicia solo da "
-                 "el TOTAL del día, así que se reparte en horas — escalando el perfil de "
-                 "Sencrop si lo hay, o en las 6 horas de mayor humedad si Sencrop da 0.")
+            help="«MeteoGalicia manda» sustituye la lluvia de Sencrop donde MG cubra: si MG "
+                 "dice 0, se cree a MG aunque Sencrop anuncie lluvia. «La mayor de las dos» "
+                 "no pierde episodios pero deja que Sencrop imponga su lluvia cuando MG no "
+                 "la ve — que es justo el caso en el que Sencrop suele equivocarse menos… o "
+                 "más, según el día. MG solo da el TOTAL diario: se reparte escalando el "
+                 "perfil horario de Sencrop, o en las 6 horas de mayor humedad si Sencrop "
+                 "da 0.")
         st.session_state["lw_rain_source"] = next(
             k for k, v in _rain_opts.items() if v == _sel_rain)
-        if st.session_state["lw_rain_source"] != "sencrop":
-            st.caption("⚠️ MeteoGalicia cubre ~3,5 días. Más allá de ese horizonte manda "
-                       "Sencrop de todas formas, porque MG no llega.")
+        _src_now = st.session_state["lw_rain_source"]
+        if _src_now != "sencrop":
+            if st.session_state.get("_lw_mg_aplicada"):
+                st.success("✅ Lluvia de MeteoGalicia aplicada a la previsión.")
+            else:
+                st.warning(
+                    "⚠️ **No se ha podido aplicar**: no hay datos de MeteoGalicia ni en vivo "
+                    "ni en el archivo. Se está usando la lluvia de Sencrop. Si esto persiste, "
+                    "revisa que el informe diario esté archivando la previsión de MG.")
+            st.caption(
+                "⚠️ MeteoGalicia cubre **~3,5 días**. Más allá manda Sencrop igualmente, "
+                "porque MG no llega — así que el horizonte largo sigue con el modelo flojo.\n\n"
+                "Y el reverso de fiarse de MG: tiene **2 escapes de 9** episodios. Cuando MG "
+                "dice 0 y Sencrop ve lluvia, con esta opción se cree a MG. Si prefieres no "
+                "perder ningún aviso a costa de tratar de más, usa «La mayor de las dos».")
 
         if st.session_state["lw_forecast_model"] == "rimpro":
             _p = st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS))
