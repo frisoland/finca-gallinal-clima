@@ -22873,6 +22873,93 @@ def forecast_reliability(history_df, archive_df=None):
         return None, {"n": 0}
 
 
+def forecast_threshold_sweep(history_df, archive_df=None, tol_dias=1):
+    """¿Cuál es el umbral de AVISO que menos trata sin perder infecciones?
+
+    El valor REAL de Mills marca infección en 100 (estándar). Pero la previsión
+    sobrestima de forma sistemática —el estimador de hoja mojada da ~1,84 veces
+    las horas que mide el sensor— así que exigirle también 100 dispara avisos de
+    más: ~2 falsas alarmas por acierto.
+
+    El umbral del REAL es física y no se toca. El umbral de la PREVISIÓN es una
+    decisión de operación: si infla, súbele el listón. Misma lógica que en la
+    lluvia, donde el umbral de previsión (>0) va aparte del real (≥0,2 mm), solo
+    que allí había que bajarlo y aquí subirlo.
+
+    Barre umbrales de aviso y devuelve, para cada uno, cuántas infecciones
+    reales se avisan y cuántos tratamientos se dispararían de más. Con `tol_dias`
+    de tolerancia (±1 día por defecto), coherente con el resto del panel: un
+    aviso pegado a un evento real es la cola del mismo episodio.
+    """
+    try:
+        if archive_df is None:
+            archive_df = load_forecast_archive()
+        if archive_df is None or archive_df.empty or history_df is None or history_df.empty:
+            return pd.DataFrame()
+        today = pd.Timestamp.now().normalize()
+        oldest = pd.to_datetime(archive_df.get("target_date"), errors="coerce").min()
+        days_back = 60 if pd.isna(oldest) else min(max(int((today - oldest).days) + 5, 15), 730)
+        actual = build_risk_timeline(history_df, pd.DataFrame(), days_back=days_back)
+        if actual is None or actual.empty:
+            return pd.DataFrame()
+        actual = actual.copy()
+        actual["_d"] = pd.to_datetime(actual["Fecha"]).dt.normalize()
+        a = actual.drop_duplicates("_d").set_index("_d")
+
+        ad = archive_df.copy()
+        ad["_d"] = pd.to_datetime(ad.get("target_date"), errors="coerce").dt.normalize()
+        ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce")
+        ad = ad.dropna(subset=["_d", "_h"])
+        ad = ad[ad["_h"] >= 1]
+        # Una fila por día: el aviso MÁS FUERTE de todas las emisiones que lo cubrieron.
+        # Es lo que de verdad decide — si cualquier previsión pasa el umbral, tratas.
+        filas = []
+        for etiqueta, pcol, rcol in [("🍄 Moteado", "pred_mills", "Mills_valor"),
+                                     ("🟤 Monilia", "pred_monilia", "Monilia_valor")]:
+            if pcol not in ad.columns or rcol not in a.columns:
+                continue
+            g = ad[["_d", pcol]].copy()
+            g[pcol] = pd.to_numeric(g[pcol], errors="coerce")
+            g = g.dropna(subset=[pcol]).groupby("_d")[pcol].max()
+            dias = [d for d in g.index if d in a.index]
+            if not dias:
+                continue
+            reales = {d: float(pd.to_numeric(a.loc[d, rcol], errors="coerce") or 0) for d in dias}
+            ev_dias = {d for d in dias if reales[d] >= 100.0}
+            for thr in (100, 110, 120, 130, 140, 150, 160, 175, 200):
+                avisados = esc = falsas = 0
+                for d in dias:
+                    aviso = float(g[d]) >= thr
+                    # ¿hay evento real en ±tol días? (mismo episodio)
+                    ev_cerca = any((d + pd.Timedelta(days=k)) in ev_dias
+                                   for k in range(-tol_dias, tol_dias + 1))
+                    if d in ev_dias:
+                        if aviso:
+                            avisados += 1
+                        else:
+                            # ¿lo rescata un aviso en un día vecino?
+                            if any(d + pd.Timedelta(days=k) in g.index
+                                   and float(g[d + pd.Timedelta(days=k)]) >= thr
+                                   for k in (-tol_dias, tol_dias)):
+                                avisados += 1
+                            else:
+                                esc += 1
+                    elif aviso and not ev_cerca:
+                        falsas += 1
+                n_ev = len(ev_dias)
+                filas.append({
+                    "Qué": etiqueta, "Umbral de aviso": thr,
+                    "Infecciones": n_ev,
+                    "Avisadas": avisados,
+                    "🔴 Escapes": esc,
+                    "Tratamientos de más": falsas,
+                    "Por cada acierto": (round(falsas / avisados, 1) if avisados else np.nan),
+                })
+        return pd.DataFrame(filas)
+    except Exception:
+        return pd.DataFrame()
+
+
 def forecast_reliability_persistence(history_df, archive_df=None):
     """Fiabilidad medida sobre TODAS las emisiones, no solo la última.
 
@@ -24394,6 +24481,56 @@ def render_decisiones_panel():
                         data=_ev.to_csv(index=False).encode("utf-8-sig"),
                         file_name="fiabilidad_por_evento.csv", mime="text/csv",
                         key="reliab_persist_dl")
+
+        with st.expander("💰 ¿Cuántos tratamientos me ahorro subiendo el listón?", expanded=False):
+            st.caption(
+                "El valor **real** de Mills marca infección en **100**: eso es física y no se "
+                "toca. Pero el umbral que dispara el **aviso** es una decisión de operación, y "
+                "no tiene por qué ser el mismo — porque **la previsión sobrestima**: el "
+                "estimador de hoja mojada da ~1,84 veces las horas que mide tu sensor.\n\n"
+                "Es la misma idea que ya aplicamos a la lluvia, donde el umbral de la previsión "
+                "va aparte del real. Allí había que **bajarlo**; aquí, **subirlo**.\n\n"
+                "Abajo, qué pasaría con cada umbral: cuántas infecciones seguirías avisando y "
+                "cuántos tratamientos te ahorrarías. **La columna que manda es «Escapes»** — "
+                "mientras siga en 0, subir el listón sale gratis.")
+            _sw = forecast_threshold_sweep(history_df)
+            if _sw is None or _sw.empty:
+                st.info("Aún no hay suficientes días archivados con infección real para barrer "
+                        "umbrales. Se irá llenando con la campaña.")
+            else:
+                for _q in _sw["Qué"].unique():
+                    _s = _sw[_sw["Qué"] == _q].drop(columns=["Qué"])
+                    st.markdown(f"**{_q}**")
+                    st.dataframe(
+                        _s, use_container_width=True, hide_index=True,
+                        column_config={
+                            "Umbral de aviso": st.column_config.Column("Umbral de aviso", pinned=True),
+                            "🔴 Escapes": st.column_config.NumberColumn(
+                                "🔴 Escapes", help="Infecciones reales que dejarías de avisar. "
+                                                   "Mientras sea 0, subir el umbral no tiene coste."),
+                            "Por cada acierto": st.column_config.NumberColumn(
+                                "Tratam. de más por acierto", format="%.1f")})
+                    _ok = _s[_s["🔴 Escapes"] == 0]
+                    if not _ok.empty:
+                        _mej = _ok.loc[_ok["Tratamientos de más"].idxmin()]
+                        _act = _s[_s["Umbral de aviso"] == 100]
+                        if not _act.empty and int(_mej["Umbral de aviso"]) != 100:
+                            _ahorro = int(_act.iloc[0]["Tratamientos de más"]) - int(_mej["Tratamientos de más"])
+                            if _ahorro > 0:
+                                st.success(
+                                    f"**Umbral {int(_mej['Umbral de aviso'])}**: sigue avisando "
+                                    f"las **{int(_mej['Avisadas'])} de {int(_mej['Infecciones'])}** "
+                                    f"infecciones (0 escapes) y se ahorra **{_ahorro} "
+                                    f"tratamiento(s)** frente al umbral 100.")
+                            else:
+                                st.info("Con estos datos, subir el umbral no ahorra tratamientos "
+                                        "sin empezar a perder infecciones.")
+                st.caption(
+                    "⚠️ Se cuenta el aviso **más fuerte** de todas las emisiones que cubrieron cada "
+                    "día: es lo que de verdad decide, porque si cualquier previsión pasa el umbral, "
+                    "tratas. Tolerancia ±1 día, igual que el resto del panel. **Con pocas "
+                    "infecciones esta tabla es frágil** — un evento nuevo puede cambiar el umbral "
+                    "recomendado, así que revísala cada pocas semanas antes de fiarte.")
 
         with st.expander("🔍 Qué hay REALMENTE en el archivo (diagnóstico)"):
             st.caption(
