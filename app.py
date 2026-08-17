@@ -23402,6 +23402,24 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
     for _lo, _hi, _col in _zones:
         fig.add_hrect(y0=_lo, y1=_hi, fillcolor=_col, line_width=0, layer="below")
 
+    # Línea del UMBRAL DE AVISO, solo si difiere de la franja «Grave» (100).
+    # Las franjas miden CUÁNTA infección hay (escala de Mills, no se toca). El umbral
+    # de aviso decide CUÁNDO la app manda tratar, y en la previsión va más alto porque
+    # sobrestima (ver FORECAST_WARN_THR_DEFAULTS). Sin esta línea la gráfica confunde:
+    # un valor de 111 cae en zona roja «Grave» y sin embargo no dispara aviso.
+    _enf_key = ("mills" if "moteado" in str(disease_name).lower()
+                else "monilia" if "monilia" in str(disease_name).lower()
+                else "oidio" if "oídio" in str(disease_name).lower() or "oidio" in str(disease_name).lower()
+                else None)
+    if _enf_key:
+        _thr_av = forecast_warn_threshold(_enf_key)
+        if abs(_thr_av - 100.0) > 0.5 and _thr_av <= _ymax:
+            fig.add_hline(
+                y=_thr_av, line_dash="dot", line_color="rgba(150,0,200,0.85)", line_width=2,
+                annotation_text=f"Umbral de aviso ({int(_thr_av)})",
+                annotation_position="top left", annotation_font_size=10,
+                annotation_font_color="rgba(150,0,200,0.95)")
+
     # Curva de infección: línea suavizada (spline) rellena hasta cero. El relleno
     # deja ver las zonas de color del fondo → el área se "colorea" según la gravedad
     # que alcanza la curva. La línea se colorea según el pico del periodo.
@@ -25668,7 +25686,22 @@ def render_decisiones_panel():
     # ═══════════════════════════════════════════════════════════════════════════
     if _ver_moteado:
         st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
-        st.caption(f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. Zona azul = predicción Sencrop. {_treats_info}")
+        _thr_av_mo = forecast_warn_threshold("mills")
+        st.caption(
+            f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. "
+            f"Zona azul = predicción Sencrop. {_treats_info}")
+        if abs(_thr_av_mo - 100.0) > 0.5:
+            st.caption(
+                f"⚠️ **Ojo a la diferencia entre las franjas y el aviso.** Las franjas de color "
+                f"miden **cuánta infección hay** (escala de Mills: grave a partir de 100) y no "
+                f"cambian. Pero el **aviso de tratamiento** salta en **{int(_thr_av_mo)}** "
+                f"— la línea morada de puntos — porque la previsión **sobrestima**: el estimador "
+                f"de hoja mojada da ~1,84 veces las horas que mide el sensor. Por eso un valor "
+                f"previsto de, digamos, 111 aparece en zona roja pero **no dispara aviso**: en el "
+                f"histórico, previsiones de ese nivel acabaron en infección real menos de la mitad "
+                f"de las veces. En los **días pasados** (mojada medida por tu sensor) el 100 sí "
+                f"significa infección. Ajustable en Decisiones → *Fiabilidad* → *¿Cuántos "
+                f"tratamientos me ahorro subiendo el listón?*")
         st.caption(
             "ℹ️ **¿Cómo se cuenta una infección?** El moteado necesita que la hoja esté mojada "
             "durante un rato seguido. La app agrupa esas horas en un **«evento» de mojada**:\n\n"
