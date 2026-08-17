@@ -22182,6 +22182,63 @@ def _lw_model_params():
     return model, params
 
 
+def forecast_merge_rain_mg(forecast_df, mg_rain, modo="max"):
+    """Mete la lluvia diaria de MeteoGalicia en la previsión HORARIA de Sencrop.
+
+    Motivo (ago-2026): sobre el archivo de fiabilidad, a Sencrop se le escapan
+    **11 de 18** episodios de lluvia (39 % avisados) mientras MeteoGalicia acierta
+    **7 de 9** (78 %). La muestra de MG es corta para certificarlo, pero la de
+    Sencrop es de sobra para descartarlo. Y como la lluvia es la entrada más
+    directa del estimador de hoja mojada, cada lluvia que se escapa es mojadura
+    que no se estima y una infección que no se avisa.
+
+    `modo`:
+      · "max"    — se queda con el MAYOR de los dos por día (recomendado). Un
+                   avisador no debe perder episodios: si cualquiera de las dos
+                   fuentes ve lluvia, se cuenta.
+      · "mg"     — manda MeteoGalicia siempre que cubra ese día.
+      · "sencrop"— no toca nada (comportamiento anterior).
+
+    ⚠️ ASUNCIÓN EXPLÍCITA del reparto horario: MG solo da el total del día. Si
+    Sencrop ya reparte lluvia ese día, se **escala** su perfil horario hasta el
+    total elegido, respetando a qué horas llueve. Si Sencrop da 0 y MG ve lluvia,
+    no hay perfil que escalar: se reparte a partes iguales entre las **6 horas de
+    mayor humedad relativa** del día, como aproximación de cuándo es más probable
+    que llueva. Es una heurística, no un dato — pero para el estimador de mojadura
+    lo que importa es que esas horas queden marcadas como húmedas, no el milímetro
+    exacto de cada una.
+    """
+    if forecast_df is None or forecast_df.empty or not mg_rain or modo == "sencrop":
+        return forecast_df
+    try:
+        f = forecast_df.copy()
+        f["fecha_hora"] = pd.to_datetime(f["fecha_hora"], errors="coerce")
+        f = f.dropna(subset=["fecha_hora"])
+        if f.empty or "lluvia_mm" not in f.columns:
+            return forecast_df
+        f["lluvia_mm"] = pd.to_numeric(f["lluvia_mm"], errors="coerce").fillna(0.0)
+        f["_d"] = f["fecha_hora"].dt.normalize()
+        mg = {pd.Timestamp(k).normalize(): float(v) for k, v in mg_rain.items()
+              if v is not None and pd.notna(v)}
+        for d, idx in f.groupby("_d").groups.items():
+            if d not in mg:
+                continue                       # MG no cubre ese día → dejar Sencrop
+            _mg, _sc = mg[d], float(f.loc[idx, "lluvia_mm"].sum())
+            objetivo = max(_mg, _sc) if modo == "max" else _mg
+            if abs(objetivo - _sc) < 0.05:
+                continue                       # ya coinciden
+            if _sc > 0.05:
+                f.loc[idx, "lluvia_mm"] = f.loc[idx, "lluvia_mm"] * (objetivo / _sc)
+            elif objetivo > 0.05:
+                # Sin perfil horario que escalar: repartir en las 6 h más húmedas.
+                _hr = pd.to_numeric(f.loc[idx, "hr_media"], errors="coerce")
+                _top = _hr.nlargest(min(6, len(idx))).index if _hr.notna().any() else idx[:6]
+                f.loc[_top, "lluvia_mm"] = objetivo / max(len(_top), 1)
+        return f.drop(columns=["_d"])
+    except Exception:
+        return forecast_df
+
+
 def calibrate_leaf_wetness(history, sensor_min_minutes=30):
     """Compara el estimador RIMpro con el sensor real (humectacion_hoja) del
     histórico sobre una rejilla de parámetros. Devuelve (DataFrame, mejores_params).
@@ -24389,7 +24446,25 @@ def render_decisiones_panel():
 
     # Archiva (1 vez al día) la previsión de riesgo, para medir su fiabilidad con el
     # tiempo. Silencioso: si Supabase falla, no afecta al panel.
+    # OJO AL ORDEN: se archiva ANTES de mezclar la lluvia de MeteoGalicia, para que el
+    # archivo siga guardando la previsión de Sencrop PURA. Si no, la comparación de
+    # fiabilidad entre las tres fuentes dejaría de tener sentido: estaríamos midiendo
+    # a Sencrop con la lluvia de MG ya metida dentro.
     archive_today_forecast(history_df, forecast_df)
+
+    # Lluvia de MeteoGalicia dentro de la previsión horaria, para que el estimador de
+    # hoja mojada no se pierda los episodios que a Sencrop se le escapan (11 de 18 en
+    # el archivo, frente a 2 de 9 de MG). Ver forecast_merge_rain_mg para el reparto
+    # horario y sus asunciones. El selector está en el expander de abajo; en el primer
+    # render aún no existe y se usa el valor recomendado ("max").
+    _rain_src = st.session_state.get("lw_rain_source", "max")
+    if _rain_src != "sencrop" and forecast_df is not None and not forecast_df.empty:
+        try:
+            _mg_now, _ = meteosix_wrf_daily_rain_cached()
+            if _mg_now:
+                forecast_df = forecast_merge_rain_mg(forecast_df, _mg_now, _rain_src)
+        except Exception:
+            pass
 
     st.markdown(
         "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
@@ -24405,6 +24480,34 @@ def render_decisiones_panel():
                              "RIMpro usa HR, rocío (punto de rocío) y un retardo de secado; el "
                              "clásico es el método anterior (respaldo). Cambia los avisos de moteado.")
         st.session_state["lw_forecast_model"] = "rimpro" if _sel.startswith("RIMpro") else "legacy"
+
+        st.divider()
+        st.markdown("**🌧️ Fuente de lluvia para estimar la mojadura**")
+        st.caption(
+            "La lluvia es la entrada más directa del estimador: cada episodio que se escapa "
+            "es mojadura que no se estima y una infección que no se avisa. Sobre el archivo "
+            "de fiabilidad, a **Sencrop se le escapan 11 de 18** episodios (39 % avisados) y "
+            "**MeteoGalicia acierta 7 de 9** (78 %). La muestra de MG es corta para "
+            "certificarla, pero la de Sencrop sobra para descartarla.")
+        _rain_opts = {
+            "max": "La mayor de las dos (recomendado)",
+            "mg": "Solo MeteoGalicia (1 km oficial)",
+            "sencrop": "Solo Sencrop (como antes)",
+        }
+        _cur_rain = st.session_state.get("lw_rain_source", "max")
+        _sel_rain = st.radio(
+            "Fuente", list(_rain_opts.values()), horizontal=True,
+            index=list(_rain_opts).index(_cur_rain) if _cur_rain in _rain_opts else 0,
+            key="lw_rain_radio",
+            help="«La mayor de las dos» no pierde episodios: si cualquiera de las fuentes ve "
+                 "lluvia, se cuenta. Es lo que conviene a un avisador. MeteoGalicia solo da "
+                 "el TOTAL del día, así que se reparte en horas — escalando el perfil de "
+                 "Sencrop si lo hay, o en las 6 horas de mayor humedad si Sencrop da 0.")
+        st.session_state["lw_rain_source"] = next(
+            k for k, v in _rain_opts.items() if v == _sel_rain)
+        if st.session_state["lw_rain_source"] != "sencrop":
+            st.caption("⚠️ MeteoGalicia cubre ~3,5 días. Más allá de ese horizonte manda "
+                       "Sencrop de todas formas, porque MG no llega.")
 
         if st.session_state["lw_forecast_model"] == "rimpro":
             _p = st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS))
