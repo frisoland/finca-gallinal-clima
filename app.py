@@ -23069,11 +23069,20 @@ def forecast_bias_correction(history_df, archive_df=None, min_real=20.0):
             _rat = np.array(_rat)
             factor = float(np.median(_rat))
             q1, q3 = float(np.percentile(_rat, 25)), float(np.percentile(_rat, 75))
+            _d_ini = min(g.index) if len(g.index) else None
+            _d_fin = max(g.index) if len(g.index) else None
             fac_rows.append({
                 "Qué": etiqueta, "Factor (mediana)": round(factor, 2),
                 "Rango 50 % central": f"{q1:.2f} – {q3:.2f}",
                 "Mín – Máx": f"{_rat.min():.2f} – {_rat.max():.2f}",
-                "Días usados": len(_rat),
+                # Se separan los dos números porque "Días usados" solo se prestaba a
+                # pensar que se miran los últimos N días. No: se usa TODO el archivo, y
+                # de ahí se filtran los días con real ≥ min_real (dividir por valores
+                # casi cero da ratios absurdos: 5 previsto sobre 1 real serían ×5).
+                "Días comparables": len(pares),
+                f"…con real ≥{int(min_real)} (los que cuentan)": len(_rat),
+                "Periodo": (f"{_d_ini:%d/%m} – {_d_fin:%d/%m}"
+                            if _d_ini is not None else "—"),
                 "¿Sirve un factor único?": ("sí, sesgo estable" if (q3 - q1) <= 0.6
                                             else "dudoso, muy disperso"),
             })
@@ -24895,7 +24904,13 @@ def render_decisiones_panel():
                     "**Factor** = mediana de previsto ÷ real (mediana y no media: un solo día "
                     "de ×3,5 arrastraría la media). **Rango 50 % central** es lo que decide si "
                     "esto sirve: si va de 1,3 a 1,6, el sesgo es estable y corregir funciona; si "
-                    "va de 0,8 a 3,0, no hay un factor que valga para todos los días.")
+                    "va de 0,8 a 3,0, no hay un factor que valga para todos los días.\n\n"
+                    "📅 Se usa **todo el archivo**, no los últimos días — el periodo está en su "
+                    "columna. De los **días comparables** (los que tienen previsión archivada y "
+                    "real conocido) solo entran en el factor los de **real ≥20**: por debajo, "
+                    "dividir da ratios absurdos — una previsión de 5 sobre un real de 1 sería "
+                    "×5 y no significa nada. La **comparativa de estrategias** de abajo sí usa "
+                    "todos los días comparables, sin ese filtro.")
                 if _cmp is not None and not _cmp.empty:
                     st.markdown("**Las tres estrategias, con tus datos**")
                     for _q in _cmp["Qué"].unique():
