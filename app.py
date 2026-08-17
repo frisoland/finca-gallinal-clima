@@ -14457,7 +14457,30 @@ CARPOCAPSA_BIOFIX_THRESHOLD = 2
 # ⚠️ Calculado con 4 y 5 infecciones. Revisar el barrido («¿Cuántos tratamientos
 # me ahorro subiendo el listón?») cada pocas semanas: un evento nuevo puede mover
 # el umbral recomendado.
-FORECAST_WARN_THR_DEFAULTS = {"mills": 140.0, "monilia": 100.0, "oidio": 100.0}
+FORECAST_WARN_THR_DEFAULTS = {"mills": 100.0, "monilia": 100.0, "oidio": 100.0}
+
+
+# ── Corrección de sesgo de la PREVISIÓN ──────────────────────────────────────
+# El valor previsto salía sistemáticamente inflado: el estimador de hoja mojada
+# da ~1,65 veces las horas que mide el sensor, y como el índice es
+# «horas mojadas ÷ horas necesarias», el índice hereda ese factor. Efecto visible:
+# la gráfica enseñaba picos altos en el futuro que, al llegar el día, se quedaban
+# en la mitad. Eso desgasta la confianza en la herramienta más que cualquier error
+# puntual — un avisador que salta todos los días deja de avisar.
+#
+# Se dividen los valores de los días de PREDICCIÓN por estos factores, medidos
+# sobre el archivo de fiabilidad (mediana de previsto ÷ real, 30 días con real
+# ≥20, ago-2026). Los días REALES no se tocan: ahí la mojadura la mide el sensor.
+#
+# Con esto el umbral vuelve a ser 100 en los dos lados, que es más simple de
+# entender que «100 en el real y 140 en la previsión» y hace la gráfica del
+# futuro comparable con la del pasado.
+#
+# ⚠️ El factor NO es constante (rango del 50 % central: 1,34-2,33 en moteado).
+# Habrá días en que se quede corto y otros en que se pase. Corrige el sesgo
+# MEDIO, no cada día. Revisar con el panel «¿Y si corregimos el número...?»
+# cada pocas semanas; si la mediana se mueve mucho, actualizar estos números.
+FORECAST_BIAS_DEFAULTS = {"mills": 1.65, "monilia": 1.67, "oidio": 1.0}
 
 
 def forecast_warn_threshold(enfermedad):
@@ -22454,6 +22477,13 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
         lluvia   = pd.to_numeric(g["lluvia_mm"],  errors="coerce").sum()
         horas_hum = int((pd.to_numeric(g["humectacion_hoja"], errors="coerce").fillna(0) > 0).sum())
         dd_dia = max(0.0, min(float(temp_med) if pd.notna(temp_med) else 0.0, float(upper_temp)) - base_temp) if pd.notna(temp_med) else 0.0
+        # Corrección de sesgo SOLO en días de predicción: el estimador de hoja mojada
+        # infla las horas y el índice las hereda, así que el futuro pintaba picos que
+        # luego no se cumplían. En los días reales la mojadura la mide el sensor y no
+        # se toca nada. Ver FORECAST_BIAS_DEFAULTS.
+        _bm = FORECAST_BIAS_DEFAULTS["mills"]   if es_pred else 1.0
+        _bo = FORECAST_BIAS_DEFAULTS["monilia"] if es_pred else 1.0
+        _bd = FORECAST_BIAS_DEFAULTS["oidio"]   if es_pred else 1.0
         rows.append({
             "Fecha":          d,
             "T_min":          round(float(temp_min), 1) if pd.notna(temp_min) else None,
@@ -22463,11 +22493,11 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
             "Lluvia":         round(float(lluvia), 1)   if pd.notna(lluvia)   else 0.0,
             "Horas_mojadura": horas_hum,
             "Es_prediccion":  es_pred,
-            "Mills_valor":    round(min(mills_by_day.get(d, 0.0), 150.0), 1),
+            "Mills_valor":    round(min(mills_by_day.get(d, 0.0) / _bm, 150.0), 1),
             "Mills_evento":   mills_evt_by_day.get(d, ""),
-            "Monilia_valor":  round(min(monilia_by_day.get(d, 0.0), 150.0), 1),  # techo 150 como Mills (severidad por encima del umbral 100, coherente con moteado)
+            "Monilia_valor":  round(min(monilia_by_day.get(d, 0.0) / _bo, 150.0), 1),  # techo 150 como Mills (severidad por encima del umbral 100, coherente con moteado)
             "Monilia_evento": monilia_evt_by_day.get(d, ""),
-            "Oidio_valor":    _dec_oidio_value(temp_med, hr_med, lluvia),
+            "Oidio_valor":    round(_dec_oidio_value(temp_med, hr_med, lluvia) / _bd, 1),
             "DD_dia":         round(dd_dia, 1),
         })
 
@@ -22806,9 +22836,15 @@ def archive_today_forecast(history_df, forecast_df):
                         continue
                     _e = _by_date.setdefault(d.strftime("%Y-%m-%d"), {})
                     _e["horizon"] = _hz
-                    _e["pred_mills"] = float(r.get("Mills_valor", np.nan))
-                    _e["pred_monilia"] = float(r.get("Monilia_valor", np.nan))
-                    _e["pred_oidio"] = float(r.get("Oidio_valor", np.nan))
+                    # Se archiva el valor SIN corregir (crudo del modelo). Desde que
+                    # build_risk_timeline aplica FORECAST_BIAS_DEFAULTS a los días de
+                    # predicción, `Mills_valor` ya viene dividido — si se guardara así,
+                    # el cálculo del sesgo se volvería circular y daría 1,0 para siempre.
+                    # Se deshace la división para conservar la serie cruda comparable
+                    # con lo que se archivó antes de introducir la corrección.
+                    _e["pred_mills"] = float(r.get("Mills_valor", np.nan)) * FORECAST_BIAS_DEFAULTS["mills"]
+                    _e["pred_monilia"] = float(r.get("Monilia_valor", np.nan)) * FORECAST_BIAS_DEFAULTS["monilia"]
+                    _e["pred_oidio"] = float(r.get("Oidio_valor", np.nan)) * FORECAST_BIAS_DEFAULTS["oidio"]
                     _e["pred_rain"] = float(r.get("Lluvia", np.nan))
         # --- Lluvia WRF9 (Windguru): independiente de forecast_df ---
         try:
@@ -23510,23 +23546,10 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
     for _lo, _hi, _col in _zones:
         fig.add_hrect(y0=_lo, y1=_hi, fillcolor=_col, line_width=0, layer="below")
 
-    # Línea del UMBRAL DE AVISO, solo si difiere de la franja «Grave» (100).
-    # Las franjas miden CUÁNTA infección hay (escala de Mills, no se toca). El umbral
-    # de aviso decide CUÁNDO la app manda tratar, y en la previsión va más alto porque
-    # sobrestima (ver FORECAST_WARN_THR_DEFAULTS). Sin esta línea la gráfica confunde:
-    # un valor de 111 cae en zona roja «Grave» y sin embargo no dispara aviso.
-    _enf_key = ("mills" if "moteado" in str(disease_name).lower()
-                else "monilia" if "monilia" in str(disease_name).lower()
-                else "oidio" if "oídio" in str(disease_name).lower() or "oidio" in str(disease_name).lower()
-                else None)
-    if _enf_key:
-        _thr_av = forecast_warn_threshold(_enf_key)
-        if abs(_thr_av - 100.0) > 0.5 and _thr_av <= _ymax:
-            fig.add_hline(
-                y=_thr_av, line_dash="dot", line_color="rgba(150,0,200,0.85)", line_width=2,
-                annotation_text=f"Umbral de aviso ({int(_thr_av)})",
-                annotation_position="top left", annotation_font_size=10,
-                annotation_font_color="rgba(150,0,200,0.95)")
+    # (Aquí hubo una línea de «umbral de aviso» cuando la previsión se juzgaba con un
+    #  listón más alto —140 en moteado—. Ya no hace falta: desde que build_risk_timeline
+    #  corrige el sesgo de los días de predicción, el 100 significa lo mismo a los dos
+    #  lados de «hoy» y la franja «Grave» vale para toda la gráfica.)
 
     # Curva de infección: línea suavizada (spline) rellena hasta cero. El relleno
     # deja ver las zonas de color del fondo → el área se "colorea" según la gravedad
@@ -25847,22 +25870,19 @@ def render_decisiones_panel():
     # ═══════════════════════════════════════════════════════════════════════════
     if _ver_moteado:
         st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
-        _thr_av_mo = forecast_warn_threshold("mills")
         st.caption(
             f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. "
             f"Zona azul = predicción Sencrop. {_treats_info}")
-        if abs(_thr_av_mo - 100.0) > 0.5:
+        _bias_mo = FORECAST_BIAS_DEFAULTS.get("mills", 1.0)
+        if abs(_bias_mo - 1.0) > 0.01:
             st.caption(
-                f"⚠️ **Ojo a la diferencia entre las franjas y el aviso.** Las franjas de color "
-                f"miden **cuánta infección hay** (escala de Mills: grave a partir de 100) y no "
-                f"cambian. Pero el **aviso de tratamiento** salta en **{int(_thr_av_mo)}** "
-                f"— la línea morada de puntos — porque la previsión **sobrestima**: el estimador "
-                f"de hoja mojada da ~1,84 veces las horas que mide el sensor. Por eso un valor "
-                f"previsto de, digamos, 111 aparece en zona roja pero **no dispara aviso**: en el "
-                f"histórico, previsiones de ese nivel acabaron en infección real menos de la mitad "
-                f"de las veces. En los **días pasados** (mojada medida por tu sensor) el 100 sí "
-                f"significa infección. Ajustable en Decisiones → *Fiabilidad* → *¿Cuántos "
-                f"tratamientos me ahorro subiendo el listón?*")
+                f"✅ **La parte de predicción va corregida (÷{_bias_mo:.2f}).** El estimador de "
+                f"hoja mojada daba ~{_bias_mo:.1f} veces las horas que mide tu sensor, así que el "
+                f"futuro pintaba picos que luego se quedaban en la mitad. Ahora **lo que ves a la "
+                f"derecha es comparable con lo de la izquierda**: si la previsión marca 100, es "
+                f"que se espera una infección de verdad, no un susto. Los días pasados no se "
+                f"tocan — ahí la mojadura la mide el sensor. Factor revisable en Decisiones → "
+                f"*Fiabilidad* → *¿Y si corregimos el número...?*")
         st.caption(
             "ℹ️ **¿Cómo se cuenta una infección?** El moteado necesita que la hoja esté mojada "
             "durante un rato seguido. La app agrupa esas horas en un **«evento» de mojada**:\n\n"
