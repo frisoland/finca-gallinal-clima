@@ -23004,6 +23004,105 @@ def forecast_reliability(history_df, archive_df=None):
         return None, {"n": 0}
 
 
+def forecast_bias_correction(history_df, archive_df=None, min_real=20.0):
+    """¿Y si en vez de subir el umbral, corregimos el número previsto?
+
+    Es corrección de sesgo (*bias correction*), técnica estándar en pronóstico:
+    si la previsión infla de forma sistemática, se divide por ese factor y el
+    umbral vuelve a ser el mismo en los dos lados (100). Más limpio que mover el
+    punto de corte, porque además deja la gráfica comparable con lo real.
+
+    El factor se estima con la MEDIANA del ratio previsto/real (no la media: hay
+    outliers de ×3,5 que la arrastrarían) y solo sobre días con real ≥ `min_real`,
+    porque dividir por valores casi cero da ratios absurdos.
+
+    Devuelve (factores, comparativa):
+      · factores   — factor y dispersión por enfermedad. Si el rango
+                     intercuartílico es ancho, la corrección vale poco: el sesgo
+                     no es constante y un factor único no lo captura.
+      · comparativa— escapes y falsas alarmas de cada estrategia, para elegir con
+                     datos: subir el umbral vs corregir el número.
+    """
+    vacio = (pd.DataFrame(), pd.DataFrame())
+    try:
+        if archive_df is None:
+            archive_df = load_forecast_archive()
+        if archive_df is None or archive_df.empty or history_df is None or history_df.empty:
+            return vacio
+        today = pd.Timestamp.now().normalize()
+        oldest = pd.to_datetime(archive_df.get("target_date"), errors="coerce").min()
+        days_back = 60 if pd.isna(oldest) else min(max(int((today - oldest).days) + 5, 15), 730)
+        actual = build_risk_timeline(history_df, pd.DataFrame(), days_back=days_back)
+        if actual is None or actual.empty:
+            return vacio
+        actual = actual.copy()
+        actual["_d"] = pd.to_datetime(actual["Fecha"]).dt.normalize()
+        a = actual.drop_duplicates("_d").set_index("_d")
+
+        ad = archive_df.copy()
+        ad["_d"] = pd.to_datetime(ad.get("target_date"), errors="coerce").dt.normalize()
+        ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce")
+        ad = ad.dropna(subset=["_d", "_h"])
+        ad = ad[ad["_h"] >= 1]
+
+        fac_rows, cmp_rows = [], []
+        for etiqueta, pcol, rcol in [("🍄 Moteado", "pred_mills", "Mills_valor"),
+                                     ("🟤 Monilia", "pred_monilia", "Monilia_valor")]:
+            if pcol not in ad.columns or rcol not in a.columns:
+                continue
+            g = ad[["_d", pcol]].copy()
+            g[pcol] = pd.to_numeric(g[pcol], errors="coerce")
+            g = g.dropna(subset=[pcol]).groupby("_d")[pcol].max()
+            pares = []
+            for d in g.index:
+                if d not in a.index:
+                    continue
+                r = pd.to_numeric(a.loc[d, rcol], errors="coerce")
+                if pd.isna(r):
+                    continue
+                pares.append((float(g[d]), float(r)))
+            if not pares:
+                continue
+            _rat = [p / r for p, r in pares if r >= min_real and r > 0]
+            if not _rat:
+                continue
+            _rat = np.array(_rat)
+            factor = float(np.median(_rat))
+            q1, q3 = float(np.percentile(_rat, 25)), float(np.percentile(_rat, 75))
+            fac_rows.append({
+                "Qué": etiqueta, "Factor (mediana)": round(factor, 2),
+                "Rango 50 % central": f"{q1:.2f} – {q3:.2f}",
+                "Mín – Máx": f"{_rat.min():.2f} – {_rat.max():.2f}",
+                "Días usados": len(_rat),
+                "¿Sirve un factor único?": ("sí, sesgo estable" if (q3 - q1) <= 0.6
+                                            else "dudoso, muy disperso"),
+            })
+            # Comparar estrategias sobre TODOS los días (no solo los de real alto)
+            _thr_actual = forecast_warn_threshold("mills" if "Moteado" in etiqueta else "monilia")
+            for nombre, corr, thr in [
+                    ("Sin corregir · umbral 100", 1.0, 100.0),
+                    (f"Sin corregir · umbral {int(_thr_actual)} (actual)", 1.0, _thr_actual),
+                    ("Corregido · umbral 100", factor, 100.0)]:
+                esc = fal = ok = 0
+                for p, r in pares:
+                    aviso, evento = (p / corr) >= thr, r >= 100.0
+                    if evento and aviso:
+                        ok += 1
+                    elif evento:
+                        esc += 1
+                    elif aviso:
+                        fal += 1
+                cmp_rows.append({
+                    "Qué": etiqueta, "Estrategia": nombre,
+                    "Infecciones avisadas": ok, "🔴 Escapes": esc,
+                    "Falsas alarmas": fal,
+                    "Total avisos": ok + fal,
+                })
+        return pd.DataFrame(fac_rows), pd.DataFrame(cmp_rows)
+    except Exception:
+        return vacio
+
+
 def forecast_threshold_sweep(history_df, archive_df=None, tol_dias=1):
     """¿Cuál es el umbral de AVISO que menos trata sin perder infecciones?
 
@@ -24773,6 +24872,53 @@ def render_decisiones_panel():
                 if _dif:
                     st.info("Estás usando umbrales distintos de los recomendados en "
                             + ", ".join(_dif) + ". Se aplican a toda la app.")
+
+        with st.expander("🧮 ¿Y si corregimos el número en vez de subir el umbral?", expanded=False):
+            st.caption(
+                "En vez de mover el punto de corte, **arreglar el número**: si la previsión "
+                "infla de forma sistemática, se divide por ese factor y el 100 vuelve a "
+                "significar lo mismo en los dos lados. Es *corrección de sesgo*, técnica "
+                "estándar en pronóstico, y de paso deja la gráfica comparable con lo real — "
+                "se acabaría lo de ver un 111 en zona roja que no dispara aviso.\n\n"
+                "**Pero solo funciona si el sesgo es constante.** Si unos días infla ×1,4 y "
+                "otros ×3,5, un factor único no lo captura y puede empeorar las cosas: en los "
+                "días en que la previsión se queda CORTA, dividir la hunde más.")
+            _fac, _cmp = forecast_bias_correction(history_df)
+            if _fac is None or _fac.empty:
+                st.info("Aún no hay días suficientes con infección real archivada para estimar "
+                        "el sesgo. Se irá llenando con la campaña.")
+            else:
+                st.markdown("**Cuánto infla la previsión**")
+                st.dataframe(_fac, use_container_width=True, hide_index=True,
+                             column_config={"Qué": st.column_config.Column("Qué", pinned=True)})
+                st.caption(
+                    "**Factor** = mediana de previsto ÷ real (mediana y no media: un solo día "
+                    "de ×3,5 arrastraría la media). **Rango 50 % central** es lo que decide si "
+                    "esto sirve: si va de 1,3 a 1,6, el sesgo es estable y corregir funciona; si "
+                    "va de 0,8 a 3,0, no hay un factor que valga para todos los días.")
+                if _cmp is not None and not _cmp.empty:
+                    st.markdown("**Las tres estrategias, con tus datos**")
+                    for _q in _cmp["Qué"].unique():
+                        st.markdown(f"*{_q}*")
+                        st.dataframe(
+                            _cmp[_cmp["Qué"] == _q].drop(columns=["Qué"]),
+                            use_container_width=True, hide_index=True,
+                            column_config={
+                                "Estrategia": st.column_config.Column("Estrategia", pinned=True),
+                                "🔴 Escapes": st.column_config.NumberColumn(
+                                    "🔴 Escapes",
+                                    help="Infecciones reales no avisadas. Es lo que no se "
+                                         "puede permitir subir.")})
+                    st.caption(
+                        "Compara mirando **primero los escapes** y solo después las falsas "
+                        "alarmas. La estrategia buena es la que mantiene los escapes igual (o "
+                        "menos) y recorta avisos. Si la corregida empata en escapes y baja "
+                        "falsas alarmas, es mejor que subir el umbral — y además deja los "
+                        "números de la gráfica en su sitio.")
+                st.caption(
+                    "⚠️ Nada de esto está aplicado: es solo el análisis. Cambiar a corrección "
+                    "de sesgo implicaría tocar el valor que se muestra en toda la app, así que "
+                    "conviene decidirlo con la comparativa delante y con más días archivados.")
 
         with st.expander("🔍 Qué hay REALMENTE en el archivo (diagnóstico)"):
             st.caption(
