@@ -16022,8 +16022,18 @@ def carpocapsa_tab(history):
                         n_traps = 0
                     total_cap = int(pd.to_numeric(tt["Capturas machos"], errors="coerce").fillna(0).sum())
                     capt_per_trap = (total_cap / n_traps) if n_traps > 0 else np.nan
+                    # DOS PICOS DISTINTOS, y no tienen por qué caer el mismo día:
+                    #  · BRUTO (capt/trampa por lectura) = cuántas polillas se cogieron.
+                    #  · RITMO (capt/trampa/día)          = a qué velocidad se cogían.
+                    # En 2026 el bruto es el 25/05 (8,7 capt/trampa, 209 en total) y el ritmo
+                    # el 27/07 (5,4 capt/trampa pero en solo 4 días → 1,34/día, con 129 en
+                    # total). Se enseñaba SOLO el ritmo, y encima ignorando el selector de
+                    # métrica de arriba: la tabla daba a entender que el vuelo grande de la
+                    # campaña fue en julio cuando en mayo se capturó casi el doble.
                     pico = float(dcap["_ctd"].max()) if not dcap.empty else np.nan
                     pico_f = dcap.loc[dcap["_ctd"].idxmax(), "Fecha"] if not dcap.empty else pd.NaT
+                    pico_b = float(dcap["_cap"].max()) if not dcap.empty else np.nan
+                    pico_bf = dcap.loc[dcap["_cap"].idxmax(), "Fecha"] if not dcap.empty else pd.NaT
                     # Tratamientos de CARPOCAPSA (excluye fungicidas/abonos puros).
                     # Si hay campo filtrado, solo los que tocaron ESE campo. Se cuentan
                     # FECHAS distintas de tratamiento (= nº de pases), no filas.
@@ -16056,8 +16066,10 @@ def carpocapsa_tab(history):
                         "DD a 1ª captura": f"{dd_to_first:.0f}" if pd.notna(dd_to_first) else "—",
                         "Nº trampas": n_traps if n_traps > 0 else "—",
                         "Capturas/trampa": f"{capt_per_trap:.1f}" if pd.notna(capt_per_trap) else "—",
+                        "Pico capt/trampa": f"{pico_b:.1f}" if pd.notna(pico_b) else "—",
+                        "Fecha pico": pd.Timestamp(pico_bf).strftime("%d/%m") if pd.notna(pico_bf) else "—",
                         "Pico capt/tr/día": f"{pico:.2f}" if pd.notna(pico) else "—",
-                        "Fecha pico": pd.Timestamp(pico_f).strftime("%d/%m") if pd.notna(pico_f) else "—",
+                        "Fecha pico ritmo": pd.Timestamp(pico_f).strftime("%d/%m") if pd.notna(pico_f) else "—",
                         "Capt. totales": total_cap,
                         "Tratam.": n_trat,
                         "% daño": f"{dano:.1f}" if pd.notna(dano) else "—",
@@ -16082,7 +16094,12 @@ def carpocapsa_tab(history):
                     "Curvas superpuestas por **día del año** (eje X = fecha sin año). Las capturas "
                     "se muestran **por trampa y día** (comparable aunque pongas distinto nº de "
                     "trampas cada año), y los días se calculan de las **fechas reales** entre "
-                    "lecturas, no de la columna del Excel. · **Capturas/trampa** = capturas totales ÷ nº de trampas de "
+                    "lecturas, no de la columna del Excel. · **Hay DOS picos y pueden caer en "
+                    "días distintos**: «Pico capt/trampa» es **cuántas polillas se cogieron** en "
+                    "la mejor lectura, y «Pico capt/tr/día» es **a qué velocidad se cogían**. Una "
+                    "lectura corta puede ganar en ritmo capturando bastante menos — en 2026 el "
+                    "25/05 dio 209 capturas en 7 días y el 27/07 solo 129, pero en 4 días. Para "
+                    "«cuándo voló más», mira el **bruto**. · **Capturas/trampa** = capturas totales ÷ nº de trampas de "
                     "ese año. · **DD a 1ª captura** = grados-día acumulados **desde el 1 de enero** "
                     "hasta la primera captura (indica cuánto calor hizo falta para el primer vuelo). "
                     "· La **curva de DD** se acumula desde el biofix (umbrales 130/300/580/750 DD "
