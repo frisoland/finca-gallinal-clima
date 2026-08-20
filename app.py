@@ -5413,13 +5413,13 @@ SENCROP_SENSORS = [
     # clave con la que se casan los IDs reales en «🔍 Diagnóstico: listar mis
     # dispositivos». Los tres IDs sin confirmar siguen siendo sospechosos.
     {
-        "id":       "89669",          # confirmado por soporte Sencrop (antes: 11653)
+        "id":       "89669",          # «Finca Gallinal»       (antes, mal: 11653)
         "ref":      "RC0028091",
         "nombre":   "Temperatura / Humedad / Lluvia",
         "measures": ["temperature", "relativeHumidity", "rainfall"],
     },
     {
-        "id":       "26768",
+        "id":       "57049",          # «Gallinal viento»       (antes, mal: 26768)
         "ref":      "WC007301",
         "nombre":   "Viento",
         # windGust primero: si la estación expone la ráfaga real, tiene prioridad
@@ -5427,17 +5427,20 @@ SENCROP_SENSORS = [
         "measures": ["windGust", "windSpeed", "windDirection"],
     },
     {
-        "id":       "16899",
+        "id":       "59879",          # «Huertona humedad hojas» (antes, mal: 16899)
         "ref":      "LC001544",
         "nombre":   "Humectacion de hoja",
         "measures": ["leafWetness"],
     },
     {
-        "id":       "59258",
+        "id":       "124206",         # «Solarcrop Gallinal»     (antes, mal: 59258)
         "ref":      "SL001609",
         "nombre":   "Radiacion solar",
         "measures": ["irradiance"],
     },
+    # PENDIENTE: la organización tiene un 5º equipo, «Gallinal Los Pinos» (id 133681,
+    # identification k1kwjq64ogbx, modelId 24), instalado en junio de 2026. Se integrará
+    # más adelante — no se toca ahora para no cambiar el histórico a mitad de campaña.
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -6171,7 +6174,24 @@ def render_sencrop_panel():
                 st.dataframe(_int, use_container_width=True, hide_index=True)
         if _dev is not None and not _dev.empty:
             _c_id = _sencrop_col_candidata(_dev, ["deviceid", "device_id", "id"])
-            _c_ref = _sencrop_col_candidata(_dev, ["reference", "serial", "ref", "name", "label"])
+            # CASAR POR CONTENIDO, NO POR NOMBRE DE COLUMNA. Buscar por nombre elegía
+            # «serial» (1D81947, 20941BF…), que es otra numeración distinta de las
+            # referencias del aparato; las RC/WC/LC/SL están en «identification». En vez
+            # de aprenderme el nombre bueno, se busca la columna cuyos VALORES coincidan
+            # con las referencias que ya conocemos — así aguanta que lo renombren.
+            _refs_conocidas = {str(s["ref"]).strip().upper() for s in SENCROP_SENSORS}
+            _c_ref, _mejor = None, 0
+            for _c in _dev.columns:
+                try:
+                    _vals = {str(v).strip().upper() for v in _dev[_c].dropna()}
+                except Exception:
+                    continue
+                _n = len(_vals & _refs_conocidas)
+                if _n > _mejor:
+                    _c_ref, _mejor = _c, _n
+            if _c_ref is None:
+                _c_ref = _sencrop_col_candidata(
+                    _dev, ["identification", "reference", "serial", "ref", "name", "label"])
             st.markdown("**Dispositivos que Sencrop dice que son tuyos**")
             st.dataframe(_dev, use_container_width=True, hide_index=True)
             if _c_id and _c_ref:
