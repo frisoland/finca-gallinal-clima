@@ -5730,23 +5730,36 @@ def sencrop_auth_diagnostico():
     """
     via = st.session_state.get("_sencrop_auth_via")
     err = st.session_state.get("_sencrop_oauth_err")
+    _b = st.session_state.get("_sencrop_401_body")
+    _u = st.session_state.get("_sencrop_401_url")
+    _cuerpo = ""
+    if _b:
+        _cuerpo = (f"\n\n**Lo que responde Sencrop:**\n```\n{_b}\n```"
+                   + (f"\nEndpoint: `{_u}`" if _u else ""))
     if via == "oauth":
         return ("🔑 Sencrop ha rechazado la API key (HTTP 401).",
                 "La app **sí consiguió** un token con `SENCROP_APP_ID` / "
-                "`SENCROP_APP_SECRET`, pero Sencrop no lo acepta. Lo habitual es que la "
-                "**API key haya sido revocada o le hayan cambiado los permisos**. "
-                "Comprueba en Sencrop que la clave sigue activa y con acceso a la "
-                "organización y a los sensores de la finca.")
+                "`SENCROP_APP_SECRET`, pero Sencrop no lo acepta al pedir los datos. "
+                "Dos causas posibles:\n\n"
+                "1. **La API key ha sido revocada o le han cambiado los permisos** — "
+                "comprueba en Sencrop que sigue activa y con acceso a la organización "
+                "y a los sensores de la finca.\n"
+                "2. **La descarga usa los endpoints internos de la web de Sencrop** "
+                "(`.infra.sencrop.com/app/…`), pensados para el JWT del navegador, no "
+                "para una API key. La clave se emite para la API pública "
+                "`api.sencrop.com/v1`. Si Sencrop ha endurecido esa validación, hay que "
+                "migrar la descarga a la API pública."
+                + _cuerpo)
     if via == "manual":
         return ("🔑 El token manual de Sencrop ha caducado.",
                 "Se está usando `SENCROP_TOKEN` (el JWT del navegador), que caduca cada "
                 "pocas semanas. Si tienes API key de aplicación, añade `SENCROP_APP_ID` y "
                 "`SENCROP_APP_SECRET` a los Secrets y esto deja de pasar."
-                + (f"\n\nEl OAuth no se usó porque: {err}" if err else ""))
+                + (f"\n\nEl OAuth no se usó porque: {err}" if err else "") + _cuerpo)
     return ("🔑 La app no ha conseguido ninguna credencial para Sencrop.",
             "**No es que un token caducara: no llegó a obtenerse ninguno**, y la petición "
             "salió sin credencial válida — por eso Sencrop responde 401.\n\n"
-            f"Motivo: {err or '(sin detalle)'}")
+            f"Motivo: {err or '(sin detalle)'}" + _cuerpo)
 
 
 def _sencrop_user_from_jwt(token: str) -> str:
@@ -6257,6 +6270,18 @@ def sencrop_get_statistics(token, user_id, device_id, start_date, end_date, meas
             if r.status_code == 401:
                 if "E_USER_MISMATCH" in r.text:
                     return pd.DataFrame(), "USER_MISMATCH"
+                # GUARDAR EL CUERPO DEL 401. Sencrop devuelve ahí su código de error
+                # (E_...), que es lo único que distingue "la credencial no vale" de "la
+                # credencial no vale PARA ESTE endpoint" — y la acción a tomar es
+                # distinta: renovar la clave, o dejar de usar los endpoints internos
+                # /app/... (pensados para el JWT del navegador) y pasar a la API pública
+                # api.sencrop.com/v1, que es para la que se emite la API key.
+                # Se descartaba, y sin él el diagnóstico se queda en conjeturas.
+                try:
+                    st.session_state["_sencrop_401_body"] = (r.text or "")[:400]
+                    st.session_state["_sencrop_401_url"] = str(r.url).split("?")[0]
+                except Exception:
+                    pass          # daily_report.py importa app.py sin contexto Streamlit
                 return pd.DataFrame(), "TOKEN_EXPIRED"
             if "JWT_EXPIRED" in r.text:
                 return pd.DataFrame(), "TOKEN_EXPIRED"
