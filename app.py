@@ -23483,6 +23483,51 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                     "Lluvia MG": (_sr(pr.get("pred_rain_mg")) if pr is not None else "—"),
                     "Lluvia real": _sr(r.get("Lluvia")),
                 })
+        # DÍAS FUTUROS CUANDO NO HAY PREVISIÓN DE SENCROP. El esqueleto temporal de la
+        # tabla salía SOLO de build_risk_timeline, que necesita la previsión horaria de
+        # Sencrop. Si falta, no había ninguna fila futura — y con ella se perdían de vista
+        # WRF9 y MeteoGalicia, que son fuentes INDEPENDIENTES y siguen funcionando
+        # (20/08/2026: Sencrop retiró el acceso y la tabla se quedó sin lluvia prevista
+        # aunque las otras dos fuentes estaban ahí).
+        # La lluvia prevista sí se puede enseñar; el riesgo de infección no, porque
+        # necesita temperatura y HR horarias que solo da Sencrop — esas van en "—".
+        _cubiertos = {r["_sort"] for r in rows}
+        _extra = set()
+        for _src in ((wrf_rain or {}), (mg_rain or {})):
+            for _d in _src:
+                try:
+                    _extra.add(pd.Timestamp(_d).normalize())
+                except Exception:
+                    pass
+        for _td_s in pred_map:          # MG/WRF9 archivados por el informe diario
+            try:
+                _extra.add(pd.Timestamp(_td_s).normalize())
+            except Exception:
+                pass
+        _tope = today + pd.Timedelta(days=int(days_fwd))
+        for d in sorted(_extra):
+            if d in _cubiertos or d < today or d > _tope:
+                continue
+            pr = pred_map.get(d.strftime("%Y-%m-%d"))
+            _mg_v = (mg_rain or {}).get(d)
+            if _mg_v is None and pr is not None:
+                _mg_v = pr.get("pred_rain_mg")
+            _wrf_v = (wrf_rain or {}).get(d)
+            if _wrf_v is None and pr is not None:
+                _wrf_v = pr.get("pred_rain_wrf")
+            if _mg_v is None and _wrf_v is None:
+                continue               # nada que enseñar de ese día
+            rows.append({
+                "_sort": d, "Fecha": d.strftime("%d/%m") + " 🔮",
+                "Moteado prev.": "—", "Moteado real": "—",
+                "Monilia prev.": "—", "Monilia real": "—",
+                "Oídio prev.": "—",   "Oídio real": "—",
+                "Lluvia prev.": "—",
+                "Lluvia WRF9": _sr(_wrf_v),
+                "Lluvia MG": _sr(_mg_v),
+                "Lluvia real": "—",
+            })
+
         if not rows:
             return pd.DataFrame()
         return (pd.DataFrame(rows).sort_values("_sort", ascending=False)
@@ -24673,12 +24718,15 @@ def render_decisiones_panel():
         except Exception:
             pass
         st.warning(
-            "🔮 **No hay previsión cargada: todo lo que se ve aquí es pasado.**" + _ult_txt +
-            "\n\nNo faltan solo las gráficas hacia adelante — también desaparecen los días "
-            "🔮 futuros de la tabla de fiabilidad y no se archiva la previsión de hoy, así "
-            "que ese día quedará como hueco al medir la fiabilidad.\n\n"
-            "Ve a **🌦️ Sencrop → Previsión** y pulsa Descargar para ver el error concreto. "
-            "Si el modelo de fusión falla, prueba **Meteoblue BASIC_MLM** en el mismo sitio.")
+            "🔮 **No hay previsión cargada: el riesgo que se ve aquí es todo pasado.**" + _ult_txt +
+            "\n\nSin la previsión horaria de Sencrop no se puede calcular riesgo hacia "
+            "adelante: moteado, monilia y oídio necesitan **temperatura y HR hora a hora**, "
+            "y eso no lo da ninguna otra fuente. Tampoco se archiva la previsión de hoy, "
+            "así que ese día quedará como hueco al medir la fiabilidad.\n\n"
+            "**Sí sigues teniendo lluvia prevista**: WRF9 y MeteoGalicia son independientes "
+            "de Sencrop y aparecen en la tabla día a día, más abajo.\n\n"
+            "Ve a **🌦️ Sencrop → ⬇️ Actualizar datos** y pulsa Descargar para ver el "
+            "diagnóstico concreto.")
 
     # Archiva (1 vez al día) la previsión de riesgo, para medir su fiabilidad con el
     # tiempo. Silencioso: si Supabase falla, no afecta al panel.
@@ -25179,9 +25227,10 @@ def render_decisiones_panel():
             # conviene nombrarlas por separado.
             if forecast_df is None or forecast_df.empty:
                 st.warning(
-                    "🔮 **No hay días futuros en esta tabla porque no hay previsión cargada** "
-                    "— la tabla acaba en el último día con datos reales. Mira el aviso del "
-                    "principio de este panel.")
+                    "🔮 **Sin previsión de Sencrop:** las columnas de moteado, monilia y "
+                    "oídio no tienen valor previsto (necesitan temperatura y HR horarias). "
+                    "Los días futuros que veas traen solo **lluvia de WRF9 y MeteoGalicia**, "
+                    "que son fuentes independientes y siguen funcionando.")
             else:
                 _mgh = st.session_state.get("_lw_mg_hasta")
                 if _mgh is not None:
