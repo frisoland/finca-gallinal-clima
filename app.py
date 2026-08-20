@@ -5753,26 +5753,36 @@ def sencrop_listar_dispositivos(token, user_id):
     # /devices contesta con un error de firma AWS — no acepta Bearer. Como la descarga
     # va por organisationId y el 401 hablaba de ORGANISATION_STATION, las rutas de
     # organización son las más prometedoras.
-    _cands = []
+    # LO QUE YA SABEMOS (batería del 20/08/2026):
+    #  · /organisations/17094/devices → 400 **E_REQUIRED_PARAMETER**. Es la ÚNICA que
+    #    contesta como una ruta que existe pero mal llamada: las inexistentes devuelven
+    #    403 con el error de firma AWS del API Gateway, no un código de Sencrop. Es la
+    #    buena; solo falta el parámetro obligatorio. Su API pagina con limit/page, así
+    #    que se prueban esas combinaciones primero.
+    #  · /users/me → 400 E_NON_REENTRANT_NUMBER: espera un ID numérico, «me» no vale.
+    #  · /users/51822/… → 401 E_USER_MISMATCH: ese SENCROP_USER_ID no es el del token.
+    _org = f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}/devices"
+    _cands = [
+        (_org, {"limit": 100, "page": 0}),
+        (_org, {"limit": 100, "page": 0, "userId": user_id}) if user_id else (_org, {"limit": 100}),
+        (_org, {"userId": user_id}) if user_id else (_org, {"page": 0}),
+        (_org, {"limit": 100}),
+        (_org, {"page": 0}),
+        (f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}/stations", {"limit": 100, "page": 0}),
+    ]
     if user_id:
-        _cands += [f"{SENCROP_API_BASE}/users/{user_id}/devices",
-                   f"{SENCROP_API_BASE}/users/{user_id}/organisations"]
-    _cands += [f"{SENCROP_API_BASE}/users/me",
-               f"{SENCROP_API_BASE}/organisations",
-               f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}/devices",
-               f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}/stations",
-               f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}",
-               f"{SENCROP_API_BASE}/devices"]
+        _cands += [(f"{SENCROP_API_BASE}/users/{user_id}/devices", {"limit": 100, "page": 0})]
     intentos, encontrado = [], pd.DataFrame()
-    for _url in _cands:
+    for _url, _params in _cands:
         _st, _res = None, ""
         try:
-            r = requests.get(_url, headers=headers, timeout=25)
+            r = requests.get(_url, headers=headers, params=_params, timeout=25)
             _st = r.status_code
             _res = (r.text or "")[:200]
         except Exception as e:
             _res = f"error de conexión: {e}"
         intentos.append({"Ruta": _url.replace(SENCROP_API_BASE, "…/v1"),
+                         "Parámetros": ", ".join(f"{k}={v}" for k, v in _params.items()) or "—",
                          "HTTP": _st if _st is not None else "—",
                          "Respuesta": _res})
         if _st != 200:
