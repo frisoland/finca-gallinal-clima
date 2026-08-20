@@ -5761,17 +5761,18 @@ def sencrop_listar_dispositivos(token, user_id):
     #    que se prueban esas combinaciones primero.
     #  · /users/me → 400 E_NON_REENTRANT_NUMBER: espera un ID numérico, «me» no vale.
     #  · /users/51822/… → 401 E_USER_MISMATCH: ese SENCROP_USER_ID no es el del token.
+    # El parámetro que faltaba es **start**, no «page» — confirmado en el cliente oficial
+    # (sencrop/sencrop-js-api-client, API.md): getOrganisationDevices exige
+    # organisationId + limit + **start**. Tres rondas probando «page» dieron siempre
+    # E_REQUIRED_PARAMETER porque el nombre era otro; el error no dice cuál falta.
     _org = f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}/devices"
     _cands = [
-        (_org, {"limit": 100, "page": 0}),
-        (_org, {"limit": 100, "page": 0, "userId": user_id}) if user_id else (_org, {"limit": 100}),
-        (_org, {"userId": user_id}) if user_id else (_org, {"page": 0}),
-        (_org, {"limit": 100}),
-        (_org, {"page": 0}),
-        (f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}/stations", {"limit": 100, "page": 0}),
+        (_org, {"limit": 100, "start": 0}),
+        (_org, {"limit": 500, "start": 0}),
     ]
     if user_id:
-        _cands += [(f"{SENCROP_API_BASE}/users/{user_id}/devices", {"limit": 100, "page": 0})]
+        # getUserDevices solo exige userId; limit/start son opcionales ahí.
+        _cands += [(f"{SENCROP_API_BASE}/users/{user_id}/devices", {"limit": 100, "start": 0})]
     intentos, encontrado = [], pd.DataFrame()
     for _url, _params in _cands:
         _st, _res = None, ""
