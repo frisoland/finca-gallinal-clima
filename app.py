@@ -15962,8 +15962,15 @@ def carpocapsa_tab(history):
                     if _zona_sel != "(Todos)" and "Campo/Zona" in tt.columns:
                         tt = tt[tt["Campo/Zona"].astype(str) == _zona_sel]
                     _cap_vals = pd.to_numeric(tt["Capturas machos"], errors="coerce").fillna(0)
-                    _ctd = (_cap_vals /
-                            pd.to_numeric(tt["Días desde lectura anterior"], errors="coerce").fillna(7).clip(lower=1))
+                    # Los días salen de las FECHAS, no de la columna del Excel. Esa columna
+                    # decía 7 en 14 de las 16 lecturas de 2026 cuando los intervalos reales
+                    # iban de 4 a 15 días, así que dividir por ella deformaba la curva de
+                    # capt/trampa/día — y es justo la métrica con la que se comparan años.
+                    # El resto de la app ya usaba carpocapsa_intervalos_reales; el
+                    # comparador se había quedado atrás.
+                    _dias_map = carpocapsa_intervalos_reales(tt["Fecha"].dropna().unique())
+                    _dias_col = tt["Fecha"].map(_dias_map).astype(float).clip(lower=1)
+                    _ctd = _cap_vals / _dias_col
                     tt = tt.assign(_ctd=_ctd, _cap=_cap_vals)
                     dcap = (tt.groupby("Fecha", as_index=False).agg(_ctd=("_ctd", "mean"), _cap=("_cap", "mean"))
                             if not tt.empty else pd.DataFrame())
@@ -16074,7 +16081,8 @@ def carpocapsa_tab(history):
                 st.caption(
                     "Curvas superpuestas por **día del año** (eje X = fecha sin año). Las capturas "
                     "se muestran **por trampa y día** (comparable aunque pongas distinto nº de "
-                    "trampas cada año). · **Capturas/trampa** = capturas totales ÷ nº de trampas de "
+                    "trampas cada año), y los días se calculan de las **fechas reales** entre "
+                    "lecturas, no de la columna del Excel. · **Capturas/trampa** = capturas totales ÷ nº de trampas de "
                     "ese año. · **DD a 1ª captura** = grados-día acumulados **desde el 1 de enero** "
                     "hasta la primera captura (indica cuánto calor hizo falta para el primer vuelo). "
                     "· La **curva de DD** se acumula desde el biofix (umbrales 130/300/580/750 DD "
