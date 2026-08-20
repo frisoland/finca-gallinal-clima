@@ -5522,11 +5522,19 @@ def sencrop_download_forecast(token, model="sencrop"):
             _det = (f"«scaledForecasts» no trae «hourly» (claves: "
                     f"{list(_sf)[:8] if isinstance(_sf, dict) else type(_sf).__name__})")
         else:
-            _det = ("«hourly.days» llega VACÍO: la estructura es la de siempre, pero "
-                    "Sencrop no está sirviendo días de previsión")
+            # OJO: el endpoint de previsión NO devuelve 401 cuando el token ha caducado
+            # — responde HTTP 200 con la estructura correcta y CERO días. Por eso el
+            # chequeo de TOKEN_EXPIRED de arriba no lo pilla y el error parecía un
+            # problema de Sencrop (20/08/2026: se perdió una mañana buscando una caída
+            # que no existía; el token estaba caducado y lo dijo la pestaña de descarga
+            # de histórico, que sí recibe el 401).
+            _det = ("«hourly.days» llega VACÍO. La estructura es la de siempre, así que "
+                    "la causa más probable es que **el token haya caducado**: este "
+                    "endpoint no devuelve 401, responde 200 con cero días. Compruébalo "
+                    "en la pestaña ⬇️ *Actualizar datos*, que sí avisa de la caducidad")
         return pd.DataFrame(), (
-            f"Sencrop no devuelve previsión — {_det}. Prueba el modelo "
-            f"«Meteoblue BASIC_MLM»: es otro endpoint y suele seguir funcionando.")
+            f"Sencrop no devuelve previsión — {_det}. (Cambiar a Meteoblue no ayuda si es "
+            f"el token: los dos endpoints usan el mismo.)")
 
     rows = []
     for day in hourly_days:
@@ -5657,10 +5665,20 @@ def sencrop_get_token_from_secrets():
         app_id     = st.secrets.get("SENCROP_APP_ID", "").strip()
         app_secret = st.secrets.get("SENCROP_APP_SECRET", "").strip()
 
+        # POR QUÉ IMPORTA QUÉ VÍA SE USA: el OAuth de aplicación (APP_ID + APP_SECRET) da
+        # un token que se renueva solo; el SENCROP_TOKEN manual es el JWT de sesión del
+        # navegador y caduca cada pocas semanas, dejando la app sin datos hasta que
+        # alguien lo renueva a mano. El informe diario de GitHub Actions ya va por OAuth
+        # y por eso siguió funcionando el 20/08/2026 mientras la app estaba caída.
+        # Se deja constancia de la vía elegida y del motivo del fallo: hasta ahora el
+        # OAuth podía fallar en silencio y caer al token manual sin que se notara.
+        st.session_state["_sencrop_auth_via"] = None
+        st.session_state["_sencrop_oauth_err"] = None
         if app_id and app_secret:
             # Cachear token en session_state para no pedir uno nuevo en cada rerun
             cached = st.session_state.get("_sencrop_oauth_token")
             if cached:
+                st.session_state["_sencrop_auth_via"] = "oauth"
                 return cached
             try:
                 r = requests.post(
@@ -5673,14 +5691,25 @@ def sencrop_get_token_from_secrets():
                     token = r.json().get("access_token", "")
                     if token:
                         st.session_state["_sencrop_oauth_token"] = token
+                        st.session_state["_sencrop_auth_via"] = "oauth"
                         return token
-            except Exception:
-                pass
+                    st.session_state["_sencrop_oauth_err"] = \
+                        "Sencrop respondió 200 pero sin «access_token»."
+                else:
+                    st.session_state["_sencrop_oauth_err"] = \
+                        f"HTTP {r.status_code} al pedir el token: {r.text[:160]}"
+            except Exception as _e:
+                st.session_state["_sencrop_oauth_err"] = f"No se pudo conectar: {_e}"
+        else:
+            st.session_state["_sencrop_oauth_err"] = \
+                "No hay SENCROP_APP_ID / SENCROP_APP_SECRET en los Secrets de esta app."
 
         # Fallback: token manual
         token = st.secrets.get("SENCROP_TOKEN", "").strip()
         if token.lower().startswith("bearer "):
             token = token[7:].strip()
+        if token:
+            st.session_state["_sencrop_auth_via"] = "manual"
         return token if token else None
     except Exception:
         return None
@@ -6375,6 +6404,22 @@ def import_panel():
                         st.rerun()
                 elif sensor_errors == ["TOKEN_EXPIRED"]:
                     st.error("🔑 El token de Sencrop ha caducado. Actualiza SENCROP_TOKEN en Secrets y pulsa el botón de abajo.")
+                    # LA CAUSA DE FONDO, NO SOLO EL SÍNTOMA. Si se está tirando del JWT
+                    # manual es porque el OAuth de aplicación no está disponible, y eso
+                    # se puede arreglar de una vez en vez de renovar el token a mano cada
+                    # pocas semanas. El informe diario de GitHub Actions ya va por OAuth.
+                    if st.session_state.get("_sencrop_auth_via") == "manual":
+                        _oe = st.session_state.get("_sencrop_oauth_err")
+                        st.info(
+                            "💡 **Esto se puede dejar de sufrir.** Estás usando el token "
+                            "manual (`SENCROP_TOKEN`), que es el JWT del navegador y caduca "
+                            "cada pocas semanas. La app sabe usar **OAuth de aplicación**, "
+                            "que se renueva solo — es lo que usa el informe diario de "
+                            "GitHub Actions, y por eso ese sí ha seguido funcionando.\n\n"
+                            "Añade `SENCROP_APP_ID` y `SENCROP_APP_SECRET` a los Secrets de "
+                            "**esta app** (Manage app → Settings → Secrets) con los mismos "
+                            "valores que ya tienes en los Secrets del repositorio de GitHub."
+                            + (f"\n\nMotivo actual: {_oe}" if _oe else ""))
                     st.session_state.sencrop_token = None
                     if st.button("🔄 Ya actualicé el token en Secrets — recargar ahora", use_container_width=True, key="sencrop_reload_token"):
                         st.rerun()
