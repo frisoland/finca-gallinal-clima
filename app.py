@@ -5406,8 +5406,14 @@ SENCROP_MEASURE_MAP = {
 }
 
 SENCROP_SENSORS = [
+    # ⚠️ Los IDs numéricos NO son estables y estaban equivocados: el 20/08/2026 el
+    # soporte de Sencrop confirmó que RC0028091 es 89669 y no 11653, lo que provocaba
+    # UNAUTHORIZED_ORGANISATION_STATION_ACCESS en todas las descargas — se pedían
+    # estaciones ajenas. La «ref» (etiqueta física del aparato) sí es estable: es la
+    # clave con la que se casan los IDs reales en «🔍 Diagnóstico: listar mis
+    # dispositivos». Los tres IDs sin confirmar siguen siendo sospechosos.
     {
-        "id":       "11653",
+        "id":       "89669",          # confirmado por soporte Sencrop (antes: 11653)
         "ref":      "RC0028091",
         "nombre":   "Temperatura / Humedad / Lluvia",
         "measures": ["temperature", "relativeHumidity", "rainfall"],
@@ -5443,7 +5449,16 @@ SENCROP_MODELS_URL   = f"https://sencrop-api-production.infra.sencrop.com/app/fo
 
 # Organización e ID del sensor principal (temperatura/lluvia/HR de Finca Gallinal)
 _FC_ORG_ID    = "17094"
-_FC_STATION   = "11653"   # SENCROP_SENSORS[0]["id"]
+
+
+def _fc_station_id():
+    """ID de la estación principal para la previsión. Se lee de SENCROP_SENSORS[0] en
+    vez de ir a fuego: era una copia manual del ID, así que al corregir uno había que
+    acordarse de corregir el otro. Respeta los IDs detectados en caliente."""
+    try:
+        return str(sencrop_sensores_activos()[0]["id"])
+    except Exception:
+        return str(SENCROP_SENSORS[0]["id"])
 
 
 def sencrop_download_forecast(token, model="sencrop"):
@@ -5479,13 +5494,13 @@ def sencrop_download_forecast(token, model="sencrop"):
             "organisationId": _FC_ORG_ID,
             "modelId":        "BASIC_MLM",
             "type":           "station",
-            "stationId":      _FC_STATION,
+            "stationId":      _fc_station_id(),
         }
     else:
         url    = SENCROP_FORECAST_URL
         params = {
             "organisationId": _FC_ORG_ID,
-            "stationId":      _FC_STATION,
+            "stationId":      _fc_station_id(),
         }
 
     try:
@@ -5714,6 +5729,86 @@ def sencrop_get_token_from_secrets():
         return token if token else None
     except Exception:
         return None
+
+
+def sencrop_listar_dispositivos(token, user_id):
+    """Dispositivos de la cuenta con su ID REAL, para casarlos por REFERENCIA.
+
+    Los IDs de SENCROP_SENSORS estaban equivocados: el 20/08/2026 Sencrop confirmó que
+    RC0028091 es **89669**, no 11653. Por eso saltaba UNAUTHORIZED_ORGANISATION_STATION_
+    ACCESS — se estaban pidiendo estaciones que no son de esta cuenta. La **referencia**
+    (la etiqueta física del aparato: RC…, WC…, LC…, SL…) sí es estable, así que es la
+    clave con la que hay que casar; el ID numérico puede cambiar y no debe ir a fuego.
+
+    Devuelve (DataFrame, error). El DataFrame se deja SIN filtrar a propósito: si Sencrop
+    cambia los nombres de campo, se ve igualmente todo y se puede corregir el mapeo.
+    """
+    if not token:
+        return pd.DataFrame(), "No hay credencial de Sencrop."
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    _errs = []
+    for _url in ([f"{SENCROP_API_BASE}/users/{user_id}/devices"] if user_id else []) + [
+            f"{SENCROP_API_BASE}/devices"]:
+        try:
+            r = requests.get(_url, headers=headers, timeout=30)
+        except Exception as e:
+            _errs.append(f"{_url}: {e}")
+            continue
+        if r.status_code != 200:
+            _errs.append(f"{_url} → HTTP {r.status_code}: {(r.text or '')[:160]}")
+            continue
+        try:
+            data = r.json()
+        except Exception as e:
+            _errs.append(f"{_url}: respuesta no es JSON ({e})")
+            continue
+        # La API devuelve unas veces una lista y otras un envoltorio con la lista dentro.
+        items = data
+        if isinstance(data, dict):
+            for _k in ("devices", "data", "response", "items", "results"):
+                if isinstance(data.get(_k), list):
+                    items = data[_k]
+                    break
+        if not isinstance(items, list) or not items:
+            _errs.append(f"{_url}: sin dispositivos en la respuesta.")
+            continue
+        try:
+            df = pd.json_normalize(items)
+        except Exception:
+            df = pd.DataFrame(items)
+        return df, None
+    return pd.DataFrame(), " · ".join(_errs) if _errs else "Sin respuesta."
+
+
+def _sencrop_col_candidata(df, nombres):
+    """Primera columna cuyo nombre contenga alguno de `nombres` (sin distinguir
+    mayúsculas). Los nombres de campo de Sencrop no están garantizados, así que se
+    buscan por aproximación en vez de darlos por sabidos."""
+    for n in nombres:
+        for c in df.columns:
+            if n in str(c).lower():
+                return c
+    return None
+
+
+def sencrop_sensores_activos():
+    """SENCROP_SENSORS con los IDs corregidos en caliente, si se han detectado.
+
+    Permite arreglar los IDs desde la app (botón «Aplicar IDs detectados») sin esperar
+    a un despliegue. Cuando se confirmen, conviene fijarlos en SENCROP_SENSORS."""
+    try:
+        _ov = st.session_state.get("_sencrop_id_override") or {}
+    except Exception:
+        _ov = {}
+    if not _ov:
+        return SENCROP_SENSORS
+    out = []
+    for s in SENCROP_SENSORS:
+        s2 = dict(s)
+        if s.get("ref") in _ov:
+            s2["id"] = str(_ov[s["ref"]])
+        out.append(s2)
+    return out
 
 
 def sencrop_auth_diagnostico():
@@ -5948,7 +6043,58 @@ def render_sencrop_panel():
                 f"pero Secrets tiene `SENCROP_USER_ID = \"{_diag_stored}\"`. "
                 f"Actualiza Secrets con `SENCROP_USER_ID = \"{_diag_jwt_uid}\"` o elimina esa línea."
             )
-        if st.button("Consultar mis dispositivos", key="sencrop_list_devices"):
+        # ── Casar los sensores por REFERENCIA y corregir los IDs ────────────────
+        # El 20/08/2026 Sencrop confirmó que los IDs del código son de otras estaciones
+        # (RC0028091 es 89669, no 11653) y por eso todo daba 401. La referencia sí es
+        # estable, así que se casa por ella y se ofrece corregir sin esperar despliegue.
+        if st.button("🔎 Buscar mis estaciones y comprobar los IDs", key="sencrop_match_ids",
+                     type="primary", use_container_width=True):
+            _dev, _derr = sencrop_listar_dispositivos(
+                st.session_state.sencrop_token, st.session_state.sencrop_user_id)
+            st.session_state["_sencrop_devices_df"] = _dev
+            st.session_state["_sencrop_devices_err"] = _derr
+
+        _dev = st.session_state.get("_sencrop_devices_df")
+        _derr = st.session_state.get("_sencrop_devices_err")
+        if _derr:
+            st.error(f"No se pudieron listar los dispositivos: {_derr}")
+        if _dev is not None and not _dev.empty:
+            _c_id = _sencrop_col_candidata(_dev, ["deviceid", "device_id", "id"])
+            _c_ref = _sencrop_col_candidata(_dev, ["reference", "serial", "ref", "name", "label"])
+            st.markdown("**Dispositivos que Sencrop dice que son tuyos**")
+            st.dataframe(_dev, use_container_width=True, hide_index=True)
+            if _c_id and _c_ref:
+                _mapa = {}
+                for _, _r in _dev.iterrows():
+                    _mapa[str(_r[_c_ref]).strip().upper()] = str(_r[_c_id]).strip()
+                _filas, _cambios = [], {}
+                for s in SENCROP_SENSORS:
+                    _real = _mapa.get(str(s["ref"]).strip().upper())
+                    _ok = (_real is not None and _real == str(s["id"]))
+                    if _real is not None and not _ok:
+                        _cambios[s["ref"]] = _real
+                    _filas.append({
+                        "Sensor": s["nombre"], "Referencia": s["ref"],
+                        "ID en la app": s["id"], "ID real": _real or "— no encontrada —",
+                        "Estado": "✅ correcto" if _ok else ("❌ hay que cambiarlo" if _real else "⚠️ no aparece"),
+                    })
+                st.markdown("**Cotejo por referencia**")
+                st.dataframe(pd.DataFrame(_filas), use_container_width=True, hide_index=True)
+                if _cambios:
+                    st.warning(f"Hay **{len(_cambios)}** ID(s) equivocados. "
+                               "Aplícalos para usarlos ya en esta sesión; luego los fijo en el código.")
+                    if st.button("✅ Aplicar IDs detectados a esta sesión", key="sencrop_apply_ids"):
+                        st.session_state["_sencrop_id_override"] = _cambios
+                        st.success("IDs aplicados. Vuelve a ⬇️ Actualizar datos y descarga.")
+                    st.code("\n".join(f'{k} → "{v}"' for k, v in _cambios.items()), language="text")
+                else:
+                    st.success("✅ Todos los IDs del código coinciden con los reales.")
+            else:
+                st.info("No he sabido identificar las columnas de ID y referencia en la "
+                        "respuesta. Mira la tabla de arriba y dime cómo se llaman.")
+
+        st.divider()
+        if st.button("Consultar mis dispositivos (respuesta cruda)", key="sencrop_list_devices"):
             headers_dbg = {"Authorization": f"Bearer {st.session_state.sencrop_token}"}
             uid = st.session_state.sencrop_user_id
             for url in [
@@ -6349,7 +6495,7 @@ def sencrop_download_all_sensors(token, user_id, start_date, end_date, status_pl
     """
     frames = []
     errors = []
-    for sensor in SENCROP_SENSORS:
+    for sensor in sencrop_sensores_activos():
         if status_placeholder:
             status_placeholder.info(f"Descargando {sensor['nombre']}...")
         df, err = sencrop_get_statistics(
