@@ -25238,6 +25238,31 @@ def render_decisiones_panel():
                                f"de riesgo se recorta donde acaba MeteoGalicia (casilla «Cortar la "
                                f"previsión donde acaba MeteoGalicia», en 🍃 *Modelo de hoja mojada*). "
                                f"El archivo sí guarda los 7 días.")
+            # ¿SIGUE VIVO EL ARCHIVADO, Y DE QUÉ FUENTE? Cada una se archiva por separado,
+            # así que la fecha de la última emisión de cada una dice quién se ha quedado
+            # atrás. Es la única forma de ver DESDE LA APP si el informe diario (GitHub
+            # Actions) está corriendo: MeteoGalicia solo puede archivarla él, porque a
+            # Streamlit Cloud le bloquean las IPs de centro de datos. Sin esto, que MG
+            # dejara de llegar no se distinguía de que no lloviera (20/08/2026).
+            try:
+                _arch_now = load_forecast_archive()
+                if _arch_now is not None and not _arch_now.empty and "issue_date" in _arch_now.columns:
+                    _ii = pd.to_datetime(_arch_now["issue_date"], errors="coerce")
+                    _partes = []
+                    for _c, _n in [("pred_rain", "Sencrop"), ("pred_rain_wrf", "WRF9"),
+                                   ("pred_rain_mg", "MeteoGalicia")]:
+                        if _c not in _arch_now.columns:
+                            continue
+                        _mx = _ii[pd.to_numeric(_arch_now[_c], errors="coerce").notna()].max()
+                        _partes.append(f"{_n} **{_mx:%d/%m}**" if pd.notna(_mx) else f"{_n} **—**")
+                    if _partes:
+                        st.caption(
+                            "🗄️ Última previsión archivada de cada fuente: " + " · ".join(_partes)
+                            + ". **MeteoGalicia solo la archiva el informe diario** (GitHub "
+                              "Actions), porque la app no puede consultarla directamente: si su "
+                              "fecha se queda atrás, ese informe no está corriendo.")
+            except Exception:
+                pass
             _dcols = list(_daily.columns)
             _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
             _AMB2 = "background-color: rgba(240,160,0,0.22); color:#9a6a00; font-weight:700"
