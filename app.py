@@ -5872,6 +5872,80 @@ def sencrop_detalle_dispositivos(token, ids, org_id):
         return pd.DataFrame(filas), None
 
 
+def sencrop_probar_api_publica(token, org_id):
+    """¿Se pueden bajar las medidas por la API PÚBLICA? Y con qué userId.
+
+    Los IDs de estación ya son correctos y aun así el endpoint INTERNO
+    (`infra.sencrop.com/app/station/…`) sigue devolviendo 401
+    UNAUTHORIZED_ORGANISATION_STATION_ACCESS: esos endpoints son para el JWT del
+    navegador, no para una API key. La API pública sí acepta la clave — con ella se
+    listaron los dispositivos —, pero **todos sus endpoints de medidas son
+    `/users/{userId}/…`** y el `SENCROP_USER_ID` configurado (51822) da E_USER_MISMATCH.
+
+    Así que hay que averiguar el userId bueno. Dos vías: `/me`, que redirige al perfil
+    del autenticado, y `/organisation/{id}/members`, que lista los miembros.
+    Devuelve (DataFrame de pruebas, lista de userIds candidatos)."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    filas, uids = [], []
+
+    def _apunta(que, url, st_, txt):
+        filas.append({"Paso": que, "Ruta": str(url).replace(SENCROP_API_BASE, "…/v1"),
+                      "HTTP": st_ if st_ is not None else "—", "Respuesta": (txt or "")[:180]})
+
+    # 1) /me → redirección a /users/{id}
+    try:
+        r = requests.get(f"{SENCROP_API_BASE}/me", headers=headers, timeout=25,
+                         allow_redirects=False)
+        _loc = r.headers.get("Location", "")
+        _apunta("Identidad (/me)", f"{SENCROP_API_BASE}/me", r.status_code,
+                _loc or (r.text or "")[:180])
+        for _m in re.findall(r"/users?/(\d+)", _loc or ""):
+            uids.append(_m)
+        if not _loc and r.status_code == 200:
+            try:
+                _j = r.json()
+                for _k in ("id", "userId", "user_id"):
+                    if str(_j.get(_k, "")).isdigit():
+                        uids.append(str(_j[_k]))
+            except Exception:
+                pass
+    except Exception as e:
+        _apunta("Identidad (/me)", f"{SENCROP_API_BASE}/me", None, str(e))
+
+    # 2) Miembros de la organización
+    _u = f"{SENCROP_API_BASE}/organisation/{org_id}/members"
+    try:
+        r = requests.get(_u, headers=headers, params={"limit": 100, "start": 0}, timeout=25)
+        _apunta("Miembros de la organización", _u, r.status_code, r.text)
+        if r.status_code == 200:
+            for _m in re.findall(r'"(?:userId|user_id|id)"\s*:\s*(\d+)', r.text or ""):
+                uids.append(_m)
+    except Exception as e:
+        _apunta("Miembros de la organización", _u, None, str(e))
+
+    # 3) Con cada userId candidato, intentar bajar medidas de VERDAD del sensor principal
+    _sen = sencrop_sensores_activos()[0]
+    try:
+        _uid_secret = str(st.secrets.get("SENCROP_USER_ID", "")).strip()
+    except Exception:
+        _uid_secret = ""
+    if _uid_secret:
+        uids.append(_uid_secret)
+    uids = [u for u in dict.fromkeys(uids) if u]
+    for _uid in uids[:6]:
+        _u = f"{SENCROP_API_BASE}/users/{_uid}/devices/{_sen['id']}/hourly"
+        _params = [("beforeDate", pd.Timestamp.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")),
+                   ("days", 2)] + [("measures", m) for m in _sen["measures"]]
+        try:
+            r = requests.get(_u, headers=headers, params=_params, timeout=30)
+            _apunta(f"Medidas con userId {_uid}", _u, r.status_code, r.text)
+        except Exception as e:
+            _apunta(f"Medidas con userId {_uid}", _u, None, str(e))
+    if not uids:
+        _apunta("Medidas", "—", None, "No se encontró ningún userId candidato.")
+    return pd.DataFrame(filas), uids
+
+
 def _sencrop_col_candidata(df, nombres):
     """Primera columna cuyo nombre contenga alguno de `nombres` (sin distinguir
     mayúsculas). Los nombres de campo de Sencrop no están garantizados, así que se
@@ -6233,6 +6307,26 @@ def render_sencrop_panel():
             else:
                 st.info("No he sabido identificar las columnas de ID y referencia en la "
                         "respuesta. Mira la tabla de arriba y dime cómo se llaman.")
+
+        # ── ¿Sirve la API pública para bajar medidas, y con qué userId? ─────────
+        st.divider()
+        st.markdown("**🔬 Probar la API pública para las medidas**")
+        st.caption("Los IDs de estación ya son correctos y el endpoint interno de Sencrop "
+                   "sigue rechazando la API key: esos endpoints son para el JWT del "
+                   "navegador. La API pública sí acepta la clave, pero sus rutas de medidas "
+                   "necesitan un **userId** y el configurado no vale. Esto lo busca y prueba "
+                   "una descarga de verdad.")
+        if st.button("🔬 Buscar userId y probar una descarga real", key="sencrop_probe_public",
+                     use_container_width=True):
+            _pr, _uids = sencrop_probar_api_publica(st.session_state.sencrop_token, _FC_ORG_ID)
+            st.session_state["_sencrop_probe_df"] = _pr
+            st.session_state["_sencrop_probe_uids"] = _uids
+        _pr = st.session_state.get("_sencrop_probe_df")
+        if _pr is not None and not _pr.empty:
+            st.dataframe(_pr, use_container_width=True, hide_index=True)
+            _uids = st.session_state.get("_sencrop_probe_uids") or []
+            if _uids:
+                st.caption("userIds candidatos encontrados: " + ", ".join(f"`{u}`" for u in _uids))
 
         st.divider()
         if st.button("Consultar mis dispositivos (respuesta cruda)", key="sencrop_list_devices"):
