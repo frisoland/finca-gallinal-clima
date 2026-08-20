@@ -5507,7 +5507,26 @@ def sencrop_download_forecast(token, model="sencrop"):
     hourly_days = inner.get("scaledForecasts", {}).get("hourly", {}).get("days", [])
 
     if not hourly_days:
-        return pd.DataFrame(), "La respuesta de Sencrop no contiene datos horarios (scaledForecasts.hourly.days vacío)."
+        # Con .get() encadenado, «Sencrop cambió el esquema» y «Sencrop no tiene
+        # previsión ahora mismo» daban EXACTAMENTE el mismo mensaje, y son problemas
+        # distintos: el primero se arregla aquí, el segundo hay que esperarlo o
+        # reclamarlo. Se dice qué llegó de verdad para poder distinguirlos sin abrir
+        # DevTools. (20/08/2026: la previsión dejó de bajar y no había forma de saber
+        # cuál de los dos era.)
+        _sf = inner.get("scaledForecasts") if isinstance(inner, dict) else None
+        if not isinstance(inner, dict) or not inner:
+            _det = f"la respuesta no trae «data» (claves recibidas: {list(data)[:8]})"
+        elif _sf is None:
+            _det = f"no viene «scaledForecasts» (claves de data: {list(inner)[:8]})"
+        elif not isinstance(_sf, dict) or "hourly" not in _sf:
+            _det = (f"«scaledForecasts» no trae «hourly» (claves: "
+                    f"{list(_sf)[:8] if isinstance(_sf, dict) else type(_sf).__name__})")
+        else:
+            _det = ("«hourly.days» llega VACÍO: la estructura es la de siempre, pero "
+                    "Sencrop no está sirviendo días de previsión")
+        return pd.DataFrame(), (
+            f"Sencrop no devuelve previsión — {_det}. Prueba el modelo "
+            f"«Meteoblue BASIC_MLM»: es otro endpoint y suele seguir funcionando.")
 
     rows = []
     for day in hourly_days:
@@ -24545,6 +24564,28 @@ def render_decisiones_panel():
         st.warning("⚠️ Sin datos climáticos. Carga el histórico desde Supabase o Sencrop y la predicción desde la pestaña 🌦️ Sencrop.")
         return
 
+    # SIN PREVISIÓN: DECIRLO. Hasta ahora el panel se quedaba MUDO — las gráficas y la
+    # tabla de fiabilidad simplemente acababan en el último día real, sin ninguna marca,
+    # y había que darse cuenta contando días. Pasó el 19-20/08/2026: Sencrop empezó a
+    # devolver la previsión vacía y el panel siguió pintando como si nada.
+    # La autocarga del arranque también falla en silencio (no avisa si no baja nada),
+    # así que este es el único sitio donde el hueco se ve.
+    if forecast_df is None or forecast_df.empty:
+        _ult_txt = ""
+        try:
+            _u = pd.to_datetime(history_df["fecha_hora"], errors="coerce").max()
+            if pd.notna(_u):
+                _ult_txt = f" Lo que ves llega hasta el **{_u:%d/%m %H:%M}** y ahí se corta."
+        except Exception:
+            pass
+        st.warning(
+            "🔮 **No hay previsión cargada: todo lo que se ve aquí es pasado.**" + _ult_txt +
+            "\n\nNo faltan solo las gráficas hacia adelante — también desaparecen los días "
+            "🔮 futuros de la tabla de fiabilidad y no se archiva la previsión de hoy, así "
+            "que ese día quedará como hueco al medir la fiabilidad.\n\n"
+            "Ve a **🌦️ Sencrop → Previsión** y pulsa Descargar para ver el error concreto. "
+            "Si el modelo de fusión falla, prueba **Meteoblue BASIC_MLM** en el mismo sitio.")
+
     # Archiva (1 vez al día) la previsión de riesgo, para medir su fiabilidad con el
     # tiempo. Silencioso: si Supabase falla, no afecta al panel.
     # OJO AL ORDEN: se archiva ANTES de mezclar la lluvia de MeteoGalicia, para que el
@@ -25038,6 +25079,22 @@ def render_decisiones_panel():
                         "contra **«Lluvia real»** — a ver cuál acierta más: **«Lluvia prev.»** "
                         "(Sencrop), **«Lluvia WRF9»** (WRF 9 km de Windguru, ~3 días) y **«Lluvia MG»** "
                         "(WRF **1 km oficial de MeteoGalicia**, en el punto exacto de la finca, ~3,5 días).")
+            # POR QUÉ LA TABLA ACABA DONDE ACABA. Sin esto, que no hubiera días 🔮 no se
+            # distinguía de que los hubiera: la tabla se topaba en un día cualquiera y
+            # había que contar para notarlo (19/08/2026). Son dos causas muy distintas y
+            # conviene nombrarlas por separado.
+            if forecast_df is None or forecast_df.empty:
+                st.warning(
+                    "🔮 **No hay días futuros en esta tabla porque no hay previsión cargada** "
+                    "— la tabla acaba en el último día con datos reales. Mira el aviso del "
+                    "principio de este panel.")
+            else:
+                _mgh = st.session_state.get("_lw_mg_hasta")
+                if _mgh is not None:
+                    st.caption(f"✂️ Los días 🔮 llegan solo hasta el **{_mgh:%d/%m}**: la previsión "
+                               f"de riesgo se recorta donde acaba MeteoGalicia (casilla «Cortar la "
+                               f"previsión donde acaba MeteoGalicia», en 🍃 *Modelo de hoja mojada*). "
+                               f"El archivo sí guarda los 7 días.")
             _dcols = list(_daily.columns)
             _RED2 = "background-color: rgba(220,0,0,0.18); color:#b00000; font-weight:700"
             _AMB2 = "background-color: rgba(240,160,0,0.22); color:#9a6a00; font-weight:700"
