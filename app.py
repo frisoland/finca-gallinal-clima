@@ -5744,40 +5744,59 @@ def sencrop_listar_dispositivos(token, user_id):
     cambia los nombres de campo, se ve igualmente todo y se puede corregir el mapeo.
     """
     if not token:
-        return pd.DataFrame(), "No hay credencial de Sencrop."
+        return pd.DataFrame(), pd.DataFrame(), "No hay credencial de Sencrop."
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    _errs = []
-    for _url in ([f"{SENCROP_API_BASE}/users/{user_id}/devices"] if user_id else []) + [
-            f"{SENCROP_API_BASE}/devices"]:
+    # NO SE SABE QUÉ RUTA VALE, así que se prueban las candidatas y se informa de todas.
+    # Lo aprendido el 20/08/2026: /users/{uid}/devices da E_USER_MISMATCH (el token de
+    # client_credentials es de la APLICACIÓN, no de un usuario, y además el
+    # SENCROP_USER_ID configurado puede estar tan mal como los IDs de estación), y
+    # /devices contesta con un error de firma AWS — no acepta Bearer. Como la descarga
+    # va por organisationId y el 401 hablaba de ORGANISATION_STATION, las rutas de
+    # organización son las más prometedoras.
+    _cands = []
+    if user_id:
+        _cands += [f"{SENCROP_API_BASE}/users/{user_id}/devices",
+                   f"{SENCROP_API_BASE}/users/{user_id}/organisations"]
+    _cands += [f"{SENCROP_API_BASE}/users/me",
+               f"{SENCROP_API_BASE}/organisations",
+               f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}/devices",
+               f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}/stations",
+               f"{SENCROP_API_BASE}/organisations/{_FC_ORG_ID}",
+               f"{SENCROP_API_BASE}/devices"]
+    intentos, encontrado = [], pd.DataFrame()
+    for _url in _cands:
+        _st, _res = None, ""
         try:
-            r = requests.get(_url, headers=headers, timeout=30)
+            r = requests.get(_url, headers=headers, timeout=25)
+            _st = r.status_code
+            _res = (r.text or "")[:200]
         except Exception as e:
-            _errs.append(f"{_url}: {e}")
-            continue
-        if r.status_code != 200:
-            _errs.append(f"{_url} → HTTP {r.status_code}: {(r.text or '')[:160]}")
+            _res = f"error de conexión: {e}"
+        intentos.append({"Ruta": _url.replace(SENCROP_API_BASE, "…/v1"),
+                         "HTTP": _st if _st is not None else "—",
+                         "Respuesta": _res})
+        if _st != 200:
             continue
         try:
             data = r.json()
-        except Exception as e:
-            _errs.append(f"{_url}: respuesta no es JSON ({e})")
+        except Exception:
             continue
         # La API devuelve unas veces una lista y otras un envoltorio con la lista dentro.
         items = data
         if isinstance(data, dict):
-            for _k in ("devices", "data", "response", "items", "results"):
+            for _k in ("devices", "stations", "data", "response", "items", "results"):
                 if isinstance(data.get(_k), list):
                     items = data[_k]
                     break
-        if not isinstance(items, list) or not items:
-            _errs.append(f"{_url}: sin dispositivos en la respuesta.")
-            continue
-        try:
-            df = pd.json_normalize(items)
-        except Exception:
-            df = pd.DataFrame(items)
-        return df, None
-    return pd.DataFrame(), " · ".join(_errs) if _errs else "Sin respuesta."
+        if isinstance(items, list) and items and encontrado.empty:
+            try:
+                encontrado = pd.json_normalize(items)
+            except Exception:
+                encontrado = pd.DataFrame(items)
+    _df_int = pd.DataFrame(intentos)
+    if not encontrado.empty:
+        return encontrado, _df_int, None
+    return pd.DataFrame(), _df_int, "Ninguna ruta devolvió una lista de dispositivos."
 
 
 def _sencrop_col_candidata(df, nombres):
@@ -6049,15 +6068,22 @@ def render_sencrop_panel():
         # estable, así que se casa por ella y se ofrece corregir sin esperar despliegue.
         if st.button("🔎 Buscar mis estaciones y comprobar los IDs", key="sencrop_match_ids",
                      type="primary", use_container_width=True):
-            _dev, _derr = sencrop_listar_dispositivos(
+            _dev, _int, _derr = sencrop_listar_dispositivos(
                 st.session_state.sencrop_token, st.session_state.sencrop_user_id)
             st.session_state["_sencrop_devices_df"] = _dev
+            st.session_state["_sencrop_devices_try"] = _int
             st.session_state["_sencrop_devices_err"] = _derr
 
         _dev = st.session_state.get("_sencrop_devices_df")
+        _int = st.session_state.get("_sencrop_devices_try")
         _derr = st.session_state.get("_sencrop_devices_err")
         if _derr:
             st.error(f"No se pudieron listar los dispositivos: {_derr}")
+        if _int is not None and not _int.empty:
+            with st.expander("🧪 Rutas probadas y qué contestó cada una", expanded=bool(_derr)):
+                st.caption("La ruta buena aún no se conoce con seguridad. Si alguna da 200 "
+                           "pero no la reconozco, pégame su respuesta y ajusto el mapeo.")
+                st.dataframe(_int, use_container_width=True, hide_index=True)
         if _dev is not None and not _dev.empty:
             _c_id = _sencrop_col_candidata(_dev, ["deviceid", "device_id", "id"])
             _c_ref = _sencrop_col_candidata(_dev, ["reference", "serial", "ref", "name", "label"])
