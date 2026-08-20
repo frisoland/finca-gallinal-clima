@@ -5872,6 +5872,171 @@ def sencrop_detalle_dispositivos(token, ids, org_id):
         return pd.DataFrame(filas), None
 
 
+# ── API PÚBLICA: nombres de medida ────────────────────────────────────────────
+# El endpoint interno usa «temperature», «rainfall»…; la API pública exige el enum en
+# MAYÚSCULAS con guión bajo (openapi.api.json del cliente oficial de Sencrop). Mandar
+# los de siempre daba 400 E_NOT_IN_ENUM, igual que `interval="hourly"`: los intervalos
+# válidos son 15m · 1h · 1d · 1w · 1M.
+SENCROP_PUBLIC_MEASURE_MAP = {
+    "TEMPERATURE":           "temp_media",
+    "TEMPERATURE_MIN":       "temp_min",
+    "TEMPERATURE_MAX":       "temp_max",
+    "RELATIVE_HUMIDITY":     "hr_media",
+    "RELATIVE_HUMIDITY_MIN": "hr_min",
+    "RELATIVE_HUMIDITY_MAX": "hr_max",
+    "RAIN_FALL":             "lluvia_mm",
+    "WIND_SPEED":            "viento_velocidad",
+    "WIND_GUST":             "viento_rafaga",
+    "WIND_DIRECTION":        "viento_direccion",
+    "LEAF_WETNESS":          "humectacion_hoja",
+    "LEAF_WETNESS_MEDIUM":   "humectacion_moderada",
+    "LEAF_WETNESS_HIGH":     "humectacion_importante",
+    "IRRADIANCE":            "irradiancia",
+}
+
+# Qué enums pedir por cada medida de SENCROP_SENSORS. Se piden también los MIN/MAX
+# porque la app tiene columnas para ellos y hasta ahora se rellenaban a partir de los
+# datos horarios; y las dos bandas de humectación, que existen en la API pública.
+_SENCROP_MEASURE_TO_ENUM = {
+    "temperature":      ["TEMPERATURE", "TEMPERATURE_MIN", "TEMPERATURE_MAX"],
+    "relativeHumidity": ["RELATIVE_HUMIDITY", "RELATIVE_HUMIDITY_MIN", "RELATIVE_HUMIDITY_MAX"],
+    "rainfall":         ["RAIN_FALL"],
+    "windSpeed":        ["WIND_SPEED"],
+    "windGust":         ["WIND_GUST"],
+    "windDirection":    ["WIND_DIRECTION"],
+    "leafWetness":      ["LEAF_WETNESS", "LEAF_WETNESS_MEDIUM", "LEAF_WETNESS_HIGH"],
+    "irradiance":       ["IRRADIANCE"],
+}
+
+
+def sencrop_user_id_real(token):
+    """userId del token, preguntándoselo a Sencrop en vez de fiarse de los Secrets.
+
+    `SENCROP_USER_ID` valía 51822 y el usuario real es 32171: los endpoints de medidas
+    de la API pública son todos /users/{userId}/… y con el equivocado dan
+    E_USER_MISMATCH. `/me` no redirige — contesta 200 con el patrón «entities»
+    {"item": 32171, "users": {"32171": {…}}}, así que el id está en `item`."""
+    try:
+        _c = st.session_state.get("_sencrop_uid_real")
+        if _c:
+            return _c
+    except Exception:
+        pass
+    try:
+        r = requests.get(f"{SENCROP_API_BASE}/me", timeout=25,
+                         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+        if r.status_code == 200:
+            _j = r.json()
+            _uid = None
+            if str(_j.get("item", "")).isdigit():
+                _uid = str(_j["item"])
+            elif isinstance(_j.get("users"), dict):
+                _ks = [k for k in _j["users"] if str(k).isdigit()]
+                _uid = str(_ks[0]) if _ks else None
+            if _uid:
+                try:
+                    st.session_state["_sencrop_uid_real"] = _uid
+                except Exception:
+                    pass
+                return _uid
+    except Exception:
+        pass
+    return None
+
+
+def _sencrop_valor_medida(v):
+    """Un valor de medida puede venir como número o envuelto en un objeto con varias
+    agregaciones. Se prefieren, por este orden, el valor plano, la media y la suma."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    if isinstance(v, dict):
+        for _k in ("value", "avg", "average", "mean", "sum", "last", "val"):
+            _x = v.get(_k)
+            if isinstance(_x, (int, float)) and not isinstance(_x, bool):
+                return float(_x)
+    try:
+        return float(v)
+    except Exception:
+        return np.nan
+
+
+def sencrop_get_statistics_publica(token, user_id, device_id, start_date, end_date, measures):
+    """Medidas horarias por la **API pública** (api.sencrop.com/v1).
+
+    Sustituye al endpoint interno `infra.sencrop.com/app/station/…`, que es para el JWT
+    del navegador y rechaza la API key con UNAUTHORIZED_ORGANISATION_STATION_ACCESS
+    aunque los IDs de estación sean correctos.
+
+    Devuelve (DataFrame con CANONICAL_COLUMNS, error). El error «RAW:…» incluye el
+    principio de la respuesta para poder ajustar el mapeo si Sencrop cambia el formato.
+    """
+    _enums = []
+    for m in measures:
+        _enums += _SENCROP_MEASURE_TO_ENUM.get(m, [])
+    _enums = list(dict.fromkeys(_enums))
+    if not _enums:
+        return pd.DataFrame(), f"Medidas no reconocidas: {measures}"
+    _params = [
+        ("startDate", pd.Timestamp(start_date).strftime("%Y-%m-%dT00:00:00.000Z")),
+        ("endDate", pd.Timestamp(end_date).strftime("%Y-%m-%dT23:59:59.999Z")),
+        ("interval", "1h"),
+        ("timeZone", "Europe/Madrid"),
+    ] + [("measures", e) for e in _enums]
+    _url = f"{SENCROP_API_BASE}/users/{user_id}/devices/{device_id}/statistics"
+    try:
+        r = requests.get(_url, timeout=60, params=_params,
+                         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+    except Exception as e:
+        return pd.DataFrame(), f"Error de conexión: {e}"
+    if r.status_code == 401:
+        try:
+            st.session_state["_sencrop_401_body"] = (r.text or "")[:400]
+            st.session_state["_sencrop_401_url"] = _url
+        except Exception:
+            pass
+        return pd.DataFrame(), "TOKEN_EXPIRED"
+    if r.status_code != 200:
+        return pd.DataFrame(), f"HTTP {r.status_code}: {(r.text or '')[:220]}"
+    try:
+        data = r.json()
+    except Exception as e:
+        return pd.DataFrame(), f"Respuesta no es JSON: {e}"
+    items = data.get("measures") if isinstance(data, dict) else None
+    if not isinstance(items, list) or not items:
+        return pd.DataFrame(), None          # sin datos en ese rango, no es un error
+    filas = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        _k = it.get("key")
+        try:
+            # `key` es epoch en milisegundos; se pasa a hora local de la finca.
+            _ts = pd.to_datetime(float(_k), unit="ms", utc=True).tz_convert(
+                "Europe/Madrid").tz_localize(None)
+        except Exception:
+            _ts = pd.to_datetime(_k, errors="coerce")
+        if pd.isna(_ts):
+            continue
+        _row = {"fecha_hora": _ts}
+        for _kk, _vv in it.items():
+            if _kk in ("key", "docCount"):
+                continue
+            _col = SENCROP_PUBLIC_MEASURE_MAP.get(str(_kk).strip().upper())
+            if _col:
+                _row[_col] = _sencrop_valor_medida(_vv)
+        if len(_row) > 1:
+            filas.append(_row)
+    if not filas:
+        # Llegaron registros pero ningún campo casó con el mapeo: hay que verlos.
+        return pd.DataFrame(), f"RAW: {str(items[0])[:300]}"
+    df = pd.DataFrame(filas)
+    for col in CANONICAL_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+    df = df[CANONICAL_COLUMNS].copy()
+    return df.sort_values("fecha_hora").drop_duplicates("fecha_hora").reset_index(drop=True), None
+
+
 def sencrop_probar_api_publica(token, org_id):
     """¿Se pueden bajar las medidas por la API PÚBLICA? Y con qué userId.
 
@@ -6753,14 +6918,26 @@ def sencrop_download_all_sensors(token, user_id, start_date, end_date, status_pl
     """
     frames = []
     errors = []
+    # PRIMERO LA API PÚBLICA. El endpoint interno (infra.sencrop.com/app/…) es para el
+    # JWT del navegador y rechaza la API key aunque los IDs sean correctos. Se usa el
+    # userId que Sencrop declara en /me, no el de los Secrets, que estaba equivocado.
+    # Si algo falla se cae al camino de siempre, para no romper una instalación que
+    # todavía funcione con token manual.
+    _uid_api = sencrop_user_id_real(token) or user_id
     for sensor in sencrop_sensores_activos():
         if status_placeholder:
             status_placeholder.info(f"Descargando {sensor['nombre']}...")
-        df, err = sencrop_get_statistics(
-            token, user_id,
-            sensor["id"], start_date, end_date,
+        df, err = sencrop_get_statistics_publica(
+            token, _uid_api, sensor["id"], start_date, end_date,
             measures=sensor["measures"],
         )
+        if err and err != "TOKEN_EXPIRED":
+            _df2, _err2 = sencrop_get_statistics(
+                token, user_id, sensor["id"], start_date, end_date,
+                measures=sensor["measures"],
+            )
+            if not _df2.empty or not _err2:
+                df, err = _df2, _err2
         if err in ("TOKEN_EXPIRED", "USER_MISMATCH"):
             return pd.DataFrame(), [err]
         elif err:
