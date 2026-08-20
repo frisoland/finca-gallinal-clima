@@ -5837,11 +5837,26 @@ def sencrop_detalle_dispositivos(token, ids, org_id):
                 d = r.json()
             except Exception:
                 continue
+            # Sencrop envuelve el detalle en un diccionario INDEXADO POR ID, no en el
+            # objeto directo:  {"item": 57049, "devices": {"57049": {…}}}
+            # Sin desenvolverlo, json_normalize crea columnas «devices.57049.x» distintas
+            # para cada dispositivo y la tabla sale casi toda vacía.
             if isinstance(d, dict):
-                for _k in ("device", "data", "response"):
-                    if isinstance(d.get(_k), dict):
-                        d = d[_k]
+                _envuelto = None
+                for _k in ("devices", "entities", "device", "data", "response"):
+                    _v = d.get(_k)
+                    if isinstance(_v, dict):
+                        # ¿es un mapa id→objeto, o ya es el objeto?
+                        _c = _v.get(str(d.get("item"))) or _v.get(str(_id))
+                        if not isinstance(_c, dict) and len(_v) == 1:
+                            _c = next(iter(_v.values()))
+                        _envuelto = _c if isinstance(_c, dict) else _v
                         break
+                    if isinstance(_v, list) and _v and isinstance(_v[0], dict):
+                        _envuelto = _v[0]
+                        break
+                if isinstance(_envuelto, dict):
+                    d = _envuelto
             d = dict(d) if isinstance(d, dict) else {"valor": d}
             d["_id"] = _id
             filas.append(d)
@@ -6176,6 +6191,10 @@ def render_sencrop_panel():
                     })
                 st.markdown("**Cotejo por referencia**")
                 st.dataframe(pd.DataFrame(_filas), use_container_width=True, hide_index=True)
+                # OJO al «todo correcto»: antes salía también cuando NO se había
+                # encontrado ninguna referencia, que es el caso contrario. Solo se
+                # celebra si todas las referencias aparecieron Y coinciden.
+                _nf = sum(1 for f in _filas if f["Estado"].startswith("⚠️"))
                 if _cambios:
                     st.warning(f"Hay **{len(_cambios)}** ID(s) equivocados. "
                                "Aplícalos para usarlos ya en esta sesión; luego los fijo en el código.")
@@ -6183,6 +6202,12 @@ def render_sencrop_panel():
                         st.session_state["_sencrop_id_override"] = _cambios
                         st.success("IDs aplicados. Vuelve a ⬇️ Actualizar datos y descarga.")
                     st.code("\n".join(f'{k} → "{v}"' for k, v in _cambios.items()), language="text")
+                elif _nf:
+                    st.error(
+                        f"No he encontrado la referencia de **{_nf}** de los {len(_filas)} "
+                        f"sensores entre los dispositivos de la cuenta. Puede que el campo "
+                        f"de referencia se llame de otra forma: mira la tabla de arriba y "
+                        f"dime en qué columna aparecen los códigos tipo `RC0028091`.")
                 else:
                     st.success("✅ Todos los IDs del código coinciden con los reales.")
             else:
