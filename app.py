@@ -5901,9 +5901,17 @@ def sencrop_probar_api_publica(token, org_id):
                 _loc or (r.text or "")[:180])
         for _m in re.findall(r"/users?/(\d+)", _loc or ""):
             uids.append(_m)
-        if not _loc and r.status_code == 200:
+        if r.status_code == 200:
+            # /me NO redirige: contesta 200 con el mismo patrón «entities» que el resto
+            # de la API —  {"item": 32171, "users": {"32171": {…}}}  — así que el userId
+            # es `item` (y la clave de `users`), no un campo `id` en la raíz.
             try:
                 _j = r.json()
+                if str(_j.get("item", "")).isdigit():
+                    uids.append(str(_j["item"]))
+                _us = _j.get("users")
+                if isinstance(_us, dict):
+                    uids += [str(k) for k in _us if str(k).isdigit()]
                 for _k in ("id", "userId", "user_id"):
                     if str(_j.get(_k, "")).isdigit():
                         uids.append(str(_j[_k]))
@@ -5932,15 +5940,30 @@ def sencrop_probar_api_publica(token, org_id):
     if _uid_secret:
         uids.append(_uid_secret)
     uids = [u for u in dict.fromkeys(uids) if u]
-    for _uid in uids[:6]:
-        _u = f"{SENCROP_API_BASE}/users/{_uid}/devices/{_sen['id']}/hourly"
-        _params = [("beforeDate", pd.Timestamp.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")),
-                   ("days", 2)] + [("measures", m) for m in _sen["measures"]]
-        try:
-            r = requests.get(_u, headers=headers, params=_params, timeout=30)
-            _apunta(f"Medidas con userId {_uid}", _u, r.status_code, r.text)
-        except Exception as e:
-            _apunta(f"Medidas con userId {_uid}", _u, None, str(e))
+    # La API mezcla singular y plural (el listado es /organisations/{id}/devices pero el
+    # detalle /organisation/{id}/device/{id}), y un 403 con error de firma AWS significa
+    # «esa ruta no existe». Así que se prueban las dos formas y dos endpoints distintos
+    # en vez de fiarlo todo al path que figura en la documentación.
+    _hoy = pd.Timestamp.now()
+    _p_hourly = [("beforeDate", _hoy.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
+                 ("days", 2)] + [("measures", m) for m in _sen["measures"]]
+    _p_stats = [("startDate", (_hoy - pd.Timedelta(days=2)).strftime("%Y-%m-%dT00:00:00.000Z")),
+                ("endDate", _hoy.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
+                ("interval", "hourly")] + [("measures", m) for m in _sen["measures"]]
+    for _uid in uids[:4]:
+        for _ruta, _params in [
+            (f"{SENCROP_API_BASE}/users/{_uid}/devices/{_sen['id']}/hourly", _p_hourly),
+            (f"{SENCROP_API_BASE}/user/{_uid}/device/{_sen['id']}/hourly", _p_hourly),
+            (f"{SENCROP_API_BASE}/users/{_uid}/devices/{_sen['id']}/statistics", _p_stats),
+            (f"{SENCROP_API_BASE}/user/{_uid}/device/{_sen['id']}/statistics", _p_stats),
+        ]:
+            try:
+                r = requests.get(_ruta, headers=headers, params=_params, timeout=30)
+                _apunta(f"Medidas · userId {_uid}", _ruta, r.status_code, r.text)
+                if r.status_code == 200:
+                    break        # ruta buena encontrada, no seguir probando este userId
+            except Exception as e:
+                _apunta(f"Medidas · userId {_uid}", _ruta, None, str(e))
     if not uids:
         _apunta("Medidas", "—", None, "No se encontró ningún userId candidato.")
     return pd.DataFrame(filas), uids
