@@ -5810,6 +5810,50 @@ def sencrop_listar_dispositivos(token, user_id):
     return pd.DataFrame(), _df_int, "Ninguna ruta devolvió una lista de dispositivos."
 
 
+def sencrop_detalle_dispositivos(token, ids, org_id):
+    """Detalle de cada dispositivo (nombre, referencia…) a partir de su ID.
+
+    `getOrganisationDevices` devuelve solo una **lista de IDs pelados**, sin nombre ni
+    referencia, así que no hay forma de saber cuál es cuál sin pedir el detalle de uno
+    en uno. Ojo a la ruta: el listado es plural (`/organisations/{id}/devices`) pero el
+    detalle es **singular** (`/organisation/{id}/device/{id}`) — así está en el cliente
+    oficial de Sencrop.
+    Devuelve (DataFrame, error)."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    filas, errs = [], []
+    for _id in ids:
+        for _u in (f"{SENCROP_API_BASE}/organisation/{org_id}/device/{_id}",
+                   f"{SENCROP_API_BASE}/organisations/{org_id}/devices/{_id}",
+                   f"{SENCROP_API_BASE}/devices/{_id}"):
+            try:
+                r = requests.get(_u, headers=headers, timeout=25)
+            except Exception as e:
+                errs.append(f"{_id}: {e}")
+                continue
+            if r.status_code != 200:
+                errs.append(f"{_id} → HTTP {r.status_code}: {(r.text or '')[:110]}")
+                continue
+            try:
+                d = r.json()
+            except Exception:
+                continue
+            if isinstance(d, dict):
+                for _k in ("device", "data", "response"):
+                    if isinstance(d.get(_k), dict):
+                        d = d[_k]
+                        break
+            d = dict(d) if isinstance(d, dict) else {"valor": d}
+            d["_id"] = _id
+            filas.append(d)
+            break
+    if not filas:
+        return pd.DataFrame(), (" · ".join(errs[:6]) if errs else "Sin detalle.")
+    try:
+        return pd.json_normalize(filas), None
+    except Exception:
+        return pd.DataFrame(filas), None
+
+
 def _sencrop_col_candidata(df, nombres):
     """Primera columna cuyo nombre contenga alguno de `nombres` (sin distinguir
     mayúsculas). Los nombres de campo de Sencrop no están garantizados, así que se
@@ -6081,6 +6125,21 @@ def render_sencrop_panel():
                      type="primary", use_container_width=True):
             _dev, _int, _derr = sencrop_listar_dispositivos(
                 st.session_state.sencrop_token, st.session_state.sencrop_user_id)
+            # El listado devuelve IDs pelados (una sola columna de números). En ese caso
+            # hay que pedir el detalle de cada uno para saber su referencia: sin nombre
+            # no se pueden casar con los sensores de la finca.
+            if _dev is not None and not _dev.empty and _dev.shape[1] <= 2:
+                _ids = []
+                for _c in _dev.columns:
+                    _ids += [str(v).strip() for v in _dev[_c].dropna().tolist()]
+                _ids = [i for i in dict.fromkeys(_ids) if i and i.lower() != "nan"]
+                if _ids:
+                    _det, _deterr = sencrop_detalle_dispositivos(
+                        st.session_state.sencrop_token, _ids[:20], _FC_ORG_ID)
+                    if _det is not None and not _det.empty:
+                        _dev = _det
+                    elif _deterr:
+                        _derr = (_derr or "") + f" · Detalle: {_deterr}"
             st.session_state["_sencrop_devices_df"] = _dev
             st.session_state["_sencrop_devices_try"] = _int
             st.session_state["_sencrop_devices_err"] = _derr
