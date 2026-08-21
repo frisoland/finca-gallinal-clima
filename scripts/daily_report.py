@@ -167,7 +167,12 @@ def refresh_sencrop_data(app, history):
         # devuelve vacío con rangos muy estrechos) y recorta la salida a lo pedido.
 
         print(f"  Descargando Sencrop {start_date} → {today}…")
-        # El user_id no se usa en el endpoint de medidas (usa organisationId/stationId).
+        # Se pasa user_id vacío A PROPÓSITO: desde el cambio a la API pública
+        # (21/08/2026) las medidas van por /users/{userId}/devices/{deviceId}/statistics
+        # y sencrop_download_all_sensors resuelve el userId preguntándoselo a Sencrop
+        # (/me). Así no depende del SENCROP_USER_ID de los Secrets, que estaba mal
+        # (51822 en vez de 32171). Antes esto era cierto por otro motivo: el endpoint
+        # interno iba por organisationId + stationId y el usuario no pintaba nada.
         # Sencrop suele estar INESTABLE a primera hora de la mañana (responde vacío
         # unos minutos). Reintentamos con esperas crecientes hasta ~7 min para
         # aguantar esas caídas. Las respuestas vacías son rápidas, así que esto cabe
