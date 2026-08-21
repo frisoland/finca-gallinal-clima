@@ -5492,29 +5492,45 @@ def sencrop_download_forecast_publica(token, user_id, device_id):
     _ahora = pd.Timestamp.now()
     _fmts = [_ahora.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
              _ahora.strftime("%Y-%m-%d"),
-             _ahora.strftime("%Y-%m-%dT00:00:00.000Z"),
-             _ahora.isoformat()]
-    data, _ultimo = None, ""
-    for _d in _fmts:
-        try:
-            r = requests.get(_url, timeout=40, params={"date": _d},
-                             headers={"Authorization": f"Bearer {token}",
-                                      "Accept": "application/json"})
-        except Exception as e:
-            _ultimo = f"Error de conexión: {e}"
-            continue
-        if r.status_code == 401:
-            return pd.DataFrame(), "TOKEN_EXPIRED"
-        if r.status_code != 200:
-            _ultimo = f"date={_d} → HTTP {r.status_code}: {(r.text or '')[:200]}"
-            continue
-        try:
-            data = r.json()
-            break
-        except Exception as e:
-            _ultimo = f"date={_d} → respuesta no es JSON: {e}"
-    if data is None:
-        return pd.DataFrame(), (_ultimo or "Sin respuesta de la API pública.")
+             _ahora.strftime("%Y-%m-%dT00:00:00.000Z")]
+    # Dos endpoints: el del dispositivo y el de coordenadas. Si el primero devuelve el
+    # 403 de firma AWS es que esa ruta no está mapeada, y entonces la única salida es
+    # pedir la previsión por lat/lon — que para una finca de 40 ha da lo mismo.
+    # Coordenadas literales a propósito: METEOSIX_COORDS se define mucho más abajo en el
+    # módulo y la autocarga del arranque llama a esta función antes de llegar ahí.
+    _lon, _lat = "-5.7985", "43.481583"      # El Gallinal (Serín, Gijón)
+    _intentos = []
+    for _u, _base in ((_url, {}),
+                      (f"{SENCROP_API_BASE}/users/{user_id}/forecasts",
+                       {"latitude": _lat, "longitude": _lon})):
+        for _d in _fmts:
+            _p = dict(_base)
+            _p["date"] = _d
+            try:
+                r = requests.get(_u, timeout=40, params=_p,
+                                 headers={"Authorization": f"Bearer {token}",
+                                          "Accept": "application/json"})
+            except Exception as e:
+                _intentos.append(f"{_u.split('/v1')[-1]} date={_d}: {e}")
+                continue
+            if r.status_code == 401:
+                return pd.DataFrame(), "TOKEN_EXPIRED"
+            if r.status_code != 200:
+                _intentos.append(f"{_u.split('/v1')[-1]} date={_d} → {r.status_code}: "
+                                 f"{(r.text or '')[:110]}")
+                continue
+            try:
+                data = r.json()
+                break
+            except Exception as e:
+                _intentos.append(f"{_u.split('/v1')[-1]} date={_d} → no es JSON: {e}")
+        else:
+            continue          # ningún formato funcionó con esta ruta: probar la siguiente
+        break
+    else:
+        # Se enseñan TODOS los intentos: con solo el último no se distingue «formato de
+        # fecha malo» de «esa ruta no existe», y son problemas distintos.
+        return pd.DataFrame(), " | ".join(_intentos[:6])
 
     # Buscar en profundidad listas de registros que tengan una fecha.
     _listas = []
