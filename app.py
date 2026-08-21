@@ -5464,6 +5464,102 @@ def _fc_station_id():
         return str(SENCROP_SENSORS[0]["id"])
 
 
+# Campos de la previsión de la API pública: el esquema los deja como «objeto libre»,
+# así que no se puede saber su nombre exacto de antemano. Se casan por PALABRA CLAVE.
+# El orden importa: «gust» y «direction» antes que «wind», y «temperature» después de
+# comprobar que no es punto de rocío.
+_FC_CLAVES = [
+    ("lluvia_mm",        ("rain", "precip")),
+    ("viento_rafaga",    ("gust",)),
+    ("viento_direccion", ("winddirection", "wind_direction", "direction")),
+    ("viento_velocidad", ("windspeed", "wind_speed", "wind")),
+    ("hr_media",         ("relativehumidity", "humidity")),
+    ("humectacion_hoja", ("leafwetness", "leaf")),
+    ("irradiancia",      ("irradiance", "radiation", "solar")),
+    ("temp_media",       ("temperature", "temp")),
+]
+
+
+def sencrop_download_forecast_publica(token, user_id, device_id):
+    """Previsión horaria por la **API pública** (`/users/{id}/devices/{id}/forecasts`).
+
+    El endpoint que se usaba (`infra.sencrop.com/app/forecast/…`) es interno y con API
+    key devuelve 200 con cero días, sin dar ningún error — fue lo que hizo parecer que
+    Sencrop estaba caído. Devuelve (DataFrame con CANONICAL_COLUMNS, error)."""
+    _url = f"{SENCROP_API_BASE}/users/{user_id}/devices/{device_id}/forecasts"
+    try:
+        r = requests.get(_url, timeout=40,
+                         params={"date": pd.Timestamp.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")},
+                         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+    except Exception as e:
+        return pd.DataFrame(), f"Error de conexión: {e}"
+    if r.status_code == 401:
+        return pd.DataFrame(), "TOKEN_EXPIRED"
+    if r.status_code != 200:
+        return pd.DataFrame(), f"HTTP {r.status_code}: {(r.text or '')[:220]}"
+    try:
+        data = r.json()
+    except Exception as e:
+        return pd.DataFrame(), f"Respuesta no es JSON: {e}"
+
+    # Buscar en profundidad listas de registros que tengan una fecha.
+    _listas = []
+
+    def _walk(o):
+        if isinstance(o, list):
+            if o and isinstance(o[0], dict) and any(
+                    k for k in o[0] if "date" in str(k).lower() or "time" in str(k).lower()):
+                _listas.append(o)
+            else:
+                for it in o:
+                    _walk(it)
+        elif isinstance(o, dict):
+            for v in o.values():
+                _walk(v)
+
+    _walk(data.get("forecasts") if isinstance(data, dict) else data)
+    if not _listas:
+        _f = data.get("forecasts") if isinstance(data, dict) else None
+        return pd.DataFrame(), (f"RAW (sin series de previsión; forecasts="
+                                f"{type(_f).__name__}): {str(_f)[:320]}")
+    filas = []
+    for _l in _listas:
+        for it in _l:
+            if not isinstance(it, dict):
+                continue
+            _fc = next((k for k in it if "date" in str(k).lower() or "time" in str(k).lower()), None)
+            _ts = pd.to_datetime(it.get(_fc), errors="coerce", utc=True)
+            if pd.isna(_ts):
+                continue
+            try:
+                _ts = _ts.tz_convert("Europe/Madrid").tz_localize(None)
+            except Exception:
+                _ts = _ts.tz_localize(None)
+            _row = {"fecha_hora": _ts}
+            _plano = dict(it)
+            if isinstance(it.get("metrics"), dict):      # forma del endpoint interno
+                _plano.update(it["metrics"])
+            for _k, _v in _plano.items():
+                _kl = str(_k).lower().replace(" ", "")
+                if _k == _fc or isinstance(_v, (dict, list)):
+                    continue
+                for _col, _pistas in _FC_CLAVES:
+                    if any(p in _kl for p in _pistas):
+                        if _col not in _row:
+                            _row[_col] = _sencrop_valor_medida(_v)
+                        break
+            if len(_row) > 1:
+                filas.append(_row)
+    if not filas:
+        return pd.DataFrame(), f"RAW (previsión sin campos reconocidos): {str(_listas[0][0])[:320]}"
+    df = pd.DataFrame(filas)
+    for col in CANONICAL_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+    df = df[CANONICAL_COLUMNS].copy()
+    return df.sort_values("fecha_hora").drop_duplicates("fecha_hora").reset_index(drop=True), None
+
+
 def sencrop_download_forecast(token, model="sencrop"):
     """
     Descarga la predicción meteorológica horaria de Sencrop.
@@ -5483,6 +5579,20 @@ def sencrop_download_forecast(token, model="sencrop"):
 
     Devuelve (df, error) con columnas CANONICAL_COLUMNS.
     """
+    # LA API PÚBLICA PRIMERO. El endpoint interno de abajo devuelve 200 con cero días
+    # cuando se le llama con API key — sin error, solo vacío — y eso fue lo que hizo
+    # creer durante una mañana que Sencrop estaba caído. Solo se cae a él si la pública
+    # no responde, para no romper una instalación que aún vaya con token manual.
+    if model != "meteoblue":
+        _uid = sencrop_user_id_real(token)
+        if _uid:
+            _df_pub, _err_pub = sencrop_download_forecast_publica(
+                token, _uid, _fc_station_id())
+            if _df_pub is not None and not _df_pub.empty:
+                return _df_pub, None
+            if _err_pub and str(_err_pub).startswith("RAW"):
+                return pd.DataFrame(), _err_pub      # formato inesperado: hay que verlo
+
     headers = {
         "Authorization": f"Bearer {token}",
         "Origin":        "https://app.sencrop.com",
