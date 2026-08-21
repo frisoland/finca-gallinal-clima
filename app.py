@@ -6001,8 +6001,17 @@ def sencrop_get_statistics_publica(token, user_id, device_id, start_date, end_da
         data = r.json()
     except Exception as e:
         return pd.DataFrame(), f"Respuesta no es JSON: {e}"
+    # OJO A LA DIFERENCIA: «no hay datos en ese rango» y «la respuesta no tiene la forma
+    # que espero» son cosas distintas, y tragarse la segunda como si fuera la primera
+    # deja un «no se obtuvieron datos» que no dice nada. Solo es «sin datos» si la clave
+    # existe y viene vacía; si no existe, se devuelve el principio de la respuesta.
     items = data.get("measures") if isinstance(data, dict) else None
-    if not isinstance(items, list) or not items:
+    if items is None and isinstance(data, dict):
+        return pd.DataFrame(), (f"RAW (sin clave «measures»; claves: {list(data)[:8]}): "
+                                f"{str(data)[:400]}")
+    if not isinstance(items, list):
+        return pd.DataFrame(), f"RAW («measures» no es una lista): {str(items)[:300]}"
+    if not items:
         return pd.DataFrame(), None          # sin datos en ese rango, no es un error
     filas = []
     for it in items:
@@ -6054,8 +6063,11 @@ def sencrop_probar_api_publica(token, org_id):
     filas, uids = [], []
 
     def _apunta(que, url, st_, txt):
+        # 600 caracteres, no 180: con 180 la respuesta de medidas se cortaba antes de
+        # enseñar un solo registro, que es justo lo que hace falta ver para saber cómo
+        # se llaman los campos.
         filas.append({"Paso": que, "Ruta": str(url).replace(SENCROP_API_BASE, "…/v1"),
-                      "HTTP": st_ if st_ is not None else "—", "Respuesta": (txt or "")[:180]})
+                      "HTTP": st_ if st_ is not None else "—", "Respuesta": (txt or "")[:600]})
 
     # 1) /me → redirección a /users/{id}
     try:
@@ -6109,26 +6121,29 @@ def sencrop_probar_api_publica(token, org_id):
     # detalle /organisation/{id}/device/{id}), y un 403 con error de firma AWS significa
     # «esa ruta no existe». Así que se prueban las dos formas y dos endpoints distintos
     # en vez de fiarlo todo al path que figura en la documentación.
+    # Ruta y parámetros ya CONFIRMADOS con la especificación oficial (openapi.api.json):
+    # /users/{id}/devices/{id}/statistics, enum de medidas en MAYÚSCULAS e interval=1h.
+    # Se prueban varias ventanas porque «200 sin datos» también sale si el rango no pilla
+    # registros, y eso no hay que confundirlo con un problema de formato.
     _hoy = pd.Timestamp.now()
-    _p_hourly = [("beforeDate", _hoy.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
-                 ("days", 2)] + [("measures", m) for m in _sen["measures"]]
-    _p_stats = [("startDate", (_hoy - pd.Timedelta(days=2)).strftime("%Y-%m-%dT00:00:00.000Z")),
+    _enums = []
+    for m in _sen["measures"]:
+        _enums += _SENCROP_MEASURE_TO_ENUM.get(m, [])
+    for _uid in uids[:3]:
+        for _dias, _iv in ((2, "1h"), (7, "1h"), (7, "1d")):
+            _ruta = f"{SENCROP_API_BASE}/users/{_uid}/devices/{_sen['id']}/statistics"
+            _params = [
+                ("startDate", (_hoy - pd.Timedelta(days=_dias)).strftime("%Y-%m-%dT00:00:00.000Z")),
                 ("endDate", _hoy.strftime("%Y-%m-%dT%H:%M:%S.000Z")),
-                ("interval", "hourly")] + [("measures", m) for m in _sen["measures"]]
-    for _uid in uids[:4]:
-        for _ruta, _params in [
-            (f"{SENCROP_API_BASE}/users/{_uid}/devices/{_sen['id']}/hourly", _p_hourly),
-            (f"{SENCROP_API_BASE}/user/{_uid}/device/{_sen['id']}/hourly", _p_hourly),
-            (f"{SENCROP_API_BASE}/users/{_uid}/devices/{_sen['id']}/statistics", _p_stats),
-            (f"{SENCROP_API_BASE}/user/{_uid}/device/{_sen['id']}/statistics", _p_stats),
-        ]:
+                ("interval", _iv), ("timeZone", "Europe/Madrid"),
+            ] + [("measures", e) for e in dict.fromkeys(_enums)]
             try:
                 r = requests.get(_ruta, headers=headers, params=_params, timeout=30)
-                _apunta(f"Medidas · userId {_uid}", _ruta, r.status_code, r.text)
-                if r.status_code == 200:
-                    break        # ruta buena encontrada, no seguir probando este userId
+                _apunta(f"Medidas · uid {_uid} · {_dias}d · {_iv}", _ruta, r.status_code, r.text)
+                if r.status_code == 200 and '"measures":[{' in (r.text or "").replace(" ", ""):
+                    break        # ya trae registros: no hace falta seguir probando
             except Exception as e:
-                _apunta(f"Medidas · userId {_uid}", _ruta, None, str(e))
+                _apunta(f"Medidas · uid {_uid} · {_dias}d · {_iv}", _ruta, None, str(e))
     if not uids:
         _apunta("Medidas", "—", None, "No se encontró ningún userId candidato.")
     return pd.DataFrame(filas), uids
