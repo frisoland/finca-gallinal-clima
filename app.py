@@ -6062,12 +6062,31 @@ def sencrop_probar_api_publica(token, org_id):
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     filas, uids = [], []
 
+    def _resumen(txt):
+        """Enseñar lo que IMPORTA, no el principio. La respuesta de medidas empieza con
+        los metadatos del modelo del aparato («Raincrop», diámetro, etc.) y se comía los
+        600 caracteres antes de llegar a «measures», que es justo lo que hay que ver
+        para saber cómo se llaman los campos de cada registro."""
+        try:
+            import json as _json
+            j = _json.loads(txt)
+        except Exception:
+            return (txt or "")[:600]
+        if not isinstance(j, dict):
+            return str(j)[:600]
+        _p = [f"claves={list(j)[:10]}"]
+        _m = j.get("measures")
+        if isinstance(_m, list):
+            _p.append(f"measures={len(_m)} registros")
+            if _m:
+                _p.append(f"1º registro: {str(_m[0])[:420]}")
+        else:
+            _p.append(str(j)[:300])
+        return " · ".join(_p)
+
     def _apunta(que, url, st_, txt):
-        # 600 caracteres, no 180: con 180 la respuesta de medidas se cortaba antes de
-        # enseñar un solo registro, que es justo lo que hace falta ver para saber cómo
-        # se llaman los campos.
         filas.append({"Paso": que, "Ruta": str(url).replace(SENCROP_API_BASE, "…/v1"),
-                      "HTTP": st_ if st_ is not None else "—", "Respuesta": (txt or "")[:600]})
+                      "HTTP": st_ if st_ is not None else "—", "Respuesta": _resumen(txt)})
 
     # 1) /me → redirección a /users/{id}
     try:
