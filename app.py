@@ -5528,6 +5528,21 @@ def sencrop_download_forecast_publica(token, user_id, device_id):
             continue          # ningún formato funcionó con esta ruta: probar la siguiente
         break
     else:
+        # Si TODAS las llamadas devuelven el 403 de firma AWS, no es un problema de
+        # parámetros: esas rutas no están mapeadas en el gateway. Comprobado el
+        # 21/08/2026 con las dos rutas documentadas (por dispositivo y por coordenadas)
+        # y tres formatos de fecha — seis de seis. La previsión no está disponible con
+        # API key de aplicación, aunque el histórico sí lo esté. Un muro con las seis
+        # respuestas no aporta nada; lo que hace falta es saber qué se puede hacer.
+        if _intentos and all("missing equal-sign" in i for i in _intentos):
+            return pd.DataFrame(), (
+                "NO_DISPONIBLE: la previsión de Sencrop **no está disponible con API key "
+                "de aplicación** — sus rutas de previsión no existen para este tipo de "
+                "credencial (403 en las dos documentadas, con todos los formatos de "
+                "fecha). El **histórico sí funciona** y sigue actualizándose solo. "
+                "Para recuperar el riesgo previsto hay dos caminos: pedir a Sencrop que "
+                "habilite la previsión para tu API key, o calcularlo con MeteoGalicia, "
+                "que ya usamos para la lluvia y también sirve temperatura y humedad.")
         # Se enseñan TODOS los intentos: con solo el último no se distingue «formato de
         # fecha malo» de «esa ruta no existe», y son problemas distintos.
         return pd.DataFrame(), " | ".join(_intentos[:6])
