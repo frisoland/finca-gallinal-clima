@@ -5960,6 +5960,36 @@ def _sencrop_valor_medida(v):
         return np.nan
 
 
+def _sencrop_series_respuesta(data):
+    """Registros de medida de una respuesta de `statistics`, sea cual sea su forma.
+
+    Esta API envuelve casi todo en diccionarios indexados por id, y `measures` no es una
+    excepción: puede llegar como lista de registros (cada uno con todas las medidas
+    dentro) o como diccionario indexado por medida o por dispositivo, con una serie
+    cada uno. En vez de dar por buena una forma concreta, se recorre la respuesta en
+    profundidad buscando **listas de objetos que tengan `key`** (el instante), y se
+    recuerda bajo qué clave de medida colgaba cada una.
+
+    Devuelve una lista de (enum_medida_o_None, lista_de_registros).
+    """
+    _out = []
+
+    def _walk(o, ctx):
+        if isinstance(o, list):
+            if o and isinstance(o[0], dict) and "key" in o[0]:
+                _out.append((ctx, o))
+            else:
+                for it in o:
+                    _walk(it, ctx)
+        elif isinstance(o, dict):
+            for k, v in o.items():
+                _k = str(k).strip().upper()
+                _walk(v, _k if _k in SENCROP_PUBLIC_MEASURE_MAP else ctx)
+
+    _walk(data, None)
+    return _out
+
+
 def sencrop_get_statistics_publica(token, user_id, device_id, start_date, end_date, measures):
     """Medidas horarias por la **API pública** (api.sencrop.com/v1).
 
@@ -6001,43 +6031,52 @@ def sencrop_get_statistics_publica(token, user_id, device_id, start_date, end_da
         data = r.json()
     except Exception as e:
         return pd.DataFrame(), f"Respuesta no es JSON: {e}"
-    # OJO A LA DIFERENCIA: «no hay datos en ese rango» y «la respuesta no tiene la forma
-    # que espero» son cosas distintas, y tragarse la segunda como si fuera la primera
-    # deja un «no se obtuvieron datos» que no dice nada. Solo es «sin datos» si la clave
-    # existe y viene vacía; si no existe, se devuelve el principio de la respuesta.
-    items = data.get("measures") if isinstance(data, dict) else None
-    if items is None and isinstance(data, dict):
-        return pd.DataFrame(), (f"RAW (sin clave «measures»; claves: {list(data)[:8]}): "
-                                f"{str(data)[:400]}")
-    if not isinstance(items, list):
-        return pd.DataFrame(), f"RAW («measures» no es una lista): {str(items)[:300]}"
-    if not items:
-        return pd.DataFrame(), None          # sin datos en ese rango, no es un error
-    filas = []
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        _k = it.get("key")
-        try:
-            # `key` es epoch en milisegundos; se pasa a hora local de la finca.
-            _ts = pd.to_datetime(float(_k), unit="ms", utc=True).tz_convert(
-                "Europe/Madrid").tz_localize(None)
-        except Exception:
-            _ts = pd.to_datetime(_k, errors="coerce")
-        if pd.isna(_ts):
-            continue
-        _row = {"fecha_hora": _ts}
-        for _kk, _vv in it.items():
-            if _kk in ("key", "docCount"):
+    _series = _sencrop_series_respuesta(data)
+    if not _series:
+        # «No hay datos en ese rango» y «no entiendo la respuesta» son cosas distintas:
+        # confundirlas deja un «no se obtuvieron datos» que no explica nada. Si la clave
+        # existe pero viene vacía es lo primero; si no hay ninguna serie, lo segundo.
+        _m = data.get("measures") if isinstance(data, dict) else None
+        if isinstance(_m, (list, dict)) and len(_m) == 0:
+            return pd.DataFrame(), None      # sin registros en ese rango: correcto
+        return pd.DataFrame(), (f"RAW (claves={list(data)[:8] if isinstance(data, dict) else '?'}; "
+                                f"measures={type(_m).__name__}): {str(_m)[:320]}")
+    # Fusionar por instante: cada serie puede traer una medida (si colgaba de su propia
+    # clave) o varias dentro de cada registro.
+    _por_ts = {}
+    for _ctx, _lista in _series:
+        for it in _lista:
+            if not isinstance(it, dict):
                 continue
-            _col = SENCROP_PUBLIC_MEASURE_MAP.get(str(_kk).strip().upper())
-            if _col:
-                _row[_col] = _sencrop_valor_medida(_vv)
-        if len(_row) > 1:
-            filas.append(_row)
+            try:
+                # `key` es epoch en milisegundos; se pasa a hora local de la finca.
+                _ts = pd.to_datetime(float(it.get("key")), unit="ms", utc=True).tz_convert(
+                    "Europe/Madrid").tz_localize(None)
+            except Exception:
+                _ts = pd.to_datetime(it.get("key"), errors="coerce")
+            if pd.isna(_ts):
+                continue
+            _row = _por_ts.setdefault(_ts, {"fecha_hora": _ts})
+            _puesto = False
+            for _kk, _vv in it.items():
+                if _kk in ("key", "docCount"):
+                    continue
+                _col = SENCROP_PUBLIC_MEASURE_MAP.get(str(_kk).strip().upper())
+                if _col:
+                    _row[_col] = _sencrop_valor_medida(_vv)
+                    _puesto = True
+            if not _puesto and _ctx:
+                # La medida no está en el registro: la da la clave que lo contenía.
+                _col = SENCROP_PUBLIC_MEASURE_MAP.get(_ctx)
+                if _col:
+                    for _kk in ("value", "avg", "average", "mean", "sum", "last", "val"):
+                        if _kk in it:
+                            _row[_col] = _sencrop_valor_medida(it[_kk])
+                            break
+    filas = [r for r in _por_ts.values() if len(r) > 1]
     if not filas:
-        # Llegaron registros pero ningún campo casó con el mapeo: hay que verlos.
-        return pd.DataFrame(), f"RAW: {str(items[0])[:300]}"
+        _ej = _series[0][1][0] if _series and _series[0][1] else {}
+        return pd.DataFrame(), f"RAW (ningún campo reconocido) 1º registro: {str(_ej)[:320]}"
     df = pd.DataFrame(filas)
     for col in CANONICAL_COLUMNS:
         if col not in df.columns:
@@ -6077,11 +6116,22 @@ def sencrop_probar_api_publica(token, org_id):
         _p = [f"claves={list(j)[:10]}"]
         _m = j.get("measures")
         if isinstance(_m, list):
-            _p.append(f"measures={len(_m)} registros")
+            _p.append(f"measures = lista de {len(_m)}")
             if _m:
-                _p.append(f"1º registro: {str(_m[0])[:420]}")
+                _p.append(f"1º: {str(_m[0])[:380]}")
+        elif isinstance(_m, dict):
+            # Esta API indexa casi todo por id, así que «measures» suele ser un dict.
+            _p.append(f"measures = dict, claves {list(_m)[:6]}")
+            if _m:
+                _k0 = list(_m)[0]
+                _v0 = _m[_k0]
+                if isinstance(_v0, list):
+                    _p.append(f"['{_k0}'] = lista de {len(_v0)}"
+                              + (f"; 1º: {str(_v0[0])[:320]}" if _v0 else ""))
+                else:
+                    _p.append(f"['{_k0}'] = {str(_v0)[:320]}")
         else:
-            _p.append(str(j)[:300])
+            _p.append(f"measures = {type(_m).__name__}: {str(_m)[:260]}")
         return " · ".join(_p)
 
     def _apunta(que, url, st_, txt):
