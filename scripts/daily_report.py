@@ -469,6 +469,16 @@ def main():
         except Exception:
             _mg_msg = "MeteoGalicia 1km: error"
         print(f"Previsión de riesgo archivada (Sencrop si hay + WRF9 Windguru + {_mg_msg}).")
+        # Serie HORARIA de MeteoGalicia (temperatura, HR y lluvia). Solo se puede hacer
+        # desde aquí: Streamlit Cloud no consigue conectar con MeteoGalicia. Es únicamente
+        # recogida de datos — no cambia nada de lo que se ve — para poder decidir con
+        # hechos si MeteoGalicia puede sustituir a la previsión de Sencrop, que dejó de
+        # estar disponible con API key el 19/08/2026.
+        try:
+            _ok_h, _msg_h = app.archive_mg_hourly_forecast()
+            print(f"  MeteoGalicia horaria: {'OK' if _ok_h else 'no archivada'} — {_msg_h}")
+        except Exception as _eh:
+            print(f"  MeteoGalicia horaria: error — {_eh}")
     except Exception as _e:
         print(f"  (archivado de previsión falló: {_e})")
 

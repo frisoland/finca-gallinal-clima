@@ -23657,6 +23657,85 @@ def meteosix_wrf_daily_rain_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "
         return {}, f"{_n}: {str(_ex)[:110]}"
 
 
+# Variables de MeteoSIX → columnas canónicas de la app. Los tres vienen del MISMO
+# endpoint que ya usábamos para la lluvia: no hay que aprender otra API.
+METEOSIX_VARS = {
+    "temperature":         "temp_media",
+    "relative_humidity":   "hr_media",
+    "precipitation_amount": "lluvia_mm",
+}
+
+
+def meteosix_wrf_hourly_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km")):
+    """Serie **HORARIA** de temperatura, HR y lluvia del WRF de MeteoGalicia.
+
+    `meteosix_wrf_daily_rain_diag` ya recibía valores hora a hora y los **sumaba** para
+    dar el total del día: la serie horaria estaba ahí y se tiraba. Aquí se conserva, y
+    se piden además temperatura y humedad, que son las entradas del modelo de infección.
+
+    Para qué: la previsión archivada solo guarda ÍNDICES de riesgo (Mills, monilia), que
+    se calculan pasando temperatura y HR por nuestro estimador de hoja mojada. Cuando un
+    aviso falla no se puede saber si se equivocó la previsión o el estimador — y sabemos
+    que el estimador da ~1,65× las horas que mide el sensor. Guardando temperatura y HR
+    previstas se podrán comparar contra el sensor **sin el estimador de por medio**.
+
+    Devuelve (DataFrame[fecha_hora, temp_media, hr_media, lluvia_mm], motivo_del_fallo).
+    """
+    key = _get_meteosix_key()
+    if not key:
+        return pd.DataFrame(), "falta la API key (secret METEOSIX_API_KEY)"
+    _ultimo = ""
+    try:
+        for grid in grids:
+            params = {"coords": coords, "variables": ",".join(METEOSIX_VARS),
+                      "models": "wrf", "grids": grid, "API_KEY": key}
+            r = requests.get(METEOSIX_URL, params=params, timeout=(5, 20))
+            if r.status_code != 200:
+                _ultimo = f"malla {grid}: HTTP {r.status_code}"
+                continue
+            js = r.json()
+            if not isinstance(js, dict):
+                _ultimo = f"malla {grid}: respuesta inesperada"
+                continue
+            if "exception" in js:
+                _e = js.get("exception") or {}
+                _ultimo = f"malla {grid}: API {_e.get('code','?')} — {str(_e.get('message',''))[:110]}"
+                continue
+            _filas = {}
+            for feat in js.get("features", []):
+                for day in feat.get("properties", {}).get("days", []):
+                    for var in day.get("variables", []):
+                        _col = METEOSIX_VARS.get(var.get("name"))
+                        if not _col:
+                            continue
+                        for v in var.get("values", []):
+                            _val, _ti = v.get("value"), v.get("timeInstant")
+                            if _val is None or not _ti:
+                                continue
+                            # timeInstant viene en hora LOCAL con offset ("…T11:00:00+02").
+                            _ts = pd.to_datetime(_ti, errors="coerce")
+                            if pd.isna(_ts):
+                                continue
+                            try:
+                                _ts = _ts.tz_localize(None)
+                            except Exception:
+                                pass
+                            _filas.setdefault(_ts, {"fecha_hora": _ts})[_col] = float(_val)
+            if _filas:
+                df = pd.DataFrame(list(_filas.values())).sort_values("fecha_hora")
+                return df.reset_index(drop=True), ""
+            _ultimo = f"malla {grid}: sin valores"
+        return pd.DataFrame(), (_ultimo or "sin datos")
+    except Exception as _ex:
+        _n = type(_ex).__name__
+        if _n in ("ConnectTimeout", "ConnectionError", "NewConnectionError", "MaxRetryError"):
+            return pd.DataFrame(), ("el servidor de MeteoGalicia no responde (servicio caído "
+                                    "o inaccesible). No es tu API key")
+        if "Timeout" in _n:
+            return pd.DataFrame(), "el servidor de MeteoGalicia tardó demasiado en responder"
+        return pd.DataFrame(), f"{_n}: {str(_ex)[:110]}"
+
+
 def meteosix_wrf_daily_rain(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km")):
     """{fecha_normalizada: mm} de lluvia prevista por el WRF de MeteoGalicia (~3,5 días,
     malla 1 km oficial en el punto exacto de la finca). Prueba mallas de fina a gruesa
@@ -23673,6 +23752,83 @@ def meteosix_wrf_daily_rain_cached():
 
 
 SUPABASE_FORECAST_ARCHIVE_PATH = "forecast_risk_archive.parquet"
+SUPABASE_MG_HOURLY_PATH = "forecast_mg_hourly.parquet"
+
+
+def load_mg_hourly_archive():
+    """Previsiones HORARIAS de MeteoGalicia archivadas (temperatura, HR, lluvia).
+
+    Archivo aparte del de riesgo: aquí la fila es una HORA, no un día, y el objetivo es
+    otro — poder comparar la previsión con el sensor sin el estimador de mojadura de por
+    medio. Columnas: issue_date · target_dt · horizon_h · mg_temp · mg_hr · mg_rain."""
+    if not supabase_is_configured():
+        return pd.DataFrame()
+    try:
+        url, key = get_supabase_credentials()
+        endpoint = (f"{url.rstrip('/')}/storage/v1/object/"
+                    f"{SUPABASE_SNAPSHOT_BUCKET}/{SUPABASE_MG_HOURLY_PATH}")
+        r = requests.get(endpoint, headers={"apikey": key, "Authorization": f"Bearer {key}"},
+                         timeout=60)
+        if r.status_code != 200 or not r.content:
+            return pd.DataFrame()
+        return pd.read_parquet(io.BytesIO(r.content), engine="pyarrow")
+    except Exception:
+        return pd.DataFrame()
+
+
+def archive_mg_hourly_forecast():
+    """Guarda (1 vez al día) la previsión horaria de MeteoGalicia para poder medirla.
+
+    Solo corre de verdad desde el informe diario: Streamlit Cloud no consigue conectar
+    con MeteoGalicia (nos bloquean las IPs de centro de datos), así que desde la app
+    esto no hace nada y no molesta.
+
+    Se guarda **sin tocar nada de lo que se ve**: es únicamente recogida de datos, para
+    poder decidir con hechos si MeteoGalicia puede sustituir a la previsión de Sencrop
+    —que dejó de estar disponible el 19/08/2026— en vez de apostar. Con dos semanas se
+    ve la tendencia; con un mes se decide.
+    """
+    try:
+        if not supabase_is_configured():
+            return False, "Supabase no configurado."
+        _hoy = pd.Timestamp.now().normalize()
+        _issue = _hoy.strftime("%Y-%m-%d")
+        df, err = meteosix_wrf_hourly_diag()
+        if df is None or df.empty:
+            return False, err or "sin datos de MeteoGalicia"
+        d = df.copy()
+        d["fecha_hora"] = pd.to_datetime(d["fecha_hora"], errors="coerce")
+        d = d.dropna(subset=["fecha_hora"])
+        # Fuera las horas ya pasadas: no son previsión, son el día en curso a medias.
+        # Es el mismo error de horizonte 0 que falseó el archivo de riesgo en agosto.
+        d = d[d["fecha_hora"] > pd.Timestamp.now()]
+        if d.empty:
+            return False, "la previsión de MeteoGalicia no cubre ninguna hora futura"
+        out = pd.DataFrame({
+            "issue_date": _issue,
+            "target_dt": d["fecha_hora"],
+            "horizon_h": ((d["fecha_hora"] - pd.Timestamp.now()).dt.total_seconds() // 3600).astype(int),
+            "mg_temp": pd.to_numeric(d.get("temp_media"), errors="coerce"),
+            "mg_hr": pd.to_numeric(d.get("hr_media"), errors="coerce"),
+            "mg_rain": pd.to_numeric(d.get("lluvia_mm"), errors="coerce"),
+        })
+        old = load_mg_hourly_archive()
+        if old is not None and not old.empty:
+            out = pd.concat([old, out], ignore_index=True)
+            out = out.drop_duplicates(subset=["issue_date", "target_dt"], keep="last")
+        buf = io.BytesIO()
+        out.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
+        buf.seek(0)
+        endpoint = climate_snapshot_storage_url(SUPABASE_MG_HOURLY_PATH)
+        headers = supabase_headers()
+        headers["Content-Type"] = "application/octet-stream"
+        headers["x-upsert"] = "true"
+        r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        if r.status_code in (200, 201):
+            return True, f"{len(d)} horas archivadas (total {len(out)})."
+        return False, f"HTTP {r.status_code} al subir."
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:120]}"
 
 
 def upload_forecast_archive(df):
@@ -23854,6 +24010,62 @@ def archive_today_forecast(history_df, forecast_df):
                 pass
     except Exception:
         pass
+
+
+def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84):
+    """Compara la previsión HORARIA de MeteoGalicia con lo que midió el sensor.
+
+    Esta comparación es distinta de la del panel de fiabilidad, y a propósito: allí se
+    miden ÍNDICES de riesgo, que salen de pasar temperatura y HR por nuestro estimador
+    de hoja mojada. Cuando un aviso falla no se sabe de quién es la culpa. Aquí se
+    comparan las variables **crudas** contra el sensor, sin el estimador de por medio.
+
+    De cada hora se toma la emisión más reciente (horizonte más corto). Devuelve
+    (DataFrame por tramo de antelación, meta) o (None, meta)."""
+    try:
+        if archive_df is None:
+            archive_df = load_mg_hourly_archive()
+        if archive_df is None or archive_df.empty or history_df is None or history_df.empty:
+            return None, {"n": 0}
+        a = archive_df.copy()
+        a["target_dt"] = pd.to_datetime(a.get("target_dt"), errors="coerce")
+        a["horizon_h"] = pd.to_numeric(a.get("horizon_h"), errors="coerce")
+        a = a.dropna(subset=["target_dt"])
+        a = a[(a["horizon_h"] >= 1) & (a["horizon_h"] <= max_h)]
+        if a.empty:
+            return None, {"n": 0}
+        a = a.sort_values("horizon_h").drop_duplicates("target_dt", keep="first")
+        h = history_df.copy()
+        h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+        h = h.dropna(subset=["fecha_hora"])
+        m = a.merge(h[["fecha_hora", "temp_media", "hr_media", "lluvia_mm"]],
+                    left_on="target_dt", right_on="fecha_hora", how="inner")
+        if m.empty:
+            return None, {"n": 0, "pendiente": len(a)}
+        # Tramos de antelación: importa más acertar a 1 día que a 3.
+        m["tramo"] = pd.cut(m["horizon_h"], [0, 24, 48, 84],
+                            labels=["≤1 día", "1-2 días", "2-3,5 días"])
+        filas = []
+        for _t, g in m.groupby("tramo", observed=True):
+            _f = {"Antelación": str(_t), "Horas": len(g)}
+            for _p, _r, _n in (("mg_temp", "temp_media", "Temp"),
+                               ("mg_hr", "hr_media", "HR"),
+                               ("mg_rain", "lluvia_mm", "Lluvia")):
+                _d = pd.to_numeric(g[_p], errors="coerce") - pd.to_numeric(g[_r], errors="coerce")
+                _d = _d.dropna()
+                if _d.empty:
+                    _f[f"{_n} sesgo"], _f[f"{_n} error"] = "—", "—"
+                else:
+                    # Sesgo = se pasa o se queda corto (con signo). Error = cuánto se
+                    # equivoca de media, sin signo. Los dos hacen falta: un sesgo de 0
+                    # puede esconder errores grandes que se compensan.
+                    _f[f"{_n} sesgo"] = f"{_d.mean():+.1f}"
+                    _f[f"{_n} error"] = f"{_d.abs().mean():.1f}"
+            filas.append(_f)
+        return pd.DataFrame(filas), {"n": len(m), "desde": m["target_dt"].min(),
+                                     "hasta": m["target_dt"].max()}
+    except Exception:
+        return None, {"n": 0}
 
 
 def forecast_reliability(history_df, archive_df=None):
@@ -25860,6 +26072,41 @@ def render_decisiones_panel():
                     "⚠️ Nada de esto está aplicado: es solo el análisis. Cambiar a corrección "
                     "de sesgo implicaría tocar el valor que se muestra en toda la app, así que "
                     "conviene decidirlo con la comparativa delante y con más días archivados.")
+
+        with st.expander("🌍 ¿Sirve MeteoGalicia para sustituir la previsión de Sencrop?"):
+            st.caption(
+                "Sencrop dejó de servir previsión con nuestra API key el **19/08/2026**. "
+                "Aquí se acumula, día a día, la previsión **horaria** de MeteoGalicia "
+                "(temperatura, humedad y lluvia) y se compara con lo que midió tu sensor "
+                "cuando llega la hora. **No se compara con Sencrop** — ya no genera "
+                "previsión, así que esa comparación cara a cara se perdió. Lo que se mide "
+                "es si MeteoGalicia es lo bastante buena por sí sola.\n\n"
+                "A diferencia del panel de arriba, aquí **no interviene el estimador de "
+                "hoja mojada**: se comparan las variables crudas. Así se puede separar por "
+                "fin el error de la previsión del error de nuestro estimador.")
+            _mgh, _meta_h = mg_hourly_vs_sensor(history_df)
+            if _mgh is not None and not _mgh.empty:
+                st.dataframe(_mgh, use_container_width=True, hide_index=True)
+                st.caption(
+                    f"**{_meta_h['n']} horas** comparadas "
+                    f"({_meta_h['desde']:%d/%m} → {_meta_h['hasta']:%d/%m}). · **Sesgo** = "
+                    "si se pasa (+) o se queda corta (−) de media. · **Error** = cuánto se "
+                    "equivoca de media sin mirar el signo. Hacen falta los dos: un sesgo de "
+                    "0 puede esconder errores grandes que se compensan entre sí. · "
+                    "Temperatura en °C, humedad en %, lluvia en mm.")
+                if _meta_h["n"] < 200:
+                    st.info("⏳ Muestra aún pequeña. Con **2 semanas** se ve la tendencia; "
+                            "con un mes se puede decidir.")
+            else:
+                _pend = (_meta_h or {}).get("pendiente")
+                st.info(
+                    "Todavía no hay nada que comparar."
+                    + (f" Hay **{_pend}** horas archivadas esperando a que llegue su momento."
+                       if _pend else "")
+                    + "\n\nEl archivado lo hace el **informe diario** (GitHub Actions), porque "
+                      "la app no puede consultar MeteoGalicia directamente. Empieza a llenarse "
+                      "la primera vez que corra, y las horas solo se pueden comparar cuando "
+                      "pasan y el sensor mide de verdad.")
 
         with st.expander("🗑️ Reiniciar archivo de fiabilidad (empezar de cero)"):
             st.caption(
