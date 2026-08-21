@@ -5487,20 +5487,34 @@ def sencrop_download_forecast_publica(token, user_id, device_id):
     key devuelve 200 con cero días, sin dar ningún error — fue lo que hizo parecer que
     Sencrop estaba caído. Devuelve (DataFrame con CANONICAL_COLUMNS, error)."""
     _url = f"{SENCROP_API_BASE}/users/{user_id}/devices/{device_id}/forecasts"
-    try:
-        r = requests.get(_url, timeout=40,
-                         params={"date": pd.Timestamp.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")},
-                         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
-    except Exception as e:
-        return pd.DataFrame(), f"Error de conexión: {e}"
-    if r.status_code == 401:
-        return pd.DataFrame(), "TOKEN_EXPIRED"
-    if r.status_code != 200:
-        return pd.DataFrame(), f"HTTP {r.status_code}: {(r.text or '')[:220]}"
-    try:
-        data = r.json()
-    except Exception as e:
-        return pd.DataFrame(), f"Respuesta no es JSON: {e}"
+    # `date` es obligatorio y el esquema solo dice «date-time», sin precisar el formato.
+    # Se prueban las variantes habituales en vez de dar una por buena.
+    _ahora = pd.Timestamp.now()
+    _fmts = [_ahora.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+             _ahora.strftime("%Y-%m-%d"),
+             _ahora.strftime("%Y-%m-%dT00:00:00.000Z"),
+             _ahora.isoformat()]
+    data, _ultimo = None, ""
+    for _d in _fmts:
+        try:
+            r = requests.get(_url, timeout=40, params={"date": _d},
+                             headers={"Authorization": f"Bearer {token}",
+                                      "Accept": "application/json"})
+        except Exception as e:
+            _ultimo = f"Error de conexión: {e}"
+            continue
+        if r.status_code == 401:
+            return pd.DataFrame(), "TOKEN_EXPIRED"
+        if r.status_code != 200:
+            _ultimo = f"date={_d} → HTTP {r.status_code}: {(r.text or '')[:200]}"
+            continue
+        try:
+            data = r.json()
+            break
+        except Exception as e:
+            _ultimo = f"date={_d} → respuesta no es JSON: {e}"
+    if data is None:
+        return pd.DataFrame(), (_ultimo or "Sin respuesta de la API pública.")
 
     # Buscar en profundidad listas de registros que tengan una fecha.
     _listas = []
@@ -5590,8 +5604,12 @@ def sencrop_download_forecast(token, model="sencrop"):
                 token, _uid, _fc_station_id())
             if _df_pub is not None and not _df_pub.empty:
                 return _df_pub, None
-            if _err_pub and str(_err_pub).startswith("RAW"):
-                return pd.DataFrame(), _err_pub      # formato inesperado: hay que verlo
+            # NO CAER AL INTERNO EN SILENCIO. Si hay userId es que la API key funciona, y
+            # entonces la vía buena es la pública: el endpoint interno solo sirve con
+            # token manual y devuelve 200 con cero días, tapando el error de verdad. Eso
+            # ya pasó una vez y costó una mañana.
+            return pd.DataFrame(), (f"API pública: {_err_pub}" if _err_pub
+                                    else "La API pública no devolvió días de previsión.")
 
     headers = {
         "Authorization": f"Bearer {token}",
