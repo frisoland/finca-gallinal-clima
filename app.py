@@ -23700,8 +23700,13 @@ def meteosix_wrf_hourly_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km
                 _pend = [v for v in _vars if METEOSIX_VARS[v] not in _cols_ok]
                 if not _pend:
                     continue
+                # MeteoSIX exige **un modelo por cada variable**: pedir 3 variables con un
+                # solo «wrf» da API 306 («the number of requested models is 1 and the
+                # number of requested variables is 3, but they must be the same»). Por eso
+                # la lluvia diaria funcionaba —una variable, un modelo— y esto no.
                 params = {"coords": coords, "variables": ",".join(_pend),
-                          "models": "wrf", "grids": grid, "API_KEY": key}
+                          "models": ",".join(["wrf"] * len(_pend)),
+                          "grids": grid, "API_KEY": key}
                 r = requests.get(METEOSIX_URL, params=params, timeout=(5, 20))
                 if r.status_code != 200:
                     _errs.append(f"{'+'.join(_pend)}: HTTP {r.status_code}")
