@@ -23869,6 +23869,34 @@ def load_mg_hourly_archive():
         return pd.DataFrame()
 
 
+def purge_mg_hourly_archive():
+    """Vacía el archivo horario de MeteoGalicia (sobrescribe con un parquet vacío).
+
+    Hace falta cuando lo acumulado se midió con un criterio que luego resultó estar mal
+    —las primeras 89 horas se archivaron con el horizonte inflado 2 h, por comparar la
+    hora UTC del servidor con las horas locales de MeteoSIX—. Mezclar esas con las
+    buenas ensucia justo lo que se quiere medir: el acierto según la antelación."""
+    if not supabase_is_configured():
+        return False, "Supabase no está configurado."
+    try:
+        vacio = pd.DataFrame(columns=["issue_date", "target_dt", "horizon_h",
+                                      "mg_temp", "mg_hr", "mg_rain"])
+        buf = io.BytesIO()
+        vacio.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
+        buf.seek(0)
+        endpoint = climate_snapshot_storage_url(SUPABASE_MG_HOURLY_PATH)
+        headers = supabase_headers()
+        headers["Content-Type"] = "application/octet-stream"
+        headers["x-upsert"] = "true"
+        r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        ok = r.status_code in (200, 201)
+        return ok, ("Archivo horario de MeteoGalicia vaciado. Volverá a llenarse en la "
+                    "próxima ejecución del informe diario." if ok
+                    else f"No se pudo vaciar (HTTP {r.status_code}).")
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:120]}"
+
+
 def archive_mg_hourly_forecast():
     """Guarda (1 vez al día) la previsión horaria de MeteoGalicia para poder medirla.
 
@@ -26226,6 +26254,20 @@ def render_decisiones_panel():
                         + (f" — **{_pend}** esperan a que llegue su momento." if _pend else ".")
                         + "\n\nUna hora solo se compara cuando **ya ha pasado** y el sensor la "
                           "ha medido. Si acaba de archivarse, hay que esperar.")
+
+            # Purga (fuera del if/else: siempre disponible). Hizo falta porque las
+            # primeras horas se archivaron con el horizonte inflado 2 h — se comparaba la
+            # hora UTC del servidor con las horas locales de MeteoSIX — y mezclarlas con
+            # las buenas estropea justo lo que se quiere medir: el acierto por antelación.
+            st.divider()
+            _ok_purga = st.checkbox(
+                "🗑️ Quiero **vaciar** lo archivado y empezar esta comparación de cero",
+                key="mgh_purge_confirm",
+                help="Vacía SOLO el archivo horario de MeteoGalicia. No toca el histórico "
+                     "del sensor ni el archivo de fiabilidad de arriba.")
+            if _ok_purga and st.button("Vaciar y empezar de cero", key="mgh_purge"):
+                _okp, _msgp = purge_mg_hourly_archive()
+                (st.success if _okp else st.error)(_msgp)
 
         with st.expander("🗑️ Reiniciar archivo de fiabilidad (empezar de cero)"):
             st.caption(
