@@ -6165,9 +6165,16 @@ def sencrop_get_statistics_publica(token, user_id, device_id, start_date, end_da
     _enums = list(dict.fromkeys(_enums))
     if not _enums:
         return pd.DataFrame(), f"Medidas no reconocidas: {measures}"
+    # RANGO AL DERECHO. El informe diario arranca en «la última hora del histórico», y si
+    # esa hora es posterior a hoy (pasa: el histórico llegaba al 23/08 02:00 el día 22)
+    # el rango sale invertido, Sencrop no devuelve nada y el fallo se disfrazaba de
+    # TOKEN_EXPIRED al caer al endpoint interno. Se ordenan y punto.
+    _s, _e = pd.Timestamp(start_date), pd.Timestamp(end_date)
+    if _s > _e:
+        _s, _e = _e, _s
     _params = [
-        ("startDate", pd.Timestamp(start_date).strftime("%Y-%m-%dT00:00:00.000Z")),
-        ("endDate", pd.Timestamp(end_date).strftime("%Y-%m-%dT23:59:59.999Z")),
+        ("startDate", _s.strftime("%Y-%m-%dT00:00:00.000Z")),
+        ("endDate", _e.strftime("%Y-%m-%dT23:59:59.999Z")),
         ("interval", "1h"),
         ("timeZone", "Europe/Madrid"),
     ] + [("measures", e) for e in _enums]
@@ -6237,6 +6244,21 @@ def sencrop_get_statistics_publica(token, user_id, device_id, start_date, end_da
         _ej = _series[0][1][0] if _series and _series[0][1] else {}
         return pd.DataFrame(), f"RAW (ningún campo reconocido) 1º registro: {str(_ej)[:320]}"
     df = pd.DataFrame(filas)
+    # NINGUNA MEDIDA REAL PUEDE SER DEL FUTURO. Aparecieron horas por delante del reloj
+    # (el 22/08/2026 el histórico decía llegar al 23/08 02:00), y eso envenena todo: los
+    # grados-día de carpocapsa y el balance de riego se calculan sobre el histórico, y
+    # además el informe diario arranca la descarga en «la última hora registrada», que
+    # pasaba a ser futura y dejaba el rango del revés. Se descartan con 1 h de margen.
+    _limite = pd.Timestamp.now() + pd.Timedelta(hours=1)
+    _fut = int((df["fecha_hora"] > _limite).sum())
+    if _fut:
+        df = df[df["fecha_hora"] <= _limite].copy()
+        try:                      # visible en el log del informe diario
+            print(f"  ⚠️ Sencrop devolvió {_fut} hora(s) con fecha futura: descartadas.")
+        except Exception:
+            pass
+    if df.empty:
+        return pd.DataFrame(), None
     for col in CANONICAL_COLUMNS:
         if col not in df.columns:
             df[col] = np.nan
@@ -7175,12 +7197,19 @@ def sencrop_download_all_sensors(token, user_id, start_date, end_date, status_pl
             measures=sensor["measures"],
         )
         if err and err != "TOKEN_EXPIRED":
+            _err_pub = err                      # el motivo BUENO, antes de intentar el viejo
             _df2, _err2 = sencrop_get_statistics(
                 token, user_id, sensor["id"], start_date, end_date,
                 measures=sensor["measures"],
             )
             if not _df2.empty or not _err2:
                 df, err = _df2, _err2
+            else:
+                # NO dejar que el endpoint interno tape el error de la API pública. El
+                # interno SIEMPRE falla con API key (401 → "TOKEN_EXPIRED"), así que su
+                # mensaje sustituía al bueno y hacía pensar que el token había caducado
+                # cuando el problema era otro (22/08/2026: rango de fechas invertido).
+                err = f"{_err_pub} · (el endpoint antiguo tampoco: {_err2})"
         if err in ("TOKEN_EXPIRED", "USER_MISMATCH"):
             return pd.DataFrame(), [err]
         elif err:
