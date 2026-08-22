@@ -961,6 +961,28 @@ def compact_history(df):
             df[col] = np.nan
 
     df = df[CANONICAL_COLUMNS].copy()
+
+    # FUERA LAS HORAS DEL FUTURO. Ninguna medida real puede serlo. Se colaron pidiendo a
+    # Sencrop la fecha local con sufijo Z (UTC): el rango se iba dos horas y traía
+    # registros del día siguiente. Aunque el rango ya está arreglado, los que se
+    # guardaron entonces siguen ahí — reimportar solo reemplaza las fechas que vuelven a
+    # venir, no borra las que sobran. Aquí sí, porque esto consolida el histórico entero.
+    # Importa de verdad: la última hora del histórico es el punto de arranque de la
+    # descarga automática, y con una hora futura el rango sale invertido y el informe
+    # diario no baja nada. Margen de 2 h por si el reloj del servidor va adelantado.
+    try:
+        _lim = pd.Timestamp.now() + pd.Timedelta(hours=2)
+        _fh = pd.to_datetime(df["fecha_hora"], errors="coerce")
+        _n_fut = int((_fh > _lim).sum())
+        if _n_fut:
+            df = df[~(_fh > _lim)].copy()
+            try:
+                print(f"  ⚠️ Descartadas {_n_fut} fila(s) con fecha futura del histórico.")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     df = df.sort_values("fecha_hora")
 
     # Combina filas de distintos sensores que comparten la misma hora.
