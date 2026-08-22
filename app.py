@@ -6172,9 +6172,28 @@ def sencrop_get_statistics_publica(token, user_id, device_id, start_date, end_da
     _s, _e = pd.Timestamp(start_date), pd.Timestamp(end_date)
     if _s > _e:
         _s, _e = _e, _s
+
+    def _a_utc(ts, fin=False):
+        """Día LOCAL completo → instante UTC de verdad.
+
+        Se mandaba la fecha local con el sufijo **Z**, que significa UTC. En verano la
+        finca va +2, así que se pedía un rango corrido **dos horas**: pedir «hasta el 21»
+        traía en realidad hasta las 02:00 del 22 en hora local. De ahí venían las horas
+        con fecha futura, el «datos hasta mañana 02:00» y, como el informe diario arranca
+        en la última hora del histórico, el rango invertido que lo tumbó el 22/08/2026.
+        """
+        t = pd.Timestamp(ts).normalize()
+        if fin:
+            t = t + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
+        try:
+            t = t.tz_localize("Europe/Madrid", ambiguous=True, nonexistent="shift_forward")
+            return t.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
+        except Exception:
+            return t.strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
+
     _params = [
-        ("startDate", _s.strftime("%Y-%m-%dT00:00:00.000Z")),
-        ("endDate", _e.strftime("%Y-%m-%dT23:59:59.999Z")),
+        ("startDate", _a_utc(_s)),
+        ("endDate", _a_utc(_e, fin=True)),
         ("interval", "1h"),
         ("timeZone", "Europe/Madrid"),
     ] + [("measures", e) for e in _enums]
