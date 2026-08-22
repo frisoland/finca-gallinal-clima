@@ -23685,46 +23685,64 @@ def meteosix_wrf_hourly_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km
     if not key:
         return pd.DataFrame(), "falta la API key (secret METEOSIX_API_KEY)"
     _ultimo = ""
+    # Se piden las tres variables juntas y, si no vuelve nada, se prueban DE UNA EN UNA.
+    # Motivo: si un solo nombre de variable no le gusta a MeteoSIX, la petición entera
+    # falla y nos quedamos sin ninguna — que es lo que pasó el 22/08/2026, cuando la
+    # lluvia diaria (una sola variable) sí se archivó y la horaria no. Mejor quedarse con
+    # dos de tres que con ninguna.
+    _juegos = [list(METEOSIX_VARS)] + [[v] for v in METEOSIX_VARS]
     try:
         for grid in grids:
-            params = {"coords": coords, "variables": ",".join(METEOSIX_VARS),
-                      "models": "wrf", "grids": grid, "API_KEY": key}
-            r = requests.get(METEOSIX_URL, params=params, timeout=(5, 20))
-            if r.status_code != 200:
-                _ultimo = f"malla {grid}: HTTP {r.status_code}"
-                continue
-            js = r.json()
-            if not isinstance(js, dict):
-                _ultimo = f"malla {grid}: respuesta inesperada"
-                continue
-            if "exception" in js:
-                _e = js.get("exception") or {}
-                _ultimo = f"malla {grid}: API {_e.get('code','?')} — {str(_e.get('message',''))[:110]}"
-                continue
-            _filas = {}
-            for feat in js.get("features", []):
-                for day in feat.get("properties", {}).get("days", []):
-                    for var in day.get("variables", []):
-                        _col = METEOSIX_VARS.get(var.get("name"))
-                        if not _col:
-                            continue
-                        for v in var.get("values", []):
-                            _val, _ti = v.get("value"), v.get("timeInstant")
-                            if _val is None or not _ti:
+            _filas, _cols_ok, _errs = {}, set(), []
+            for _vars in _juegos:
+                # No repetir lo ya conseguido: si la petición conjunta funcionó, las
+                # sueltas sobran; y si trajo dos de tres, solo se reintenta la que falta.
+                _pend = [v for v in _vars if METEOSIX_VARS[v] not in _cols_ok]
+                if not _pend:
+                    continue
+                params = {"coords": coords, "variables": ",".join(_pend),
+                          "models": "wrf", "grids": grid, "API_KEY": key}
+                r = requests.get(METEOSIX_URL, params=params, timeout=(5, 20))
+                if r.status_code != 200:
+                    _errs.append(f"{'+'.join(_pend)}: HTTP {r.status_code}")
+                    continue
+                js = r.json()
+                if not isinstance(js, dict):
+                    _errs.append(f"{'+'.join(_pend)}: respuesta inesperada")
+                    continue
+                if "exception" in js:
+                    _e = js.get("exception") or {}
+                    _errs.append(f"{'+'.join(_pend)}: API {_e.get('code','?')} — "
+                                 f"{str(_e.get('message',''))[:90]}")
+                    continue
+                for feat in js.get("features", []):
+                    for day in feat.get("properties", {}).get("days", []):
+                        for var in day.get("variables", []):
+                            _col = METEOSIX_VARS.get(var.get("name"))
+                            if not _col:
                                 continue
-                            # timeInstant viene en hora LOCAL con offset ("…T11:00:00+02").
-                            _ts = pd.to_datetime(_ti, errors="coerce")
-                            if pd.isna(_ts):
-                                continue
-                            try:
-                                _ts = _ts.tz_localize(None)
-                            except Exception:
-                                pass
-                            _filas.setdefault(_ts, {"fecha_hora": _ts})[_col] = float(_val)
+                            for v in var.get("values", []):
+                                _val, _ti = v.get("value"), v.get("timeInstant")
+                                if _val is None or not _ti:
+                                    continue
+                                # timeInstant viene en hora LOCAL con offset ("…T11:00:00+02").
+                                _ts = pd.to_datetime(_ti, errors="coerce")
+                                if pd.isna(_ts):
+                                    continue
+                                try:
+                                    _ts = _ts.tz_localize(None)
+                                except Exception:
+                                    pass
+                                _filas.setdefault(_ts, {"fecha_hora": _ts})[_col] = float(_val)
+                                _cols_ok.add(_col)
             if _filas:
                 df = pd.DataFrame(list(_filas.values())).sort_values("fecha_hora")
-                return df.reset_index(drop=True), ""
-            _ultimo = f"malla {grid}: sin valores"
+                # Se avisa de lo que NO se pudo traer: es mejor archivar dos variables de
+                # tres sabiéndolo que creer que están las tres.
+                _falta = [c for c in METEOSIX_VARS.values() if c not in _cols_ok]
+                _av = (f"sin {', '.join(_falta)} ({' · '.join(_errs[:3])})" if _falta else "")
+                return df.reset_index(drop=True), _av
+            _ultimo = f"malla {grid}: " + (" · ".join(_errs[:3]) if _errs else "sin valores")
         return pd.DataFrame(), (_ultimo or "sin datos")
     except Exception as _ex:
         _n = type(_ex).__name__
@@ -23825,7 +23843,10 @@ def archive_mg_hourly_forecast():
         headers["x-upsert"] = "true"
         r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
         if r.status_code in (200, 201):
-            return True, f"{len(d)} horas archivadas (total {len(out)})."
+            # El aviso de meteosix_wrf_hourly_diag se propaga: puede haber archivado bien
+            # pero con una variable menos, y eso hay que verlo en el log del informe.
+            return True, (f"{len(d)} horas archivadas (total {len(out)})."
+                          + (f" ⚠️ {err}" if err else ""))
         return False, f"HTTP {r.status_code} al subir."
     except Exception as e:
         return False, f"{type(e).__name__}: {str(e)[:120]}"
@@ -26098,15 +26119,28 @@ def render_decisiones_panel():
                     st.info("⏳ Muestra aún pequeña. Con **2 semanas** se ve la tendencia; "
                             "con un mes se puede decidir.")
             else:
+                # ESTADO DEL ARCHIVO, no solo «no hay nada». Sin esto no se distingue
+                # «aún no ha pasado el tiempo» de «no se está archivando», que son
+                # problemas muy distintos: el primero se arregla esperando y el segundo no.
+                _arch = load_mg_hourly_archive()
                 _pend = (_meta_h or {}).get("pendiente")
-                st.info(
-                    "Todavía no hay nada que comparar."
-                    + (f" Hay **{_pend}** horas archivadas esperando a que llegue su momento."
-                       if _pend else "")
-                    + "\n\nEl archivado lo hace el **informe diario** (GitHub Actions), porque "
-                      "la app no puede consultar MeteoGalicia directamente. Empieza a llenarse "
-                      "la primera vez que corra, y las horas solo se pueden comparar cuando "
-                      "pasan y el sensor mide de verdad.")
+                if _arch is None or _arch.empty:
+                    st.warning(
+                        "⚠️ **El archivo está vacío: no se está archivando.** No es que "
+                        "falte tiempo — no ha entrado ni una hora.\n\n"
+                        "Lo archiva el **informe diario** (GitHub Actions), porque la app no "
+                        "puede consultar MeteoGalicia directamente. Mira el registro del "
+                        "workflow y busca la línea «MeteoGalicia horaria:», que dice qué pasó.")
+                else:
+                    _ii = pd.to_datetime(_arch.get("issue_date"), errors="coerce")
+                    _tt = pd.to_datetime(_arch.get("target_dt"), errors="coerce")
+                    st.info(
+                        f"⏳ Hay **{len(_arch)}** horas archivadas "
+                        f"(última emisión **{_ii.max():%d/%m}**, cubren hasta "
+                        f"**{_tt.max():%d/%m %H:%M}**) pero todavía ninguna se puede comparar"
+                        + (f" — **{_pend}** esperan a que llegue su momento." if _pend else ".")
+                        + "\n\nUna hora solo se compara cuando **ya ha pasado** y el sensor la "
+                          "ha medido. Si acaba de archivarse, hay que esperar.")
 
         with st.expander("🗑️ Reiniciar archivo de fiabilidad (empezar de cero)"):
             st.caption(
