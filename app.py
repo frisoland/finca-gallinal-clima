@@ -23884,7 +23884,17 @@ def archive_mg_hourly_forecast():
     try:
         if not supabase_is_configured():
             return False, "Supabase no configurado."
-        _hoy = pd.Timestamp.now().normalize()
+        # HORA LOCAL DE LA FINCA, no la del servidor. Esto corre en GitHub Actions, que va
+        # en UTC: comparar contra `pd.Timestamp.now()` metía dos horas de error en verano
+        # — se archivaban como «futuras» horas que ya habían pasado, y el horizonte salía
+        # inflado en 2 h, con lo que las horas caían en el tramo de antelación equivocado.
+        # Los timeInstant de MeteoSIX vienen en hora local, así que hay que compararlos
+        # con hora local.
+        try:
+            _ahora = pd.Timestamp.now(tz="Europe/Madrid").tz_localize(None)
+        except Exception:
+            _ahora = pd.Timestamp.now()
+        _hoy = _ahora.normalize()
         _issue = _hoy.strftime("%Y-%m-%d")
         df, err = meteosix_wrf_hourly_diag()
         if df is None or df.empty:
@@ -23894,13 +23904,13 @@ def archive_mg_hourly_forecast():
         d = d.dropna(subset=["fecha_hora"])
         # Fuera las horas ya pasadas: no son previsión, son el día en curso a medias.
         # Es el mismo error de horizonte 0 que falseó el archivo de riesgo en agosto.
-        d = d[d["fecha_hora"] > pd.Timestamp.now()]
+        d = d[d["fecha_hora"] > _ahora]
         if d.empty:
             return False, "la previsión de MeteoGalicia no cubre ninguna hora futura"
         out = pd.DataFrame({
             "issue_date": _issue,
             "target_dt": d["fecha_hora"],
-            "horizon_h": ((d["fecha_hora"] - pd.Timestamp.now()).dt.total_seconds() // 3600).astype(int),
+            "horizon_h": ((d["fecha_hora"] - _ahora).dt.total_seconds() // 3600).astype(int),
             "mg_temp": pd.to_numeric(d.get("temp_media"), errors="coerce"),
             "mg_hr": pd.to_numeric(d.get("hr_media"), errors="coerce"),
             "mg_rain": pd.to_numeric(d.get("lluvia_mm"), errors="coerce"),
