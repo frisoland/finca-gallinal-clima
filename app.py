@@ -24146,6 +24146,94 @@ def archive_today_forecast(history_df, forecast_df):
         pass
 
 
+def _mg_merge_sensor(history_df, archive_df=None, max_h=84):
+    """Cruce previsión horaria de MeteoGalicia ↔ sensor, por instante. Base común de la
+    comparación global y del desglose. De cada hora se toma la emisión más reciente."""
+    if archive_df is None:
+        archive_df = load_mg_hourly_archive()
+    if archive_df is None or archive_df.empty or history_df is None or history_df.empty:
+        return pd.DataFrame()
+    a = archive_df.copy()
+    a["target_dt"] = pd.to_datetime(a.get("target_dt"), errors="coerce")
+    a["horizon_h"] = pd.to_numeric(a.get("horizon_h"), errors="coerce")
+    a = a.dropna(subset=["target_dt"])
+    a = a[(a["horizon_h"] >= 1) & (a["horizon_h"] <= max_h)]
+    if a.empty:
+        return pd.DataFrame()
+    a = a.sort_values("horizon_h").drop_duplicates("target_dt", keep="first")
+    h = history_df.copy()
+    h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+    h = h.dropna(subset=["fecha_hora"])
+    return a.merge(h[["fecha_hora", "temp_media", "hr_media", "lluvia_mm"]],
+                   left_on="target_dt", right_on="fecha_hora", how="inner")
+
+
+def mg_hourly_detalle(history_df, archive_df=None, max_h=84, rh_thr=92.0):
+    """DÓNDE se equivoca MeteoGalicia, no solo cuánto.
+
+    Un error de 5 puntos de humedad no vale lo mismo a las 6:00 con el sensor al 90 %
+    que a las 15:00 con el 60 %: el primero decide si esa hora cuenta como **hoja
+    mojada** y el segundo no le importa a nadie. El error medio global mezcla los dos y
+    esconde justo lo que hay que saber.
+
+    Devuelve (por_humedad, por_franja_horaria, metricas_umbral).
+    """
+    m = _mg_merge_sensor(history_df, archive_df, max_h)
+    if m.empty:
+        return pd.DataFrame(), pd.DataFrame(), {}
+    m = m.copy()
+    m["_hr_r"] = pd.to_numeric(m["hr_media"], errors="coerce")
+    m["_hr_p"] = pd.to_numeric(m["mg_hr"], errors="coerce")
+    m["_t_r"] = pd.to_numeric(m["temp_media"], errors="coerce")
+    m["_t_p"] = pd.to_numeric(m["mg_temp"], errors="coerce")
+
+    def _bloque(g):
+        _dh = (g["_hr_p"] - g["_hr_r"]).dropna()
+        _dt = (g["_t_p"] - g["_t_r"]).dropna()
+        return {
+            "Horas": len(g),
+            "HR sesgo": f"{_dh.mean():+.1f}" if len(_dh) else "—",
+            "HR error": f"{_dh.abs().mean():.1f}" if len(_dh) else "—",
+            "Temp sesgo": f"{_dt.mean():+.1f}" if len(_dt) else "—",
+            "Temp error": f"{_dt.abs().mean():.1f}" if len(_dt) else "—",
+        }
+
+    # ── Por FRANJA DE HUMEDAD REAL. Los cortes no son redondos por gusto: se ponen
+    #    alrededor del umbral de mojadura, que es donde el error cambia decisiones.
+    _lo, _hi = rh_thr - 7, rh_thr
+    _et = [f"Seca (<{_lo:.0f} %)", f"Al filo ({_lo:.0f}-{_hi:.0f} %)", f"Húmeda (≥{_hi:.0f} %)"]
+    m["_fr_hr"] = pd.cut(m["_hr_r"], [-1, _lo, _hi, 1000], labels=_et)
+    _f1 = [{"Humedad real": str(k), **_bloque(g)}
+           for k, g in m.groupby("_fr_hr", observed=True) if len(g)]
+
+    # ── Por FRANJA HORARIA. La mojadura se forma de noche y de madrugada: ahí es donde
+    #    el acierto importa, y donde un modelo de malla lo tiene más difícil.
+    _hh = m["target_dt"].dt.hour
+    m["_fr_h"] = pd.cut(_hh, [-1, 5, 11, 17, 23],
+                        labels=["Madrugada (0-5)", "Mañana (6-11)",
+                                "Tarde (12-17)", "Noche (18-23)"])
+    _f2 = [{"Franja": str(k), **_bloque(g)}
+           for k, g in m.groupby("_fr_h", observed=True) if len(g)]
+
+    # ── LO QUE DE VERDAD DECIDE: ¿acierta al cruzar el umbral de mojadura? Da igual
+    #    errar por 4 puntos si los dos quedan del mismo lado del umbral; errar por 1
+    #    justo en el corte sí cambia la decisión.
+    _v = m.dropna(subset=["_hr_r", "_hr_p"])
+    _met = {}
+    if len(_v):
+        _real = _v["_hr_r"] >= rh_thr
+        _prev = _v["_hr_p"] >= rh_thr
+        _met = {
+            "umbral": rh_thr,
+            "n": len(_v),
+            "reales": int(_real.sum()),
+            "aciertos": int((_real & _prev).sum()),
+            "escapes": int((_real & ~_prev).sum()),
+            "falsas": int((~_real & _prev).sum()),
+        }
+    return pd.DataFrame(_f1), pd.DataFrame(_f2), _met
+
+
 def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84):
     """Compara la previsión HORARIA de MeteoGalicia con lo que midió el sensor.
 
@@ -26231,6 +26319,45 @@ def render_decisiones_panel():
                 if _meta_h["n"] < 200:
                     st.info("⏳ Muestra aún pequeña. Con **2 semanas** se ve la tendencia; "
                             "con un mes se puede decidir.")
+
+                # ── DÓNDE se equivoca, no solo cuánto ────────────────────────────
+                _thr = float(st.session_state.get("lw_params",
+                                                  LEAF_WETNESS_DEFAULTS).get("rh_thr", 92))
+                _f_hr, _f_hora, _met = mg_hourly_detalle(history_df, rh_thr=_thr)
+                st.markdown("---")
+                st.markdown("**🎯 ¿Dónde se equivoca?**")
+                st.caption(
+                    "El error medio de arriba mezcla horas que deciden con horas que no. "
+                    f"Un fallo de 5 puntos con el sensor al {_thr:.0f} % cambia si esa hora "
+                    "cuenta como **hoja mojada**; el mismo fallo al 60 % no le importa a "
+                    "nadie. Aquí se separa por franja de humedad real y por hora del día.")
+                if _f_hr is not None and not _f_hr.empty:
+                    st.dataframe(_f_hr, use_container_width=True, hide_index=True)
+                if _f_hora is not None and not _f_hora.empty:
+                    st.dataframe(_f_hora, use_container_width=True, hide_index=True)
+                    st.caption("La mojadura se forma de **noche y madrugada**: es la franja "
+                               "que hay que mirar. Un error grande a mediodía es inofensivo.")
+                if _met:
+                    _ac, _es, _fa = _met["aciertos"], _met["escapes"], _met["falsas"]
+                    _re = _met["reales"]
+                    st.markdown(
+                        f"**Lo que de verdad decide — ¿acierta al cruzar el umbral de "
+                        f"{_met['umbral']:.0f} % HR?**\n\n"
+                        f"De **{_re}** horas que el sensor dio por húmedas, MeteoGalicia "
+                        f"habría marcado **{_ac}** "
+                        f"({(100*_ac/_re):.0f} %) y se le habrían escapado **{_es}**. "
+                        f"Además habría marcado **{_fa}** horas como húmedas sin serlo."
+                        if _re else
+                        f"**Umbral de {_met['umbral']:.0f} % HR:** todavía no ha habido "
+                        f"ninguna hora húmeda en la muestra ({_met['n']} horas), así que "
+                        f"esto no se puede medir aún. Hará falta una noche de rocío o lluvia.")
+                    if _re:
+                        st.caption(
+                            "**Escapes** = mojadura real que no habría visto → infecciones sin "
+                            "avisar. **Falsas** = horas de mojadura inventadas → tratamientos de "
+                            "más. Es la misma cuenta que ya hacemos con la lluvia, y la que "
+                            "decide si MeteoGalicia sirve: da igual que se equivoque en el "
+                            "número mientras acierte de qué lado del umbral cae.")
             else:
                 # ESTADO DEL ARCHIVO, no solo «no hay nada». Sin esto no se distingue
                 # «aún no ha pasado el tiempo» de «no se está archivando», que son
