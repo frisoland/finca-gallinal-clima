@@ -26719,14 +26719,21 @@ def render_decisiones_panel():
             # fija: es la lluvia de la PREVISIÓN ACTIVA, y desde el 23/08/2026 esa
             # previsión es la de MeteoGalicia, no la de Sencrop. Dejar puesto «(Sencrop)»
             # hacía leer mal la tabla — parecían dos modelos distintos comparándose.
+            # FUERA «Lluvia prev.» CUANDO YA NO ES DE SENCROP. Esa columna se rellena con
+            # el ARCHIVO en los días pasados (Sencrop) y con la PREVISIÓN ACTIVA en los
+            # futuros (MeteoGalicia desde el 23/08/2026). Son dos modelos distintos en la
+            # misma columna y sin forma de distinguirlos: no se arregla explicándolo, se
+            # arregla no enseñándolo. El dato archivado de Sencrop no se pierde — sigue
+            # en el archivo y en el panel de fiabilidad de arriba.
             _src_now = st.session_state.get("_forecast_src", "sencrop")
-            if _src_now == "meteogalicia":
+            if _src_now == "meteogalicia" and "Lluvia prev." in _daily.columns:
+                _daily = _daily.drop(columns=["Lluvia prev."])
                 _txt_prev = (
-                    "**«Lluvia prev.»** = la de la **previsión activa**, que ahora es "
-                    "**MeteoGalicia horaria** (Sencrop ya no sirve previsión). **«Lluvia MG»** "
-                    "es el **total diario** que archiva el informe cada mañana: misma fuente "
-                    "pero otra consulta y otro momento, así que **pueden no coincidir** — si "
-                    "difieren mucho, suele ser que la serie horaria no cubre el día entero.")
+                    "**«Lluvia MG»** = WRF **1 km oficial de MeteoGalicia**, en el punto "
+                    "exacto de la finca — es la fuente de la previsión activa. "
+                    "*(La columna «Lluvia prev.» de Sencrop ya no se muestra: mezclaba el "
+                    "archivo de Sencrop en los días pasados con MeteoGalicia en los "
+                    "futuros. Lo archivado sigue guardado.)*")
             else:
                 _txt_prev = ("**«Lluvia prev.»** = la de la previsión activa (Sencrop). "
                              "**«Lluvia MG»** = WRF **1 km oficial de MeteoGalicia**, en el "
@@ -26739,6 +26746,17 @@ def render_decisiones_panel():
                         + _txt_prev +
                         " **«Lluvia WRF9»** es el WRF 9 km de Windguru (~3 días), independiente "
                         "de las otras dos.")
+            # LAS COLUMNAS «prev.» DE INFECCIÓN TAMBIÉN CAMBIARON DE FUENTE a mitad del
+            # histórico, y estas no se pueden quitar: son el contenido de la tabla. Al
+            # menos hay que decir dónde está la costura, para no comparar entre sí dos
+            # modelos distintos creyendo que es el mismo.
+            if _src_now == "meteogalicia":
+                st.caption(
+                    "⚠️ **Ojo al comparar días entre sí:** las columnas «prev.» de moteado, "
+                    "monilia y oídio salen de **Sencrop hasta el 22/08** y de **MeteoGalicia "
+                    "desde el 23/08**. Son modelos distintos, así que un día de agosto y uno "
+                    "de septiembre no se miden con la misma vara. Lo archivado a partir de "
+                    "ahora ya queda marcado con su fuente.")
             # POR QUÉ LA TABLA ACABA DONDE ACABA. Sin esto, que no hubiera días 🔮 no se
             # distinguía de que los hubiera: la tabla se topaba en un día cualquiera y
             # había que contar para notarlo (19/08/2026). Son dos causas muy distintas y
