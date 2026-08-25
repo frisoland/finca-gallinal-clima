@@ -26715,13 +26715,30 @@ def render_decisiones_panel():
         _daily = forecast_reliability_daily(history_df, forecast_df=forecast_df, days=30,
                                             days_fwd=7, wrf_rain=_wrf_rain, mg_rain=_mg_rain)
         if _daily is not None and not _daily.empty:
+            # DE QUÉ FUENTE ES CADA COLUMNA DE LLUVIA. «Lluvia prev.» no es una fuente
+            # fija: es la lluvia de la PREVISIÓN ACTIVA, y desde el 23/08/2026 esa
+            # previsión es la de MeteoGalicia, no la de Sencrop. Dejar puesto «(Sencrop)»
+            # hacía leer mal la tabla — parecían dos modelos distintos comparándose.
+            _src_now = st.session_state.get("_forecast_src", "sencrop")
+            if _src_now == "meteogalicia":
+                _txt_prev = (
+                    "**«Lluvia prev.»** = la de la **previsión activa**, que ahora es "
+                    "**MeteoGalicia horaria** (Sencrop ya no sirve previsión). **«Lluvia MG»** "
+                    "es el **total diario** que archiva el informe cada mañana: misma fuente "
+                    "pero otra consulta y otro momento, así que **pueden no coincidir** — si "
+                    "difieren mucho, suele ser que la serie horaria no cubre el día entero.")
+            else:
+                _txt_prev = ("**«Lluvia prev.»** = la de la previsión activa (Sencrop). "
+                             "**«Lluvia MG»** = WRF **1 km oficial de MeteoGalicia**, en el "
+                             "punto exacto de la finca (~3,5 días).")
             st.markdown("**📋 Día a día: valor de infección previsto vs. real.** Arriba, los días "
                         "**🔮 futuros** con la previsión de hoy (el real aparecerá cuando llegue "
                         "el día). Abajo, los **pasados**: lo que se predijo vs. lo real (umbral "
-                        "grave = 100; «—» = sin dato). Hay **tres fuentes de lluvia** para comparar "
-                        "contra **«Lluvia real»** — a ver cuál acierta más: **«Lluvia prev.»** "
-                        "(Sencrop), **«Lluvia WRF9»** (WRF 9 km de Windguru, ~3 días) y **«Lluvia MG»** "
-                        "(WRF **1 km oficial de MeteoGalicia**, en el punto exacto de la finca, ~3,5 días).")
+                        "grave = 100; «—» = sin dato).\n\n"
+                        "**Fuentes de lluvia**, todas contra **«Lluvia real»** del sensor: "
+                        + _txt_prev +
+                        " **«Lluvia WRF9»** es el WRF 9 km de Windguru (~3 días), independiente "
+                        "de las otras dos.")
             # POR QUÉ LA TABLA ACABA DONDE ACABA. Sin esto, que no hubiera días 🔮 no se
             # distinguía de que los hubiera: la tabla se topaba en un día cualquiera y
             # había que contar para notarlo (19/08/2026). Son dos causas muy distintas y
