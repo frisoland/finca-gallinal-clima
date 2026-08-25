@@ -19271,16 +19271,33 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
 if "autoload_forecast_done" not in st.session_state:
     st.session_state.autoload_forecast_done = False
 
-if not st.session_state.autoload_forecast_done and sencrop_is_configured():
+if not st.session_state.autoload_forecast_done:
     st.session_state.autoload_forecast_done = True
-    _fc_token = sencrop_get_token_from_secrets()
-    if _fc_token and not st.session_state.get("forecast_df", pd.DataFrame()).shape[0]:
-        _fc_df, _fc_err = sencrop_download_forecast(token=_fc_token, model="sencrop")
-        if _fc_df is not None and not _fc_df.empty:
-            st.session_state["forecast_df"]    = _fc_df
-            st.session_state["forecast_model"] = "⭐ Previsión Sencrop"
-            # Guardar token para que render_sencrop_panel lo encuentre ya cacheado
-            st.session_state["sencrop_token"]  = _fc_token
+    if not st.session_state.get("forecast_df", pd.DataFrame()).shape[0]:
+        _fc_df = None
+        if sencrop_is_configured():
+            _fc_token = sencrop_get_token_from_secrets()
+            if _fc_token:
+                _fc_df, _fc_err = sencrop_download_forecast(token=_fc_token, model="sencrop")
+                if _fc_df is not None and not _fc_df.empty:
+                    st.session_state["forecast_df"]    = _fc_df
+                    st.session_state["forecast_model"] = "⭐ Previsión Sencrop"
+                    st.session_state["_forecast_src"]  = "sencrop"
+                # Guardar token para que render_sencrop_panel lo encuentre ya cacheado
+                st.session_state["sencrop_token"] = _fc_token
+        # SI SENCROP NO DA PREVISIÓN, LA PONE METEOGALICIA. Sencrop confirmó el
+        # 23/08/2026 que no la sirve por API y que llegará «en una versión futura», sin
+        # fecha: dejar la app sin previsión indefinidamente no es una opción, porque sin
+        # ella no hay riesgo de moteado ni de monilia hacia adelante. Se lee del archivo
+        # que llena el informe diario — la app no puede consultar MeteoGalicia
+        # directamente. Ver forecast_desde_mg().
+        if _fc_df is None or _fc_df.empty:
+            _mg_df, _mg_nota = forecast_desde_mg()
+            if _mg_df is not None and not _mg_df.empty:
+                st.session_state["forecast_df"]    = _mg_df
+                st.session_state["forecast_model"] = "🌍 Previsión MeteoGalicia (WRF 1 km)"
+                st.session_state["_forecast_src"]  = "meteogalicia"
+            st.session_state["_forecast_mg_nota"] = _mg_nota
 
 # Main layout
 if not _HEADLESS:
@@ -23874,6 +23891,60 @@ def load_mg_hourly_archive():
         return pd.DataFrame()
 
 
+def forecast_desde_mg(archive_df=None, horas_max=84):
+    """Previsión horaria a partir de lo que MeteoGalicia tiene archivado.
+
+    Pasa a ser **la** previsión de la app: Sencrop confirmó (23/08/2026) que no sirve
+    previsión por API y que llegará «en una versión futura», sin fecha. El histórico
+    sigue viniendo de Sencrop; solo cambia de dónde sale el futuro.
+
+    Se lee del archivo, no en vivo, porque Streamlit Cloud no consigue conectar con
+    MeteoGalicia — les bloquean las IPs de centro de datos. Lo llena el informe diario
+    cada mañana, así que la previsión es tan fresca como la última ejecución.
+
+    Devuelve (DataFrame con CANONICAL_COLUMNS, aviso). El estimador de hoja mojada solo
+    necesita temp_media, hr_media y lluvia_mm — el punto de rocío lo calcula él.
+    """
+    if archive_df is None:
+        archive_df = load_mg_hourly_archive()
+    if archive_df is None or archive_df.empty:
+        return pd.DataFrame(), "no hay previsión de MeteoGalicia archivada"
+    try:
+        a = archive_df.copy()
+        a["target_dt"] = pd.to_datetime(a.get("target_dt"), errors="coerce")
+        a = a.dropna(subset=["target_dt"])
+        try:
+            _ahora = pd.Timestamp.now(tz="Europe/Madrid").tz_localize(None)
+        except Exception:
+            _ahora = pd.Timestamp.now()
+        a = a[(a["target_dt"] > _ahora) &
+              (a["target_dt"] <= _ahora + pd.Timedelta(hours=int(horas_max)))]
+        if a.empty:
+            return pd.DataFrame(), ("la previsión archivada de MeteoGalicia ya ha caducado "
+                                    "(no cubre ninguna hora futura)")
+        # De cada hora, la emisión MÁS RECIENTE: es la que menos antelación tiene y, por
+        # tanto, la más fiable. `issue_date` ordena bien porque es una cadena ISO.
+        a = a.sort_values("issue_date").drop_duplicates("target_dt", keep="last")
+        out = pd.DataFrame({
+            "fecha_hora": a["target_dt"],
+            "temp_media": pd.to_numeric(a.get("mg_temp"), errors="coerce"),
+            "hr_media": pd.to_numeric(a.get("mg_hr"), errors="coerce"),
+            "lluvia_mm": pd.to_numeric(a.get("mg_rain"), errors="coerce").fillna(0.0),
+        })
+        for col in CANONICAL_COLUMNS:
+            if col not in out.columns:
+                out[col] = np.nan
+        out = out[CANONICAL_COLUMNS].sort_values("fecha_hora").reset_index(drop=True)
+        # Sin temperatura o sin humedad no se puede calcular riesgo de infección.
+        if out["temp_media"].notna().sum() == 0 or out["hr_media"].notna().sum() == 0:
+            return pd.DataFrame(), ("la previsión archivada no trae temperatura o humedad; "
+                                    "solo sirve para la lluvia")
+        _hasta = out["fecha_hora"].max()
+        return out, f"MeteoGalicia · {len(out)} h · hasta el {_hasta:%d/%m %H:%M}"
+    except Exception as e:
+        return pd.DataFrame(), f"{type(e).__name__}: {str(e)[:110]}"
+
+
 def purge_mg_hourly_archive():
     """Vacía el archivo horario de MeteoGalicia (sobrescribe con un parquet vacío).
 
@@ -24103,6 +24174,14 @@ def archive_today_forecast(history_df, forecast_df):
                     _e["pred_monilia"] = float(r.get("Monilia_valor", np.nan)) * FORECAST_BIAS_DEFAULTS["monilia"]
                     _e["pred_oidio"] = float(r.get("Oidio_valor", np.nan)) * FORECAST_BIAS_DEFAULTS["oidio"]
                     _e["pred_rain"] = float(r.get("Lluvia", np.nan))
+                    # DE QUÉ FUENTE SALIÓ. Desde el 23/08/2026 la previsión puede venir
+                    # de MeteoGalicia en vez de Sencrop, y son modelos distintos: sin
+                    # marcarlo, dentro de unos meses la fiabilidad mezclaría dos cosas
+                    # como si fueran una y el resultado no significaría nada.
+                    try:
+                        _e["pred_src"] = str(st.session_state.get("_forecast_src", "sencrop"))
+                    except Exception:
+                        _e["pred_src"] = "sencrop"
         # --- Lluvia WRF9 (Windguru): independiente de forecast_df ---
         try:
             for d, mm in (windguru_wrf9_daily_rain() or {}).items():
@@ -25997,6 +26076,29 @@ def render_decisiones_panel():
     # devolver la previsión vacía y el panel siguió pintando como si nada.
     # La autocarga del arranque también falla en silencio (no avisa si no baja nada),
     # así que este es el único sitio donde el hueco se ve.
+    # DE QUÉ FUENTE ES LA PREVISIÓN. Desde que Sencrop dejó de servirla, el futuro sale
+    # de MeteoGalicia, y eso cambia cómo hay que leer los avisos: es un modelo de malla
+    # de 1 km sin calibrar con la estación, no la fusión calibrada de Sencrop. Decirlo
+    # cada vez evita que dentro de un mes nadie recuerde de dónde salen estos números.
+    if (forecast_df is not None and not forecast_df.empty
+            and st.session_state.get("_forecast_src") == "meteogalicia"):
+        _mg_hasta = ""
+        try:
+            _mh = pd.to_datetime(forecast_df["fecha_hora"], errors="coerce").max()
+            if pd.notna(_mh):
+                _mg_hasta = f" Llega hasta el **{_mh:%d/%m %H:%M}**."
+        except Exception:
+            pass
+        st.info(
+            "🌍 **La previsión es de MeteoGalicia** (WRF 1 km en el punto de la finca), "
+            "no de Sencrop, que ya no la sirve por API." + _mg_hasta +
+            " La actualiza el **informe diario** cada mañana.\n\n"
+            "Léela con esta cautela: es un modelo de malla **sin calibrar con tu "
+            "estación**. Las primeras medidas apuntan a que **de noche da la humedad "
+            "unos puntos más alta de la real**, y eso infla las horas de hoja mojada — "
+            "puede sobrar algún aviso de moteado. Se está midiendo en «¿Sirve "
+            "MeteoGalicia…?», más abajo, para corregirlo con datos.")
+
     if forecast_df is None or forecast_df.empty:
         _ult_txt = ""
         try:
@@ -26032,6 +26134,11 @@ def render_decisiones_panel():
     _rain_src = st.session_state.get("lw_rain_source", "mg")
     _mg_aplicada = False
     _mg_hasta = None
+    # Si la previsión YA es de MeteoGalicia, no tiene sentido meterle encima la lluvia
+    # diaria de MeteoGalicia ni recortarla a su propio horizonte: sería mezclarla
+    # consigo misma y el aviso de recorte confundiría más que ayuda.
+    if st.session_state.get("_forecast_src") == "meteogalicia":
+        _rain_src = "sencrop"          # = «no tocar la lluvia de la previsión»
     if _rain_src != "sencrop" and forecast_df is not None and not forecast_df.empty:
         try:
             # mg_rain_disponible() cae al ARCHIVO si la consulta en vivo falla, que es
