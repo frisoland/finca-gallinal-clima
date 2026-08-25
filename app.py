@@ -6006,8 +6006,13 @@ def sencrop_detalle_dispositivos(token, ids, org_id):
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     filas, errs = [], []
     for _id in ids:
-        for _u in (f"{SENCROP_API_BASE}/organisation/{org_id}/device/{_id}",
-                   f"{SENCROP_API_BASE}/organisations/{org_id}/devices/{_id}",
+        # La ruta DOCUMENTADA va primero (plural, `getOrganisationDevice` en
+        # developer.sencrop.com/reference, sección partnerAccess). La singular la sacamos
+        # del cliente JS, que mezcla endpoints públicos e internos sin distinguirlos —
+        # y Sencrop avisó de que los internos pueden cambiar sin previo aviso. Se queda
+        # detrás solo como respaldo.
+        for _u in (f"{SENCROP_API_BASE}/organisations/{org_id}/devices/{_id}",
+                   f"{SENCROP_API_BASE}/organisation/{org_id}/device/{_id}",
                    f"{SENCROP_API_BASE}/devices/{_id}"):
             try:
                 r = requests.get(_u, headers=headers, timeout=25)
