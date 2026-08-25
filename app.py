@@ -4864,6 +4864,89 @@ def supabase_is_configured():
     return bool(url and key)
 
 
+# ── Archivo horario de MeteoGalicia ───────────────────────────────────────────
+# Va AQUÍ ARRIBA y no junto al resto de funciones de MeteoGalicia porque la
+# autocarga del arranque llama a forecast_desde_mg() mucho antes de llegar a
+# aquellas: a nivel de módulo el orden importa, y definido más abajo reventaba
+# con NameError al abrir la app.
+SUPABASE_MG_HOURLY_PATH = "forecast_mg_hourly.parquet"
+
+
+def load_mg_hourly_archive():
+    """Previsiones HORARIAS de MeteoGalicia archivadas (temperatura, HR, lluvia).
+
+    Archivo aparte del de riesgo: aquí la fila es una HORA, no un día, y el objetivo es
+    otro — poder comparar la previsión con el sensor sin el estimador de mojadura de por
+    medio. Columnas: issue_date · target_dt · horizon_h · mg_temp · mg_hr · mg_rain."""
+    if not supabase_is_configured():
+        return pd.DataFrame()
+    try:
+        url, key = get_supabase_credentials()
+        endpoint = (f"{url.rstrip('/')}/storage/v1/object/"
+                    f"{SUPABASE_SNAPSHOT_BUCKET}/{SUPABASE_MG_HOURLY_PATH}")
+        r = requests.get(endpoint, headers={"apikey": key, "Authorization": f"Bearer {key}"},
+                         timeout=60)
+        if r.status_code != 200 or not r.content:
+            return pd.DataFrame()
+        return pd.read_parquet(io.BytesIO(r.content), engine="pyarrow")
+    except Exception:
+        return pd.DataFrame()
+
+
+def forecast_desde_mg(archive_df=None, horas_max=84):
+    """Previsión horaria a partir de lo que MeteoGalicia tiene archivado.
+
+    Pasa a ser **la** previsión de la app: Sencrop confirmó (23/08/2026) que no sirve
+    previsión por API y que llegará «en una versión futura», sin fecha. El histórico
+    sigue viniendo de Sencrop; solo cambia de dónde sale el futuro.
+
+    Se lee del archivo, no en vivo, porque Streamlit Cloud no consigue conectar con
+    MeteoGalicia — les bloquean las IPs de centro de datos. Lo llena el informe diario
+    cada mañana, así que la previsión es tan fresca como la última ejecución.
+
+    Devuelve (DataFrame con CANONICAL_COLUMNS, aviso). El estimador de hoja mojada solo
+    necesita temp_media, hr_media y lluvia_mm — el punto de rocío lo calcula él.
+    """
+    if archive_df is None:
+        archive_df = load_mg_hourly_archive()
+    if archive_df is None or archive_df.empty:
+        return pd.DataFrame(), "no hay previsión de MeteoGalicia archivada"
+    try:
+        a = archive_df.copy()
+        a["target_dt"] = pd.to_datetime(a.get("target_dt"), errors="coerce")
+        a = a.dropna(subset=["target_dt"])
+        try:
+            _ahora = pd.Timestamp.now(tz="Europe/Madrid").tz_localize(None)
+        except Exception:
+            _ahora = pd.Timestamp.now()
+        a = a[(a["target_dt"] > _ahora) &
+              (a["target_dt"] <= _ahora + pd.Timedelta(hours=int(horas_max)))]
+        if a.empty:
+            return pd.DataFrame(), ("la previsión archivada de MeteoGalicia ya ha caducado "
+                                    "(no cubre ninguna hora futura)")
+        # De cada hora, la emisión MÁS RECIENTE: es la que menos antelación tiene y, por
+        # tanto, la más fiable. `issue_date` ordena bien porque es una cadena ISO.
+        a = a.sort_values("issue_date").drop_duplicates("target_dt", keep="last")
+        out = pd.DataFrame({
+            "fecha_hora": a["target_dt"],
+            "temp_media": pd.to_numeric(a.get("mg_temp"), errors="coerce"),
+            "hr_media": pd.to_numeric(a.get("mg_hr"), errors="coerce"),
+            "lluvia_mm": pd.to_numeric(a.get("mg_rain"), errors="coerce").fillna(0.0),
+        })
+        for col in CANONICAL_COLUMNS:
+            if col not in out.columns:
+                out[col] = np.nan
+        out = out[CANONICAL_COLUMNS].sort_values("fecha_hora").reset_index(drop=True)
+        # Sin temperatura o sin humedad no se puede calcular riesgo de infección.
+        if out["temp_media"].notna().sum() == 0 or out["hr_media"].notna().sum() == 0:
+            return pd.DataFrame(), ("la previsión archivada no trae temperatura o humedad; "
+                                    "solo sirve para la lluvia")
+        _hasta = out["fecha_hora"].max()
+        return out, f"MeteoGalicia · {len(out)} h · hasta el {_hasta:%d/%m %H:%M}"
+    except Exception as e:
+        return pd.DataFrame(), f"{type(e).__name__}: {str(e)[:110]}"
+
+
 def supabase_headers():
     url, key = get_supabase_credentials()
     return {
@@ -23867,84 +23950,6 @@ def meteosix_wrf_daily_rain_cached():
 
 
 SUPABASE_FORECAST_ARCHIVE_PATH = "forecast_risk_archive.parquet"
-SUPABASE_MG_HOURLY_PATH = "forecast_mg_hourly.parquet"
-
-
-def load_mg_hourly_archive():
-    """Previsiones HORARIAS de MeteoGalicia archivadas (temperatura, HR, lluvia).
-
-    Archivo aparte del de riesgo: aquí la fila es una HORA, no un día, y el objetivo es
-    otro — poder comparar la previsión con el sensor sin el estimador de mojadura de por
-    medio. Columnas: issue_date · target_dt · horizon_h · mg_temp · mg_hr · mg_rain."""
-    if not supabase_is_configured():
-        return pd.DataFrame()
-    try:
-        url, key = get_supabase_credentials()
-        endpoint = (f"{url.rstrip('/')}/storage/v1/object/"
-                    f"{SUPABASE_SNAPSHOT_BUCKET}/{SUPABASE_MG_HOURLY_PATH}")
-        r = requests.get(endpoint, headers={"apikey": key, "Authorization": f"Bearer {key}"},
-                         timeout=60)
-        if r.status_code != 200 or not r.content:
-            return pd.DataFrame()
-        return pd.read_parquet(io.BytesIO(r.content), engine="pyarrow")
-    except Exception:
-        return pd.DataFrame()
-
-
-def forecast_desde_mg(archive_df=None, horas_max=84):
-    """Previsión horaria a partir de lo que MeteoGalicia tiene archivado.
-
-    Pasa a ser **la** previsión de la app: Sencrop confirmó (23/08/2026) que no sirve
-    previsión por API y que llegará «en una versión futura», sin fecha. El histórico
-    sigue viniendo de Sencrop; solo cambia de dónde sale el futuro.
-
-    Se lee del archivo, no en vivo, porque Streamlit Cloud no consigue conectar con
-    MeteoGalicia — les bloquean las IPs de centro de datos. Lo llena el informe diario
-    cada mañana, así que la previsión es tan fresca como la última ejecución.
-
-    Devuelve (DataFrame con CANONICAL_COLUMNS, aviso). El estimador de hoja mojada solo
-    necesita temp_media, hr_media y lluvia_mm — el punto de rocío lo calcula él.
-    """
-    if archive_df is None:
-        archive_df = load_mg_hourly_archive()
-    if archive_df is None or archive_df.empty:
-        return pd.DataFrame(), "no hay previsión de MeteoGalicia archivada"
-    try:
-        a = archive_df.copy()
-        a["target_dt"] = pd.to_datetime(a.get("target_dt"), errors="coerce")
-        a = a.dropna(subset=["target_dt"])
-        try:
-            _ahora = pd.Timestamp.now(tz="Europe/Madrid").tz_localize(None)
-        except Exception:
-            _ahora = pd.Timestamp.now()
-        a = a[(a["target_dt"] > _ahora) &
-              (a["target_dt"] <= _ahora + pd.Timedelta(hours=int(horas_max)))]
-        if a.empty:
-            return pd.DataFrame(), ("la previsión archivada de MeteoGalicia ya ha caducado "
-                                    "(no cubre ninguna hora futura)")
-        # De cada hora, la emisión MÁS RECIENTE: es la que menos antelación tiene y, por
-        # tanto, la más fiable. `issue_date` ordena bien porque es una cadena ISO.
-        a = a.sort_values("issue_date").drop_duplicates("target_dt", keep="last")
-        out = pd.DataFrame({
-            "fecha_hora": a["target_dt"],
-            "temp_media": pd.to_numeric(a.get("mg_temp"), errors="coerce"),
-            "hr_media": pd.to_numeric(a.get("mg_hr"), errors="coerce"),
-            "lluvia_mm": pd.to_numeric(a.get("mg_rain"), errors="coerce").fillna(0.0),
-        })
-        for col in CANONICAL_COLUMNS:
-            if col not in out.columns:
-                out[col] = np.nan
-        out = out[CANONICAL_COLUMNS].sort_values("fecha_hora").reset_index(drop=True)
-        # Sin temperatura o sin humedad no se puede calcular riesgo de infección.
-        if out["temp_media"].notna().sum() == 0 or out["hr_media"].notna().sum() == 0:
-            return pd.DataFrame(), ("la previsión archivada no trae temperatura o humedad; "
-                                    "solo sirve para la lluvia")
-        _hasta = out["fecha_hora"].max()
-        return out, f"MeteoGalicia · {len(out)} h · hasta el {_hasta:%d/%m %H:%M}"
-    except Exception as e:
-        return pd.DataFrame(), f"{type(e).__name__}: {str(e)[:110]}"
-
-
 def purge_mg_hourly_archive():
     """Vacía el archivo horario de MeteoGalicia (sobrescribe con un parquet vacío).
 
