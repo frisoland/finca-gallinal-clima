@@ -24509,16 +24509,37 @@ def forecast_reliability(history_df, archive_df=None):
                 _fiab = "🟡 Promete (pocos datos)"
             else:
                 _fiab = "🟢 Buena"
+            # EVENTOS QUE NI SIQUIERA SE EVALUARON. Arriba se descartan los días que no
+            # están en el archivo (`if td not in a.index: continue`): sin previsión no hay
+            # nada que comparar. Pero si ESE día hubo infección, desaparecía de la cuenta
+            # y el resumen podía decir «avisó de TODAS» habiendo eventos sin cubrir.
+            # Pasó el 25/08/2026, en el hueco entre que Sencrop dejó de servir previsión y
+            # que se montó la de MeteoGalicia: la tabla día a día lo pintaba en rojo y el
+            # resumen seguía diciendo 100 %. No es culpa del modelo — no había modelo —
+            # pero el usuario tiene que saberlo: esos días estuvo sin avisador.
+            _sin_cub = 0
+            _col_real = {"🍄 Moteado": "Mills_valor", "🟤 Monilia": "Monilia_valor",
+                         "⚪ Oídio": "Oidio_valor"}.get(label)
+            if _col_real and _col_real in a.columns:
+                try:
+                    _ev_all = a.index[pd.to_numeric(a[_col_real], errors="coerce") >= thr]
+                    _sin_cub = int(sum(1 for _d in _ev_all if _d not in set(comp_day["target_date"])))
+                except Exception:
+                    _sin_cub = 0
             out_rows.append({
                 "Qué": label,
-                "Fiabilidad": _fiab,
+                "Fiabilidad": ("🟠 Días sin previsión" if (_sin_cub and _fiab == "🟢 Buena")
+                               else _fiab),
                 "Eventos avisados (lo que importa)": (
                     f"{tp} de {reales} ({round(tp / reales * 100)}%)" if reales else "sin eventos aún"),
                 "Acertó (de los días)": f"{aciertos} de {_nd}",
                 "Falsas alarmas (avisó, no pasó)": fp,
                 "Se le escapó (no avisó, sí pasó)": (f"{fn} de {reales}" if reales else "0"),
+                "Sin previsión (no se pudo avisar)": _sin_cub,
             })
         meta = {"n": len(comp), "n_dias": _n_dias, "comp": comp,
+                "sin_cubrir": int(sum(r.get("Sin previsión (no se pudo avisar)", 0)
+                                      for r in out_rows)),
                 "since": str(archive_df.get("issue_date", pd.Series(dtype=str)).min())}
         return pd.DataFrame(out_rows), meta
     except Exception:
@@ -26533,6 +26554,13 @@ def render_decisiones_panel():
                     st.error(f"No se pudo borrar: {_pmsg}")
         _rel_df = st.session_state.get("forecast_reliab_df")
         _rel_meta = st.session_state.get("forecast_reliab_meta", {"n": 0})
+        # FUERA la fila «🌧️ Lluvia» (Sencrop) cuando la previsión ya no es suya: es un
+        # archivo cerrado que no puede crecer, y puesta junto a WRF9 y MeteoGalicia
+        # parece que se están comparando tres modelos vivos. Las otras dos siguen.
+        if (_rel_df is not None and hasattr(_rel_df, "empty") and not _rel_df.empty
+                and st.session_state.get("_forecast_src") == "meteogalicia"
+                and "Qué" in _rel_df.columns):
+            _rel_df = _rel_df[_rel_df["Qué"].astype(str) != "🌧️ Lluvia"].copy()
         if _rel_df is None or (hasattr(_rel_df, "empty") and _rel_df.empty):
             if "forecast_reliab_df" in st.session_state:
                 st.info("Aún no hay predicciones archivadas que ya hayan pasado para comparar. "
@@ -26560,9 +26588,23 @@ def render_decisiones_panel():
                     _nom = _q.split(" ", 1)[-1] if " " in _q else _q
                     _detalle.append(f"{_nom.lower()} {_tp}/{_re}")
             _det = " · ".join(_detalle)
-            if _tot_ev == 0:
+            # DÍAS SIN PREVISIÓN: no son escapes del modelo, pero tampoco son aciertos.
+            # Decir «avisó de TODAS» cuando hubo infecciones sin cubrir es engañoso, aunque
+            # la culpa fuera de que no había previsión ese día. Se dice aparte y sin
+            # disfrazarlo: el usuario estuvo sin avisador, y eso es lo que le afecta.
+            _sc = int((_rel_meta or {}).get("sin_cubrir", 0) or 0)
+            _txt_sc = (f"\n\n⚠️ Aparte, **{_sc} infección(es) cayeron en días **sin previsión "
+                       f"archivada** — no cuentan como escape porque no había nada que "
+                       f"comparar, pero esos días **estuviste sin avisador**. (Del hueco entre "
+                       f"que Sencrop dejó de servir previsión y se montó la de MeteoGalicia.)"
+                       if _sc else "")
+            if _tot_ev == 0 and not _sc:
                 st.info("🟡 **Aún no ha habido infecciones reales verificadas** (o muy pocos datos). "
                         "El veredicto llegará cuando el verano deje algún evento que comprobar.")
+            elif _tot_esc == 0 and _sc:
+                st.warning(
+                    f"⚠️ **De las {_tot_ev} infecciones que se pudieron verificar, el modelo avisó "
+                    f"de todas** ({_det})." + _txt_sc)
             elif _tot_esc == 0:
                 st.success(
                     f"✅ **De las {_tot_ev} infecciones reales de esta campaña, el modelo avisó de "
@@ -26572,7 +26614,7 @@ def render_decisiones_panel():
             else:
                 st.warning(
                     f"⚠️ De **{_tot_ev}** infecciones reales avisó de **{_tot_av}** ({_det}); "
-                    f"**se le escaparon {_tot_esc}** (mira las filas en rojo).")
+                    f"**se le escaparon {_tot_esc}** (mira las filas en rojo)." + _txt_sc)
             st.caption("👉 Esto es lo que importa de un avisador: **no perderse infecciones**. Lo "
                        "demás (precisión con antelación) es detalle técnico, abajo en su desplegable.")
 
