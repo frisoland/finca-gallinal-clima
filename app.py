@@ -26827,7 +26827,13 @@ def render_decisiones_panel():
                 if _arch_now is not None and not _arch_now.empty and "issue_date" in _arch_now.columns:
                     _ii = pd.to_datetime(_arch_now["issue_date"], errors="coerce")
                     _partes = []
-                    for _c, _n in [("pred_rain", "Sencrop"), ("pred_rain_wrf", "WRF9"),
+                    # «pred_rain» NO es «Sencrop»: es la lluvia de la previsión ACTIVA, y
+                    # desde el 25/08/2026 la rellena MeteoGalicia. Con la etiqueta vieja
+                    # esta línea decía «Sencrop 25/08» cuando Sencrop no archiva nada
+                    # desde el 19.
+                    _n_prev = ("Previsión activa" if st.session_state.get("_forecast_src")
+                               == "meteogalicia" else "Sencrop")
+                    for _c, _n in [("pred_rain", _n_prev), ("pred_rain_wrf", "WRF9"),
                                    ("pred_rain_mg", "MeteoGalicia")]:
                         if _c not in _arch_now.columns:
                             continue
