@@ -26124,6 +26124,49 @@ def render_decisiones_panel():
             "unos puntos más alta de la real**, y eso infla las horas de hoja mojada — "
             "puede sobrar algún aviso de moteado. Se está midiendo en «¿Sirve "
             "MeteoGalicia…?», más abajo, para corregirlo con datos.")
+        # QUÉ HAY DEBAJO DE CADA NÚMERO. Sin esto, un «moteado previsto = 0» en un día
+        # con lluvia anunciada no se puede ni confirmar ni desmentir: hay que poder ver
+        # la lluvia y la humedad HORARIAS que entran al modelo, que no son las mismas que
+        # el total diario de la tabla de fiabilidad (son dos consultas distintas a MG).
+        with st.expander("🔍 Ver la previsión que se está usando (día a día)"):
+            st.caption(
+                "Lo que de verdad entra al modelo, resumido por día. La **lluvia** y la "
+                "**humedad** de aquí son las de la serie **horaria**; la columna «Lluvia MG» "
+                "de la tabla de fiabilidad es el **total diario**, otra consulta distinta. "
+                "Si un día sale con lluvia y aun así el riesgo es 0, aquí se ve por qué.")
+            try:
+                _fx = forecast_df.copy()
+                _fx["fecha_hora"] = pd.to_datetime(_fx["fecha_hora"], errors="coerce")
+                _fx = _fx.dropna(subset=["fecha_hora"])
+                _pw = st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS))
+                _fx["_wet"] = estimate_leaf_wetness_minutes(_fx, _pw)
+                _fx["_d"] = _fx["fecha_hora"].dt.normalize()
+                _g = _fx.groupby("_d").agg(
+                    Horas=("fecha_hora", "size"),
+                    Lluvia_mm=("lluvia_mm", "sum"),
+                    HR_media=("hr_media", "mean"),
+                    HR_max=("hr_media", "max"),
+                    T_min=("temp_media", "min"),
+                    T_max=("temp_media", "max"),
+                    Horas_mojadura=("_wet", lambda s: int((pd.to_numeric(s) > 0).sum())),
+                ).reset_index()
+                _g["_d"] = _g["_d"].dt.strftime("%d/%m")
+                _g = _g.rename(columns={"_d": "Día", "Lluvia_mm": "Lluvia (mm)",
+                                        "HR_media": "HR media", "HR_max": "HR máx",
+                                        "T_min": "T mín", "T_max": "T máx",
+                                        "Horas_mojadura": "Horas hoja mojada"})
+                for _c in ("Lluvia (mm)", "HR media", "HR máx", "T mín", "T máx"):
+                    _g[_c] = pd.to_numeric(_g[_c], errors="coerce").round(1)
+                st.dataframe(_g, use_container_width=True, hide_index=True)
+                st.caption(
+                    f"Umbral de mojadura configurado: **HR ≥ {_pw.get('rh_thr', 92):.0f} %** "
+                    f"· rocío ≤ {_pw.get('dew_depr', 1.5):.1f} °C · lluvia > 0,1 mm. "
+                    "**Horas hoja mojada** es lo que alimenta el moteado y la monilia: si "
+                    "sale 0, el riesgo será 0 por mucha lluvia que anuncie el total diario. "
+                    "· **Horas** = cuántas horas de ese día trae la previsión: si son pocas, "
+                    "el día está incompleto y sus totales se quedan cortos.")
+            except Exception as _e:
+                st.warning(f"No se pudo resumir la previsión: {type(_e).__name__}: {_e}")
 
     if forecast_df is None or forecast_df.empty:
         _ult_txt = ""
