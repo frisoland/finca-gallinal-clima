@@ -23585,21 +23585,39 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
             fin = pd.to_datetime(ev.get("Fin"), errors="coerce")
             if pd.isna(fin):
                 continue
-            d = fin.normalize()
             ini = pd.to_datetime(ev.get("Inicio"), errors="coerce")
+            # EL RIESGO MARCA TODOS LOS DÍAS QUE LA HOJA ESTUVO MOJADA, no solo aquel en
+            # que se secó. Antes se apuntaba únicamente al día del `Fin` del evento, y
+            # eso dejaba el aviso SIEMPRE UN DÍA TARDE cuando la mojadura cruzaba la
+            # medianoche: la noche del 27 al 28 de agosto de 2026 daba riesgo 0 el 27
+            # —con 18 h de hoja mojada y lluvia— y 150 el 28, ya con la infección hecha.
+            # Para un avisador eso es inútil: el aviso tiene que llegar mientras aún se
+            # puede tratar. Agronómicamente también es lo correcto: si la hoja estuvo
+            # mojada los dos días, los dos días hubo riesgo.
+            # Cada día se queda con el valor MÁXIMO de los eventos que lo tocan.
+            try:
+                _dias = (pd.date_range(ini.normalize(), fin.normalize(), freq="D")
+                         if pd.notna(ini) else [fin.normalize()])
+            except Exception:
+                _dias = [fin.normalize()]
             wet_eq = pd.to_numeric(ev.get("Horas húmedas equivalentes"), errors="coerce")
             rm = ev.get("Ratio moteado", np.nan)
             ro = ev.get("Ratio monilia", np.nan)
-            if pd.notna(rm):
-                _v = float(rm) * 100.0
-                if _v >= mills_by_day.get(d, -1.0):       # quedarse con el evento del valor máx.
-                    mills_by_day[d] = _v
-                    mills_evt_by_day[d] = _evt_txt(ini, fin, wet_eq)
-            if pd.notna(ro):
-                _v = float(ro) * 100.0
-                if _v >= monilia_by_day.get(d, -1.0):
-                    monilia_by_day[d] = _v
-                    monilia_evt_by_day[d] = _evt_txt(ini, fin, wet_eq)
+            _multi = len(_dias) > 1
+            for d in _dias:
+                _txt = _evt_txt(ini, fin, wet_eq)
+                if _multi and _txt:
+                    _txt += " (evento de varios días)"
+                if pd.notna(rm):
+                    _v = float(rm) * 100.0
+                    if _v >= mills_by_day.get(d, -1.0):   # quedarse con el evento del valor máx.
+                        mills_by_day[d] = _v
+                        mills_evt_by_day[d] = _txt
+                if pd.notna(ro):
+                    _v = float(ro) * 100.0
+                    if _v >= monilia_by_day.get(d, -1.0):
+                        monilia_by_day[d] = _v
+                        monilia_evt_by_day[d] = _txt
 
     # 3. Construir filas diarias con agregados meteo + valores de enfermedad por evento.
     allh["_fecha"] = allh["fecha_hora"].dt.date
@@ -26660,6 +26678,20 @@ def render_decisiones_panel():
                     f"**se le escaparon {_tot_esc}** (mira las filas en rojo)." + _txt_sc)
             st.caption("👉 Esto es lo que importa de un avisador: **no perderse infecciones**. Lo "
                        "demás (precisión con antelación) es detalle técnico, abajo en su desplegable.")
+            # AVISO DE TRANSICIÓN. Desde el 26/08/2026 el riesgo marca TODOS los días que
+            # la hoja estuvo mojada, no solo aquel en que se secó. El valor REAL se
+            # recalcula siempre, así que ya usa el criterio nuevo; las previsiones
+            # ARCHIVADAS antes de esa fecha son fijas y se guardaron con el viejo. Durante
+            # unas semanas se comparan dos criterios distintos y saldrán más escapes de
+            # los que hubo. No es que el modelo haya empeorado.
+            st.caption(
+                "ℹ️ **Criterio cambiado el 26/08/2026:** un episodio de hoja mojada que cruza "
+                "la medianoche ahora marca **los dos días**, no solo aquel en que se secó — "
+                "antes el aviso llegaba un día tarde, con la infección ya hecha. Los valores "
+                "**reales** se recalculan con el criterio nuevo, pero las previsiones "
+                "**archivadas antes** de esa fecha se guardaron con el viejo: durante unas "
+                "semanas la comparación mezcla los dos y **aparecerán más escapes de los que "
+                "realmente hubo**. Se corrige solo según entren días nuevos.")
 
             # Resaltar lo que IMPORTA: "Eventos avisados" (verde si pilla todos, rojo si
             # se escapa alguno) y "Se le escapó" en rojo cuando es >0.
