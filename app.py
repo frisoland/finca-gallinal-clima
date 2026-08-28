@@ -24437,9 +24437,17 @@ def forecast_reliability(history_df, archive_df=None):
             _hz_r = pd.to_numeric(r.get("horizon"), errors="coerce")
             if pd.isna(_hz_r) or int(_hz_r) < 1:
                 continue
-            _mp = float(r.get("pred_mills", 0));   _mr = float(a.loc[td, "Mills_valor"])
-            _op = float(r.get("pred_monilia", 0)); _omr = float(a.loc[td, "Monilia_valor"])
-            _dp = float(r.get("pred_oidio", 0));   _dr = float(a.loc[td, "Oidio_valor"])
+            # La previsión archivada es CRUDA; el real está corregido y topado. Compararlos
+            # tal cual medía el modelo más generoso de lo que es: un previsto crudo de 120
+            # contaba como aviso (≥100) cuando corregido son 73. Se pasan a la misma
+            # escala, con el factor de la fuente con que se archivó cada uno.
+            _src_r = r.get("pred_src") or "sencrop"
+            _mp = float(pred_en_escala_real(r.get("pred_mills", 0), "mills", _src_r) or 0)
+            _mr = float(a.loc[td, "Mills_valor"])
+            _op = float(pred_en_escala_real(r.get("pred_monilia", 0), "monilia", _src_r) or 0)
+            _omr = float(a.loc[td, "Monilia_valor"])
+            _dp = float(pred_en_escala_real(r.get("pred_oidio", 0), "oidio", _src_r) or 0)
+            _dr = float(a.loc[td, "Oidio_valor"])
             _lp = float(r.get("pred_rain", 0));    _lr = float(a.loc[td, "Lluvia"])
             _lwp = r.get("pred_rain_wrf", np.nan)
             _lwp = float(_lwp) if pd.notna(_lwp) else np.nan
@@ -24801,6 +24809,44 @@ def forecast_reliability_persistence(history_df, archive_df=None):
         return vacio
 
 
+# Factor de sesgo POR FUENTE. El 1,65/1,67 se midió sobre Sencrop; MeteoGalicia es otro
+# modelo y su sesgo aún no está medido, así que va 1,0 hasta que haya datos. Cada
+# previsión se archiva con su `pred_src`, así que se puede aplicar el que le toca.
+FORECAST_BIAS_BY_SRC = {
+    "sencrop": FORECAST_BIAS_DEFAULTS,
+    "meteogalicia": {"mills": 1.0, "monilia": 1.0, "oidio": 1.0},
+}
+
+
+def pred_en_escala_real(valor, campo, src="sencrop", tope=150.0):
+    """Previsión ARCHIVADA (cruda) llevada a la misma escala que el valor real.
+
+    El archivo guarda la previsión **sin** corregir el sesgo, y a propósito: si guardara
+    el valor ya dividido, el cálculo del factor se mordería la cola y daría 1,0 para
+    siempre. Pero para **enseñarla junto al real** —y para medir fiabilidad contra él—
+    hay que aplicarle la misma corrección y el mismo tope, o se comparan escalas
+    distintas. Se veía en la tabla: un previsto de **229** al lado de un real topado en
+    **150**, que no es que fuera mayor, es que estaba sin corregir (229/1,65 = 139).
+
+    Y no es solo cosmético: en fiabilidad, un previsto crudo de 120 contaba como aviso
+    (≥100) cuando corregido son 73 y no habría avisado — el modelo salía más generoso
+    de lo que es.
+    """
+    try:
+        v = float(valor)
+    except Exception:
+        return np.nan
+    if pd.isna(v):
+        return np.nan
+    _f = FORECAST_BIAS_BY_SRC.get(str(src or "sencrop"),
+                                  FORECAST_BIAS_BY_SRC["sencrop"]).get(campo, 1.0)
+    try:
+        _f = float(_f) or 1.0
+    except Exception:
+        _f = 1.0
+    return min(v / _f, float(tope))
+
+
 def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, days=30, days_fwd=7, wrf_rain=None, mg_rain=None):
     """Tabla día a día PREVISTO vs REAL. Incluye:
       · Días FUTUROS (🔮): la previsión EN VIVO de la gráfica (real aún pendiente).
@@ -24880,15 +24926,25 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                 })
             else:
                 pr = pred_map.get(td)
+                # El archivo guarda la previsión CRUDA (sin corregir el sesgo ni topar).
+                # Aquí va al lado del real, así que hay que ponerla en su misma escala:
+                # si no, un previsto de 229 junto a un real de 150 parece mayor cuando en
+                # realidad son 139 corregidos. Ver pred_en_escala_real().
+                _src_pr = (pr.get("pred_src") if pr is not None else None) or "sencrop"
 
-                def _pp(col):
-                    return _si(pr.get(col)) if pr is not None else "—"
+                def _pp(col, campo):
+                    if pr is None:
+                        return "—"
+                    return _si(pred_en_escala_real(pr.get(col), campo, _src_pr))
 
                 rows.append({
                     "_sort": d, "Fecha": d.strftime("%d/%m"),
-                    "Moteado prev.": _pp("pred_mills"),   "Moteado real": _si(r.get("Mills_valor")),
-                    "Monilia prev.": _pp("pred_monilia"), "Monilia real": _si(r.get("Monilia_valor")),
-                    "Oídio prev.": _pp("pred_oidio"),     "Oídio real": _si(r.get("Oidio_valor")),
+                    "Moteado prev.": _pp("pred_mills", "mills"),
+                    "Moteado real": _si(r.get("Mills_valor")),
+                    "Monilia prev.": _pp("pred_monilia", "monilia"),
+                    "Monilia real": _si(r.get("Monilia_valor")),
+                    "Oídio prev.": _pp("pred_oidio", "oidio"),
+                    "Oídio real": _si(r.get("Oidio_valor")),
                     "Lluvia prev.": (_sr(pr.get("pred_rain")) if pr is not None else "—"),
                     "Lluvia WRF9": (_sr(pr.get("pred_rain_wrf")) if pr is not None else "—"),
                     "Lluvia MG": (_sr(pr.get("pred_rain_mg")) if pr is not None else "—"),
