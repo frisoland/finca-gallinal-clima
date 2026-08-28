@@ -24717,21 +24717,39 @@ def forecast_reliability_persistence(history_df, archive_df=None):
         # Horizonte 0 fuera: es el día en curso a media mañana, no una previsión.
         ad = ad[ad["_h"] >= 1]
 
-        # (etiqueta, col. archivo, col. real, umbral real, umbral previsión)
+        # (etiqueta, col. archivo, col. real, umbral real, umbral previsión, campo_sesgo)
         MODELOS = [
-            ("🍄 Moteado",          "pred_mills",    "Mills_valor",   100.0, 90.0),
-            ("🟤 Monilia",          "pred_monilia",  "Monilia_valor", 100.0, 90.0),
-            ("⚪ Oídio",            "pred_oidio",    "Oidio_valor",   100.0, 90.0),
-            ("🌧️ Lluvia Sencrop",  "pred_rain",     "Lluvia",          0.2,  0.05),
-            ("🌧️ Lluvia WRF9",     "pred_rain_wrf", "Lluvia",          0.2,  0.05),
-            ("🌧️ Lluvia MeteoGal.", "pred_rain_mg", "Lluvia",          0.2,  0.05),
+            ("🍄 Moteado",          "pred_mills",    "Mills_valor",   100.0, 90.0, "mills"),
+            ("🟤 Monilia",          "pred_monilia",  "Monilia_valor", 100.0, 90.0, "monilia"),
+            ("⚪ Oídio",            "pred_oidio",    "Oidio_valor",   100.0, 90.0, "oidio"),
+            ("🌧️ Lluvia WRF9",     "pred_rain_wrf", "Lluvia",          0.2,  0.05, None),
+            ("🌧️ Lluvia MeteoGal.", "pred_rain_mg", "Lluvia",          0.2,  0.05, None),
         ]
+        # «pred_rain» se etiquetaba como «Lluvia Sencrop», pero es la lluvia de la
+        # PREVISIÓN ACTIVA: desde el 25/08/2026 la rellena MeteoGalicia, así que esa fila
+        # salía duplicando a «Lluvia MeteoGal.» con otro recuento de emisiones y con un
+        # nombre falso. Solo se lista mientras la previsión sea de verdad de Sencrop.
+        try:
+            _src_activa = st.session_state.get("_forecast_src", "sencrop")
+        except Exception:
+            _src_activa = "sencrop"
+        if _src_activa != "meteogalicia":
+            MODELOS.insert(3, ("🌧️ Lluvia Sencrop", "pred_rain", "Lluvia", 0.2, 0.05, None))
         ev_rows, res_rows, hz_rows = [], [], []
-        for label, pcol, rcol, thr_r, thr_p in MODELOS:
+        for label, pcol, rcol, thr_r, thr_p, _campo in MODELOS:
             if pcol not in ad.columns or rcol not in a.columns:
                 continue
-            sub = ad[["_td", "_h", pcol]].copy()
+            _cols = ["_td", "_h", pcol] + (["pred_src"] if "pred_src" in ad.columns else [])
+            sub = ad[_cols].copy()
             sub[pcol] = pd.to_numeric(sub[pcol], errors="coerce")
+            # La previsión se archiva CRUDA (sin corregir el sesgo ni topar). Aquí se
+            # compara con el real y se enseña en «Última previsión», así que hay que
+            # ponerla en la misma escala: si no, salían 229 al lado de un real de 137.
+            if _campo:
+                _srcs = (sub["pred_src"] if "pred_src" in sub.columns
+                         else pd.Series("sencrop", index=sub.index))
+                sub[pcol] = [pred_en_escala_real(_v, _campo, _sc)
+                             for _v, _sc in zip(sub[pcol], _srcs.fillna("sencrop"))]
             sub = sub.dropna(subset=[pcol])
             if sub.empty:
                 continue
