@@ -26254,10 +26254,11 @@ def render_decisiones_panel():
             "no de Sencrop, que ya no la sirve por API." + _mg_hasta +
             " La actualiza el **informe diario** cada mañana.\n\n"
             "Léela con esta cautela: es un modelo de malla **sin calibrar con tu "
-            "estación**. Las primeras medidas apuntan a que **de noche da la humedad "
-            "unos puntos más alta de la real**, y eso infla las horas de hoja mojada — "
-            "puede sobrar algún aviso de moteado. Se está midiendo en «¿Sirve "
-            "MeteoGalicia…?», más abajo, para corregirlo con datos.")
+            "estación**. Con una semana de datos, la **temperatura** y la **lluvia** "
+            "salen muy ajustadas; la **humedad** es el punto flojo y tiende a quedarse "
+            "**algo por debajo** de la real, lo que puede hacer que se pierda alguna hora "
+            "de hoja mojada. Míralo en «¿Sirve MeteoGalicia…?», más abajo — ahí está "
+            "medido y actualizado, que es lo que vale.")
         # QUÉ HAY DEBAJO DE CADA NÚMERO. Sin esto, un «moteado previsto = 0» en un día
         # con lluvia anunciada no se puede ni confirmar ni desmentir: hay que poder ver
         # la lluvia y la humedad HORARIAS que entran al modelo, que no son las mismas que
