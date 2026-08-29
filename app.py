@@ -24383,6 +24383,49 @@ def mg_hourly_detalle(history_df, archive_df=None, max_h=84, rh_thr=92.0):
     return pd.DataFrame(_f1), pd.DataFrame(_f2), _met
 
 
+def mg_umbral_sweep(history_df, archive_df=None, max_h=84, rh_thr=92.0):
+    """¿Qué umbral de humedad habría que aplicarle a MeteoGalicia?
+
+    MeteoGalicia se queda **corta** de humedad frente al sensor, así que aplicarle el
+    mismo umbral (92 %) le hace perder horas de mojadura que sí ocurrieron: con una
+    semana de datos, 30 de 68. Bajarle el umbral SOLO A ELLA compensa ese sesgo sin
+    tocar el sensor ni el modelo de infección.
+
+    No se elige a ojo: se barren los candidatos y se ve qué se gana y qué se paga. Cada
+    punto que se baja recupera escapes (mojadura real no vista → infecciones sin avisar)
+    pero añade falsas (mojadura inventada → tratamientos de más). El punto bueno es
+    donde los escapes caen mucho y las falsas todavía no se disparan.
+
+    La referencia SIEMPRE es el sensor con su umbral real; lo único que se mueve es el
+    listón que se le pide a la previsión.
+    """
+    m = _mg_merge_sensor(history_df, archive_df, max_h)
+    if m.empty:
+        return pd.DataFrame()
+    _r = pd.to_numeric(m["hr_media"], errors="coerce")
+    _p = pd.to_numeric(m["mg_hr"], errors="coerce")
+    _ok = _r.notna() & _p.notna()
+    _r, _p = _r[_ok], _p[_ok]
+    if _r.empty:
+        return pd.DataFrame()
+    _real = _r >= rh_thr
+    _n_real = int(_real.sum())
+    filas = []
+    for _u in [rh_thr - k for k in (0, 2, 4, 5, 6, 8, 10)]:
+        _prev = _p >= _u
+        _ac = int((_real & _prev).sum())
+        _es = int((_real & ~_prev).sum())
+        _fa = int((~_real & _prev).sum())
+        filas.append({
+            "Umbral para MG": f"{_u:.0f} %" + ("  (el del sensor)" if _u == rh_thr else ""),
+            "Horas mojadura vistas": f"{_ac} de {_n_real}" if _n_real else "—",
+            "% recuperado": (round(100 * _ac / _n_real) if _n_real else 0),
+            "Escapes (no la vio)": _es,
+            "Falsas (se la inventó)": _fa,
+        })
+    return pd.DataFrame(filas)
+
+
 def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84):
     """Compara la previsión HORARIA de MeteoGalicia con lo que midió el sensor.
 
@@ -26667,6 +26710,19 @@ def render_decisiones_panel():
                         f"**Umbral de {_met['umbral']:.0f} % HR:** todavía no ha habido "
                         f"ninguna hora húmeda en la muestra ({_met['n']} horas), así que "
                         f"esto no se puede medir aún. Hará falta una noche de rocío o lluvia.")
+                    # ¿Y si le bajamos el listón SOLO a MeteoGalicia? Se mide, no se
+                    # elige a ojo: cada punto recupera escapes y añade falsas.
+                    _sw = mg_umbral_sweep(history_df, rh_thr=_thr)
+                    if _sw is not None and not _sw.empty:
+                        st.markdown("**¿Y si le bajamos el umbral solo a MeteoGalicia?**")
+                        st.dataframe(_sw, use_container_width=True, hide_index=True)
+                        st.caption(
+                            "MeteoGalicia se queda **corta** de humedad, así que pedirle el "
+                            "mismo 92 % que al sensor le hace perder mojadura real. Bajarle el "
+                            "listón **solo a ella** compensa ese sesgo sin tocar el sensor ni el "
+                            "modelo. El punto bueno es donde los **escapes** caen mucho y las "
+                            "**falsas** aún no se disparan — recuerda que un escape es una "
+                            "infección sin avisar y una falsa es solo un tratamiento de más.")
                     if _re:
                         st.caption(
                             "**Escapes** = mojadura real que no habría visto → infecciones sin "
