@@ -4872,6 +4872,22 @@ def supabase_is_configured():
 SUPABASE_MG_HOURLY_PATH = "forecast_mg_hourly.parquet"
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _descargar_mg_hourly(url, key):
+    """Descarga cruda del parquet horario de MeteoGalicia. Cacheada 5 min porque en un
+    solo render se pide hasta CINCO veces (la previsión, la comparación con el sensor,
+    el desglose por franjas y el estado del archivo). Sin caché eran cinco descargas
+    seguidas del mismo fichero, y se notaba al abrir."""
+    try:
+        endpoint = (f"{url.rstrip('/')}/storage/v1/object/"
+                    f"{SUPABASE_SNAPSHOT_BUCKET}/{SUPABASE_MG_HOURLY_PATH}")
+        r = requests.get(endpoint, headers={"apikey": key, "Authorization": f"Bearer {key}"},
+                         timeout=30)
+        return r.content if (r.status_code == 200 and r.content) else None
+    except Exception:
+        return None
+
+
 def load_mg_hourly_archive():
     """Previsiones HORARIAS de MeteoGalicia archivadas (temperatura, HR, lluvia).
 
@@ -4882,13 +4898,10 @@ def load_mg_hourly_archive():
         return pd.DataFrame()
     try:
         url, key = get_supabase_credentials()
-        endpoint = (f"{url.rstrip('/')}/storage/v1/object/"
-                    f"{SUPABASE_SNAPSHOT_BUCKET}/{SUPABASE_MG_HOURLY_PATH}")
-        r = requests.get(endpoint, headers={"apikey": key, "Authorization": f"Bearer {key}"},
-                         timeout=60)
-        if r.status_code != 200 or not r.content:
+        content = _descargar_mg_hourly(url, key)
+        if not content:
             return pd.DataFrame()
-        return pd.read_parquet(io.BytesIO(r.content), engine="pyarrow")
+        return pd.read_parquet(io.BytesIO(content), engine="pyarrow")
     except Exception:
         return pd.DataFrame()
 
@@ -5554,6 +5567,12 @@ SENCROP_SENSORS = [
 
 SENCROP_FORECAST_URL = f"https://sencrop-api-production.infra.sencrop.com/app/forecast/sencrop-mode-data"
 SENCROP_MODELS_URL   = f"https://sencrop-api-production.infra.sencrop.com/app/forecast/models-mode-data"
+
+# ¿Sirve Sencrop la PREVISIÓN por API? Confirmado por su soporte el 23/08/2026: no, y
+# llegará «en una versión futura» sin fecha. Mientras esté en False la app no la intenta
+# al arrancar (se iba en peticiones fallidas y hacía el arranque lento); la previsión la
+# pone MeteoGalicia. El botón manual de la pestaña Previsión la intenta igualmente.
+SENCROP_FORECAST_DISPONIBLE = False
 
 # Organización e ID del sensor principal (temperatura/lluvia/HR de Finca Gallinal)
 _FC_ORG_ID    = "17094"
@@ -19358,7 +19377,15 @@ if not st.session_state.autoload_forecast_done:
     st.session_state.autoload_forecast_done = True
     if not st.session_state.get("forecast_df", pd.DataFrame()).shape[0]:
         _fc_df = None
-        if sencrop_is_configured():
+        # OJO AL COSTE DE ARRANQUE. Sencrop confirmó por correo (23/08/2026) que la
+        # previsión NO está disponible por API y que llegará «en una versión futura», sin
+        # fecha. Intentarla en cada arranque cuesta ~8 peticiones que SIEMPRE fallan
+        # (OAuth + /me + 2 rutas × 3 formatos de fecha, con timeouts de hasta 40 s cada
+        # una): era la causa de que la app tardara tanto en abrir por las mañanas y a
+        # veces pareciera colgada. El botón manual de la pestaña Previsión sigue
+        # intentándolo, para poder comprobar si ya lo han habilitado.
+        # Poner a True en cuanto lo habiliten.
+        if SENCROP_FORECAST_DISPONIBLE and sencrop_is_configured():
             _fc_token = sencrop_get_token_from_secrets()
             if _fc_token:
                 _fc_df, _fc_err = sencrop_download_forecast(token=_fc_token, model="sencrop")
@@ -23766,7 +23793,8 @@ def _get_meteosix_key():
     return (_os.environ.get("METEOSIX_API_KEY") or "").strip()
 
 
-def meteosix_wrf_daily_rain_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km")):
+def meteosix_wrf_daily_rain_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km"),
+                                 timeout=(5, 15)):
     """Igual que `meteosix_wrf_daily_rain` pero devuelve (datos, motivo_del_fallo).
 
     Antes la función se callaba ante CUALQUIER error (key ausente, HTTP 4xx/5xx,
@@ -23787,7 +23815,7 @@ def meteosix_wrf_daily_rain_diag(coords=METEOSIX_COORDS, grids=("1km", "04km", "
             # respuesta. Antes eran 30 s únicos y, con el servidor de MeteoGalicia
             # caído (pasa: 2 veces en 4 días), la app se quedaba 30 s bloqueada al
             # abrir Decisiones. Si no conecta en 5 s, no va a conectar.
-            r = requests.get(METEOSIX_URL, params=params, timeout=(5, 15))
+            r = requests.get(METEOSIX_URL, params=params, timeout=timeout)
             if r.status_code != 200:
                 _ultimo = f"malla {grid}: HTTP {r.status_code}"
                 continue
@@ -23963,8 +23991,14 @@ def meteosix_wrf_daily_rain(coords=METEOSIX_COORDS, grids=("1km", "04km", "12km"
 @st.cache_data(ttl=3600, show_spinner=False)
 def meteosix_wrf_daily_rain_cached():
     """Versión cacheada (1 h) para el panel — no golpear la API en cada rerun.
+
+    UNA sola malla y timeouts cortos a propósito: desde Streamlit Cloud esta llamada
+    **nunca** funciona (MeteoGalicia bloquea las IPs de centro de datos) y el valor bueno
+    llega igual del archivo que escribe el informe diario. Probar las tres mallas con
+    timeout de 20 s costaba hasta un minuto de espera al abrir, para nada. El informe
+    diario sí usa la versión completa, que es donde importa acertar la malla.
     Devuelve (datos, motivo) para poder mostrar por qué falla si viene vacío."""
-    return meteosix_wrf_daily_rain_diag()
+    return meteosix_wrf_daily_rain_diag(grids=("1km",), timeout=(3, 6))
 
 
 SUPABASE_FORECAST_ARCHIVE_PATH = "forecast_risk_archive.parquet"
@@ -23988,6 +24022,10 @@ def purge_mg_hourly_archive():
         headers["Content-Type"] = "application/octet-stream"
         headers["x-upsert"] = "true"
         r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        try:
+            _descargar_mg_hourly.clear()
+        except Exception:
+            pass
         ok = r.status_code in (200, 201)
         return ok, ("Archivo horario de MeteoGalicia vaciado. Volverá a llenarse en la "
                     "próxima ejecución del informe diario." if ok
@@ -24054,6 +24092,10 @@ def archive_mg_hourly_forecast():
         headers["Content-Type"] = "application/octet-stream"
         headers["x-upsert"] = "true"
         r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        try:                       # que el panel no siga viendo el archivo viejo
+            _descargar_mg_hourly.clear()
+        except Exception:
+            pass
         if r.status_code in (200, 201):
             # El aviso de meteosix_wrf_hourly_diag se propaga: puede haber archivado bien
             # pero con una variable menos, y eso hay que verlo en el log del informe.
