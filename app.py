@@ -24380,6 +24380,27 @@ def mg_hourly_detalle(history_df, archive_df=None, max_h=84, rh_thr=92.0):
             "escapes": int((_real & ~_prev).sum()),
             "falsas": int((~_real & _prev).sum()),
         }
+    # ── LA LLUVIA, HORA A HORA. Pesa más que la humedad: en el estimador de mojadura la
+    #    PRIMERA condición es «lluvia > 0,1 mm», así que una hora con lluvia prevista
+    #    cuenta como hoja mojada sin mirar cuánta. Si el modelo anuncia 4,5 mm y caen
+    #    0,5, se inventa horas de mojadura y el riesgo se dispara — pasó los días 28 a
+    #    30/08/2026, con la previsión saturada en 150 y un real de 8 a 47.
+    #    El error medio en mm no sirve para verlo: en días secos sale minúsculo y parece
+    #    que acierta. Lo que importa es cuántas HORAS de lluvia ve y cuántas inventa.
+    _lv = m.dropna(subset=["lluvia_mm", "mg_rain"])
+    if len(_lv):
+        _LL = 0.1                       # el mismo corte que usa el estimador
+        _lr = pd.to_numeric(_lv["lluvia_mm"], errors="coerce") > _LL
+        _lp = pd.to_numeric(_lv["mg_rain"], errors="coerce") > _LL
+        _met["lluvia"] = {
+            "n": len(_lv),
+            "reales": int(_lr.sum()),
+            "aciertos": int((_lr & _lp).sum()),
+            "escapes": int((_lr & ~_lp).sum()),
+            "falsas": int((~_lr & _lp).sum()),
+            "mm_real": float(pd.to_numeric(_lv["lluvia_mm"], errors="coerce").sum()),
+            "mm_prev": float(pd.to_numeric(_lv["mg_rain"], errors="coerce").sum()),
+        }
     return pd.DataFrame(_f1), pd.DataFrame(_f2), _met
 
 
@@ -26710,6 +26731,23 @@ def render_decisiones_panel():
                         f"**Umbral de {_met['umbral']:.0f} % HR:** todavía no ha habido "
                         f"ninguna hora húmeda en la muestra ({_met['n']} horas), así que "
                         f"esto no se puede medir aún. Hará falta una noche de rocío o lluvia.")
+                    _ml = _met.get("lluvia") or {}
+                    if _ml.get("reales") is not None:
+                        _lr, _la = _ml["reales"], _ml["aciertos"]
+                        st.markdown(
+                            f"**La lluvia, hora a hora** — pesa más que la humedad: en el "
+                            f"estimador, *cualquier* hora con lluvia prevista cuenta como hoja "
+                            f"mojada, sin mirar cuánta.\n\n"
+                            f"De **{_lr}** horas en que llovió de verdad, MeteoGalicia vio "
+                            f"**{_la}**" + (f" ({round(100*_la/_lr)} %)" if _lr else "") +
+                            f" y se le escaparon **{_ml['escapes']}**. Además marcó "
+                            f"**{_ml['falsas']}** horas de lluvia que no cayó. "
+                            f"En total anunció **{_ml['mm_prev']:.1f} mm** y cayeron "
+                            f"**{_ml['mm_real']:.1f} mm**.")
+                        st.caption(
+                            "Ojo con el «error medio en mm» de la tabla de arriba: en días secos "
+                            "sale minúsculo y parece que acierta. Lo que de verdad mueve el "
+                            "riesgo es cuántas **horas** de lluvia ve y cuántas se inventa.")
                     # ¿Y si le bajamos el listón SOLO a MeteoGalicia? Se mide, no se
                     # elige a ojo: cada punto recupera escapes y añade falsas.
                     _sw = mg_umbral_sweep(history_df, rh_thr=_thr)
