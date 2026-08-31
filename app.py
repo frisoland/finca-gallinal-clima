@@ -26339,6 +26339,17 @@ def render_decisiones_panel():
                 _fx = _fx.dropna(subset=["fecha_hora"])
                 _pw = st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS))
                 _fx["_wet"] = estimate_leaf_wetness_minutes(_fx, _pw)
+                # ¿CUÁNTO DEL AVISO SE SOSTIENE SIN LA LLUVIA PREVISTA? En el estimador la
+                # primera condición es «lluvia > 0,1 mm», así que una hora con lluvia
+                # anunciada cuenta como hoja mojada aunque la humedad no acompañe. Si el
+                # modelo se pasa con la lluvia —MeteoGalicia anunció 4,5 mm el 28/08 y
+                # cayeron 0,5— se inventa mojadura y el riesgo se dispara sin motivo.
+                # Recalcular con lluvia 0 dice qué parte del aviso aguanta por humedad y
+                # rocío, que es lo que no depende de acertar los milímetros.
+                # Esto NO corrige nada: solo señala qué avisos son frágiles.
+                _fx_sin = _fx.copy()
+                _fx_sin["lluvia_mm"] = 0.0
+                _fx["_wet_sin"] = estimate_leaf_wetness_minutes(_fx_sin, _pw)
                 _fx["_d"] = _fx["fecha_hora"].dt.normalize()
                 _g = _fx.groupby("_d").agg(
                     Horas=("fecha_hora", "size"),
@@ -26348,15 +26359,41 @@ def render_decisiones_panel():
                     T_min=("temp_media", "min"),
                     T_max=("temp_media", "max"),
                     Horas_mojadura=("_wet", lambda s: int((pd.to_numeric(s) > 0).sum())),
+                    Horas_sin_lluvia=("_wet_sin", lambda s: int((pd.to_numeric(s) > 0).sum())),
                 ).reset_index()
+
+                def _solidez(r):
+                    """Un día es FRÁGIL si su mojadura la sostiene sobre todo la lluvia
+                    prevista: si el modelo se pasa con los milímetros, ese aviso se cae."""
+                    _t, _s = int(r["Horas_mojadura"]), int(r["Horas_sin_lluvia"])
+                    if _t == 0:
+                        return "—"
+                    _p = _s / _t
+                    if _p >= 0.7:
+                        return "🟢 Sólido (humedad)"
+                    if _p >= 0.3:
+                        return "🟡 Mixto"
+                    return "🔴 Frágil (solo lluvia)"
+
+                _g["Solidez"] = _g.apply(_solidez, axis=1)
                 _g["_d"] = _g["_d"].dt.strftime("%d/%m")
                 _g = _g.rename(columns={"_d": "Día", "Lluvia_mm": "Lluvia (mm)",
                                         "HR_media": "HR media", "HR_max": "HR máx",
                                         "T_min": "T mín", "T_max": "T máx",
-                                        "Horas_mojadura": "Horas hoja mojada"})
+                                        "Horas_mojadura": "Horas hoja mojada",
+                                        "Horas_sin_lluvia": "…sin la lluvia"})
                 for _c in ("Lluvia (mm)", "HR media", "HR máx", "T mín", "T máx"):
                     _g[_c] = pd.to_numeric(_g[_c], errors="coerce").round(1)
                 st.dataframe(_g, use_container_width=True, hide_index=True)
+                _frag = _g[_g["Solidez"].astype(str).str.startswith("🔴")]
+                if not _frag.empty:
+                    st.warning(
+                        "🔴 **Aviso frágil** en: **" + ", ".join(_frag["Día"].astype(str)) +
+                        "**. Esos días la hoja mojada la sostiene casi solo la **lluvia "
+                        "prevista**, sin humedad que acompañe. Si el modelo se pasa con los "
+                        "milímetros —le ha pasado— ese riesgo no llega a existir.\n\n"
+                        "**Antes de tratar por uno de estos, espera a ver si llueve de "
+                        "verdad.** Un día 🟢 sólido no depende de acertar los milímetros.")
                 st.caption(
                     f"Umbral de mojadura configurado: **HR ≥ {_pw.get('rh_thr', 92):.0f} %** "
                     f"· rocío ≤ {_pw.get('dew_depr', 1.5):.1f} °C · lluvia > 0,1 mm. "
