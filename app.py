@@ -15481,6 +15481,85 @@ CARPOCAPSA_HATCH_BANDS = [
 ]
 
 
+# Ancho de la VENTANA ÓPTIMA al inicio de cada eclosión: las larvas están naciendo y aún
+# no han entrado en el fruto, que es cuando el tratamiento rinde más.
+CARPOCAPSA_VENTANA_OPTIMA_DD = 40
+
+
+def carpocapsa_fase(dd):
+    """Fase biológica en ese acumulado de DD. **FUENTE ÚNICA** de los umbrales.
+
+    Había CUATRO tablas distintas conviviendo (los hitos de la gráfica, las bandas de
+    eclosión, `carpocapsa_status_from_dd` y las fases de la tabla DD-tratamiento), con
+    cortes que no coincidían: 120 / 122 / 130 para el inicio de la eclosión de 1ª, y
+    611 / 750 para la de 2ª. Peor aún, `carpocapsa_status_from_dd` decía «entre
+    generaciones» de 800 a 1100 DD cuando ahí hay **plena eclosión de 2ª** sobre fruta
+    a punto de cosecha — el mismo error que ya se corrigió en las fases y que se había
+    quedado sin arreglar aquí.
+
+    La referencia son las **bandas de eclosión** (`CARPOCAPSA_HATCH_BANDS`, 1-99 % de
+    huevos eclosionados), que es lo que se pinta en la gráfica y lo que decide si el
+    tratamiento sirve: sin larvas naciendo, el Bt no hace nada.
+
+    Devuelve dict con:
+      · nombre    — texto de la fase, con ⭐ (ventana óptima) o ✅ (eclosión activa)
+      · eclosion  — hay larvas naciendo: el tratamiento SÍ sirve
+      · optima    — además es el mejor momento (primeras entradas en fruto)
+      · gen       — nº de generación cuando hay eclosión, None si no
+    """
+    try:
+        if dd is None or pd.isna(dd):
+            return {"nombre": "—", "eclosion": False, "optima": False, "gen": None}
+        d = float(dd)
+    except Exception:
+        return {"nombre": "—", "eclosion": False, "optima": False, "gen": None}
+
+    _bandas = sorted([(float(i), float(f)) for i, f, *_ in CARPOCAPSA_HATCH_BANDS])
+    for _g, (_ini, _fin) in enumerate(_bandas, start=1):
+        if _ini <= d <= _fin:
+            _opt = d <= _ini + CARPOCAPSA_VENTANA_OPTIMA_DD
+            if _opt:
+                _n = (f"⭐ Inicio eclosión {_g}ª gen · primeras entradas en fruto "
+                      f"({_ini:.0f}–{_ini + CARPOCAPSA_VENTANA_OPTIMA_DD:.0f})")
+            else:
+                _n = f"✅ Eclosión {_g}ª gen EN CURSO ({_ini:.0f}–{_fin:.0f})"
+            return {"nombre": _n, "eclosion": True, "optima": _opt, "gen": _g}
+
+    # Fuera de banda: no hay larvas naciendo. Se nombra según dónde caiga.
+    _pri = _bandas[0][0] if _bandas else 122.0
+    _ult = _bandas[-1][1] if _bandas else 1167.0
+    if d < 50:
+        return {"nombre": f"Pre-puesta (<50)", "eclosion": False, "optima": False, "gen": None}
+    if d < 100:
+        return {"nombre": "Inicio puesta de huevos (50–100)", "eclosion": False,
+                "optima": False, "gen": None}
+    if d < _pri:
+        return {"nombre": f"Puesta → eclosión (100–{_pri:.0f})", "eclosion": False,
+                "optima": False, "gen": None}
+    if d > _ult:
+        # Pasada la última banda: 3ª generación según los hitos.
+        _v3 = next((v for v, t in CARPOCAPSA_GEN_DD if "3ª gen · inicio vuelo" in t), 1230.0)
+        _e3 = next((v for v, t in CARPOCAPSA_GEN_DD if "3ª gen · inicio eclosión" in t), 1370.0)
+        if d < _v3:
+            return {"nombre": f"Entre generaciones ({_ult:.0f}–{_v3:.0f})", "eclosion": False,
+                    "optima": False, "gen": None}
+        if d < _e3:
+            return {"nombre": f"Vuelo 3ª gen: adultos, aún NO eclosiona ({_v3:.0f}–{_e3:.0f})",
+                    "eclosion": False, "optima": False, "gen": None}
+        return {"nombre": f"✅ Eclosión 3ª gen (>{_e3:.0f})", "eclosion": True,
+                "optima": False, "gen": 3}
+    # Hueco entre dos bandas: el vuelo de la siguiente generación.
+    for _g, (_ini, _fin) in enumerate(_bandas, start=1):
+        if d > _fin and _g < len(_bandas) and d < _bandas[_g][0]:
+            _sig = _bandas[_g][0]
+            return {"nombre": f"Vuelo {_g + 1}ª gen: adultos, aún NO eclosiona "
+                              f"({_fin:.0f}–{_sig:.0f})",
+                    "eclosion": False, "optima": False, "gen": None}
+    return {"nombre": "—", "eclosion": False, "optima": False, "gen": None}
+
+
+
+
 # ── Grupos de campos para decidir en conjunto (EN PRUEBAS, campaña 2026) ──────
 # Motivación: el 54 % de la variación entre lecturas es ruido de muestreo puro
 # (índice de dispersión 5,25; solo el 16 % es efecto real de cada trampa). Una
@@ -15616,29 +15695,38 @@ def carpocapsa_status_from_dd(current_dd, recent_captures_per_day=0, rain_since_
 
     dd = float(current_dd)
     pressure = float(recent_captures_per_day or 0)
+    # MISMOS UMBRALES QUE TODO LO DEMÁS. Esta función tenía su propia tabla (70/90/140/
+    # 300/540/800/1100/1300) y decía «entre generaciones» de 800 a 1100 DD cuando ahí hay
+    # PLENA eclosión de 2ª generación sobre fruta a punto de cosecha. Era el mismo error
+    # que ya se había corregido en las fases y que aquí se quedó sin arreglar: el estado
+    # de la app invitaba a bajar la guardia justo en la fase que más daño hace.
+    _f = carpocapsa_fase(dd)
+    _alta = pressure >= 2
 
-    if dd < 70:
-        return "Seguimiento", "Antes de ventana", "Revisar trampas semanalmente y confirmar biofix si hay repunte."
-    if dd < 90:
-        return "Preparar", "90 DD próximo", "Preparar intervención si continúan capturas o existe foco histórico."
-    if dd <= 140:
-        action = "Ventana activa 90–140 DD: mantener cobertura sobre fruta si hay capturas recientes."
-        if pressure >= 2:
-            action = "TRATAR/REFORZAR HOY: ventana activa y capturas recientes relevantes."
-        return "Ventana activa", "90–140 DD", action
-    if dd <= 300:
-        if pressure >= 2:
-            return "Vigilancia alta", "250–300 DD / vuelo continuo", "Refuerzo si capturas >2 machos/trampa/día o si hubo lavado de tratamiento."
-        return "Vigilancia", "Post-ventana inicial", "Seguir capturas y preparar siguiente ola si repunta el vuelo."
-    if dd <= 540:
-        return "Pico 1ª generación", "460–540 DD", "Revisar daños y cobertura. Considerar tratamiento fuerte si presión alta."
-    if dd <= 800:
-        return "Verificación", "~500 DD superados", "Verificar eficacia de 1ª generación y muestrear fruto."
-    if dd < 1100:
-        return "Seguimiento 2ª gen.", "Entre generaciones", "Mantener trampas, bordes y revisión de daños."
-    if dd <= 1300:
-        return "Pico 2ª generación", "~1200 DD", "Riesgo de 2ª generación: valorar cobertura si hay capturas o daño."
-    return "Cierre/seguimiento", ">1200 DD", "Seguimiento final, evaluación de daños y planificación de próxima campaña."
+    if _f["optima"]:
+        return ("Ventana óptima",
+                _f["nombre"].replace("⭐ ", ""),
+                "TRATAR: larvas naciendo y aún sin entrar en el fruto — es cuando más rinde."
+                if _alta else
+                "Momento ideal para tratar si hay capturas: larvas naciendo y fruto aún sano.")
+    if _f["eclosion"]:
+        return ("Eclosión activa",
+                _f["nombre"].replace("✅ ", ""),
+                "TRATAR/REFORZAR: hay larvas naciendo y presión de capturas."
+                if _alta else
+                "Hay larvas naciendo: el tratamiento sirve. Decidir según capturas y cobertura.")
+    if dd < 50:
+        return ("Seguimiento", _f["nombre"],
+                "Revisar trampas semanalmente y confirmar el biofix si hay repunte.")
+    if "Puesta" in _f["nombre"] or "puesta" in _f["nombre"]:
+        return ("Preparar", _f["nombre"],
+                "Preparar la intervención: la eclosión está próxima y el Bt actúa sobre larva.")
+    if "Vuelo" in _f["nombre"]:
+        return ("Vigilancia", _f["nombre"],
+                "Solo hay adultos: tratar ahora no sirve. Contar capturas para acertar la ventana."
+                + (" Presión alta: preparar el tratamiento." if _alta else ""))
+    return ("Seguimiento", _f["nombre"],
+            "Entre generaciones: mantener trampas, revisar bordes y muestrear daño en fruto.")
 
 
 def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp=31.1,
@@ -16359,29 +16447,12 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
         # el INICIO de su eclosión. Consecuencia del error: un campo a 900-1200 DD leía
         # "tras pico, ya pasó" cuando estaba en PLENA eclosión de 2ª gen sobre fruta a punto
         # de cosecha — la fase que más daño hace.
-        if dd is None or (isinstance(dd, float) and np.isnan(dd)):
-            return "—"
-        if dd < 50:
-            return "Pre‑puesta (<50)"
-        if dd < 100:
-            return "Inicio puesta huevos (50–100)"
-        if dd < 120:
-            return "Puesta→eclosión (100–120)"
-        if dd < 140:
-            return "✅ Inicio eclosión 1ª gen / entradas fruto (120–140)"
-        if dd < 250:
-            return "Eclosión 1ª gen en curso (140–250)"
-        if dd < 360:
-            return "Eclosión 1ª gen plena (250–360)"
-        if dd < 580:
-            return "Cola 1ª gen / entre generaciones (360–580)"
-        if dd < 750:
-            return "Vuelo 2ª gen: adultos emergiendo, aún NO eclosiona (580–750)"
-        if dd < 1230:
-            return "✅ Eclosión 2ª gen EN CURSO (750–1230)"
-        if dd < 1370:
-            return "Vuelo 3ª gen: adultos emergiendo (1230–1370)"
-        return "✅ Eclosión 3ª gen (>1370)"
+        # Los umbrales salen de carpocapsa_fase(), que es la FUENTE ÚNICA: antes
+        # esta función tenía su propia tabla y no coincidía ni con las bandas de la
+        # gráfica ni con carpocapsa_status_from_dd. El ⭐ marca la ventana óptima
+        # (primeras entradas en fruto) y el ✅ que hay eclosión activa, en cualquier
+        # generación — antes el ✅ solo cubría 20 DD en la 1ª y 480 en la 2ª.
+        return carpocapsa_fase(dd)["nombre"]
 
     # ── Preparar tratamientos de carpocapsa ───────────────────────────────────
     treat = pd.DataFrame()
