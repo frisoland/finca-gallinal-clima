@@ -3475,6 +3475,51 @@ CARPOCAPSA_PRODUCTS_CATALOG = {
     },
 }
 
+# ── Persistencia de la protección de carpocapsa, en días y por TIPO de producto ────
+# NO es la vida del producto en el envase ni su plazo de seguridad: es cuántos días
+# sigue habiendo suficiente materia activa SOBRE EL FRUTO para matar a una larva que
+# nace hoy y busca dónde entrar. Es lo único que cuenta para medir protección.
+#
+#  · Bt (Bactur, Delfin) — 7 días. La ficha de Delfin dice literalmente "repetir a los
+#    7-8 días si la salida de larvas es escalonada"; se degrada con UV. Es un techo
+#    optimista: con sol fuerte la eficacia real cae antes.
+#  · Granulovirus (Madex) — 7 días. Mismo problema de UV que el Bt.
+#  · Diamidas (Coragen, Exirel) — 14 días. Persistencia larga y resisten mejor la lluvia.
+#  · Neonicotinoides (Calypso) — 10 días. Sistémico, tampoco se lava con facilidad.
+#
+# Son estimaciones de ficha técnica, no medidas en esta finca. Se pueden mover desde el
+# panel del punto 7 para ver cuánto cambian las conclusiones — si la historia solo se
+# sostiene con 7 días y se cae con 10, es que no era sólida.
+CARPOCAPSA_PERSISTENCIA_DIAS = {
+    "Biológico - Bt":     7,
+    "Biológico - Virus":  7,
+    "Diamida":           14,
+    "Neonicotinoide":    10,
+}
+CARPOCAPSA_PERSISTENCIA_DEFECTO = 7      # producto sin catalogar
+# Lluvia acumulada que da por LAVADA la protección de un producto de superficie. El Bt y
+# el granulovirus actúan por ingestión desde la piel del fruto: no están dentro del
+# tejido, así que la lluvia se los lleva. 15 mm es el mismo umbral que ya usa el módulo
+# de fungicidas de contacto.
+CARPOCAPSA_LAVADO_MM = 15.0
+
+
+def carpocapsa_persistencia_producto(producto, defecto=None):
+    """Días de protección efectiva de un producto de carpocapsa, del catálogo.
+
+    En un caldo mixto manda el producto de MAYOR persistencia (si echas Bt y una
+    diamida juntos, la diamida sigue protegiendo cuando el Bt ya no está). Mismo
+    criterio que el módulo de fungicidas."""
+    p = str(producto or "").lower()
+    _def = float(defecto) if defecto is not None else float(CARPOCAPSA_PERSISTENCIA_DEFECTO)
+    mejor = None
+    for nombre, info in CARPOCAPSA_PRODUCTS_CATALOG.items():
+        if nombre.lower() in p or any(a in p for a in info.get("aliases", [])):
+            d = float(CARPOCAPSA_PERSISTENCIA_DIAS.get(info.get("tipo"), _def))
+            mejor = d if mejor is None else max(mejor, d)
+    return mejor if mejor is not None else _def
+
+
 # Abonos y otros productos que pueden aparecer mezclados — no son ni fungicidas ni carpocapsa
 FOLIAR_NUTRITION_KEYWORDS = [
     "stimulan", "stimulan k", "abono", "fertilizante", "aminoacid",
@@ -16631,6 +16676,234 @@ def carpocapsa_treatment_timing_by_field(traps_df, treatments_df, daily_dd, camp
     return pd.DataFrame(rows).sort_values("Campo/Zona").reset_index(drop=True)
 
 
+def carpocapsa_cobertura_eclosion(traps_df, treatments_df, daily_dd, campaign_year,
+                                  history=None, biofix_threshold=CARPOCAPSA_BIOFIX_THRESHOLD,
+                                  persistencia_fija=None, lavado_mm=CARPOCAPSA_LAVADO_MM,
+                                  aplicar_lavado=True):
+    """Cuantos dias de ECLOSION tuvo el fruto realmente protegido, campo a campo.
+
+    Esto NO es lo mismo que la «Cobertura %» del resumen por grupos, y la diferencia
+    importa. Aquella mide **cumplimiento del umbral**: de las lecturas que pidieron
+    tratamiento, cuantas lo recibieron. Un campo puede sacar 100 % ahi y aun asi tener
+    la fruta desprotegida medio verano, porque las semanas de 0-3 capturas no piden
+    nada y la eclosion no se para por eso: los huevos puestos semanas antes siguen
+    naciendo aunque las trampas den cero.
+
+    Esta funcion mide lo otro, que es lo que decide el dano: **dias con producto
+    activo / dias de eclosion**. La eclosion son las bandas de `CARPOCAPSA_HATCH_BANDS`
+    (1-99 % de huevos eclosionados) recorridas con los DD del campo desde SU biofix.
+
+    Aritmetica de fondo, que es el resultado que de verdad se busca: cada banda dura
+    ~50 dias y el Bt aguanta 7. Cubrir una generacion entera pide 7 pases seguidos. Si
+    se dieron 2 o 3, la cobertura no puede pasar del 30-40 % por mucho que el umbral se
+    respetara a rajatabla.
+
+    · `persistencia_fija` — fuerza los mismos dias para todos los productos (para el
+      deslizador de sensibilidad). Si es None, manda el catalogo por producto.
+    · `aplicar_lavado` — corta la proteccion cuando se acumulan `lavado_mm` desde la
+      aplicacion. El Bt esta en la piel del fruto, no dentro.
+
+    Devuelve (resumen por campo, huecos, pases). Un «hueco» es una racha de dias
+    seguidos sin producto activo; solo se listan los que pisan eclosion, y se ordenan
+    por DD de eclosion perdidos — no por dias, porque 20 dias en pleno agosto valen
+    mucho mas que 20 en abril.
+    """
+    vacio = (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    if traps_df is None or traps_df.empty or "Campo/Zona" not in traps_df.columns:
+        return vacio
+    if daily_dd is None or daily_dd.empty:
+        return vacio
+
+    t = traps_df.copy()
+    t["Fecha_dt"] = pd.to_datetime(t["Fecha"], errors="coerce")
+    cap_col = next((c for c in ["Capturas machos", "Capturas/trampa/día", "Capturas"]
+                    if c in t.columns), None)
+    if cap_col is None:
+        return vacio
+    t["_capturas"] = pd.to_numeric(t[cap_col], errors="coerce")
+    if "Campaña" in t.columns:
+        t = t[pd.to_numeric(t["Campaña"], errors="coerce") == int(campaign_year)]
+    t = t.dropna(subset=["Fecha_dt", "_capturas", "Campo/Zona"])
+    if t.empty:
+        return vacio
+
+    dd = daily_dd.copy()
+    dd["Fecha"] = pd.to_datetime(dd["Fecha"], errors="coerce")
+    dd = dd.dropna(subset=["Fecha"]).sort_values("Fecha").reset_index(drop=True)
+    dd["DD día"] = pd.to_numeric(dd["DD día"], errors="coerce").fillna(0.0)
+    if dd.empty:
+        return vacio
+    hoy = pd.Timestamp(dd["Fecha"].max()).normalize()
+
+    # Lluvia diaria, para el lavado.
+    lluvia = pd.Series(dtype=float)
+    if (aplicar_lavado and history is not None and not history.empty
+            and "lluvia_mm" in history.columns and "fecha_hora" in history.columns):
+        h = history[["fecha_hora", "lluvia_mm"]].copy()
+        h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+        h = h.dropna(subset=["fecha_hora"])
+        if not h.empty:
+            lluvia = (pd.to_numeric(h["lluvia_mm"], errors="coerce").fillna(0.0)
+                      .groupby(h["fecha_hora"].dt.normalize()).sum())
+
+    treat = pd.DataFrame()
+    if treatments_df is not None and not treatments_df.empty and "Campos" in treatments_df.columns:
+        treat = treatments_df.copy()
+        treat["Fecha_dt"] = pd.to_datetime(treat["Fecha"], errors="coerce")
+        treat = treat.dropna(subset=["Fecha_dt"]).sort_values("Fecha_dt")
+
+    bandas = [(float(_i), float(_f), str(_l)) for _i, _f, _l, *_r in CARPOCAPSA_HATCH_BANDS]
+
+    filas, huecos, pases_out = [], [], []
+    for campo in sorted(t["Campo/Zona"].astype(str).unique()):
+        ct = t[t["Campo/Zona"].astype(str) == campo].sort_values("Fecha_dt")
+        bf, bf_sost = _carpocapsa_sustained_biofix(ct, biofix_threshold)
+        if bf is None:
+            continue                      # sin biofix no hay reloj: no se puede medir
+        bf = pd.Timestamp(bf).normalize()
+
+        serie = dd[(dd["Fecha"] >= bf) & (dd["Fecha"] <= hoy)].copy()
+        if serie.empty:
+            continue
+        serie["DDacum"] = serie["DD día"].cumsum()
+        serie = serie.set_index("Fecha")
+        dias = serie.index
+
+        # ── Dias con producto activo ──────────────────────────────────────────
+        prot = pd.Series(False, index=dias)
+        n_pases = 0
+        if not treat.empty:
+            _mine = treat[treat["Campos"].apply(
+                lambda s: carpocapsa_campo_en_tratamiento(s, campo))]
+            # Agrupar por FECHA: Agroptima parte una misma aplicación en varias filas
+            # (una por producto, o repetida por cuaderno) y contarlas por separado
+            # inflaba los pases sin añadir un solo día de protección. Dos productos el
+            # mismo día son UN pase con caldo mixto → manda el de más persistencia.
+            _por_fecha = {}
+            for _, r in _mine.iterrows():
+                f0 = pd.Timestamp(r["Fecha_dt"]).normalize()
+                prod = ""
+                for pc in ["Producto carpocapsa", "Productos", "Producto"]:
+                    v = str(r.get(pc, "") or "").strip()
+                    if v and v.lower() not in ("nan", "none"):
+                        prod = v
+                        break
+                _prev = _por_fecha.setdefault(f0, [])
+                if prod and prod not in _prev:
+                    _prev.append(prod)
+            for f0 in sorted(_por_fecha):
+                prod = " + ".join(_por_fecha[f0])
+                pdias = (float(persistencia_fija) if persistencia_fija
+                         else carpocapsa_persistencia_producto(prod))
+                fin_nom = f0 + pd.Timedelta(days=pdias - 1)
+                fin_ef, mm_acum, lavado = fin_nom, 0.0, False
+                if aplicar_lavado and not lluvia.empty:
+                    _d = f0
+                    while _d <= fin_nom:
+                        mm_acum += float(lluvia.get(_d, 0.0))
+                        if mm_acum >= float(lavado_mm):
+                            fin_ef, lavado = _d, True
+                            break
+                        _d += pd.Timedelta(days=1)
+                prot.loc[(dias >= f0) & (dias <= fin_ef)] = True
+                n_pases += 1
+                _ddp = float(serie.loc[(dias >= bf) & (dias <= f0), "DD día"].sum())
+                pases_out.append({
+                    "Campo/Zona": campo,
+                    "Fecha": f0.date(),
+                    "Producto": prod or "—",
+                    "Persistencia (días)": pdias,
+                    "Protege hasta": fin_ef.date(),
+                    "Días reales": int((fin_ef - f0).days) + 1,
+                    "Lavado por lluvia": "🌧️ sí" if lavado else "",
+                    "DD desde biofix": round(_ddp, 1),
+                    "Fase al aplicar": carpocapsa_fase(_ddp)["nombre"],
+                })
+
+        # ── Cobertura por banda de eclosion ───────────────────────────────────
+        fila = {"Campo/Zona": campo,
+                "Biofix": bf.date(),
+                "Pases carpocapsa": n_pases,
+                "DD hoy": round(float(serie["DDacum"].iloc[-1]), 0)}
+        for _g, (_ini, _fin, _lbl) in enumerate(bandas, start=1):
+            _m = (serie["DDacum"] >= _ini) & (serie["DDacum"] <= _fin)
+            _db = dias[_m]
+            if len(_db) == 0:
+                fila[f"% eclosión {_g}ª cubierta"] = np.nan
+                fila[f"Días eclosión {_g}ª"] = 0
+                fila[f"_abierta{_g}"] = False
+                continue
+            _cub = int(prot.reindex(_db).fillna(False).sum())
+            fila[f"% eclosión {_g}ª cubierta"] = round(100.0 * _cub / len(_db), 0)
+            fila[f"Días eclosión {_g}ª"] = int(len(_db))
+            # La banda termino o sigue abierta: un 20 % sobre una banda a medias no es
+            # comparable con un 20 % sobre una banda ya cerrada.
+            fila[f"_abierta{_g}"] = bool(float(serie["DDacum"].iloc[-1]) < _fin)
+
+        # ── Huecos: rachas de dias seguidos sin producto ──────────────────────
+        _libre = (~prot.values)
+        _mejor_dd, _mejor = -1.0, None
+        _i = 0
+        while _i < len(_libre):
+            if not _libre[_i]:
+                _i += 1
+                continue
+            _j = _i
+            while _j + 1 < len(_libre) and _libre[_j + 1]:
+                _j += 1
+            _d0, _d1 = dias[_i], dias[_j]
+            _sub = serie.iloc[_i:_j + 1]
+            _dd_ecl, _det = 0.0, []
+            for _g, (_ini, _fin, _lbl) in enumerate(bandas, start=1):
+                _mm = (_sub["DDacum"] >= _ini) & (_sub["DDacum"] <= _fin)
+                _v = float(_sub.loc[_mm, "DD día"].sum())
+                if _v > 0:
+                    _dd_ecl += _v
+                    _det.append(f"{_v:.0f} DD de {_g}ª")
+            if _dd_ecl > 0:
+                _en_hueco = ct[(ct["Fecha_dt"] >= _d0) & (ct["Fecha_dt"] <= _d1)]
+                _cmax = 0
+                if not _en_hueco.empty:
+                    _v = pd.to_numeric(_en_hueco["_capturas"], errors="coerce").max()
+                    _cmax = int(_v) if pd.notna(_v) else 0
+                _fila_h = {
+                    "Campo/Zona": campo,
+                    "Desde": _d0.date(),
+                    "Hasta": _d1.date(),
+                    "Días sin producto": int(_j - _i) + 1,
+                    "DD de eclosión sin cubrir": round(_dd_ecl, 0),
+                    "Reparto": " + ".join(_det),
+                    "Máx capturas en el hueco": _cmax,
+                }
+                huecos.append(_fila_h)
+                if _dd_ecl > _mejor_dd:
+                    _mejor_dd, _mejor = _dd_ecl, _fila_h
+            _i = _j + 1
+
+        if _mejor:
+            fila["Hueco mayor"] = f"{_mejor['Desde']:%d/%m}→{_mejor['Hasta']:%d/%m}"
+            fila["Días del hueco"] = _mejor["Días sin producto"]
+            fila["DD eclosión perdidos"] = _mejor["DD de eclosión sin cubrir"]
+            fila["Capturas máx en el hueco"] = _mejor["Máx capturas en el hueco"]
+        else:
+            fila["Hueco mayor"] = "—"
+            fila["Días del hueco"] = 0
+            fila["DD eclosión perdidos"] = 0
+            fila["Capturas máx en el hueco"] = 0
+        filas.append(fila)
+
+    res = pd.DataFrame(filas)
+    if not res.empty:
+        res = res.sort_values("DD eclosión perdidos", ascending=False).reset_index(drop=True)
+    hue = pd.DataFrame(huecos)
+    if not hue.empty:
+        hue = hue.sort_values("DD de eclosión sin cubrir", ascending=False).reset_index(drop=True)
+    pas = pd.DataFrame(pases_out)
+    if not pas.empty:
+        pas = pas.sort_values(["Campo/Zona", "Fecha"]).reset_index(drop=True)
+    return res, hue, pas
+
+
 def carpocapsa_tab(history):
     st.subheader("Carpocapsa · Cydia pomonella")
 
@@ -17690,6 +17963,182 @@ def carpocapsa_tab(history):
                 "📌 Opcional: rellena la **tabla de biofix** por campo (incluidos los que quedaron "
                 "vacíos) para que el resto de la app la use. El punto 6 funciona igual con o sin esto."
             )
+
+    # ── 7. COBERTURA REAL DE LA ECLOSIÓN ────────────────────────────────────────
+    st.markdown("### 7. Cobertura real de la eclosión (¿estuvo la manzana protegida?)")
+    st.caption(
+        "⚠️ **No confundir con la «Cobertura %» del resumen por grupos** (punto 2). "
+        "Aquella mide si **cumpliste tu propia regla**: de las lecturas que cruzaron el "
+        "umbral, cuántas trataste. Esta mide si **la manzana estuvo protegida**: días con "
+        "producto activo ÷ días de eclosión.\n\n"
+        "Son cosas distintas y pueden ir en direcciones opuestas. Un campo puede sacar "
+        "**100 % allí y 20 % aquí**: trataste siempre que las capturas lo pidieron, pero las "
+        "semanas de 0-3 capturas no pidieron nada y **la eclosión no se para porque las "
+        "trampas den cero** — los huevos puestos semanas antes siguen naciendo. El daño en "
+        "el fruto lo decide esta segunda cifra."
+    )
+
+    if history_campaign is None or history_campaign.empty:
+        st.info("Carga primero el histórico climático: sin grados-día no hay bandas de eclosión.")
+    else:
+        _cbc1, _cbc2, _cbc3 = st.columns([1.1, 1, 1.4])
+        with _cbc1:
+            _cb_persist = st.selectbox(
+                "Persistencia del producto",
+                options=["Por producto (catálogo)", "5 días", "7 días", "10 días", "14 días"],
+                index=0, key="carpo_cob_persist",
+                help="«Por producto» usa el catálogo: Bt y granulovirus 7 días, "
+                     "neonicotinoides 10, diamidas 14. Las otras opciones fuerzan el mismo "
+                     "valor para todo, para ver si la conclusión aguanta. Si la historia solo "
+                     "se sostiene con 7 días y se cae con 10, es que no era sólida.")
+        with _cbc2:
+            _cb_lavado = st.checkbox(
+                "Descontar lavado por lluvia", value=True, key="carpo_cob_lavado",
+                help=f"El Bt y el granulovirus actúan por ingestión desde la PIEL del fruto: "
+                     f"no están dentro del tejido y la lluvia se los lleva. Se corta la "
+                     f"protección al acumular {CARPOCAPSA_LAVADO_MM:.0f} mm desde la aplicación.")
+        with _cbc3:
+            st.caption(
+                "Bandas de eclosión: **1ª gen 122–511 DD · 2ª gen 611–1167 DD** (1–99 % de "
+                "huevos eclosionados, Utah State University). Cada banda dura **~50 días**. "
+                "El biofix es el de **cada campo**, no el general de la finca.")
+
+        _cb_pfija = None
+        if _cb_persist != "Por producto (catálogo)":
+            _cb_pfija = float(_cb_persist.split()[0])
+
+        _cb_dd = carpocapsa_daily_degree_days(
+            history_campaign, base_temp=base_temp, upper_temp=upper_value, method=method)
+        _cb_res, _cb_hue, _cb_pas = carpocapsa_cobertura_eclosion(
+            carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, campaign_year),
+            carp_treatments if not carp_treatments.empty else None,
+            _cb_dd, campaign_year, history=history_campaign,
+            persistencia_fija=_cb_pfija, aplicar_lavado=bool(_cb_lavado))
+
+        if _cb_res.empty:
+            st.info(
+                "No se puede calcular: hace falta al menos un campo con **biofix** (primera "
+                "captura sostenida) y grados-día de la campaña.")
+        else:
+            # La aritmética de fondo, con los números de ESTA campaña.
+            _n_ab = int(_cb_res["_abierta2"].sum()) if "_abierta2" in _cb_res.columns else 0
+            _med1 = _cb_res["% eclosión 1ª cubierta"].mean(skipna=True)
+            _med2 = _cb_res["% eclosión 2ª cubierta"].mean(skipna=True)
+            _dias1 = _cb_res["Días eclosión 1ª"].replace(0, np.nan).mean(skipna=True)
+            _dias2 = _cb_res["Días eclosión 2ª"].replace(0, np.nan).mean(skipna=True)
+            _pmed = _cb_pfija if _cb_pfija else 7.0
+
+            _m1, _m2, _m3 = st.columns(3)
+            _m1.metric("Cobertura media 1ª gen",
+                       "—" if pd.isna(_med1) else f"{_med1:.0f} %")
+            _m2.metric("Cobertura media 2ª gen",
+                       "—" if pd.isna(_med2) else f"{_med2:.0f} %",
+                       help="Si hay bandas aún abiertas, este % puede subir todavía.")
+            _m3.metric("Pases que pediría cubrir la 2ª",
+                       "—" if pd.isna(_dias2) else f"{_dias2 / _pmed:.0f}",
+                       help=f"Días de eclosión de 2ª ÷ {_pmed:.0f} días de persistencia. "
+                            f"Es el número de pases SEGUIDOS que haría falta para cubrirla "
+                            f"entera con este producto.")
+
+            if pd.notna(_dias2):
+                st.info(
+                    f"**La aritmética que explica el resto de la tabla.** La eclosión de 2ª "
+                    f"generación dura **{_dias2:.0f} días** de media en esta campaña y el "
+                    f"producto aguanta **{_pmed:.0f}**. Cubrirla entera pide "
+                    f"**{_dias2 / _pmed:.0f} pases seguidos**, solo para esa generación. "
+                    f"Se dieron **{_cb_res['Pases carpocapsa'].mean():.1f}** de media (contando "
+                    f"las dos generaciones). Con esos números la cobertura no puede ser alta "
+                    f"**por bien que se respetara el umbral de capturas**: no es un fallo de "
+                    f"criterio, es que no da la aritmética.")
+
+            _cols_res = ["Campo/Zona", "Biofix", "DD hoy", "Pases carpocapsa",
+                         "% eclosión 1ª cubierta", "Días eclosión 1ª",
+                         "% eclosión 2ª cubierta", "Días eclosión 2ª",
+                         "Hueco mayor", "Días del hueco", "DD eclosión perdidos",
+                         "Capturas máx en el hueco"]
+            _vista = _cb_res[[c for c in _cols_res if c in _cb_res.columns]].copy()
+            st.dataframe(
+                _vista, use_container_width=True, hide_index=True,
+                column_config={
+                    "Campo/Zona": st.column_config.Column("Campo/Zona", pinned=True),
+                    "% eclosión 1ª cubierta": st.column_config.ProgressColumn(
+                        "% eclosión 1ª", format="%.0f%%", min_value=0, max_value=100,
+                        help="Días con producto activo ÷ días dentro de la banda 122–511 DD."),
+                    "% eclosión 2ª cubierta": st.column_config.ProgressColumn(
+                        "% eclosión 2ª", format="%.0f%%", min_value=0, max_value=100,
+                        help="Días con producto activo ÷ días dentro de la banda 611–1167 DD."),
+                    "Capturas máx en el hueco": st.column_config.NumberColumn(
+                        "Capturas máx en el hueco",
+                        help="La lectura MÁS ALTA registrada durante el hueco mayor. Si es "
+                             "baja (0-4), el hueco no fue un descuido: el umbral no pidió "
+                             "tratar y por eso no se trató. Ahí es donde falla usar las "
+                             "capturas como interruptor de cobertura."),
+                })
+            st.caption(
+                "**DD eclosión perdidos** es lo que de verdad ordena la tabla, no los días: "
+                "20 días sin producto en pleno agosto pesan mucho más que 20 en abril, porque "
+                "en agosto nacen muchas más larvas por día. Los campos de arriba son los que "
+                "más eclosión pasaron a la intemperie.")
+            if _n_ab:
+                st.caption(
+                    f"ℹ️ En **{_n_ab} campo(s)** la banda de 2ª generación **sigue abierta** "
+                    f"(aún no se alcanzaron los 1167 DD): ese % todavía puede subir si se "
+                    f"trata, y no es comparable con el de un campo que ya la cerró.")
+
+            with st.expander("🕳️ Todos los huecos que pisaron eclosión", expanded=False):
+                if _cb_hue.empty:
+                    st.success("No hay ningún hueco sin producto dentro de las bandas de eclosión.")
+                else:
+                    st.caption(
+                        "Cada fila es una racha de días seguidos **sin producto activo** que "
+                        "cayó dentro de una banda de eclosión. **Máx capturas en el hueco** es "
+                        "la clave para leerlo: un hueco largo con capturas altas es un aviso "
+                        "que se pasó por alto; un hueco largo con capturas de 0-4 es el umbral "
+                        "funcionando como se le pidió — y aun así la fruta quedó expuesta.")
+                    st.dataframe(_cb_hue, use_container_width=True, hide_index=True)
+
+            with st.expander("💊 Pases aplicados y hasta cuándo protegieron", expanded=False):
+                if _cb_pas.empty:
+                    st.info("No hay tratamientos de carpocapsa cruzados con estos campos.")
+                else:
+                    st.caption(
+                        "**Días reales** es la protección efectiva: la persistencia del "
+                        "producto, recortada si la lluvia lo lavó antes. **Fase al aplicar** "
+                        "dice si en ese momento había larvas naciendo — un pase fuera de banda "
+                        "de eclosión no protege nada, por bien dado que esté.")
+                    st.dataframe(_cb_pas, use_container_width=True, hide_index=True)
+
+            with st.expander("📖 Cómo se calcula y qué NO dice", expanded=False):
+                st.markdown(
+                    "**Cómo se calcula**\n\n"
+                    "1. **Biofix por campo** — primera captura sostenida de ESE campo "
+                    "(*Riedl & Croft 1976*). Sin biofix el campo no aparece: no hay reloj "
+                    "que arrancar.\n"
+                    "2. **Días de eclosión** — desde el biofix se acumulan grados-día "
+                    "(base 10 °C / techo 31,1 °C) y se marcan los días cuyo acumulado cae "
+                    "dentro de **122–511 DD** (1ª gen) o **611–1167 DD** (2ª gen).\n"
+                    "3. **Días protegidos** — cada tratamiento de carpocapsa de Agroptima "
+                    "protege desde su fecha durante la persistencia de su producto. En un "
+                    "caldo mixto manda el de mayor persistencia.\n"
+                    f"4. **Lavado** — si se acumulan {CARPOCAPSA_LAVADO_MM:.0f} mm desde la "
+                    "aplicación, la protección se corta ese día.\n"
+                    "5. **Cobertura** = días protegidos ÷ días de eclosión, por banda.\n\n"
+                    "**Qué NO dice**\n\n"
+                    "- **No es eficacia.** Un día cuenta como protegido si el producto estaba "
+                    "aplicado y en plazo. No sabe si el mojado fue bueno, si la dosis era "
+                    "correcta, ni si el producto llegó a toda la copa.\n"
+                    "- **Las persistencias son de ficha técnica, no medidas aquí.** Los 7 días "
+                    "del Bt salen del propio prospecto de Delfin; con sol fuerte pueden ser "
+                    "menos. Por eso está el selector: mueve el valor y mira si la conclusión "
+                    "cambia.\n"
+                    "- **Las bandas son de literatura** (Utah State University), no de esta "
+                    "finca. Marcan cuándo hay larvas naciendo *en general*, no las fechas "
+                    "exactas de El Gallinal.\n"
+                    "- **No prueba causalidad.** Que un campo tenga poca cobertura y mucho daño "
+                    "es consistente, no concluyente. Lo que lo pondría a prueba de verdad es "
+                    "muestrear un campo con **cobertura alta y presión alta**: si está limpio, "
+                    "la explicación es el hueco; si también tiene daño, entonces el problema "
+                    "es el producto y no la programación.")
 
     # ── 📈 Gráfica DD POR CAMPO (biofix propio + tratamientos de ESE campo) ──────
     st.markdown("### 📈 Gráfica de grados-día POR CAMPO")
