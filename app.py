@@ -26394,6 +26394,24 @@ def render_decisiones_panel():
                         "milímetros —le ha pasado— ese riesgo no llega a existir.\n\n"
                         "**Antes de tratar por uno de estos, espera a ver si llueve de "
                         "verdad.** Un día 🟢 sólido no depende de acertar los milímetros.")
+                # NO VENDER LA ETIQUETA POR MÁS DE LO QUE ES. «Sólido» solo dice que el
+                # aviso no depende de la lluvia; NO que vaya a acertar. El 31/08/2026 la
+                # lluvia estuvo perfecta (0 previstos, 0 reales) y aun así previó 144
+                # contra un real de 21: el error vino de la humedad y la temperatura de
+                # madrugada, que es justo la franja donde MeteoGalicia infla (HR +1,7 y
+                # temperatura −1,1 → se alcanza antes el rocío → más horas de mojadura).
+                # El sesgo global de HR (−4,6) engaña porque lo domina la tarde, que no
+                # pinta nada en la mojadura.
+                st.caption(
+                    "⚠️ **«Sólido» no quiere decir «acertará».** Solo dice que ese aviso **no "
+                    "depende de la lluvia**. Puede fallar igual si la humedad o la temperatura "
+                    "previstas se desvían: de madrugada MeteoGalicia da la humedad algo más "
+                    "alta y la temperatura algo más baja, y las dos cosas adelantan el rocío e "
+                    "inflan las horas de hoja mojada.\n\n"
+                    "Además, **la previsión va ahora mismo sin corregir**: el estimador de hoja "
+                    "mojada sobreestima con cualquier fuente (con Sencrop se midió ×1,65) y para "
+                    "MeteoGalicia el factor está en 1,0 hasta que haya datos para medirlo. Por "
+                    "eso los números previstos salen altos frente a los reales.")
                 st.caption(
                     f"Umbral de mojadura configurado: **HR ≥ {_pw.get('rh_thr', 92):.0f} %** "
                     f"· rocío ≤ {_pw.get('dew_depr', 1.5):.1f} °C · lluvia > 0,1 mm. "
