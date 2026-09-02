@@ -14938,6 +14938,34 @@ def carpocapsa_prepare_biofix_df(df):
     return out
 
 
+def carpocapsa_limpiar_danos_fantasma(df):
+    """Quita las filas de muestreo que no son un muestreo.
+
+    Durante semanas la plantilla del Excel traía filas en blanco con SOLO la campaña
+    rellena. El filtro de la importación dejó de cazarlas con pandas 3 (ahí
+    `.astype(str)` conserva el NaN en vez de convertirlo en la cadena "nan"), así que
+    se colaron ~30 por importación, se guardaron en Supabase y de ahí volvían en cada
+    arranque: la tabla de daños salía llena de filas vacías. Arreglar la importación
+    frenó las nuevas pero no borró las que ya estaban, y sin esto seguirían para
+    siempre.
+
+    Una fila cuenta como real si tiene **campo** o **algún fruto contado**. Se es
+    conservador a propósito: no se toca nada que lleve datos, solo lo que está vacío
+    por los dos lados."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    out = df.copy()
+    _campo = (out["Campo/Zona"].astype("string").str.strip()
+              if "Campo/Zona" in out.columns else pd.Series("", index=out.index, dtype="string"))
+    tiene_campo = _campo.notna() & (_campo != "") & (_campo.str.lower() != "nan")
+    tiene_datos = pd.Series(False, index=out.index)
+    for _c in ["Frutos revisados", "Frutos dañados", "Con larva dentro",
+               "Salida vacía (galería)", "Picadura superficial"]:
+        if _c in out.columns:
+            tiene_datos |= pd.to_numeric(out[_c], errors="coerce").fillna(0) > 0
+    return out[tiene_campo | tiene_datos].reset_index(drop=True)
+
+
 def carpocapsa_prepare_damage_df(df):
     if df is None or df.empty:
         return carpocapsa_default_damage_df()
@@ -15254,7 +15282,11 @@ def upload_carpocapsa_snapshot_to_supabase(traps_df, biofix_df, damage_df):
         _et = _eb = _ed = None
     traps_m  = _carpocapsa_merge_by_year(traps_df,  _et)
     biofix_m = _carpocapsa_merge_by_year(biofix_df, _eb)
-    damage_m = _carpocapsa_merge_by_year(damage_df, _ed)
+    # Limpiar los DOS lados: si solo se limpiara al leer, las fantasma seguirían en el
+    # Parquet y volverían en cuanto alguien guardara desde otra sesión.
+    damage_m = carpocapsa_limpiar_danos_fantasma(
+        _carpocapsa_merge_by_year(carpocapsa_limpiar_danos_fantasma(damage_df),
+                                  carpocapsa_limpiar_danos_fantasma(_ed)))
 
     headers = supabase_headers()
     headers["Content-Type"] = "application/octet-stream"
@@ -15405,7 +15437,9 @@ def load_carpocapsa_snapshot_from_supabase():
 
     traps  = results.get("traps")
     biofix = results.get("biofix")
-    damage = results.get("damage")
+    # Las filas fantasma de la plantilla vieja están ya guardadas en Supabase: se
+    # descartan al leerlas, para que no vuelvan a aparecer en cada arranque.
+    damage = carpocapsa_limpiar_danos_fantasma(results.get("damage"))
 
     parts = []
     if traps  is not None and not traps.empty:
