@@ -14856,13 +14856,38 @@ CARPOCAPSA_DEFAULT_BIOFIX_COLUMNS = [
     "Campaña",
 ]
 
+# Columnas del muestreo de daño. Las cinco del medio se añadieron el 02/09/2026, cuando
+# el primer muestreo serio de la campaña demostró que "dañados" a secas no dice nada:
+#  · Variedad — el criterio es 100 frutos por variedad Y parcela, y hay campos con tres
+#    (Piedrona Rincón tiene Durona de Tresali y Regona sin trampas separadas).
+#  · Origen — el fruto del SUELO sobreestima el daño, porque la manzana picada cae antes.
+#    Se registra, pero no se mezcla con el del árbol al comparar campos. Sirve para otra
+#    cosa: saber si la caída de un campo es por gusano o por hábito de la variedad.
+#  · El desglose de los dañados en tres, que deben sumar "Frutos dañados":
+#      - Con larva dentro
+#      - Salida vacía (galería): la larva completó el ciclo y salió. Fruta perdida Y
+#        población que se va a invernar.
+#      - Picadura superficial: corcho en la piel sin galería, la larva murió al entrar.
+#        Significa que el tratamiento funcionó y el daño es casi solo cosmético.
+#    Esa última distinción es la que decide si un 30 % de frutos marcados es un desastre
+#    o es el producto haciendo su trabajo. En el muestreo del 02/09 el ~90 % llegaba al
+#    corazón, o sea ciclos completados.
 CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS = [
     "Fecha",
     "Campo/Zona",
+    "Variedad",
+    "Origen",
     "Frutos revisados",
     "Frutos dañados",
+    "Con larva dentro",
+    "Salida vacía (galería)",
+    "Picadura superficial",
     "Observaciones",
     "Campaña",
+]
+CARPOCAPSA_DAMAGE_NUM_COLS = [
+    "Frutos revisados", "Frutos dañados",
+    "Con larva dentro", "Salida vacía (galería)", "Picadura superficial",
 ]
 
 
@@ -14919,17 +14944,33 @@ def carpocapsa_prepare_damage_df(df):
     out = df.copy()
     for col in CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS:
         if col not in out.columns:
-            out[col] = "" if col not in ["Frutos revisados", "Frutos dañados"] else np.nan
+            out[col] = "" if col not in CARPOCAPSA_DAMAGE_NUM_COLS else np.nan
     out = out[CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS].copy()
     out["Fecha"] = pd.to_datetime(out["Fecha"], errors="coerce")
-    out["Frutos revisados"] = pd.to_numeric(out["Frutos revisados"], errors="coerce").fillna(0)
-    out["Frutos dañados"] = pd.to_numeric(out["Frutos dañados"], errors="coerce").fillna(0)
+    for _c in CARPOCAPSA_DAMAGE_NUM_COLS:
+        out[_c] = pd.to_numeric(out[_c], errors="coerce").fillna(0)
+    # Por defecto ÁRBOL: es el criterio acordado, y una fila sin origen casi siempre lo es.
+    out["Origen"] = (out["Origen"].astype("string").str.strip()
+                     .replace({"": pd.NA, "nan": pd.NA}).fillna("Árbol"))
     detected_year = carpocapsa_detect_year_from_df(out, "Fecha")
     out["Campaña"] = pd.to_numeric(out.get("Campaña", detected_year), errors="coerce").fillna(detected_year if detected_year is not None else pd.Timestamp.today().year).astype(int)
     out["% daño"] = out.apply(
         lambda r: round(float(r["Frutos dañados"]) / float(r["Frutos revisados"]) * 100, 2) if float(r["Frutos revisados"]) > 0 else np.nan,
         axis=1,
     )
+    # % con galería = daño REAL (larva dentro + ciclo completado), sin las picaduras.
+    # Es el número que hay que mirar: una picadura es una larva muerta al entrar, y en
+    # sidra —que va a prensa— no cuenta como fruta perdida.
+    _prof = out["Con larva dentro"] + out["Salida vacía (galería)"]
+    out["% con galería"] = np.where(
+        out["Frutos revisados"] > 0, (100.0 * _prof / out["Frutos revisados"]).round(2), np.nan)
+    # Si el desglose está relleno, tiene que sumar los dañados. Se avisa en vez de
+    # corregir en silencio: un descuadre es un error de conteo que hay que ver.
+    _suma = _prof + out["Picadura superficial"]
+    out["Descuadre"] = np.where(
+        (_suma > 0) & (_suma != out["Frutos dañados"]),
+        "⚠️ el desglose suma " + _suma.astype(int).astype(str) + " y dañados dice "
+        + out["Frutos dañados"].astype(int).astype(str), "")
     return out
 
 
@@ -15119,11 +15160,18 @@ def carpocapsa_import_workbook(uploaded_file):
             damage = damage_raw.copy()
             for col in CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS:
                 if col not in damage.columns:
-                    damage[col] = "" if col not in ["Frutos revisados", "Frutos dañados"] else np.nan
-            # Quitar filas vacías de la hoja de plantilla.
+                    damage[col] = "" if col not in CARPOCAPSA_DAMAGE_NUM_COLS else np.nan
+            # Quitar filas vacías de la hoja de plantilla. El filtro de antes era
+            # `.astype(str).str.strip().replace("nan","")`, que dejó de funcionar con
+            # pandas 3: ahí `.astype(str)` conserva el NaN en vez de convertirlo en la
+            # cadena "nan", así que no lo cazaba. Consecuencia: la plantilla traía filas
+            # con solo la campaña rellena y se importaban como muestreos fantasma — 30
+            # cada semana, y la app decía «30 muestreos importados». Ahora se comprueba
+            # el nulo de verdad, sin depender de cómo se serialice.
             damage = damage[CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS].copy()
             damage = damage.dropna(how="all")
-            damage = damage[damage["Campo/Zona"].astype(str).str.strip().replace("nan", "") != ""]
+            _campo = damage["Campo/Zona"].astype("string").str.strip()
+            damage = damage[_campo.notna() & (_campo != "") & (_campo.str.lower() != "nan")]
             if not damage.empty:
                 detected_campaign = imported.get("detected_campaign") or carpocapsa_detect_year_from_df(damage, "Fecha")
                 damage_prepared = carpocapsa_prepare_damage_df(damage)
@@ -17143,6 +17191,43 @@ def carpocapsa_tab(history):
                 use_container_width=True,
             )
 
+        # ── Grados-día por campaña ───────────────────────────────────────────
+        # Ya se podían descargar, pero desde un expander COLAPSADO al final del punto 4
+        # y con un botón que no decía el nombre del fichero: el usuario no lo encontraba
+        # nunca. Las descargas se buscan aquí, en el punto de importar/exportar.
+        # OJO: `campaign_year` NO existe todavía en este punto (se elige en el punto 1),
+        # así que los años se sacan del propio histórico climático, que es además lo que
+        # de verdad determina si hay grados-día que descargar.
+        _anios_dd = []
+        if history is not None and not history.empty and "fecha_hora" in history.columns:
+            _fh = pd.to_datetime(history["fecha_hora"], errors="coerce").dropna()
+            _anios_dd = sorted(_fh.dt.year.unique().tolist(), reverse=True)[:4]
+        if _anios_dd:
+            st.markdown("**Grados-día diarios** (base 10 °C / techo 31,1 °C)")
+            _cols_dd = st.columns(len(_anios_dd))
+            for _col, _a in zip(_cols_dd, _anios_dd):
+                _dd_a = carpocapsa_daily_degree_days(
+                    carpocapsa_filter_history_campaign(history, int(_a)),
+                    base_temp=10.0, upper_temp=31.1, method="horario")
+                with _col:
+                    if _dd_a.empty:
+                        st.caption(f"{_a}: sin datos")
+                        continue
+                    st.download_button(
+                        f"📥 {_a}",
+                        data=_dd_a.to_csv(index=False).encode("utf-8-sig"),
+                        file_name=f"carpocapsa_grados_dia_{int(_a)}.csv",
+                        mime="text/csv",
+                        key=f"dl_dd_{_a}",
+                        use_container_width=True,
+                        help=f"carpocapsa_grados_dia_{int(_a)}.csv · {len(_dd_a)} días. "
+                             f"Es la serie que hace falta para analizar la cobertura de la "
+                             f"eclosión fuera de la app. La misma tabla, para verla, está "
+                             f"en el punto 4 → «Grados-día diarios usados por el modelo».")
+            st.caption(
+                "Se generan con los parámetros estándar del modelo, no con los del punto 1: "
+                "si allí cambias la base o el techo, descarga desde el punto 4.")
+
         if not st.session_state.carpocapsa_traps_df.empty:
             st.success(
                 f"Sesión actual: {len(st.session_state.carpocapsa_traps_df)} capturas, "
@@ -18231,7 +18316,22 @@ def carpocapsa_tab(history):
                 "la trampa SÍ se revisó aunque no cayera nada; línea roja = sus DD desde SU biofix."
             )
 
-    st.caption("Registra muestreos posteriores a tratamiento o revisiones de foco. Objetivo orientativo: daño <1%.")
+    st.caption(
+        "**Criterio de muestreo:** solo fruto cogido del **ÁRBOL**, mínimo **100 frutos por "
+        "variedad y parcela**. El fruto del suelo sobreestima el daño (la manzana picada cae "
+        "antes) — se registra con Origen «Suelo» y **no se mezcla** con el del árbol al "
+        "comparar campos; sirve para saber si la caída de un campo es por gusano o por "
+        "hábito de la variedad.\n\n"
+        "**Frutos dañados** = todo fruto con orificio de entrada. Las tres columnas del "
+        "desglose deben sumar esa cifra:\n"
+        "- **Con larva dentro** — sigue en el fruto.\n"
+        "- **Salida vacía (galería)** — galería hasta el corazón y larva ya salida: **ciclo "
+        "completado**, fruta perdida y población que se va a invernar en la finca.\n"
+        "- **Picadura superficial** — corcho en la piel **sin galería**: la larva murió al "
+        "entrar. El tratamiento funcionó y el daño es casi solo cosmético.\n\n"
+        "Por eso la columna que decide es **% con galería**, no **% daño**: en sidra, que va "
+        "a prensa, una picadura no es fruta perdida. ⚠️ El objetivo del **1 %** es un "
+        "estándar de manzana de MESA; para sidra habrá que fijar uno propio.")
     damage_edit = st.data_editor(
         carpocapsa_filter_campaign(st.session_state.carpocapsa_damage_df, campaign_year).copy(),
         use_container_width=True,
@@ -18240,8 +18340,23 @@ def carpocapsa_tab(history):
         key="carpocapsa_damage_editor_v893",
         column_config={
             "Fecha": st.column_config.DateColumn("Fecha"),
+            "Variedad": st.column_config.TextColumn(
+                "Variedad", help="Obligatoria: el criterio es 100 frutos por variedad Y parcela."),
+            "Origen": st.column_config.SelectboxColumn(
+                "Origen", options=["Árbol", "Suelo"], default="Árbol",
+                help="Árbol = medida válida para comparar campos. Suelo = sobreestima, "
+                     "solo sirve para saber si la caída es por gusano."),
             "Frutos revisados": st.column_config.NumberColumn("Frutos revisados", min_value=0, step=1),
-            "Frutos dañados": st.column_config.NumberColumn("Frutos dañados", min_value=0, step=1),
+            "Frutos dañados": st.column_config.NumberColumn(
+                "Frutos dañados", min_value=0, step=1,
+                help="TODO fruto con orificio de entrada, tenga larva o no."),
+            "Con larva dentro": st.column_config.NumberColumn("Con larva dentro", min_value=0, step=1),
+            "Salida vacía (galería)": st.column_config.NumberColumn(
+                "Salida vacía (galería)", min_value=0, step=1,
+                help="Galería hasta el corazón, larva ya salida: ciclo completado."),
+            "Picadura superficial": st.column_config.NumberColumn(
+                "Picadura superficial", min_value=0, step=1,
+                help="Corcho en la piel SIN galería: la larva murió al entrar."),
         },
     )
     if st.button("Guardar daños en sesión", use_container_width=True):
@@ -18260,6 +18375,19 @@ def carpocapsa_tab(history):
             lambda x: "Cumple" if pd.notna(x) and x < 1 else ("Revisar" if pd.notna(x) else "Sin dato")
         )
         st.dataframe(damage_show, use_container_width=True, hide_index=True)
+        _desc = damage_show[damage_show["Descuadre"].astype(str).str.strip() != ""]
+        if not _desc.empty:
+            st.warning(
+                "**El desglose no cuadra en "
+                f"{len(_desc)} fila(s):** " + " · ".join(
+                    f"{r['Campo/Zona']} {pd.to_datetime(r['Fecha']):%d/%m}" for _, r in _desc.iterrows())
+                + ". Con larva + galería + picadura tiene que sumar «Frutos dañados».")
+        _suelo = damage_show[damage_show["Origen"].astype(str).str.lower().str.startswith("suelo")]
+        if not _suelo.empty:
+            st.info(
+                f"ℹ️ **{len(_suelo)} muestreo(s) de SUELO** en la tabla. Su % NO es la tasa de "
+                "daño del campo y no debe compararse con los de árbol: la manzana picada cae "
+                "antes, así que el suelo sobreestima siempre.")
         st.download_button(
             "Descargar muestreos de daño CSV",
             data=damage_show.to_csv(index=False).encode("utf-8-sig"),
