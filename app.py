@@ -18366,12 +18366,24 @@ def carpocapsa_tab(history):
         "Por eso la columna que decide es **% con galería**, no **% daño**: en sidra, que va "
         "a prensa, una picadura no es fruta perdida. ⚠️ El objetivo del **1 %** es un "
         "estándar de manzana de MESA; para sidra habrá que fijar uno propio.")
+    # Orden canónico. Al importar se concatena lo nuevo con lo que ya había guardado, que
+    # traía el juego de columnas viejo: pandas deja las columnas nuevas pegadas AL FINAL,
+    # así que el editor mostraba «Variedad», «Origen» y el desglose detrás de
+    # Observaciones y Campaña, lejos de «Frutos dañados», que es justo donde se rellenan.
+    _dmg_src = carpocapsa_filter_campaign(
+        st.session_state.carpocapsa_damage_df, campaign_year).copy()
+    for _c in CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS:
+        if _c not in _dmg_src.columns:
+            _dmg_src[_c] = "" if _c not in CARPOCAPSA_DAMAGE_NUM_COLS else np.nan
+    _dmg_src = _dmg_src[CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS
+                        + [c for c in _dmg_src.columns
+                           if c not in CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS]]
     damage_edit = st.data_editor(
-        carpocapsa_filter_campaign(st.session_state.carpocapsa_damage_df, campaign_year).copy(),
+        _dmg_src,
         use_container_width=True,
         hide_index=True,
         num_rows="dynamic",
-        key="carpocapsa_damage_editor_v893",
+        key="carpocapsa_damage_editor_v894",
         column_config={
             "Fecha": st.column_config.DateColumn("Fecha"),
             "Variedad": st.column_config.TextColumn(
@@ -18393,6 +18405,8 @@ def carpocapsa_tab(history):
                 help="Corcho en la piel SIN galería: la larva murió al entrar."),
         },
     )
+    st.caption("⬆️ Aquí se **escribe** (añade, corrige o borra filas) · ⬇️ abajo se **lee** "
+               "lo calculado. Los cambios del editor no se guardan hasta pulsar el botón.")
     if st.button("Guardar daños en sesión", use_container_width=True):
         prepared = carpocapsa_prepare_damage_df(damage_edit)[CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS]
         prepared["Campaña"] = int(campaign_year)
@@ -18408,7 +18422,23 @@ def carpocapsa_tab(history):
         damage_show["Estado objetivo <1%"] = damage_show["% daño"].apply(
             lambda x: "Cumple" if pd.notna(x) and x < 1 else ("Revisar" if pd.notna(x) else "Sin dato")
         )
-        st.dataframe(damage_show, use_container_width=True, hide_index=True)
+        # Solo las columnas CALCULADAS (más lo justo para identificar la fila). Antes se
+        # repetían las once del editor justo encima: dos tablas casi idénticas, una sobre
+        # otra, y no se entendía para qué servía cada una. Lo único que esta aporta es lo
+        # que el editor no puede mostrar, porque se recalcula solo.
+        _cols_calc = [c for c in ["Fecha", "Campo/Zona", "Variedad", "Origen",
+                                  "% daño", "% con galería", "Estado objetivo <1%", "Descuadre"]
+                      if c in damage_show.columns]
+        st.dataframe(damage_show[_cols_calc], use_container_width=True, hide_index=True,
+                     column_config={
+                         "% con galería": st.column_config.NumberColumn(
+                             "% con galería", format="%.1f %%",
+                             help="Daño REAL: larva dentro + ciclo completado, sin las "
+                                  "picaduras. Es el número que decide."),
+                         "% daño": st.column_config.NumberColumn(
+                             "% daño", format="%.1f %%",
+                             help="Todos los frutos con orificio, picaduras incluidas."),
+                     })
         _desc = damage_show[damage_show["Descuadre"].astype(str).str.strip() != ""]
         if not _desc.empty:
             st.warning(
