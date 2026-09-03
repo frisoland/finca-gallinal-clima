@@ -25274,6 +25274,9 @@ def forecast_reliability(history_df, archive_df=None):
             recs.append({
                 "target_date": td,
                 "horizon": int(r.get("horizon", 0)),
+                # Fuente con la que se archivó. Sin esto las enfermedades mezclaban en
+                # una sola cifra a Sencrop (muerta desde el 19/08/2026) con MeteoGalicia.
+                "src": str(_src_r),
                 # Booleanas (corte estricto ≥umbral) — usadas por la tabla de antelación.
                 "moteado_p": _mp >= THR,  "moteado_r": _mr >= THR,
                 "monilia_p": _op >= THR,  "monilia_r": _omr >= THR,
@@ -25303,16 +25306,48 @@ def forecast_reliability(history_df, archive_df=None):
         # `thr` = umbral del valor REAL (¿hubo evento?). `thr_p` = umbral de la PREVISIÓN
         # (¿el modelo lo anunció?). En infecciones coinciden (100); en lluvia NO: real
         # ≥0,2 mm, pero anunciar lluvia es cualquier cantidad > 0.
-        for label, pv, rv, thr, thr_p, near, tol in [
-                ("🍄 Moteado", "moteado_pv", "moteado_rv", THR,  THR,       NEAR, 1),
-                ("🟤 Monilia", "monilia_pv", "monilia_rv", THR,  THR,       NEAR, 1),
-                ("⚪ Oídio",   "oidio_pv",   "oidio_rv",   THR,  THR,       NEAR, 1),
-                ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, RAIN_PRED, 1.0, 0),
-                ("🌧️ Lluvia WRF9", "lluvia_wrf_pv", "lluvia_rv", RAIN, RAIN_PRED, 1.0, 0),
-                ("🌧️ Lluvia MeteoGal.", "lluvia_mg_pv", "lluvia_rv", RAIN, RAIN_PRED, 1.0, 0)]:
+        # LAS ENFERMEDADES SE DESGLOSAN POR FUENTE. Antes salía una sola fila por
+        # enfermedad que promediaba Sencrop y MeteoGalicia como si fueran el mismo
+        # avisador. Sencrop dejó de servir previsión el 19/08/2026 y MeteoGalicia entró
+        # el 25/08: a primeros de septiembre, ~57 de los 66 días verificados eran de una
+        # fuente que ya no existe. Leer «Moteado 60 %» y creer que es lo que hace tu
+        # previsión de hoy era el resultado natural, y estaba mal. La lluvia ya venía
+        # desglosada (WRF9 y MeteoGalicia en columnas propias); esto lo iguala.
+        _SRC_LBL = {"meteogalicia": "MeteoGalicia", "sencrop": "Sencrop (ya no activa)"}
+        _srcs_all = set(comp["src"].astype(str))
+        _srcs_pres = [s for s in ["meteogalicia", "sencrop"] if s in _srcs_all]
+        _srcs_pres += sorted(_srcs_all - {"meteogalicia", "sencrop"})
+
+        _specs = []
+        for _lbl, _pv, _rv in [("🍄 Moteado", "moteado_pv", "moteado_rv"),
+                               ("🟤 Monilia", "monilia_pv", "monilia_rv"),
+                               ("⚪ Oídio",   "oidio_pv",   "oidio_rv")]:
+            if len(_srcs_pres) <= 1:
+                _specs.append((_lbl, _pv, _rv, THR, THR, NEAR, 1, None))
+            else:
+                for _s in _srcs_pres:
+                    _specs.append((f"{_lbl} · {_SRC_LBL.get(_s, _s)}",
+                                   _pv, _rv, THR, THR, NEAR, 1, _s))
+        _specs += [
+            ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, RAIN_PRED, 1.0, 0, None),
+            ("🌧️ Lluvia WRF9", "lluvia_wrf_pv", "lluvia_rv", RAIN, RAIN_PRED, 1.0, 0, None),
+            ("🌧️ Lluvia MeteoGal.", "lluvia_mg_pv", "lluvia_rv", RAIN, RAIN_PRED, 1.0, 0, None),
+        ]
+
+        for label, pv, rv, thr, thr_p, near, tol, _srcf in _specs:
+            # Cada fila con SU subconjunto: si filtra por fuente, la deduplicación por
+            # día se hace dentro de esa fuente, no sobre la mezcla.
+            if _srcf is None:
+                _cday = comp_day
+            else:
+                _sub = comp[comp["src"].astype(str) == _srcf]
+                if _sub.empty:
+                    continue
+                _cday = _sub.sort_values("horizon").drop_duplicates("target_date", keep="first").copy()
+                _cday["_dt"] = pd.to_datetime(_cday["target_date"], errors="coerce").dt.normalize()
             # Estado por día: (aviso_pleno ≥umbral, aviso_casi ≥90%, evento_real).
             _day = {}
-            for _, _rw in comp_day.iterrows():
+            for _, _rw in _cday.iterrows():
                 _d = _rw["_dt"]
                 if pd.isna(_d):
                     continue
@@ -25370,8 +25405,13 @@ def forecast_reliability(history_df, archive_df=None):
                     _sin_cub = int(sum(1 for _d in _ev_all if _d not in set(comp_day["target_date"])))
                 except Exception:
                     _sin_cub = 0
+            _per = "—"
+            if _day:
+                _fmin, _fmax = min(_day), max(_day)
+                _per = (f"{_fmin:%d/%m}" if _fmin == _fmax else f"{_fmin:%d/%m}–{_fmax:%d/%m}")
             out_rows.append({
                 "Qué": label,
+                "Periodo": _per,
                 "Fiabilidad": ("🟠 Días sin previsión" if (_sin_cub and _fiab == "🟢 Buena")
                                else _fiab),
                 "Eventos avisados (lo que importa)": (
@@ -27614,7 +27654,12 @@ def render_decisiones_panel():
                     return int(_pp[0].split()[-1]), int(_pp[1].split()[0])
                 except Exception:
                     return (0, 0)
+            # EL VEREDICTO ES DEL AVISADOR ACTIVO, no de la mezcla. Con el desglose por
+            # fuente hay filas de Sencrop, que dejó de servir previsión el 19/08/2026:
+            # sumarlas aquí daría un veredicto sobre un avisador que ya no existe, que es
+            # justo lo que hacía antes de separarlas.
             _tot_ev = _tot_av = _tot_esc = 0
+            _hist_ev = _hist_av = _hist_esc = 0
             _detalle = []
             for _, _rr in _rel_df.iterrows():
                 _q = str(_rr.get("Qué", ""))
@@ -27622,11 +27667,21 @@ def render_decisiones_panel():
                     continue
                 _tp, _re = _parse_pair(_rr.get("Eventos avisados (lo que importa)", ""))
                 _fn, _ = _parse_pair(_rr.get("Se le escapó (no avisó, sí pasó)", ""))
+                if "ya no activa" in _q:                 # fuente retirada: aparte
+                    _hist_ev += _re; _hist_av += _tp; _hist_esc += _fn
+                    continue
                 _tot_ev += _re; _tot_av += _tp; _tot_esc += _fn
                 if _re > 0:
-                    _nom = _q.split(" ", 1)[-1] if " " in _q else _q
+                    _nom = _q.split(" · ")[0]
+                    _nom = _nom.split(" ", 1)[-1] if " " in _nom else _nom
                     _detalle.append(f"{_nom.lower()} {_tp}/{_re}")
             _det = " · ".join(_detalle)
+            if _hist_ev:
+                st.caption(
+                    f"ℹ️ El veredicto de abajo es **solo del avisador que tienes hoy**. Las filas "
+                    f"de **Sencrop** son un histórico de una fuente que dejó de servir previsión "
+                    f"el 19/08/2026 ({_hist_av} de {_hist_ev} eventos avisados, {_hist_esc} "
+                    f"escapados): explican el pasado, no dicen nada de lo que hace la app ahora.")
             # DÍAS SIN PREVISIÓN: no son escapes del modelo, pero tampoco son aciertos.
             # Decir «avisó de TODAS» cuando hubo infecciones sin cubrir es engañoso, aunque
             # la culpa fuera de que no había previsión ese día. Se dice aparte y sin
@@ -27716,6 +27771,11 @@ def render_decisiones_panel():
                 "lo tendría alto). Míralo **después** de «Eventos avisados».\n"
                 "- **Falsas alarmas (avisó, no pasó)** — anunció riesgo pero **no ocurrió** (molesto "
                 "pero seguro: tratas de más).\n"
+                "- **Una fila por enfermedad Y POR FUENTE de previsión.** Sencrop dejó de "
+                "servir previsión el **19/08/2026** y MeteoGalicia entró el **25/08**: sus "
+                "filas cubren periodos distintos (mira la columna **Periodo**) y no se deben "
+                "comparar entre sí ni sumar. La de Sencrop es un post-mortem; la que dice qué "
+                "hace tu avisador **hoy** es la de MeteoGalicia, que todavía tiene pocos días.\n"
                 "- **Se le escapó (no avisó, sí pasó)** — **no** avisó y **sí** ocurrió (🔴 lo "
                 "peligroso: te pilla sin proteger).\n\n"
                 "ℹ️ **Casi‑avisos:** en un día de evento real, una previsión que llega al **≥90 % del "
