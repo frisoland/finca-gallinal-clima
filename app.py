@@ -14867,8 +14867,11 @@ CARPOCAPSA_DEFAULT_BIOFIX_COLUMNS = [
 #      - Con larva dentro
 #      - Salida vacía (galería): la larva completó el ciclo y salió. Fruta perdida Y
 #        población que se va a invernar.
-#      - Picadura superficial: corcho en la piel sin galería, la larva murió al entrar.
-#        Significa que el tratamiento funcionó y el daño es casi solo cosmético.
+#      - Picadura superficial: la galería NO llega al corazón — la larva se paró a 1-2 cm.
+#        OJO: el muestreo del 03/09/2026 aclaró que NO son picaduras de piel de pocos
+#        milímetros, son galerías abandonadas. Encaja con una larva envenenada por Bt
+#        (deja de comer en horas, muere en 1-3 días: hace camino y se para). Y NO es
+#        daño cosmético: un túnel de 2 cm es una puerta abierta a podredumbre.
 #    Esa última distinción es la que decide si un 30 % de frutos marcados es un desastre
 #    o es el producto haciendo su trabajo. En el muestreo del 02/09 el ~90 % llegaba al
 #    corazón, o sea ciclos completados.
@@ -15611,6 +15614,90 @@ CARPOCAPSA_HATCH_BANDS = [
 # Ancho de la VENTANA ÓPTIMA al inicio de cada eclosión: las larvas están naciendo y aún
 # no han entrado en el fruto, que es cuando el tratamiento rinde más.
 CARPOCAPSA_VENTANA_OPTIMA_DD = 40
+
+
+def carpocapsa_banda_de(dd):
+    """(generación, inicio, fin) de la banda de eclosión en la que cae `dd`.
+    Devuelve (None, None, None) si está fuera de toda banda."""
+    try:
+        d = float(dd)
+    except (TypeError, ValueError):
+        return (None, None, None)
+    if pd.isna(d):
+        return (None, None, None)
+    for _g, (_lo, _hi) in enumerate(
+            sorted([(float(i), float(f)) for i, f, *_ in CARPOCAPSA_HATCH_BANDS]), start=1):
+        if _lo <= d <= _hi:
+            return (_g, _lo, _hi)
+    return (None, None, None)
+
+
+def carpocapsa_posicion_en_banda(dd):
+    """¿En qué punto de la eclosión de su generación cayó un pase dado a `dd`?
+
+    Devuelve (texto, pct) donde pct es el % de la eclosión de esa generación ya
+    transcurrido. Sirve para contestar «¿traté muy al principio o muy al final?»,
+    que mirando solo la fecha no se sabe: la misma fecha es pronto en un campo
+    tardío y tarde en uno adelantado."""
+    _g, _lo, _hi = carpocapsa_banda_de(dd)
+    if _g is None:
+        try:
+            d = float(dd)
+        except (TypeError, ValueError):
+            return ("—", np.nan)
+        _b = sorted([(float(i), float(f)) for i, f, *_ in CARPOCAPSA_HATCH_BANDS])
+        if pd.isna(d):
+            return ("—", np.nan)
+        if d < _b[0][0]:
+            return (f"⏳ Antes de la 1ª eclosión (faltan {_b[0][0] - d:.0f} DD)", np.nan)
+        for _i, (_l, _h) in enumerate(_b):
+            if d > _h and _i + 1 < len(_b) and d < _b[_i + 1][0]:
+                return (f"✗ Entre generaciones: no nace nada", np.nan)
+        return ("✗ Pasada la última eclosión publicada", np.nan)
+    _pct = 100.0 * (float(dd) - _lo) / (_hi - _lo)
+    if _pct <= 12:
+        _t = f"⭐ Inicio de la {_g}ª ({_pct:.0f} % de la eclosión)"
+    elif _pct <= 60:
+        _t = f"✅ Plena {_g}ª ({_pct:.0f} %)"
+    else:
+        _t = f"🔸 Final de la {_g}ª ({_pct:.0f} % ya pasado)"
+    return (_t, round(_pct, 0))
+
+
+def carpocapsa_pases_ideales(dates, dd_acum, persistencia_dias=7):
+    """Calendario TEÓRICO de pases: en qué fechas tocaría tratar para cubrir la
+    eclosión entera de cada generación.
+
+    El primero cae el día que el campo entra en la banda (el producto tiene que
+    estar puesto cuando nace la primera larva) y los siguientes cada
+    `persistencia_dias`, mientras siga habiendo eclosión. No es una recomendación
+    de gasto: es la referencia contra la que comparar lo que se hizo de verdad.
+
+    Devuelve [(fecha, generación, nº de pase, total de la generación)]."""
+    out = []
+    if not dates or not dd_acum:
+        return out
+    _val = [(i, v) for i, v in enumerate(dd_acum)
+            if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    if not _val:
+        return out
+    for _g, (_lo, _hi) in enumerate(
+            sorted([(float(i), float(f)) for i, f, *_ in CARPOCAPSA_HATCH_BANDS]), start=1):
+        _dentro = [i for i, v in _val if _lo <= v <= _hi]
+        if not _dentro:
+            continue
+        _f0 = pd.Timestamp(dates[_dentro[0]])
+        _f1 = pd.Timestamp(dates[_dentro[-1]])
+        _fechas, _k = [], 0
+        while _k < 15:
+            _f = _f0 + pd.Timedelta(days=persistencia_dias * _k)
+            if _f > _f1:
+                break
+            _fechas.append(_f)
+            _k += 1
+        for _i, _f in enumerate(_fechas, start=1):
+            out.append((_f, _g, _i, len(_fechas)))
+    return out
 
 
 def carpocapsa_fase(dd):
@@ -18347,8 +18434,55 @@ def carpocapsa_tab(history):
                 f"**{_sel_cc}** · biofix **{_bf_txt}** · **{len(_treats_one)}** tratamiento(s) de "
                 "carpocapsa en este campo (líneas moradas). Círculos azules = capturas de ESTE campo "
                 "(tamaño y nº = capturas); **○ gris = lectura hecha sin capturas (0)** — así se ve que "
-                "la trampa SÍ se revisó aunque no cayera nada; línea roja = sus DD desde SU biofix."
+                "la trampa SÍ se revisó aunque no cayera nada; línea roja = sus DD desde SU biofix.\n\n"
+                "**Líneas horizontales de color** = bordes de la eclosión de cada generación: la "
+                "sólida marca **desde dónde tratar sirve**, la punteada **dónde deja de servir**. "
+                "**▲ triángulos al pie** = calendario teórico de pases (uno cada 7 días mientras "
+                "dure la eclosión). Compara los triángulos con las líneas moradas."
             )
+
+            # ── ¿Cada pase real cayó dentro de la ventana, y en qué punto? ────
+            # La fecha sola no contesta a eso: el mismo 4 de agosto es pronto en un
+            # campo tardío y tarde en uno adelantado. Lo que lo dice es el DD del
+            # campo ese día, comparado con SU banda de eclosión.
+            if _bf_date_cc is not None and pd.notna(_bf_date_cc) and not _treats_one.empty:
+                _dd_cc = carpocapsa_daily_degree_days(
+                    carpocapsa_filter_history_campaign(history, campaign_year),
+                    base_temp=_base_cc, upper_temp=_upper_cc, method=method)
+                if not _dd_cc.empty:
+                    _dc = _dd_cc[_dd_cc["Fecha"] >= pd.Timestamp(_bf_date_cc)].copy()
+                    _dc["_ac"] = pd.to_numeric(_dc["DD día"], errors="coerce").fillna(0).cumsum()
+                    _map = dict(zip(pd.to_datetime(_dc["Fecha"]).dt.normalize(), _dc["_ac"]))
+                    _fil = []
+                    for _f in sorted({pd.Timestamp(x).normalize()
+                                      for x in pd.to_datetime(_treats_one.get("Fecha"), errors="coerce").dropna()}):
+                        _ddv = _map.get(_f)
+                        _txt, _pct = carpocapsa_posicion_en_banda(_ddv)
+                        _fil.append({
+                            "Pase": f"{_f:%d/%m}",
+                            "DD del campo": round(float(_ddv), 0) if _ddv is not None else np.nan,
+                            "¿Dónde cayó?": _txt,
+                            "% de la eclosión ya pasado": _pct,
+                        })
+                    if _fil:
+                        _dfp = pd.DataFrame(_fil)
+                        st.dataframe(
+                            _dfp, use_container_width=True, hide_index=True,
+                            column_config={
+                                "% de la eclosión ya pasado": st.column_config.ProgressColumn(
+                                    "% de la eclosión ya pasado", format="%.0f%%",
+                                    min_value=0, max_value=100,
+                                    help="0 % = el pase cayó justo al empezar a nacer larvas "
+                                         "(ideal). 100 % = al final, cuando casi todas habían "
+                                         "nacido ya. Vacío = el pase cayó fuera de banda."),
+                            })
+                        _fuera = int(_dfp["¿Dónde cayó?"].astype(str).str.startswith(("✗", "⏳")).sum())
+                        _n_id = len([1 for _ in carpocapsa_pases_ideales(
+                            list(_dc["Fecha"]), list(_dc["_ac"]))])
+                        st.caption(
+                            f"De **{len(_dfp)}** pases, **{_fuera}** cayeron fuera de toda banda de "
+                            f"eclosión (no había larvas naciendo). El calendario teórico pedía "
+                            f"**{_n_id}** pases para cubrir las dos generaciones enteras.")
 
     st.caption(
         "**Criterio de muestreo:** solo fruto cogido del **ÁRBOL**, mínimo **100 frutos por "
@@ -18361,11 +18495,15 @@ def carpocapsa_tab(history):
         "- **Con larva dentro** — sigue en el fruto.\n"
         "- **Salida vacía (galería)** — galería hasta el corazón y larva ya salida: **ciclo "
         "completado**, fruta perdida y población que se va a invernar en la finca.\n"
-        "- **Picadura superficial** — corcho en la piel **sin galería**: la larva murió al "
-        "entrar. El tratamiento funcionó y el daño es casi solo cosmético.\n\n"
-        "Por eso la columna que decide es **% con galería**, no **% daño**: en sidra, que va "
-        "a prensa, una picadura no es fruta perdida. ⚠️ El objetivo del **1 %** es un "
-        "estándar de manzana de MESA; para sidra habrá que fijar uno propio.")
+        "- **Picadura superficial** — la galería **NO llega al corazón**: la larva entró, "
+        "comió uno o dos centímetros y se paró. Encaja con una larva envenenada por Bt, que "
+        "deja de comer a las pocas horas y muere en uno a tres días — por eso hace camino y "
+        "se detiene, en vez de quedarse en la piel.\n\n"
+        "**% con galería** mide el daño COMPLETO (llega al corazón) y **% daño** todo el "
+        "fruto perforado. Mira los dos: una galería a medias no es fruta perdida como una "
+        "completa, pero tampoco es cosmética — es una puerta abierta a podredumbre. "
+        "⚠️ El objetivo del **1 %** es un estándar de manzana de MESA; para sidra habrá que "
+        "fijar uno propio.")
     # Orden canónico. Al importar se concatena lo nuevo con lo que ya había guardado, que
     # traía el juego de columnas viejo: pandas deja las columnas nuevas pegadas AL FINAL,
     # así que el editor mostraba «Variedad», «Origen» y el desglose detrás de
@@ -18402,7 +18540,9 @@ def carpocapsa_tab(history):
                 help="Galería hasta el corazón, larva ya salida: ciclo completado."),
             "Picadura superficial": st.column_config.NumberColumn(
                 "Picadura superficial", min_value=0, step=1,
-                help="Corcho en la piel SIN galería: la larva murió al entrar."),
+                help="La galería NO llega al corazón: la larva se paró a 1-2 cm. "
+                     "Compatible con una larva muerta por el Bt, que deja de comer a "
+                     "las pocas horas de ingerirlo."),
         },
     )
     st.caption("⬆️ Aquí se **escribe** (añade, corrige o borra filas) · ⬇️ abajo se **lee** "
@@ -26213,23 +26353,48 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
             hovertemplate="%{x|%d/%m}<br>DD acum (prev): %{y:.0f}<extra></extra>",
         ))
 
-    # Umbrales de tratamiento. El eje llega SIEMPRE al menos hasta el último umbral de
-    # 2ª generación (750) para que se vean las mismas líneas que en el item Carpocapsa,
-    # aunque los DD del año aún no hayan llegado ahí. Los hitos de 3ª gen (1230/1370)
-    # NO estiran el eje: solo aparecen si los DD reales se acercan — si no, aplastarían
-    # la curva contra el suelo durante toda la primavera.
-    max_dd  = max(dd_acum) if dd_acum else 400
-    _top_gen = max((t for t, _ in CARPOCAPSA_GEN_DD if t <= 750), default=750)
-    ymax    = max(max_dd * 1.15, _top_gen * 1.08, 400)
-    _gen_colors = ["#2ca02c", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
-    for (umbral, _lbl), color in zip(CARPOCAPSA_GEN_DD, _gen_colors):
-        # Etiqueta corta para que quepa entera a la derecha (antes se cortaba el nº).
-        _short = carpo_gen_label_short(_lbl)
-        label = f"{_short} ({umbral} DD)"
-        if umbral <= ymax * 1.2:
-            fig.add_hline(y=umbral, line_dash="dash", line_color=color, line_width=1, opacity=0.7,
-                          annotation_text=label, annotation_position="right",
-                          annotation_font_size=10)
+    # ── Bordes de la eclosión: DÓNDE EMPIEZA Y ACABA LA VENTANA DE TRATAR ─────
+    # Antes aquí se pintaban los seis hitos de CARPOCAPSA_GEN_DD (130/300/580/750/
+    # 1230/1370), que vienen de UC IPM, mientras las zonas sombreadas vienen de las
+    # bandas de Utah State. Dos fuentes distintas superpuestas, con números que no
+    # cuadran: la zona roja arrancaba en 611 y la línea de puntos decía 750. El
+    # usuario preguntó directamente cuál valía. Ahora las líneas salen de LAS MISMAS
+    # BANDAS que el sombreado, así que no puede haber contradicción.
+    max_dd = max(dd_acum) if dd_acum else 400
+    _bandas_ord = sorted([(float(i), float(f)) for i, f, *_ in CARPOCAPSA_HATCH_BANDS])
+    ymax = max(max_dd * 1.15, _bandas_ord[-1][0] * 1.08, 400)
+    _cols_gen = ["#2ca02c", "#d62728", "#9467bd"]
+    for _g, (_lo, _hi) in enumerate(_bandas_ord, start=1):
+        _c = _cols_gen[(_g - 1) % len(_cols_gen)]
+        if _lo <= ymax * 1.2:
+            fig.add_hline(y=_lo, line_dash="solid", line_color=_c, line_width=1.6, opacity=0.75,
+                          annotation_text=f"▸ {_g}ª gen: TRATAR DESDE AQUÍ ({_lo:.0f} DD)",
+                          annotation_position="right", annotation_font_size=10)
+        if _hi <= ymax * 1.2:
+            fig.add_hline(y=_hi, line_dash="dot", line_color=_c, line_width=1, opacity=0.55,
+                          annotation_text=f"{_g}ª gen: fin de eclosión ({_hi:.0f} DD)",
+                          annotation_position="right", annotation_font_size=10)
+
+    # ── Calendario TEÓRICO de pases ──────────────────────────────────────────
+    # Marcadores al pie del gráfico: cuándo TOCARÍA tratar para cubrir la eclosión
+    # entera. Comparándolos con las líneas moradas (lo que se hizo) se ve de un
+    # vistazo si un pase cayó dentro de la ventana, y si al principio o al final.
+    _ideales = carpocapsa_pases_ideales(dates, dd_acum)
+    if _ideales:
+        _tot = {}
+        for _f, _g, _i, _n in _ideales:
+            _tot[_g] = _n
+        fig.add_trace(go.Scatter(
+            x=[f for f, _, _, _ in _ideales],
+            y=[ymax * 0.022] * len(_ideales),
+            mode="markers", name="Pase ideal (teórico)",
+            marker=dict(symbol="triangle-up", size=10,
+                        color=[_cols_gen[(g - 1) % len(_cols_gen)] for _, g, _, _ in _ideales],
+                        opacity=0.55, line=dict(color="white", width=1)),
+            hovertemplate=("%{x|%d/%m}<br>Pase ideal %{customdata[0]} de %{customdata[1]}"
+                           " · %{customdata[2]}ª generación<extra></extra>"),
+            customdata=[[i, n, g] for _, g, i, n in _ideales],
+        ))
 
     # Capturas de trampas (detección flexible de columnas: la tabla real usa
     # "Fecha" y "Capturas machos", no "Fecha_dt"/"Capturas"). Se AGREGAN por fecha
@@ -26358,13 +26523,19 @@ def _dec_carpocapsa_chart(risk_df, today, biofix_df, traps_df, treats_carpo_df, 
                              .dropna().mean())
                 _proj = []
                 if rate and rate > 0.3:
-                    for _um, _lb in CARPOCAPSA_GEN_DD:
+                    # Los hitos que se proyectan son los BORDES DE LAS BANDAS, los
+                    # mismos que se dibujan. Antes se proyectaba CARPOCAPSA_GEN_DD, que
+                    # es otra fuente con otros números.
+                    _hitos = []
+                    for _g, (_lo, _hi) in enumerate(_bandas_ord, start=1):
+                        _hitos.append((_lo, f"{_g}ª gen: EMPIEZA eclosión"))
+                        _hitos.append((_hi, f"{_g}ª gen: acaba eclosión"))
+                    for _um, _lb in sorted(_hitos):
                         if _um > dd_now:
                             _days = (_um - dd_now) / rate
                             if _days <= 120:   # no proyectar más de ~4 meses
                                 _est = last_real + pd.Timedelta(days=float(_days))
-                                _sh = carpo_gen_label_short(_lb)
-                                _proj.append(f"{_sh} ({int(_um)} DD) ≈ <b>{_est.strftime('%d/%m')}</b>")
+                                _proj.append(f"{_lb} ({int(_um)} DD) ≈ <b>{_est.strftime('%d/%m')}</b>")
                 if _proj:
                     _proj_txt = (f"📅 Próxima eclosión estimada (~{rate:.1f} DD/día):<br>"
                                  + "<br>".join(_proj[:2]))
