@@ -25318,6 +25318,122 @@ def mg_mojadura_sweep(history_df, archive_df=None, max_h=84):
                                  "desde": m["target_dt"].min(), "hasta": m["target_dt"].max()}
 
 
+def estimador_vs_sensor_mojadura(history_df, dias=45):
+    """El sesgo del ESTIMADOR, sin meter la previsión de por medio.
+
+    Hay una asimetría en el modelo que no salta a la vista y que castiga solo a los
+    días futuros: **los días pasados usan el sensor de humectación y los previstos usan
+    el estimador**. Si el estimador es más generoso que el sensor, la previsión sale
+    inflada aunque la meteorología prevista fuera perfecta — y esa inflación no aparece
+    en ninguna comparación de temperatura, humedad o lluvia, porque no está ahí.
+
+    Aquí se pasa el estimador sobre las MISMAS horas reales y se compara con lo que
+    marcó el sensor. Todo lo que salga distinto es error del estimador y de nadie más.
+
+    Hay además una diferencia de forma: el sensor da minutos (0-60, puede decir 25) y
+    el estimador es binario (0 o 60). Una hora a medio mojar cuenta doble.
+
+    Devuelve (DataFrame, meta)."""
+    if history_df is None or history_df.empty:
+        return pd.DataFrame(), {"n": 0}
+    h = history_df.copy()
+    h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+    h = h.dropna(subset=["fecha_hora"])
+    if "humectacion_hoja" not in h.columns:
+        return pd.DataFrame(), {"n": 0, "sin_sensor": True}
+    _corte = pd.Timestamp.now().normalize() - pd.Timedelta(days=int(dias))
+    h = h[h["fecha_hora"] >= _corte]
+    h["_sens"] = pd.to_numeric(h["humectacion_hoja"], errors="coerce")
+    h = h.dropna(subset=["_sens"])
+    if h.empty:
+        return pd.DataFrame(), {"n": 0, "sin_sensor": True}
+    _, _p = _lw_model_params()
+    h["_est"] = estimate_leaf_wetness_minutes(h, _p).to_numpy()
+
+    _sw = h["_sens"] > 0
+    _ew = h["_est"] > 0
+    _parcial = h.loc[_sw & (h["_sens"] < 60), "_sens"]
+    filas = [
+        {"Qué": "Horas que el SENSOR da por mojadas", "Valor": int(_sw.sum())},
+        {"Qué": "Horas que el ESTIMADOR da por mojadas", "Valor": int(_ew.sum())},
+        {"Qué": "· de esas, el sensor decía seco (infladas)", "Valor": int((_ew & ~_sw).sum())},
+        {"Qué": "· mojadas reales que no ve", "Valor": int((~_ew & _sw).sum())},
+        {"Qué": "Minutos totales del SENSOR", "Valor": int(h["_sens"].sum())},
+        {"Qué": "Minutos totales del ESTIMADOR", "Valor": int(h["_est"].sum())},
+        {"Qué": "Horas a medio mojar en el sensor (<60 min)", "Valor": int(len(_parcial))},
+        {"Qué": "· minutos medios de esas horas", "Valor": round(float(_parcial.mean()), 0)
+         if len(_parcial) else 0},
+    ]
+    _ratio = (float(h["_est"].sum()) / float(h["_sens"].sum())) if h["_sens"].sum() else np.nan
+    return pd.DataFrame(filas), {"n": len(h), "ratio_minutos": _ratio,
+                                 "desde": h["fecha_hora"].min(), "hasta": h["fecha_hora"].max()}
+
+
+def mg_eventos_vs_sensor(history_df, archive_df=None, max_h=84):
+    """No cuántas horas mojadas, sino en cuántos TROZOS — que es lo que decide el índice.
+
+    El barrido de mojadura dejó claro que el número de horas casi cuadra (241 previstas
+    frente a 211 del sensor, un 14 % más). Eso no explica una previsión de 150 en un día
+    que fue 0. La explicación tiene que estar en la AGRUPACIÓN: el modelo de Mills no
+    suma horas sueltas, mide **periodos continuos** de hoja mojada, y el riesgo crece
+    con lo que dura cada periodo, no con el total del mes.
+
+    Si la previsión reparte sus 241 horas en pocos eventos largos donde el sensor ve
+    muchos cortos, el índice se dispara aunque el recuento de horas sea casi igual: dos
+    mojaduras de 8 h no dan el mismo riesgo que una de 16. Y basta con que la previsión
+    ponga hora mojada en el hueco entre dos noches para fundirlas en un solo evento.
+
+    Devuelve (DataFrame comparativo, meta)."""
+    m = _mg_merge_sensor(history_df, archive_df, max_h)
+    if m is None or m.empty:
+        return pd.DataFrame(), {"n": 0}
+    m = m.sort_values("target_dt").reset_index(drop=True)
+    _, _p = _lw_model_params()
+
+    def _wet(cols):
+        d = pd.DataFrame({"temp_media": pd.to_numeric(m[cols[0]], errors="coerce"),
+                          "hr_media":   pd.to_numeric(m[cols[1]], errors="coerce"),
+                          "lluvia_mm":  pd.to_numeric(m[cols[2]], errors="coerce")})
+        return (estimate_leaf_wetness_minutes(d, _p) > 0).to_numpy()
+
+    def _rachas(wet, horas):
+        """Duraciones de los periodos CONTINUOS de mojada. Una hora que falte en el
+        archivo rompe la racha: no se puede suponer mojado lo que no se midió."""
+        out, run = [], 0
+        for i in range(len(wet)):
+            _seguido = i == 0 or (horas[i] - horas[i - 1]) == pd.Timedelta(hours=1)
+            if wet[i] and _seguido:
+                run += 1
+            elif wet[i]:
+                if run:
+                    out.append(run)
+                run = 1
+            else:
+                if run:
+                    out.append(run)
+                run = 0
+        if run:
+            out.append(run)
+        return out
+
+    _h = list(m["target_dt"])
+    filas = []
+    for _et, _cols in (("Sensor (lo que pasó)", ("temp_media", "hr_media", "lluvia_mm")),
+                       ("MeteoGalicia (lo previsto)", ("mg_temp", "mg_hr", "mg_rain"))):
+        _r = _rachas(_wet(_cols), _h)
+        filas.append({
+            "Serie": _et,
+            "Horas mojadas": int(sum(_r)),
+            "Nº de periodos": len(_r),
+            "Duración media (h)": round(float(np.mean(_r)), 1) if _r else 0.0,
+            "El más largo (h)": int(max(_r)) if _r else 0,
+            "Periodos ≥12 h": int(sum(1 for x in _r if x >= 12)),
+            "Periodos ≥20 h": int(sum(1 for x in _r if x >= 20)),
+        })
+    return pd.DataFrame(filas), {"n": len(m),
+                                 "desde": m["target_dt"].min(), "hasta": m["target_dt"].max()}
+
+
 def mg_umbral_sweep(history_df, archive_df=None, max_h=84, rh_thr=92.0):
     """¿Qué umbral de humedad habría que aplicarle a MeteoGalicia?
 
@@ -28078,6 +28194,86 @@ def render_decisiones_panel():
                             "El listón bueno es donde el balance se acerca a cero **sin** que los "
                             "escapes se disparen. Esto es más directo que dividir el índice final "
                             "por un factor: corrige la entrada en vez de maquillar la salida.")
+
+                    # ── EL ESTIMADOR CONTRA EL SENSOR, sin previsión de por medio ─
+                    _es, _esm = estimador_vs_sensor_mojadura(history_df)
+                    if _es is not None and not _es.empty:
+                        st.markdown("**🔬 Y antes de culpar a MeteoGalicia: el estimador contra tu sensor**")
+                        st.caption(
+                            "Hay una asimetría en el modelo que castiga **solo a los días "
+                            "futuros**: los días pasados usan tu **sensor de humectación** y los "
+                            "previstos usan el **estimador**. Si el estimador es más generoso que "
+                            "el sensor, la previsión sale inflada aunque la meteorología prevista "
+                            "fuera perfecta — y eso no aparece en ninguna comparación de "
+                            "temperatura, humedad o lluvia, porque no está ahí.\n\n"
+                            "Aquí se pasa el estimador sobre las **mismas horas reales** y se "
+                            "compara con lo que marcó el sensor. Lo que salga distinto es error "
+                            "del estimador y de nadie más.")
+                        st.dataframe(_es, use_container_width=True, hide_index=True)
+                        _rt = _esm.get("ratio_minutos")
+                        if _rt is not None and pd.notna(_rt):
+                            if _rt >= 1.25:
+                                st.error(
+                                    f"⚠️ El estimador da **×{_rt:.2f} los minutos de mojadura del "
+                                    f"sensor** sobre las mismas horas. Todo día PREVISTO sale "
+                                    f"inflado en esa proporción frente a un día pasado, sin que "
+                                    f"la previsión tenga culpa. Es candidato a explicar el salto "
+                                    f"entre previsto y real mejor que ningún factor de escala.")
+                            elif _rt <= 0.8:
+                                st.warning(
+                                    f"El estimador se queda **corto**: ×{_rt:.2f} los minutos del "
+                                    f"sensor. La previsión tendería a subestimar el riesgo.")
+                            else:
+                                st.success(
+                                    f"El estimador cuadra con el sensor (×{_rt:.2f} en minutos). "
+                                    f"No es aquí donde se infla la previsión.")
+                        st.caption(
+                            "Ojo a las **horas a medio mojar**: el sensor puede decir 25 minutos, "
+                            "el estimador solo sabe decir 0 o 60. Cada hora marginal cuenta "
+                            "**doble o más**, y son justo las de principio y final de mojadura.")
+
+                    # ── EN CUÁNTOS TROZOS, no cuántas horas ──────────────────────
+                    _mev, _mevm = mg_eventos_vs_sensor(history_df)
+                    if _mev is not None and not _mev.empty and len(_mev) == 2:
+                        st.markdown("**⛓️ Y sobre todo: en cuántos trozos**")
+                        st.caption(
+                            "El recuento de horas de arriba casi cuadra, y aun así la previsión "
+                            "de enfermedad sale disparada. La explicación está aquí: **Mills no "
+                            "suma horas sueltas, mide periodos continuos**, y el riesgo crece "
+                            "con lo que dura cada periodo. Dos mojaduras de 8 h no dan el mismo "
+                            "riesgo que una de 16, aunque sean las mismas horas. Basta con que "
+                            "la previsión ponga una hora mojada en el hueco entre dos noches "
+                            "para fundirlas en un solo evento del doble de largo.")
+                        st.dataframe(_mev, use_container_width=True, hide_index=True,
+                                     column_config={
+                                         "Serie": st.column_config.Column("Serie", pinned=True),
+                                         "El más largo (h)": st.column_config.NumberColumn(
+                                             "El más largo (h)",
+                                             help="El periodo continuo más largo. Es el que "
+                                                  "marca el pico del índice."),
+                                         "Periodos ≥20 h": st.column_config.NumberColumn(
+                                             "Periodos ≥20 h",
+                                             help="Mojaduras muy largas. Cada una es un aviso "
+                                                  "grave casi seguro.")})
+                        try:
+                            _s, _g = _mev.iloc[0], _mev.iloc[1]
+                            if int(_s["Nº de periodos"]) and int(_g["Nº de periodos"]):
+                                st.caption(
+                                    f"Lectura rápida: el sensor parte sus "
+                                    f"**{int(_s['Horas mojadas'])} h** en "
+                                    f"**{int(_s['Nº de periodos'])} periodos** "
+                                    f"(el mayor de {int(_s['El más largo (h)'])} h) y "
+                                    f"MeteoGalicia sus **{int(_g['Horas mojadas'])} h** en "
+                                    f"**{int(_g['Nº de periodos'])}** "
+                                    f"(el mayor de {int(_g['El más largo (h)'])} h). "
+                                    f"**Menos periodos y más largos con las mismas horas "
+                                    f"significa que la previsión está pegando mojaduras que en "
+                                    f"realidad estuvieron separadas** — y ahí es donde el índice "
+                                    f"se dispara. Si es así, la palanca no es la lluvia: es el "
+                                    f"**secado** (`rh_dry`, hoy 80 %), que decide cuándo se "
+                                    f"corta un periodo.")
+                        except Exception:
+                            pass
 
                     # ¿Y si le bajamos el listón SOLO a MeteoGalicia? Se mide, no se
                     # elige a ojo: cada punto recupera escapes y añade falsas.
