@@ -25321,7 +25321,15 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84):
         a = a[(a["horizon_h"] >= 1) & (a["horizon_h"] <= max_h)]
         if a.empty:
             return None, {"n": 0}
-        a = a.sort_values("horizon_h").drop_duplicates("target_dt", keep="first")
+        # AQUÍ NO SE DEDUPLICA. La tabla se agrupa por ANTELACIÓN, así que tiene que
+        # conservar todas las emisiones de cada hora: la de hace 6 h y la de hace 3 días
+        # son justo lo que se quiere comparar. Antes se hacía
+        #     a.sort_values("horizon_h").drop_duplicates("target_dt", keep="first")
+        # ANTES de agrupar, o sea que solo sobrevivía el horizonte más corto de cada
+        # hora — y después se agrupaba por antelación sobre un conjunto que ya solo
+        # tenía uno. La tabla no podía enseñar nunca más de una fila («≤1 día»), por
+        # mucho archivo que hubiera. El resto de paneles (`_mg_merge_sensor`) sí
+        # deduplica, y ahí está bien: miden «lo mejor que teníamos», no la antelación.
         h = history_df.copy()
         h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
         h = h.dropna(subset=["fecha_hora"])
@@ -25335,9 +25343,14 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84):
         filas = []
         for _t, g in m.groupby("tramo", observed=True):
             _f = {"Antelación": str(_t), "Horas": len(g)}
+            # La LLUVIA no va en esta tabla. Su error medio horario sale siempre ~0,1 mm
+            # y no significa nada: el 85-90 % de las horas son secas, MeteoGalicia
+            # también dice 0, y esa masa de ceros aplasta la media. Un modelo que
+            # dijera «nunca llueve» sacaría aquí una nota parecida. Se mide aparte, en
+            # `mg_lluvia_vs_sensor`, con lo que de verdad se le pide: acertar QUÉ HORAS
+            # llueve y cuánta agua cae.
             for _p, _r, _n in (("mg_temp", "temp_media", "Temp"),
-                               ("mg_hr", "hr_media", "HR"),
-                               ("mg_rain", "lluvia_mm", "Lluvia")):
+                               ("mg_hr", "hr_media", "HR")):
                 _d = pd.to_numeric(g[_p], errors="coerce") - pd.to_numeric(g[_r], errors="coerce")
                 _d = _d.dropna()
                 if _d.empty:
@@ -25350,7 +25363,74 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84):
                     _f[f"{_n} error"] = f"{_d.abs().mean():.1f}"
             filas.append(_f)
         return pd.DataFrame(filas), {"n": len(m), "desde": m["target_dt"].min(),
-                                     "hasta": m["target_dt"].max()}
+                                     "hasta": m["target_dt"].max(),
+                                     "horas_unicas": int(m["target_dt"].nunique())}
+    except Exception:
+        return None, {"n": 0}
+
+
+def mg_lluvia_vs_sensor(history_df, archive_df=None, max_h=84, umbral=0.1):
+    """¿Acierta MeteoGalicia CUÁNDO llueve? (que es lo que se le pide, no los mm)
+
+    El error medio horario de lluvia es una métrica engañosa: con el 85-90 % de horas
+    secas y el modelo diciendo 0 en casi todas, la media sale ~0,1 mm siempre. Salía
+    0,1 semana tras semana y el usuario sospechó, con razón, que no medía nada.
+
+    Lo que sí decide es: de las horas que llovió, ¿cuántas anunció? Y de las que
+    anunció, ¿cuántas fueron falsas? Eso es detección, no error medio. Se añade el
+    agua total, que dice si el modelo se queda corto en cantidad aunque acierte las
+    horas.
+
+    `umbral` = mm/hora a partir de los cuales se considera que llovió (0,1 = lluvia
+    medible). Devuelve (DataFrame por antelación, meta)."""
+    try:
+        if archive_df is None:
+            archive_df = load_mg_hourly_archive()
+        if archive_df is None or archive_df.empty or history_df is None or history_df.empty:
+            return None, {"n": 0}
+        a = archive_df.copy()
+        a["target_dt"] = pd.to_datetime(a.get("target_dt"), errors="coerce")
+        a["horizon_h"] = pd.to_numeric(a.get("horizon_h"), errors="coerce")
+        a = a.dropna(subset=["target_dt"])
+        a = a[(a["horizon_h"] >= 1) & (a["horizon_h"] <= max_h)]
+        if a.empty:
+            return None, {"n": 0}
+        h = history_df.copy()
+        h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+        h = h.dropna(subset=["fecha_hora"])
+        m = a.merge(h[["fecha_hora", "lluvia_mm"]],
+                    left_on="target_dt", right_on="fecha_hora", how="inner")
+        if m.empty:
+            return None, {"n": 0}
+        m["_p"] = pd.to_numeric(m["mg_rain"], errors="coerce")
+        m["_r"] = pd.to_numeric(m["lluvia_mm"], errors="coerce")
+        m = m.dropna(subset=["_p", "_r"])
+        if m.empty:
+            return None, {"n": 0}
+        m["tramo"] = pd.cut(m["horizon_h"], [0, 24, 48, 84],
+                            labels=["≤1 día", "1-2 días", "2-3,5 días"])
+        filas = []
+        for _t, g in m.groupby("tramo", observed=True):
+            _pl = g["_p"] >= umbral      # anunció lluvia
+            _rl = g["_r"] >= umbral      # llovió de verdad
+            _tp = int((_pl & _rl).sum())
+            _fn = int((~_pl & _rl).sum())
+            _fp = int((_pl & ~_rl).sum())
+            _nr = int(_rl.sum())
+            filas.append({
+                "Antelación": str(_t),
+                "Horas": len(g),
+                "Horas que llovió": _nr,
+                "Las pilló": f"{_tp} de {_nr} ({100*_tp/_nr:.0f} %)" if _nr else "—",
+                "Se le escaparon": _fn,
+                "Falsas alarmas": _fp,
+                "Agua real mm": round(float(g["_r"].sum()), 1),
+                "Agua prevista mm": round(float(g["_p"].sum()), 1),
+                "Error en horas de lluvia mm": (round(float((g.loc[_rl, "_p"] - g.loc[_rl, "_r"]).abs().mean()), 2)
+                                                if _nr else np.nan),
+            })
+        return pd.DataFrame(filas), {"n": len(m), "desde": m["target_dt"].min(),
+                                     "hasta": m["target_dt"].max(), "umbral": umbral}
     except Exception:
         return None, {"n": 0}
 
@@ -27667,13 +27747,36 @@ def render_decisiones_panel():
             _mgh, _meta_h = mg_hourly_vs_sensor(history_df)
             if _mgh is not None and not _mgh.empty:
                 st.dataframe(_mgh, use_container_width=True, hide_index=True)
+                _hu = _meta_h.get("horas_unicas")
                 st.caption(
-                    f"**{_meta_h['n']} horas** comparadas "
-                    f"({_meta_h['desde']:%d/%m} → {_meta_h['hasta']:%d/%m}). · **Sesgo** = "
-                    "si se pasa (+) o se queda corta (−) de media. · **Error** = cuánto se "
-                    "equivoca de media sin mirar el signo. Hacen falta los dos: un sesgo de "
-                    "0 puede esconder errores grandes que se compensan entre sí. · "
-                    "Temperatura en °C, humedad en %, lluvia en mm.")
+                    f"**{_meta_h['n']} comparaciones** sobre "
+                    f"**{_hu if _hu else '?'} horas** distintas "
+                    f"({_meta_h['desde']:%d/%m} → {_meta_h['hasta']:%d/%m}) — cada hora se "
+                    "compara con TODAS las emisiones que la anunciaron, por eso hay más "
+                    "comparaciones que horas: es lo que permite ver si empeora con la "
+                    "antelación. · **Sesgo** = si se pasa (+) o se queda corta (−) de "
+                    "media. · **Error** = cuánto se equivoca de media sin mirar el signo. "
+                    "Hacen falta los dos: un sesgo de 0 puede esconder errores grandes que "
+                    "se compensan. · Temperatura en °C, humedad en puntos de %.")
+
+                # ── LLUVIA APARTE ────────────────────────────────────────────
+                _mgl, _meta_l = mg_lluvia_vs_sensor(history_df)
+                if _mgl is not None and not _mgl.empty:
+                    st.markdown("**🌧️ Lluvia: ¿acierta QUÉ HORAS llueve?**")
+                    st.caption(
+                        "La lluvia no está en la tabla de arriba a propósito. Su error medio "
+                        "por hora sale siempre **~0,1 mm** y no significa nada: el 85-90 % de "
+                        "las horas son secas, MeteoGalicia también dice 0, y esa montaña de "
+                        "ceros aplasta la media. **Un modelo que dijera «nunca llueve» sacaría "
+                        "una nota parecida.** Lo que de verdad se le pide es acertar las horas.")
+                    st.dataframe(_mgl, use_container_width=True, hide_index=True)
+                    st.caption(
+                        f"Cuenta como lluvia ≥ **{_meta_l.get('umbral', 0.1)} mm/hora**. · "
+                        "**Las pilló** = de las horas que llovió de verdad, en cuántas lo "
+                        "había anunciado (lo que importa). · **Falsas alarmas** = anunció y no "
+                        "cayó. · **Agua real vs prevista** dice si se queda corta en cantidad "
+                        "aunque acierte las horas. · **Error en horas de lluvia** es el error "
+                        "medio contando SOLO las horas que llovió — ese sí es comparable.")
                 if _meta_h["n"] < 200:
                     st.info("⏳ Muestra aún pequeña. Con **2 semanas** se ve la tendencia; "
                             "con un mes se puede decidir.")
