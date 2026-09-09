@@ -24173,7 +24173,14 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
 # Valores CALIBRADOS contra el sensor de la finca (mejor F1: HR≥92 · rocío≤1,5 ·
 # retardo 1 h). Son los predeterminados permanentes para que se apliquen siempre,
 # sin tener que recalibrar ni reaplicar tras un reinicio.
-LEAF_WETNESS_DEFAULTS = {"rh_thr": 92.0, "dew_depr": 1.5, "dry_lag": 1, "rh_dry": 80.0}
+# `rain_thr` = mm/hora a partir de los cuales la lluvia moja la hoja. Estaba clavado
+# en 0,1 dentro del estimador. Se saca aquí porque con previsión importa mucho: en el
+# archivo de MeteoGalicia de sept-2026, de 37 horas en que anunció lluvia solo 12
+# llovieron — las otras 25 entraban como hora mojada entera, sin mirar los milímetros,
+# e inflaban el índice de enfermedad en días que fueron secos. Con el SENSOR el 0,1
+# está bien (mide lo que cayó); con previsión hay que poder subirlo.
+LEAF_WETNESS_DEFAULTS = {"rh_thr": 92.0, "dew_depr": 1.5, "dry_lag": 1, "rh_dry": 80.0,
+                         "rain_thr": 0.1}
 
 
 def _dew_point_c(temp_c, rh_pct):
@@ -24194,7 +24201,8 @@ def estimate_leaf_wetness_minutes(df, params=None):
     rh = pd.to_numeric(df.get("hr_media"),   errors="coerce")
     ll = pd.to_numeric(df.get("lluvia_mm"),  errors="coerce").fillna(0)
     td = _dew_point_c(t, rh)
-    base = ((ll > 0.1) | (rh >= p["rh_thr"]) | ((t - td) <= p["dew_depr"])).fillna(False).to_numpy()
+    base = ((ll > float(p.get("rain_thr", 0.1))) | (rh >= p["rh_thr"])
+            | ((t - td) <= p["dew_depr"])).fillna(False).to_numpy()
     dry_ok = (rh.fillna(0) >= float(p["rh_dry"])).to_numpy()
     # Retardo de secado: extiende la humedad hasta dry_lag horas tras un periodo
     # húmedo, mientras la HR siga alta (dry_ok). Se hace en ≤dry_lag pasos vectorizados.
@@ -25254,6 +25262,60 @@ def mg_hourly_detalle(history_df, archive_df=None, max_h=84, rh_thr=92.0):
             "mm_prev": float(pd.to_numeric(_lv["mg_rain"], errors="coerce").sum()),
         }
     return pd.DataFrame(_f1), pd.DataFrame(_f2), _met
+
+
+def mg_mojadura_sweep(history_df, archive_df=None, max_h=84):
+    """¿Cuántas horas de hoja mojada se inventa MeteoGalicia, y con qué umbral de lluvia?
+
+    Esta es la comparación que de verdad importa, y no estaba: se pasa el MISMO
+    estimador dos veces —una con las variables del sensor y otra con las de
+    MeteoGalicia— y se cuentan las horas mojadas que salen de cada uno. Como el
+    estimador es el mismo en los dos lados, lo que se mide es el error de la
+    PREVISIÓN, no el del estimador.
+
+    Importa porque el índice de enfermedad crece con la duración del periodo mojado:
+    cada hora inventada alarga el evento y sube el número. En el archivo de sept-2026
+    MeteoGalicia anunció lluvia en 37 horas y solo llovió en 12; esas 25 horas de más
+    entraban como mojadura entera porque el estimador daba por mojada cualquier hora
+    con más de 0,1 mm previstos, sin mirar cuántos.
+
+    Se barre `rain_thr` (mm/hora para que la lluvia moje) porque es la palanca que
+    ataca justo ese error, sin tocar el sensor ni el modelo de enfermedad.
+    Devuelve (DataFrame del barrido, meta)."""
+    m = _mg_merge_sensor(history_df, archive_df, max_h)
+    if m is None or m.empty:
+        return pd.DataFrame(), {"n": 0}
+    m = m.sort_values("target_dt").reset_index(drop=True)
+    _, _p = _lw_model_params()
+
+    # Referencia: el estimador con lo que MIDIÓ el sensor, umbral de lluvia normal.
+    _real = pd.DataFrame({"temp_media": pd.to_numeric(m["temp_media"], errors="coerce"),
+                          "hr_media":   pd.to_numeric(m["hr_media"], errors="coerce"),
+                          "lluvia_mm":  pd.to_numeric(m["lluvia_mm"], errors="coerce")})
+    _w_real = estimate_leaf_wetness_minutes(_real, {**_p, "rain_thr": 0.1}) > 0
+    _n_real = int(_w_real.sum())
+    if _n_real == 0:
+        return pd.DataFrame(), {"n": len(m), "reales": 0}
+
+    filas = []
+    for _thr in (0.1, 0.2, 0.3, 0.5, 1.0, 2.0):
+        _prev = pd.DataFrame({"temp_media": pd.to_numeric(m["mg_temp"], errors="coerce"),
+                              "hr_media":   pd.to_numeric(m["mg_hr"], errors="coerce"),
+                              "lluvia_mm":  pd.to_numeric(m["mg_rain"], errors="coerce")})
+        _w_prev = estimate_leaf_wetness_minutes(_prev, {**_p, "rain_thr": _thr}) > 0
+        _tp = int((_w_prev & _w_real).sum())
+        _fn = int((~_w_prev & _w_real).sum())
+        _fp = int((_w_prev & ~_w_real).sum())
+        filas.append({
+            "Lluvia ≥ (mm/h)": _thr,
+            "Horas mojadas que ve": int(_w_prev.sum()),
+            "De las reales, pilla": f"{_tp} de {_n_real} ({100*_tp/_n_real:.0f} %)",
+            "Se le escapan": _fn,
+            "Se inventa": _fp,
+            "Balance (inventadas − escapadas)": _fp - _fn,
+        })
+    return pd.DataFrame(filas), {"n": len(m), "reales": _n_real,
+                                 "desde": m["target_dt"].min(), "hasta": m["target_dt"].max()}
 
 
 def mg_umbral_sweep(history_df, archive_df=None, max_h=84, rh_thr=92.0):
@@ -27975,6 +28037,48 @@ def render_decisiones_panel():
                             "Ojo con el «error medio en mm» de la tabla de arriba: en días secos "
                             "sale minúsculo y parece que acierta. Lo que de verdad mueve el "
                             "riesgo es cuántas **horas** de lluvia ve y cuántas se inventa.")
+                    # ── LA MOJADURA, QUE ES LO QUE ALIMENTA AL MODELO ────────────
+                    # Todo lo de arriba mide variables sueltas. Esto mide lo único que
+                    # el modelo de enfermedad consume: horas de hoja mojada. Mismo
+                    # estimador con el sensor y con MeteoGalicia, así que la diferencia
+                    # es de la previsión, no del estimador.
+                    _mw, _mwm = mg_mojadura_sweep(history_df)
+                    if _mw is not None and not _mw.empty:
+                        st.markdown("---")
+                        st.markdown("**🍃 Lo que de verdad come el modelo: horas de hoja mojada**")
+                        st.caption(
+                            "Las tablas de arriba miden temperatura, humedad y lluvia por "
+                            "separado. Pero el modelo de moteado y monilia no ve nada de eso: "
+                            "ve **horas de hoja mojada**, y el índice crece con lo que dura el "
+                            "periodo mojado. Aquí se pasa el **mismo estimador** dos veces —una "
+                            "con lo que midió el sensor y otra con lo que preveía MeteoGalicia— "
+                            "y se cuentan las horas que salen de cada uno. Como el estimador es "
+                            "el mismo, lo que se mide es el error de la **previsión**.\n\n"
+                            f"El sensor da **{_mwm.get('reales', 0)}** horas mojadas en el "
+                            "periodo. La columna **Lluvia ≥** es el listón de milímetros a "
+                            "partir del cual la lluvia prevista moja la hoja: hoy está en "
+                            "**0,1**, o sea que una previsión de 0,2 mm cuenta como hora mojada "
+                            "entera. Subirlo ataca justo las horas de lluvia que MeteoGalicia "
+                            "se inventa.")
+                        st.dataframe(_mw, use_container_width=True, hide_index=True,
+                                     column_config={
+                                         "Se inventa": st.column_config.NumberColumn(
+                                             "Se inventa",
+                                             help="Horas que el estimador da por mojadas con "
+                                                  "datos de MeteoGalicia y el sensor dice que "
+                                                  "no. Son las que inflan el índice en días "
+                                                  "secos."),
+                                         "Se le escapan": st.column_config.NumberColumn(
+                                             "Se le escapan",
+                                             help="Horas mojadas reales que no vería. Son las "
+                                                  "que harían perder una infección.")})
+                        st.caption(
+                            "**Balance** = inventadas − escapadas. Positivo grande significa que "
+                            "el modelo va a inflar el riesgo; negativo, que se va a quedar corto. "
+                            "El listón bueno es donde el balance se acerca a cero **sin** que los "
+                            "escapes se disparen. Esto es más directo que dividir el índice final "
+                            "por un factor: corrige la entrada en vez de maquillar la salida.")
+
                     # ¿Y si le bajamos el listón SOLO a MeteoGalicia? Se mide, no se
                     # elige a ojo: cada punto recupera escapes y añade falsas.
                     _sw = mg_umbral_sweep(history_df, rh_thr=_thr)
