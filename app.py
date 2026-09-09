@@ -25299,7 +25299,7 @@ def mg_umbral_sweep(history_df, archive_df=None, max_h=84, rh_thr=92.0):
     return pd.DataFrame(filas)
 
 
-def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84):
+def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84, solo_comunes=False):
     """Compara la previsión HORARIA de MeteoGalicia con lo que midió el sensor.
 
     Esta comparación es distinta de la del panel de fiabilidad, y a propósito: allí se
@@ -25340,6 +25340,18 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84):
         # Tramos de antelación: importa más acertar a 1 día que a 3.
         m["tramo"] = pd.cut(m["horizon_h"], [0, 24, 48, 84],
                             labels=["≤1 día", "1-2 días", "2-3,5 días"])
+        # COMPARACIÓN JUSTA ENTRE ANTELACIONES. Cada tramo cubre un conjunto de horas
+        # distinto (el archivo no empieza a la vez para todos los horizontes), así que
+        # comparar sus errores es comparar además dos meteorologías: si al tramo de 3
+        # días le tocan más horas tranquilas, sale mejor sin serlo. Con `solo_comunes`
+        # se restringe a las horas que están en LOS TRES tramos — menos datos, pero la
+        # única comparación que dice algo sobre la antelación.
+        if solo_comunes:
+            _sets = [set(g["target_dt"]) for _, g in m.groupby("tramo", observed=True)]
+            if len(_sets) > 1:
+                _com = set.intersection(*_sets)
+                if len(_com) >= 24:
+                    m = m[m["target_dt"].isin(_com)]
         filas = []
         for _t, g in m.groupby("tramo", observed=True):
             _f = {"Antelación": str(_t), "Horas": len(g)}
@@ -25364,7 +25376,8 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84):
             filas.append(_f)
         return pd.DataFrame(filas), {"n": len(m), "desde": m["target_dt"].min(),
                                      "hasta": m["target_dt"].max(),
-                                     "horas_unicas": int(m["target_dt"].nunique())}
+                                     "horas_unicas": int(m["target_dt"].nunique()),
+                                     "comunes": bool(solo_comunes)}
     except Exception:
         return None, {"n": 0}
 
@@ -27758,6 +27771,25 @@ def render_decisiones_panel():
                     "media. · **Error** = cuánto se equivoca de media sin mirar el signo. "
                     "Hacen falta los dos: un sesgo de 0 puede esconder errores grandes que "
                     "se compensan. · Temperatura en °C, humedad en puntos de %.")
+
+                # Las tres filas de arriba NO cubren las mismas horas (el archivo no
+                # arranca a la vez para todos los horizontes). Restringido a las horas
+                # que están en los tres tramos, la comparación por antelación ya es
+                # limpia: si aquí tampoco empeora, es que de verdad no empeora.
+                _mgc, _meta_c = mg_hourly_vs_sensor(history_df, solo_comunes=True)
+                if (_mgc is not None and not _mgc.empty and len(_mgc) > 1
+                        and _meta_c.get("horas_unicas", 0) >= 24):
+                    with st.expander(
+                            f"⚖️ La misma comparación sobre las MISMAS horas "
+                            f"({_meta_c['horas_unicas']} horas en los tres tramos)",
+                            expanded=False):
+                        st.caption(
+                            "Arriba cada tramo cubre horas distintas, así que parte de la "
+                            "diferencia puede ser que a uno le tocara mejor tiempo, no mejor "
+                            "previsión. Aquí solo entran las horas que están en **los tres** "
+                            "tramos: menos datos, pero es la única comparación que habla de "
+                            "la antelación y no del tiempo que hizo.")
+                        st.dataframe(_mgc, use_container_width=True, hide_index=True)
 
                 # ── LLUVIA APARTE ────────────────────────────────────────────
                 _mgl, _meta_l = mg_lluvia_vs_sensor(history_df)
