@@ -24216,7 +24216,70 @@ def estimate_leaf_wetness_minutes(df, params=None):
             break
         wet |= cand
         active = cand                   # la frontera sigue extendiéndose un paso más
-    return pd.Series(np.where(wet, 60.0, 0.0), index=df.index)
+    # MINUTOS POR HORA MOJADA. Estaba clavado en 60 —todo o nada— y ahí estaba el fallo
+    # gordo: el SENSOR de la finca da 17 minutos de media en las horas que marca mojadas
+    # (522 de sus 623 son parciales), así que el estimador entregaba ×2,14 los minutos
+    # del sensor sobre las MISMAS horas reales. Como los días pasados se calculan con el
+    # sensor y los futuros con el estimador, eso inflaba TODOS los días previstos sin que
+    # la previsión meteorológica tuviera nada que ver — y explica por qué el 1,65 de
+    # Sencrop parecía funcionar: no corregía a Sencrop, tapaba esto.
+    #
+    # NO sirve escalar plano (dar a todas las horas los mismos minutos): el detector de
+    # eventos solo cuenta una hora si llega a `min_minutes_to_start_event` (20), así que
+    # un valor plano por debajo de 20 anula TODO y uno por encima no cambia nada. Hay que
+    # GRADUAR: mucha humedad → hora entera, humedad al filo → unos minutos, que es lo que
+    # hace el sensor. `curva` es {umbral_HR: minutos} calibrado con
+    # `mojadura_curva_sensor()`; sin curva se mantiene el comportamiento de siempre.
+    _curva = p.get("curva")
+    if not _curva:
+        return pd.Series(np.where(wet, 60.0, 0.0), index=df.index)
+    _mins = np.zeros(len(df), dtype=float)
+    for _u, _m in sorted(((float(k), float(v)) for k, v in _curva.items())):
+        _mins = np.where(rh.fillna(0).to_numpy() >= _u, _m, _mins)
+    # La lluvia moja del todo: no se gradúa.
+    _mins = np.where((ll > float(p.get("rain_thr", 0.1))).to_numpy(), 60.0, _mins)
+    return pd.Series(np.where(wet, np.clip(_mins, 0.0, 60.0), 0.0), index=df.index)
+
+
+def mojadura_curva_sensor(history_df, dias=45):
+    """Cuántos minutos moja el sensor en cada franja de humedad — calibración real.
+
+    El estimador solo sabe decir mojada/seca. El sensor mide minutos, y no todas las
+    horas mojadas valen lo mismo: al 93 % de HR marca unos minutos y al 99 % marca la
+    hora entera. Sin esta curva el estimador pone 60 en todas y la previsión sale con
+    el doble de mojadura que un día real igual.
+
+    Se mide sobre el propio sensor de la finca, por franjas de HR. Devuelve
+    (curva {umbral: minutos}, tabla para enseñar, meta)."""
+    _vacio = ({}, pd.DataFrame(), {"ok": False})
+    if history_df is None or history_df.empty or "humectacion_hoja" not in history_df.columns:
+        return _vacio
+    h = history_df.copy()
+    h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+    h = h.dropna(subset=["fecha_hora"])
+    h = h[h["fecha_hora"] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=int(dias))]
+    h["_s"] = pd.to_numeric(h["humectacion_hoja"], errors="coerce")
+    h["_hr"] = pd.to_numeric(h.get("hr_media"), errors="coerce")
+    h = h.dropna(subset=["_s", "_hr"])
+    if len(h) < 200:
+        return _vacio
+    _bordes = [0, 85, 88, 90, 92, 94, 96, 98, 101]
+    curva, filas = {}, []
+    for _lo, _hi in zip(_bordes[:-1], _bordes[1:]):
+        g = h[(h["_hr"] >= _lo) & (h["_hr"] < _hi)]
+        if len(g) < 10:
+            continue
+        _m = float(g["_s"].mean())
+        curva[float(_lo)] = round(_m, 1)
+        filas.append({"HR real": f"{_lo}–{_hi - 1} %", "Horas": len(g),
+                      "Minutos que moja el sensor": round(_m, 1),
+                      "¿Cuenta como hora mojada? (≥20 min)": "sí" if _m >= 20 else "no"})
+    if not curva:
+        return _vacio
+    return curva, pd.DataFrame(filas), {"ok": True, "n": len(h)}
+
+
+
 
 
 def _lw_model_params():
@@ -24434,7 +24497,12 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
                 _wet_min = np.where(((_hr >= 92) | (_ll > 0.1)), 60.0, 0.0)
             else:
                 # RIMpro: lluvia / HR / rocío + retardo de secado (calibrable).
-                _wet_min = estimate_leaf_wetness_minutes(f, _params).to_numpy()
+                # Los minutos por hora mojada se GRADÚAN con la curva del propio sensor:
+                # sin esto el estimador pone 60 donde el sensor mide 17 de media, y cada
+                # día previsto sale con el doble de mojadura que el mismo día ya pasado.
+                _curva, _, _cm = mojadura_curva_sensor(history_df)
+                _wet_min = estimate_leaf_wetness_minutes(
+                    f, {**_params, **({"curva": _curva} if _curva else {})}).to_numpy()
             f.loc[_sin_sensor, "humectacion_hoja"] = np.asarray(_wet_min)[_sin_sensor.to_numpy()]
             f["_es_pred"] = True
             frames.append(f)
@@ -25348,7 +25416,12 @@ def estimador_vs_sensor_mojadura(history_df, dias=45):
     if h.empty:
         return pd.DataFrame(), {"n": 0, "sin_sensor": True}
     _, _p = _lw_model_params()
-    h["_est"] = estimate_leaf_wetness_minutes(h, _p).to_numpy()
+    # Sin curva (como estaba) y con la curva calibrada del propio sensor: así se ve si
+    # la calibración arregla la asimetría o no, en vez de tener que fiarse.
+    _curva, _, _ = mojadura_curva_sensor(history_df, dias=dias)
+    h["_est"] = estimate_leaf_wetness_minutes(h, {**_p, "curva": None}).to_numpy()
+    h["_est_c"] = (estimate_leaf_wetness_minutes(h, {**_p, "curva": _curva}).to_numpy()
+                   if _curva else h["_est"].to_numpy())
 
     _sw = h["_sens"] > 0
     _ew = h["_est"] > 0
@@ -25360,12 +25433,16 @@ def estimador_vs_sensor_mojadura(history_df, dias=45):
         {"Qué": "· mojadas reales que no ve", "Valor": int((~_ew & _sw).sum())},
         {"Qué": "Minutos totales del SENSOR", "Valor": int(h["_sens"].sum())},
         {"Qué": "Minutos totales del ESTIMADOR", "Valor": int(h["_est"].sum())},
+        {"Qué": "Minutos del ESTIMADOR ya calibrado", "Valor": int(h["_est_c"].sum())},
         {"Qué": "Horas a medio mojar en el sensor (<60 min)", "Valor": int(len(_parcial))},
         {"Qué": "· minutos medios de esas horas", "Valor": round(float(_parcial.mean()), 0)
          if len(_parcial) else 0},
     ]
-    _ratio = (float(h["_est"].sum()) / float(h["_sens"].sum())) if h["_sens"].sum() else np.nan
+    _den = float(h["_sens"].sum())
+    _ratio = (float(h["_est"].sum()) / _den) if _den else np.nan
+    _ratio_c = (float(h["_est_c"].sum()) / _den) if _den else np.nan
     return pd.DataFrame(filas), {"n": len(h), "ratio_minutos": _ratio,
+                                 "ratio_calibrado": _ratio_c, "curva": bool(_curva),
                                  "desde": h["fecha_hora"].min(), "hasta": h["fecha_hora"].max()}
 
 
@@ -28229,8 +28306,32 @@ def render_decisiones_panel():
                                     f"No es aquí donde se infla la previsión.")
                         st.caption(
                             "Ojo a las **horas a medio mojar**: el sensor puede decir 25 minutos, "
-                            "el estimador solo sabe decir 0 o 60. Cada hora marginal cuenta "
-                            "**doble o más**, y son justo las de principio y final de mojadura.")
+                            "y el estimador sin calibrar solo sabía decir 0 o 60. Cada hora "
+                            "marginal contaba **doble o más**, y son justo las de principio y "
+                            "final de mojadura.")
+                        _rc = _esm.get("ratio_calibrado")
+                        if _esm.get("curva") and _rc is not None and pd.notna(_rc):
+                            st.success(
+                                f"✅ **Ya corregido.** Con la curva calibrada de tu sensor el "
+                                f"estimador va por **×{_rc:.2f}** los minutos del sensor, en vez "
+                                f"de ×{_rt:.2f}. La previsión de enfermedad ya se calcula así.")
+                        _cv, _cvt, _cvm = mojadura_curva_sensor(history_df)
+                        if _cvt is not None and not _cvt.empty:
+                            with st.expander("📐 La curva con la que se calibra (tu propio sensor)",
+                                             expanded=False):
+                                st.caption(
+                                    "Cuántos minutos moja de verdad tu sensor en cada franja de "
+                                    "humedad. El estimador ya no pone 60 en todas las horas "
+                                    "mojadas: pone **lo que marca esta curva**. Por eso una noche "
+                                    "al 90 % ya no cuenta como una noche al 98 %.\n\n"
+                                    "La última columna es la que decide: el detector de eventos "
+                                    "solo cuenta una hora si llega a **20 minutos**. Ahí está el "
+                                    "corte real entre «húmedo» y «mojado».")
+                                st.dataframe(_cvt, use_container_width=True, hide_index=True)
+                                st.caption(
+                                    f"Medida sobre {_cvm.get('n', 0)} horas de los últimos 45 "
+                                    "días. Se recalcula sola: si cambias de sensor o de sitio, "
+                                    "la curva se ajusta sin tocar nada.")
 
                     # ── EN CUÁNTOS TROZOS, no cuántas horas ──────────────────────
                     _mev, _mevm = mg_eventos_vs_sensor(history_df)
@@ -28266,12 +28367,13 @@ def render_decisiones_panel():
                                     f"MeteoGalicia sus **{int(_g['Horas mojadas'])} h** en "
                                     f"**{int(_g['Nº de periodos'])}** "
                                     f"(el mayor de {int(_g['El más largo (h)'])} h). "
-                                    f"**Menos periodos y más largos con las mismas horas "
-                                    f"significa que la previsión está pegando mojaduras que en "
-                                    f"realidad estuvieron separadas** — y ahí es donde el índice "
-                                    f"se dispara. Si es así, la palanca no es la lluvia: es el "
-                                    f"**secado** (`rh_dry`, hoy 80 %), que decide cuándo se "
-                                    f"corta un periodo.")
+                                    + ("**Más periodos y más cortos**: la previsión NO está "
+                                       "pegando mojaduras, las está troceando. El índice no se "
+                                       "dispara por aquí."
+                                       if int(_g["Nº de periodos"]) > int(_s["Nº de periodos"])
+                                       else "**Menos periodos y más largos con las mismas horas**: "
+                                            "la previsión está pegando mojaduras que estuvieron "
+                                            "separadas, y ahí sí se dispara el índice."))
                         except Exception:
                             pass
 
