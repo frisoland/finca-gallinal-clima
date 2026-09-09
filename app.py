@@ -25766,8 +25766,17 @@ def forecast_bias_correction(history_df, archive_df=None, min_real=20.0):
             q1, q3 = float(np.percentile(_rat, 25)), float(np.percentile(_rat, 75))
             _d_ini = min(g.index) if len(g.index) else None
             _d_fin = max(g.index) if len(g.index) else None
+            # Qué factor se está aplicando AHORA a esa fuente y enfermedad. Sin esto la
+            # tabla dice cuánto infla la previsión pero no si ya se está corrigiendo, y
+            # el repaso semanal obliga a ir a mirar la constante en el código.
+            _campo_b = "mills" if "Moteado" in etiqueta else "monilia"
+            _apl = float(FORECAST_BIAS_BY_SRC.get(_sf or "sencrop",
+                                                  FORECAST_BIAS_DEFAULTS).get(_campo_b, 1.0))
             fac_rows.append({
-                "Qué": etiqueta, "Factor (mediana)": round(factor, 2),
+                "Qué": etiqueta,
+                "Aplicado ahora": round(_apl, 2),
+                "Factor (mediana)": round(factor, 2),
+                "Diferencia": round(factor - _apl, 2),
                 "Rango 50 % central": f"{q1:.2f} – {q3:.2f}",
                 "Mín – Máx": f"{_rat.min():.2f} – {_rat.max():.2f}",
                 # Se separan los dos números porque "Días usados" solo se prestaba a
@@ -27771,7 +27780,12 @@ def render_decisiones_panel():
                     "Hay **una fila por enfermedad y por fuente**: Sencrop y MeteoGalicia son "
                     "modelos distintos con sesgos distintos, y un factor calculado sobre la "
                     "mezcla no vale para ninguno de los dos. La fila que decide hoy es la de "
-                    "**MeteoGalicia**; la de Sencrop es histórica.")
+                    "**MeteoGalicia**; la de Sencrop es histórica.\n\n"
+                    "**Aplicado ahora** = por lo que se está dividiendo la previsión en este "
+                    "momento. **Factor (mediana)** = por lo que *habría* que dividirla según el "
+                    "archivo de hoy. Cuando la **diferencia** sea grande y el rango central "
+                    "estrecho, toca actualizar la constante. Este es el número que hay que "
+                    "mirar en el repaso semanal.")
                 st.caption(
                     "**Factor** = mediana de previsto ÷ real (mediana y no media: un solo día "
                     "de ×3,5 arrastraría la media). **Rango 50 % central** es lo que decide si "
