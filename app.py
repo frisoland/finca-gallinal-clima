@@ -25382,6 +25382,18 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84, solo_comunes=Fals
         return None, {"n": 0}
 
 
+def forecast_bias_pendiente_de_aplicar():
+    """¿Hay alguna fuente activa a la que NO se le esté aplicando corrección?
+
+    `FORECAST_BIAS_BY_SRC` guarda el factor por fuente. MeteoGalicia entró con 1,0
+    provisional —sin corregir— porque cuando se montó no había archivo suyo con el
+    que medirlo. Ya lo hay, así que la app debe avisar de que ese 1,0 sigue puesto
+    en vez de dejarlo pasar en silencio."""
+    _sin = [s for s, f in FORECAST_BIAS_BY_SRC.items()
+            if all(abs(float(v) - 1.0) < 1e-9 for v in f.values())]
+    return _sin
+
+
 def mg_lluvia_vs_sensor(history_df, archive_df=None, max_h=84, umbral=0.1):
     """¿Acierta MeteoGalicia CUÁNDO llueve? (que es lo que se le pide, no los mm)
 
@@ -25705,11 +25717,35 @@ def forecast_bias_correction(history_df, archive_df=None, min_real=20.0):
         ad = ad[ad["_h"] >= 1]
 
         fac_rows, cmp_rows = [], []
-        for etiqueta, pcol, rcol in [("🍄 Moteado", "pred_mills", "Mills_valor"),
-                                     ("🟤 Monilia", "pred_monilia", "Monilia_valor")]:
+        # UN FACTOR POR FUENTE. Antes se calculaba uno solo sobre todo el archivo,
+        # mezclando Sencrop (hasta el 19/08/2026) con MeteoGalicia (desde el 25/08).
+        # Son modelos distintos con sesgos distintos: el factor mezclado no sirve para
+        # ninguno de los dos. Y hacía falta justo ahora, porque
+        # FORECAST_BIAS_BY_SRC["meteogalicia"] está puesto a 1,0 —o sea, SIN corregir—
+        # mientras Sencrop se dividía por 1,65. Esa es la razón de que la previsión de
+        # enfermedades pasara a salir clavada en el tope al cambiar de fuente: el mismo
+        # 150 crudo con Sencrop se enseñaba como 91 y con MeteoGalicia se enseña como 150.
+        _SRC_LBL = {"meteogalicia": "MeteoGalicia", "sencrop": "Sencrop (ya no activa)"}
+        _srcs = []
+        if "pred_src" in ad.columns:
+            _srcs = [s for s in ["meteogalicia", "sencrop"]
+                     if s in set(ad["pred_src"].astype(str))]
+            _srcs += sorted(set(ad["pred_src"].astype(str)) - {"meteogalicia", "sencrop"})
+        _combos = ([(f"{e} · {_SRC_LBL.get(s, s)}", p, r, s)
+                    for e, p, r in [("🍄 Moteado", "pred_mills", "Mills_valor"),
+                                    ("🟤 Monilia", "pred_monilia", "Monilia_valor")]
+                    for s in _srcs]
+                   if len(_srcs) > 1 else
+                   [("🍄 Moteado", "pred_mills", "Mills_valor", None),
+                    ("🟤 Monilia", "pred_monilia", "Monilia_valor", None)])
+
+        for etiqueta, pcol, rcol, _sf in _combos:
             if pcol not in ad.columns or rcol not in a.columns:
                 continue
-            g = ad[["_d", pcol]].copy()
+            _ads = ad if _sf is None else ad[ad["pred_src"].astype(str) == _sf]
+            if _ads.empty:
+                continue
+            g = _ads[["_d", pcol]].copy()
             g[pcol] = pd.to_numeric(g[pcol], errors="coerce")
             g = g.dropna(subset=[pcol]).groupby("_d")[pcol].max()
             pares = []
@@ -27709,8 +27745,33 @@ def render_decisiones_panel():
                         "el sesgo. Se irá llenando con la campaña.")
             else:
                 st.markdown("**Cuánto infla la previsión**")
+                # AVISO GORDO SI HAY UNA FUENTE SIN CORREGIR. MeteoGalicia entró con
+                # factor 1,0 provisional porque no había archivo suyo con el que medirlo.
+                # Mientras siga a 1,0, su número se enseña CRUDO al lado de un real que sí
+                # está corregido y topado — y así es como se llega a "previsión 150, real 0"
+                # todos los días. Con Sencrop no pasaba porque a ella sí se le aplicaba 1,65.
+                _pend = forecast_bias_pendiente_de_aplicar()
+                if "meteogalicia" in _pend:
+                    st.error(
+                        "⚠️ **MeteoGalicia se está mostrando SIN corregir** (factor 1,0), "
+                        "mientras que a Sencrop se le aplicaba **÷1,65** en moteado y "
+                        "**÷1,67** en monilia. Por eso, desde que se cambió de fuente, la "
+                        "previsión de enfermedades sale casi siempre clavada en el tope de "
+                        "150: el mismo valor crudo que antes se enseñaba como 91 ahora se "
+                        "enseña como 150.\n\n"
+                        "**El factor de MeteoGalicia está en la tabla de aquí abajo, medido "
+                        "con su propio archivo.** Cuando tenga suficientes días y el rango "
+                        "central sea estrecho, hay que llevarlo a `FORECAST_BIAS_BY_SRC`. "
+                        "Ojo: corregir la escala **no** arregla los días en que la previsión "
+                        "acierta el número pero no la forma — anunciar mojadura que dura un "
+                        "día más de lo que duró seguirá dando un aviso en un día que fue seco.")
                 st.dataframe(_fac, use_container_width=True, hide_index=True,
                              column_config={"Qué": st.column_config.Column("Qué", pinned=True)})
+                st.caption(
+                    "Hay **una fila por enfermedad y por fuente**: Sencrop y MeteoGalicia son "
+                    "modelos distintos con sesgos distintos, y un factor calculado sobre la "
+                    "mezcla no vale para ninguno de los dos. La fila que decide hoy es la de "
+                    "**MeteoGalicia**; la de Sencrop es histórica.")
                 st.caption(
                     "**Factor** = mediana de previsto ÷ real (mediana y no media: un solo día "
                     "de ×3,5 arrastraría la media). **Rango 50 % central** es lo que decide si "
