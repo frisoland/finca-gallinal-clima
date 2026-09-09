@@ -25790,12 +25790,22 @@ def forecast_bias_correction(history_df, archive_df=None, min_real=20.0):
                 "¿Sirve un factor único?": ("sí, sesgo estable" if (q3 - q1) <= 0.6
                                             else "dudoso, muy disperso"),
             })
-            # Comparar estrategias sobre TODOS los días (no solo los de real alto)
+            # BARRIDO DE FACTORES, no solo la mediana. Con el archivo de MeteoGalicia de
+            # septiembre de 2026 la mediana salió 3,02 y aplicarla dejaba el avisador en
+            # CERO avisos y CUATRO escapes: el sesgo no es constante (ratio ~1,3 los días
+            # de infección real, ~6-7 los días secos) y la mediana cae justo en el peor
+            # sitio — demasiado alta para no perder infecciones, demasiado baja para
+            # limpiar las falsas. El factor útil hay que buscarlo mirando escapes y falsas,
+            # igual que ya se hace con el umbral de humedad, no calculándolo de un ratio.
             _thr_actual = forecast_warn_threshold("mills" if "Moteado" in etiqueta else "monilia")
-            for nombre, corr, thr in [
-                    ("Sin corregir · umbral 100", 1.0, 100.0),
-                    (f"Sin corregir · umbral {int(_thr_actual)} (actual)", 1.0, _thr_actual),
-                    ("Corregido · umbral 100", factor, 100.0)]:
+            _estrategias = [
+                ("Sin corregir · umbral 100", 1.0, 100.0),
+                (f"Sin corregir · umbral {int(_thr_actual)} (actual)", 1.0, _thr_actual),
+            ]
+            _estrategias += [(f"÷{f:.2f}".rstrip("0").rstrip(".") + " · umbral 100", f, 100.0)
+                             for f in (1.25, 1.5, 1.75, 2.0, 2.5, 3.0)]
+            _estrategias.append((f"÷{factor:.2f} (mediana) · umbral 100", factor, 100.0))
+            for nombre, corr, thr in _estrategias:
                 esc = fal = ok = 0
                 for p, r in pares:
                     aviso, evento = (p / corr) >= thr, r >= 100.0
@@ -25806,6 +25816,7 @@ def forecast_bias_correction(history_df, archive_df=None, min_real=20.0):
                     elif aviso:
                         fal += 1
                 cmp_rows.append({
+                    "_factor": round(float(corr), 2),
                     "Qué": etiqueta, "Estrategia": nombre,
                     "Infecciones avisadas": ok, "🔴 Escapes": esc,
                     "Falsas alarmas": fal,
@@ -27798,11 +27809,27 @@ def render_decisiones_panel():
                     "×5 y no significa nada. La **comparativa de estrategias** de abajo sí usa "
                     "todos los días comparables, sin ese filtro.")
                 if _cmp is not None and not _cmp.empty:
-                    st.markdown("**Las tres estrategias, con tus datos**")
+                    st.markdown("**Barrido de factores, con tus datos**")
                     for _q in _cmp["Qué"].unique():
+                        _sub = _cmp[_cmp["Qué"] == _q].copy()
+                        # El mejor factor: el que NO empeora los escapes de la referencia
+                        # sin corregir y, entre esos, recorta más falsas alarmas. Si
+                        # ninguno mejora, no se recomienda ninguno — que es un resultado
+                        # legítimo y hay que decirlo, no forzar una elección.
+                        _ref = _sub[_sub["Estrategia"].str.startswith("Sin corregir · umbral 100")]
+                        _esc_ref = int(_ref["🔴 Escapes"].iloc[0]) if not _ref.empty else 0
+                        _fal_ref = int(_ref["Falsas alarmas"].iloc[0]) if not _ref.empty else 0
+                        _cand = _sub[(_sub["_factor"] > 1.0)
+                                     & (_sub["🔴 Escapes"] <= _esc_ref)
+                                     & (_sub["Falsas alarmas"] < _fal_ref)]
+                        _mejor = (_cand.sort_values(["Falsas alarmas", "_factor"]).iloc[0]
+                                  if not _cand.empty else None)
+                        _sub["👍"] = np.where(
+                            (_mejor is not None) & (_sub["Estrategia"] == (
+                                _mejor["Estrategia"] if _mejor is not None else "")), "◀ mejor", "")
                         st.markdown(f"*{_q}*")
                         st.dataframe(
-                            _cmp[_cmp["Qué"] == _q].drop(columns=["Qué"]),
+                            _sub.drop(columns=["Qué", "_factor"]),
                             use_container_width=True, hide_index=True,
                             column_config={
                                 "Estrategia": st.column_config.Column("Estrategia", pinned=True),
@@ -27810,12 +27837,24 @@ def render_decisiones_panel():
                                     "🔴 Escapes",
                                     help="Infecciones reales no avisadas. Es lo que no se "
                                          "puede permitir subir.")})
+                        if _mejor is not None:
+                            st.success(
+                                f"**Mejor factor con los datos de hoy: ÷{_mejor['_factor']:.2f}** — "
+                                f"mantiene los escapes en {int(_mejor['🔴 Escapes'])} (igual que sin "
+                                f"corregir) y baja las falsas alarmas de {_fal_ref} a "
+                                f"{int(_mejor['Falsas alarmas'])}.")
+                        else:
+                            st.warning(
+                                f"**Ningún factor mejora nada todavía.** Sin corregir hay "
+                                f"{_esc_ref} escape(s) y {_fal_ref} falsas; cualquier división "
+                                f"que recorte falsas empieza a perder infecciones. Con estos "
+                                f"días, lo correcto es **dejarlo sin corregir** y esperar.")
                     st.caption(
                         "Compara mirando **primero los escapes** y solo después las falsas "
-                        "alarmas. La estrategia buena es la que mantiene los escapes igual (o "
-                        "menos) y recorta avisos. Si la corregida empata en escapes y baja "
-                        "falsas alarmas, es mejor que subir el umbral — y además deja los "
-                        "números de la gráfica en su sitio.")
+                        "alarmas: un escape es una infección sin avisar, una falsa es un "
+                        "tratamiento de más. Por eso no vale la mediana del ratio — con un sesgo "
+                        "disperso cae en medio y pierde infecciones sin llegar a limpiar las "
+                        "falsas. **El factor se elige de esta tabla, no de la mediana.**")
                 st.caption(
                     "⚠️ Nada de esto está aplicado: es solo el análisis. Cambiar a corrección "
                     "de sesgo implicaría tocar el valor que se muestra en toda la app, así que "
