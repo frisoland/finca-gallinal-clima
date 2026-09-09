@@ -24182,6 +24182,15 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
 LEAF_WETNESS_DEFAULTS = {"rh_thr": 92.0, "dew_depr": 1.5, "dry_lag": 1, "rh_dry": 80.0,
                          "rain_thr": 0.1}
 
+# Versión del estimador de hoja mojada, para sellar lo que se archiva.
+#   binario  — hasta el 09/09/2026: 60 minutos a toda hora mojada. Daba ×2,14 los
+#              minutos del sensor y por eso la previsión de enfermedad salía al doble.
+#   curva-v1 — desde el 09/09/2026: minutos graduados con la curva medida en el propio
+#              sensor de la finca (mojadura_curva_sensor).
+# Lo archivado con una versión NO es comparable con lo archivado con la otra.
+LW_VERSION = "curva-v1"
+LW_VERSION_CAMBIO = pd.Timestamp("2026-09-09")
+
 
 def _dew_point_c(temp_c, rh_pct):
     """Punto de rocío (°C) — fórmula de Magnus-Tetens."""
@@ -25173,8 +25182,18 @@ def archive_today_forecast(history_df, forecast_df):
                     # como si fueran una y el resultado no significaría nada.
                     try:
                         _e["pred_src"] = str(st.session_state.get("_forecast_src", "sencrop"))
+                        # VERSIÓN DEL ESTIMADOR DE MOJADURA. Igual que hizo falta separar
+                        # por fuente de previsión, hace falta separar por versión de
+                        # NUESTRO modelo: hasta el 09/09/2026 el estimador daba 60 minutos
+                        # a toda hora mojada y entregaba ×2,14 los minutos del sensor, así
+                        # que sus valores archivados no son comparables con los de después.
+                        # Sin este sello, las tablas de sesgo y fiabilidad mezclarían dos
+                        # modelos propios durante semanas y volveríamos a sacar conclusiones
+                        # de una media entre dos cosas distintas.
+                        _e["pred_lw"] = LW_VERSION
                     except Exception:
                         _e["pred_src"] = "sencrop"
+                        _e["pred_lw"] = LW_VERSION
         # --- Lluvia WRF9 (Windguru): independiente de forecast_df ---
         try:
             for d, mm in (windguru_wrf9_daily_rain() or {}).items():
@@ -25635,6 +25654,30 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84, solo_comunes=Fals
                                      "comunes": bool(solo_comunes)}
     except Exception:
         return None, {"n": 0}
+
+
+def archivo_mezcla_estimadores(archive_df=None):
+    """¿El archivo mezcla previsiones hechas con el estimador viejo y con el nuevo?
+
+    El 09/09/2026 el estimador de mojadura pasó de dar 60 minutos a toda hora mojada a
+    graduarlos con la curva del sensor. Lo archivado antes vale ×2,14 lo de después, así
+    que cualquier tabla que promedie los dos periodos —sesgo, fiabilidad— está mezclando
+    dos modelos NUESTROS, no solo dos fuentes de previsión. Devuelve (mezcla, n_viejo,
+    n_nuevo)."""
+    try:
+        if archive_df is None:
+            archive_df = load_forecast_archive()
+        if archive_df is None or archive_df.empty:
+            return False, 0, 0
+        _d = pd.to_datetime(archive_df.get("target_date"), errors="coerce")
+        if "pred_lw" in archive_df.columns:
+            _nuevo = int((archive_df["pred_lw"].astype(str) == LW_VERSION).sum())
+            _viejo = int(len(archive_df) - _nuevo)
+        else:                      # archivo anterior al sello: todo es viejo
+            _viejo, _nuevo = int((_d < LW_VERSION_CAMBIO).sum()), int((_d >= LW_VERSION_CAMBIO).sum())
+        return (_viejo > 0 and _nuevo > 0), _viejo, _nuevo
+    except Exception:
+        return False, 0, 0
 
 
 def forecast_bias_pendiente_de_aplicar():
@@ -28025,6 +28068,17 @@ def render_decisiones_panel():
                 # Mientras siga a 1,0, su número se enseña CRUDO al lado de un real que sí
                 # está corregido y topado — y así es como se llega a "previsión 150, real 0"
                 # todos los días. Con Sencrop no pasaba porque a ella sí se le aplicaba 1,65.
+                _mez, _nv, _nn = archivo_mezcla_estimadores()
+                if _mez:
+                    st.warning(
+                        f"⚠️ **Este archivo mezcla dos versiones de nuestro propio modelo.** "
+                        f"Hasta el **{LW_VERSION_CAMBIO:%d/%m/%Y}** el estimador de hoja mojada "
+                        f"daba 60 minutos a toda hora mojada y entregaba **×2,14** los minutos "
+                        f"del sensor; desde entonces se gradúan con la curva del sensor. "
+                        f"Hay **{_nv} filas del modelo viejo y {_nn} del nuevo**, y no son "
+                        f"comparables: el factor de sesgo que salga de aquí estará contaminado "
+                        f"hasta que el archivo viejo quede fuera de la ventana. "
+                        f"**No cambies el factor con esta mezcla delante.**")
                 _pend = forecast_bias_pendiente_de_aplicar()
                 if "meteogalicia" in _pend:
                     st.error(
