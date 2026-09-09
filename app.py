@@ -25656,6 +25656,112 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84, solo_comunes=Fals
         return None, {"n": 0}
 
 
+def reproceso_prevision_mg(history_df, archive_mg=None, dias=14):
+    """Rehace las previsiones de los días PASADOS con el modelo de HOY.
+
+    Los valores archivados son fotos: se guardaron con el modelo que había ese día y no
+    cambian aunque el modelo mejore. Así que al arreglar el estimador la tabla día a día
+    sigue enseñando los números viejos en el pasado y solo cambia hacia adelante — y
+    para saber si el arreglo sirve habría que esperar semanas.
+
+    No hace falta. El archivo horario de MeteoGalicia guarda lo que se preveía para cada
+    hora y cuándo se emitió, así que se puede rehacer el cálculo: para cada día se cogen
+    las horas previstas ANTES de ese día, se pasan por el estimador actual y por el mismo
+    detector de eventos, y sale lo que la app habría dicho hoy. Comparado con el real de
+    ese día, se ve el arreglo de inmediato y sobre datos de verdad.
+
+    Devuelve (DataFrame, meta)."""
+    try:
+        if archive_mg is None:
+            archive_mg = load_mg_hourly_archive()
+        if archive_mg is None or archive_mg.empty or history_df is None or history_df.empty:
+            return pd.DataFrame(), {"n": 0}
+        a = archive_mg.copy()
+        a["target_dt"] = pd.to_datetime(a.get("target_dt"), errors="coerce")
+        a["horizon_h"] = pd.to_numeric(a.get("horizon_h"), errors="coerce")
+        a = a.dropna(subset=["target_dt", "horizon_h"])
+        a = a[a["horizon_h"] >= 1]
+        if a.empty:
+            return pd.DataFrame(), {"n": 0}
+        a["issue"] = a["target_dt"] - pd.to_timedelta(a["horizon_h"], unit="h")
+
+        h = history_df.copy()
+        h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+        h = h.dropna(subset=["fecha_hora"]).sort_values("fecha_hora")
+
+        _, _p = _lw_model_params()
+        _curva, _, _ = mojadura_curva_sensor(history_df)
+        _pf = {**_p, **({"curva": _curva} if _curva else {})}
+
+        hoy = pd.Timestamp.now().normalize()
+        real = build_risk_timeline(history_df, pd.DataFrame(), days_back=int(dias) + 5)
+        if real is None or real.empty:
+            return pd.DataFrame(), {"n": 0}
+        real = real.copy()
+        real["_d"] = pd.to_datetime(real["Fecha"]).dt.normalize()
+        real = real.drop_duplicates("_d").set_index("_d")
+
+        filas = []
+        for _k in range(int(dias), 0, -1):
+            D = hoy - pd.Timedelta(days=_k)
+            # Lo que se preveía para ese día SIN saber nada de ese día: emisión anterior.
+            _sub = a[(a["target_dt"] >= D) & (a["target_dt"] < D + pd.Timedelta(days=3))
+                     & (a["issue"] < D)]
+            if _sub.empty:
+                continue
+            _sub = _sub.sort_values("issue").drop_duplicates("target_dt", keep="last")
+            fc = pd.DataFrame({
+                "fecha_hora": _sub["target_dt"].values,
+                "temp_media": pd.to_numeric(_sub["mg_temp"], errors="coerce").values,
+                "hr_media":   pd.to_numeric(_sub["mg_hr"], errors="coerce").values,
+                "lluvia_mm":  pd.to_numeric(_sub["mg_rain"], errors="coerce").values,
+            }).dropna(subset=["fecha_hora"]).sort_values("fecha_hora")
+            if fc.empty:
+                continue
+            fc["humectacion_hoja"] = estimate_leaf_wetness_minutes(fc, _pf).to_numpy()
+            # Contexto real anterior: un evento puede venir de la noche de antes.
+            ctx = h[(h["fecha_hora"] >= D - pd.Timedelta(days=6)) & (h["fecha_hora"] < D)]
+            allh = pd.concat([ctx, fc], ignore_index=True).sort_values("fecha_hora")
+            try:
+                ev = detect_leaf_wetness_events(allh)
+            except Exception:
+                ev = pd.DataFrame()
+            _mv = _ov = 0.0
+            if ev is not None and not ev.empty:
+                for _, e in ev.iterrows():
+                    _i = pd.to_datetime(e.get("Inicio"), errors="coerce")
+                    _f = pd.to_datetime(e.get("Fin"), errors="coerce")
+                    if pd.isna(_f):
+                        continue
+                    _dd = (pd.date_range(_i.normalize(), _f.normalize(), freq="D")
+                           if pd.notna(_i) else [_f.normalize()])
+                    if D not in set(_dd):
+                        continue
+                    _rm = pd.to_numeric(e.get("Ratio moteado"), errors="coerce")
+                    _ro = pd.to_numeric(e.get("Ratio monilia"), errors="coerce")
+                    if pd.notna(_rm):
+                        _mv = max(_mv, float(_rm) * 100.0)
+                    if pd.notna(_ro):
+                        _ov = max(_ov, float(_ro) * 100.0)
+            _rm_real = float(real.loc[D, "Mills_valor"]) if D in real.index else np.nan
+            _ro_real = float(real.loc[D, "Monilia_valor"]) if D in real.index else np.nan
+            filas.append({
+                "Fecha": D.strftime("%d/%m"),
+                "Moteado · rehecho": round(min(_mv, 150.0), 0),
+                "Moteado · real": round(_rm_real, 0) if pd.notna(_rm_real) else np.nan,
+                "Monilia · rehecho": round(min(_ov, 150.0), 0),
+                "Monilia · real": round(_ro_real, 0) if pd.notna(_ro_real) else np.nan,
+            })
+        if not filas:
+            return pd.DataFrame(), {"n": 0}
+        df = pd.DataFrame(filas)
+        _dm = (df["Moteado · rehecho"] - df["Moteado · real"]).abs().mean()
+        _do = (df["Monilia · rehecho"] - df["Monilia · real"]).abs().mean()
+        return df, {"n": len(df), "err_moteado": _dm, "err_monilia": _do}
+    except Exception:
+        return pd.DataFrame(), {"n": 0}
+
+
 def archivo_mezcla_estimadores(archive_df=None):
     """¿El archivo mezcla previsiones hechas con el estimador viejo y con el nuevo?
 
@@ -28947,6 +29053,37 @@ def render_decisiones_panel():
                              use_container_width=True, hide_index=True)
             except Exception:
                 st.dataframe(_daily, use_container_width=True, hide_index=True)
+
+            # ── LOS DÍAS PASADOS, REHECHOS CON EL MODELO DE HOY ──────────────
+            # Las columnas «prev.» de arriba son fotos: se archivaron con el modelo que
+            # había ese día y no cambian aunque el modelo mejore. Al corregir el
+            # estimador el 09/09/2026, la tabla sigue enseñando los valores viejos en el
+            # pasado y solo cambia hacia adelante — o sea que para saber si el arreglo
+            # sirve habría que esperar semanas. Aquí se rehace el cálculo con el archivo
+            # horario de MeteoGalicia y el modelo actual, y se ve al momento.
+            _rp, _rpm = reproceso_prevision_mg(history_df)
+            if _rp is not None and not _rp.empty:
+                with st.expander(
+                        f"🔁 Los mismos días, rehechos con el modelo de HOY "
+                        f"({_rpm['n']} días) — para no esperar semanas", expanded=True):
+                    st.caption(
+                        "Las columnas «prev.» de la tabla de arriba son **fotos**: se "
+                        "guardaron con el modelo que había ese día y no cambian aunque el "
+                        "modelo mejore. Por eso, tras corregir el estimador de hoja mojada, "
+                        "el pasado sigue enseñando los números viejos.\n\n"
+                        "Aquí se **rehace el cálculo**: para cada día se cogen las horas que "
+                        "MeteoGalicia preveía **antes** de ese día, se pasan por el estimador "
+                        "actual y por el mismo detector de eventos, y sale lo que la app "
+                        "habría dicho hoy. Al lado, lo que pasó de verdad.")
+                    st.dataframe(_rp, use_container_width=True, hide_index=True)
+                    _em, _eo = _rpm.get("err_moteado"), _rpm.get("err_monilia")
+                    if _em is not None and pd.notna(_em):
+                        st.info(
+                            f"**Diferencia media entre previsto y real, con el modelo de hoy:** "
+                            f"moteado **{_em:.0f} puntos**, monilia **{_eo:.0f}**. "
+                            f"Es la cifra que hay que mirar para saber si el arreglo sirve — "
+                            f"no las columnas archivadas de arriba, que son del modelo viejo.")
+
             st.caption(
                 "🔮 = día futuro: solo hay previsión, el real está pendiente. · 🔄 + valor con "
                 "**asterisco (*)** = **infección EN CURSO**: la hoja sigue mojada y el valor es "
