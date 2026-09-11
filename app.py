@@ -3026,9 +3026,10 @@ ZONA_NAVE = "Zona Nave"
 ZONA_RIO = "Zona Río"
 ZONA_RIO_CAMPOS = ("Viaducto", "Campazón",
                    "Los Pinos 1", "Los Pinos 2", "Los Pinos 3", "Los Pinos 4", "Los Pinos 5")
-# El sensor del Río se instaló en junio de 2026, pero sus campos no pasan a calcularse
-# con él hasta el arranque del conteo de frío: la campaña 2026 se queda con la Nave.
-ZONA_RIO_INICIO_DATOS = pd.Timestamp("2026-06-01")
+# El sensor del Río da su primer dato el 10/06/2026. Ese verano se guarda y se puede
+# ver, pero los CÁLCULOS de sus campos no lo usan hasta el arranque del conteo de frío:
+# la campaña 2026 se queda calculada con la Nave.
+ZONA_RIO_INICIO_DATOS = pd.Timestamp("2026-06-10")
 ZONA_RIO_MANDA_DESDE = pd.Timestamp("2026-11-01")
 
 
@@ -3047,6 +3048,85 @@ _ZONA_RIO_CLAVES = {_clave_campo(c) for c in ZONA_RIO_CAMPOS}
 def zona_de_campo(campo):
     """«Zona Río» o «Zona Nave» para un nombre de campo."""
     return ZONA_RIO if _clave_campo(campo) in _ZONA_RIO_CLAVES else ZONA_NAVE
+
+
+# Lo que el sensor del Río sí mide, por grupos. Se sustituye POR GRUPO y por hora: si en
+# una hora el Río tiene temperatura, se toman del Río la media, la mínima y la máxima; si
+# no la tiene (hueco del sensor), se queda el grupo entero de la Nave. Así nunca se mezcla
+# la media de un sensor con la mínima del otro.
+ZONA_RIO_GRUPOS = {
+    "temp_media": ["temp_media", "temp_min", "temp_max"],
+    "hr_media":   ["hr_media", "hr_min", "hr_max"],
+    "lluvia_mm":  ["lluvia_mm"],
+}
+
+
+def historico_zona(zona, nave, rio, rio_desde=None):
+    """Histórico horario que describe el clima de una zona.
+
+    · Zona Nave → el histórico de siempre, el MISMO objeto (ni siquiera una copia): los
+      cálculos de la Nave no pueden cambiar en nada.
+    · Zona Río → el de la Nave, con temperatura, humedad y lluvia del sensor del Río a
+      partir de `rio_desde`. Hoja mojada, viento y radiación siguen siendo de la Nave
+      (el Río no los mide). Las horas en que el sensor del Río no tiene dato se rellenan
+      con la Nave: el frío y los grados-día se van sumando, y un hueco los dejaría cortos.
+
+    `rio_desde`: por defecto ZONA_RIO_MANDA_DESDE, para los cálculos de campaña (2026 se
+    queda con la Nave). Para VER los datos del verano se pasa ZONA_RIO_INICIO_DATOS.
+
+    En `.attrs` quedan: zona, rio_desde, horas_rio (horas con temperatura del Río) y
+    horas_rellenadas (horas desde `rio_desde` sin temperatura del Río, puestas de la Nave).
+    """
+    if zona != ZONA_RIO:
+        return nave
+    desde = pd.Timestamp(ZONA_RIO_MANDA_DESDE if rio_desde is None else rio_desde)
+    base = nave if nave is not None else pd.DataFrame(columns=CANONICAL_COLUMNS)
+
+    def _limpio(df):
+        x = df.reindex(columns=CANONICAL_COLUMNS).copy()
+        x["fecha_hora"] = pd.to_datetime(x["fecha_hora"], errors="coerce")
+        x = x.dropna(subset=["fecha_hora"]).drop_duplicates("fecha_hora", keep="last")
+        return x.set_index("fecha_hora")
+
+    n = _limpio(base)
+    r = _limpio(rio) if rio is not None and not rio.empty else _limpio(pd.DataFrame())
+    r = r[r.index >= desde]
+    idx = n.index.union(r.index).rename("fecha_hora")
+    n = n.reindex(idx)
+    r = r.reindex(idx)
+    tramo = np.asarray(idx >= desde)
+    for clave, cols in ZONA_RIO_GRUPOS.items():
+        usar = tramo & r[clave].notna().to_numpy()
+        for c in cols:
+            n[c] = n[c].where(~usar, r[c])
+    out = n.reset_index()[CANONICAL_COLUMNS]
+    _con_t = r["temp_media"].notna().to_numpy()
+    out.attrs.update(zona=ZONA_RIO, rio_desde=desde,
+                     horas_rio=int((tramo & _con_t).sum()),
+                     horas_rellenadas=int((tramo & ~_con_t).sum()))
+    return out
+
+
+def historico_de_campo(campo, rio_desde=None):
+    """Histórico que le toca a un campo, con los datos cargados en la sesión."""
+    return historico_zona(zona_de_campo(campo),
+                          st.session_state.get("history_df", pd.DataFrame(columns=CANONICAL_COLUMNS)),
+                          st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS)),
+                          rio_desde=rio_desde)
+
+
+def huecos_sensor_rio(rio):
+    """(horas que debería haber entre el primer y el último dato, horas con temperatura,
+    horas sin temperatura). Las que faltan son las que se rellenarán con la Nave."""
+    if rio is None or rio.empty:
+        return 0, 0, 0
+    _fh = pd.to_datetime(rio["fecha_hora"], errors="coerce")
+    _ok = _fh[pd.to_numeric(rio["temp_media"], errors="coerce").notna()].dropna().dt.floor("h").unique()
+    _todas = _fh.dropna()
+    if _todas.empty:
+        return 0, 0, 0
+    esperadas = int((_todas.max().floor("h") - _todas.min().floor("h")) / pd.Timedelta(hours=1)) + 1
+    return esperadas, int(len(_ok)), max(esperadas - int(len(_ok)), 0)
 
 
 def clean_agroptima_bullet_text(value):
@@ -3275,11 +3355,23 @@ def fields_tab():
     c2.metric("Superficie total", f"{fields_df['Superficie ha'].sum():.2f} ha")
     c3.metric("Variedades distintas", len(sorted({v.strip() for txt in fields_df["Variedades actuales"] for v in str(txt).split(",") if v.strip()})))
 
-    st.dataframe(fields_df, use_container_width=True)
+    # La zona se añade SOLO a lo que se ve: get_fields_base_df() lo usan otras pestañas
+    # y no debe cambiar de forma.
+    _vista = fields_df.copy()
+    _vista.insert(1, "Zona", _vista["Campo"].map(zona_de_campo))
+    _es_rio = _vista["Zona"] == ZONA_RIO
+    st.caption(
+        f"🌊 **{ZONA_RIO}**: {int(_es_rio.sum())} campos · "
+        f"{_vista.loc[_es_rio, 'Superficie ha'].sum():.2f} ha — temperatura, humedad y lluvia "
+        f"del sensor de la vega del Aboño a partir del {ZONA_RIO_MANDA_DESDE:%d/%m/%Y} "
+        f"(hoja mojada, viento y radiación, de la Nave).  \n"
+        f"🏠 **{ZONA_NAVE}**: {int((~_es_rio).sum())} campos · "
+        f"{_vista.loc[~_es_rio, 'Superficie ha'].sum():.2f} ha — los sensores de siempre.")
+    st.dataframe(_vista, use_container_width=True)
 
     st.download_button(
         "Descargar base limpia de campos",
-        data=fields_df.to_csv(index=False).encode("utf-8-sig"),
+        data=_vista.to_csv(index=False).encode("utf-8-sig"),
         file_name="campos_finca_gallinal_limpios.csv",
         mime="text/csv",
     )
@@ -7551,8 +7643,11 @@ def render_zona_rio_descarga(token, user_id=""):
         st.caption("Todavía no hay datos guardados de la Zona Río.")
     else:
         _fh = pd.to_datetime(rio["fecha_hora"], errors="coerce").dropna()
+        _esp, _con, _hue = huecos_sensor_rio(rio)
         st.caption(f"Guardado: **{len(rio):,} horas** · del {_fh.min():%d/%m/%Y} al "
-                   f"{_fh.max():%d/%m/%Y %H:%M}".replace(",", "."))
+                   f"{_fh.max():%d/%m/%Y %H:%M}".replace(",", ".")
+                   + (f" · **{_hue} h sin dato** del sensor ({100 * _hue / _esp:.1f} %), que en "
+                      f"los cálculos se rellenarán con la Nave" if _hue else " · sin huecos"))
     if not token:
         st.info("ℹ️ Conecta Sencrop en la pestaña ⚙️ **Conexión** para descargar la Zona Río.")
         return
