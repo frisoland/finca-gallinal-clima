@@ -3016,6 +3016,39 @@ def get_fields_base_df():
     return pd.DataFrame(FIELDS_BASE_ROWS)
 
 
+# ── Zonas climáticas ──────────────────────────────────────────────────────────
+# Dos zonas y solo dos, aunque el riego tenga tres cabezales (VEGGA_DEVICES): esto va de
+# qué SENSOR describe el clima de cada campo, no de qué programador lo riega.
+#  · Zona Río: la vega del Aboño, con su propio sensor (SENCROP_SENSOR_RIO).
+#  · Zona Nave: todo lo demás, con los sensores de siempre.
+# La hoja mojada es la excepción: solo hay un sensor (Huertona) y sirve a las dos zonas.
+ZONA_NAVE = "Zona Nave"
+ZONA_RIO = "Zona Río"
+ZONA_RIO_CAMPOS = ("Viaducto", "Campazón",
+                   "Los Pinos 1", "Los Pinos 2", "Los Pinos 3", "Los Pinos 4", "Los Pinos 5")
+# El sensor del Río se instaló en junio de 2026, pero sus campos no pasan a calcularse
+# con él hasta el arranque del conteo de frío: la campaña 2026 se queda con la Nave.
+ZONA_RIO_INICIO_DATOS = pd.Timestamp("2026-06-01")
+ZONA_RIO_MANDA_DESDE = pd.Timestamp("2026-11-01")
+
+
+def _clave_campo(campo):
+    """Nombre de campo comparable: sin tildes, minúsculas y espacios simples
+    (Agroptima escribe a veces «Campazon» o «los pinos 3 »)."""
+    import unicodedata
+    txt = unicodedata.normalize("NFKD", str(campo or ""))
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+    return " ".join(txt.lower().split())
+
+
+_ZONA_RIO_CLAVES = {_clave_campo(c) for c in ZONA_RIO_CAMPOS}
+
+
+def zona_de_campo(campo):
+    """«Zona Río» o «Zona Nave» para un nombre de campo."""
+    return ZONA_RIO if _clave_campo(campo) in _ZONA_RIO_CLAVES else ZONA_NAVE
+
+
 def clean_agroptima_bullet_text(value):
     if pd.isna(value):
         return ""
@@ -4870,6 +4903,9 @@ def activities_tab():
 SUPABASE_CLIMATE_TABLE = "climate_hourly"
 SUPABASE_SNAPSHOT_BUCKET = "climate-snapshots"
 SUPABASE_FULL_CLIMATE_SNAPSHOT = "historico_clima_completo.parquet"
+# Zona Río (sensor «Gallinal Los Pinos»): histórico APARTE, nunca mezclado con el de
+# arriba. Ver SENCROP_SENSOR_RIO.
+SUPABASE_RIO_CLIMATE_SNAPSHOT = "historico_clima_zona_rio.parquet"
 
 
 def normalize_supabase_url(raw_url):
@@ -4915,17 +4951,20 @@ def supabase_is_configured():
 # aquellas: a nivel de módulo el orden importa, y definido más abajo reventaba
 # con NameError al abrir la app.
 SUPABASE_MG_HOURLY_PATH = "forecast_mg_hourly.parquet"
+# El mismo archivo para el punto de la Zona Río, en fichero propio para no mezclar su
+# acierto con el de la Nave.
+SUPABASE_MG_HOURLY_RIO_PATH = "forecast_mg_hourly_zona_rio.parquet"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _descargar_mg_hourly(url, key):
+def _descargar_mg_hourly(url, key, path=SUPABASE_MG_HOURLY_PATH):
     """Descarga cruda del parquet horario de MeteoGalicia. Cacheada 5 min porque en un
     solo render se pide hasta CINCO veces (la previsión, la comparación con el sensor,
     el desglose por franjas y el estado del archivo). Sin caché eran cinco descargas
     seguidas del mismo fichero, y se notaba al abrir."""
     try:
         endpoint = (f"{url.rstrip('/')}/storage/v1/object/"
-                    f"{SUPABASE_SNAPSHOT_BUCKET}/{SUPABASE_MG_HOURLY_PATH}")
+                    f"{SUPABASE_SNAPSHOT_BUCKET}/{path}")
         r = requests.get(endpoint, headers={"apikey": key, "Authorization": f"Bearer {key}"},
                          timeout=30)
         return r.content if (r.status_code == 200 and r.content) else None
@@ -4933,7 +4972,7 @@ def _descargar_mg_hourly(url, key):
         return None
 
 
-def load_mg_hourly_archive():
+def load_mg_hourly_archive(path=SUPABASE_MG_HOURLY_PATH):
     """Previsiones HORARIAS de MeteoGalicia archivadas (temperatura, HR, lluvia).
 
     Archivo aparte del de riesgo: aquí la fila es una HORA, no un día, y el objetivo es
@@ -4943,7 +4982,7 @@ def load_mg_hourly_archive():
         return pd.DataFrame()
     try:
         url, key = get_supabase_credentials()
-        content = _descargar_mg_hourly(url, key)
+        content = _descargar_mg_hourly(url, key, path)
         if not content:
             return pd.DataFrame()
         return pd.read_parquet(io.BytesIO(content), engine="pyarrow")
@@ -5239,7 +5278,7 @@ def parquet_bytes_to_climate_df(content):
     return compact_history(df)
 
 
-def upload_climate_snapshot_to_supabase(df, status_box=None):
+def upload_climate_snapshot_to_supabase(df, status_box=None, path=SUPABASE_FULL_CLIMATE_SNAPSHOT):
     """Sube un snapshot Parquet comprimido rápido a Supabase Storage."""
     if not supabase_is_configured():
         return False, "Supabase no está configurado. Revisa SUPABASE_URL y SUPABASE_KEY en Secrets."
@@ -5263,7 +5302,7 @@ def upload_climate_snapshot_to_supabase(df, status_box=None):
     if status_box is not None:
         status_box.info(f"Snapshot creado en memoria: {size_mb:.2f} MB. Subiendo a Supabase Storage...")
 
-    endpoint = climate_snapshot_storage_url()
+    endpoint = climate_snapshot_storage_url(path)
     headers = supabase_headers()
     headers["Content-Type"] = "application/octet-stream"
     headers["x-upsert"] = "true"
@@ -5295,7 +5334,7 @@ def cached_download_climate_snapshot(normalized_url, key, bucket, path, cache_bu
     return response.content, f"Snapshot descargado correctamente: {len(response.content) / (1024 * 1024):.2f} MB."
 
 
-def load_climate_snapshot_from_supabase(use_cache=True):
+def load_climate_snapshot_from_supabase(use_cache=True, path=SUPABASE_FULL_CLIMATE_SNAPSHOT):
     """Carga el histórico climático completo desde el snapshot comprimido."""
     if not supabase_is_configured():
         return pd.DataFrame(columns=CANONICAL_COLUMNS), "Supabase no está configurado. Revisa SUPABASE_URL y SUPABASE_KEY en Secrets."
@@ -5309,7 +5348,7 @@ def load_climate_snapshot_from_supabase(use_cache=True):
         normalized_url,
         key,
         SUPABASE_SNAPSHOT_BUCKET,
-        SUPABASE_FULL_CLIMATE_SNAPSHOT,
+        path,
         int(time.time()) if not use_cache else 0,
     )
 
@@ -5322,6 +5361,36 @@ def load_climate_snapshot_from_supabase(use_cache=True):
         return pd.DataFrame(columns=CANONICAL_COLUMNS), f"Snapshot descargado, pero no se pudo leer como Parquet: {exc}"
 
     return df, f"{msg} · Histórico cargado desde snapshot: {len(df)} registros."
+
+
+def fusionar_historico(base, nuevo, reemplazar=True):
+    """Une horas nuevas a un histórico horario y lo deja compacto (una fila por hora).
+
+    reemplazar=True  → las horas que ya existían se sobrescriben con lo recién bajado.
+    reemplazar=False → solo se añaden las horas que no estaban (lo que hace la descarga
+                       diaria de la Nave).
+    """
+    if nuevo is None or nuevo.empty:
+        return base if base is not None else pd.DataFrame(columns=CANONICAL_COLUMNS)
+    nuevo = nuevo.copy()
+    if base is None or base.empty:
+        return compact_history(nuevo)
+    if not reemplazar:
+        _hay = set(pd.to_datetime(base["fecha_hora"], errors="coerce").dropna())
+        nuevo = nuevo[~pd.to_datetime(nuevo["fecha_hora"], errors="coerce").isin(_hay)]
+    return compact_history(pd.concat([base, nuevo], ignore_index=True))
+
+
+def load_climate_rio_from_supabase(use_cache=True):
+    """Histórico de la Zona Río desde su propio fichero. Si aún no existe, vacío."""
+    return load_climate_snapshot_from_supabase(use_cache=use_cache,
+                                               path=SUPABASE_RIO_CLIMATE_SNAPSHOT)
+
+
+def upload_climate_rio_to_supabase(df, status_box=None):
+    """Guarda el histórico de la Zona Río en SU fichero. Nunca toca el de la Nave."""
+    return upload_climate_snapshot_to_supabase(df, status_box=status_box,
+                                               path=SUPABASE_RIO_CLIMATE_SNAPSHOT)
 
 
 def get_climate_snapshot_info():
@@ -5601,10 +5670,21 @@ SENCROP_SENSORS = [
         "nombre":   "Radiacion solar",
         "measures": ["irradiance"],
     },
-    # PENDIENTE: la organización tiene un 5º equipo, «Gallinal Los Pinos» (id 133681,
-    # identification k1kwjq64ogbx, modelId 24), instalado en junio de 2026. Se integrará
-    # más adelante — no se toca ahora para no cambiar el histórico a mitad de campaña.
 ]
+
+# ── Zona Río: sensor aparte, con histórico aparte ─────────────────────────────
+# «Gallinal Los Pinos» (id 133681, identification k1kwjq64ogbx, modelId 24), instalado en
+# junio de 2026 en la vega del Aboño. Solo mide temperatura, humedad y lluvia.
+# NO va en SENCROP_SENSORS a propósito: esa lista se fusiona hora a hora en UN histórico
+# quedándose con el último valor, así que las temperaturas del Río pisarían en silencio
+# las de la Nave sin dar ningún error. Se baja con sencrop_download_rio() y se guarda en
+# SUPABASE_RIO_CLIMATE_SNAPSHOT.
+SENCROP_SENSOR_RIO = {
+    "id":             "133681",
+    "identification": "k1kwjq64ogbx",
+    "nombre":         "Zona Río · Temperatura / Humedad / Lluvia",
+    "measures":       ["temperature", "relativeHumidity", "rainfall"],
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Predicción meteorológica — Sencrop (endpoint /app/forecast/sencrop-mode-data)
@@ -7421,6 +7501,111 @@ def sencrop_download_all_sensors(token, user_id, start_date, end_date, status_pl
     return merged, errors
 
 
+def sencrop_download_rio(token, start_date, end_date, user_id="", status_placeholder=None,
+                         trozo_dias=31):
+    """Descarga el sensor de la Zona Río a un DataFrame horario PROPIO.
+
+    Nunca toca el histórico de la Nave. Pide por trozos de un mes para que la carga
+    inicial desde junio no dependa de que Sencrop acepte un rango largo de una vez: si un
+    trozo falla, los demás se conservan y el aviso dice cuál fue.
+    Devuelve (DataFrame con CANONICAL_COLUMNS, lista de avisos)."""
+    _s, _e = pd.Timestamp(start_date).normalize(), pd.Timestamp(end_date).normalize()
+    if _s > _e:
+        _s, _e = _e, _s
+    _uid = sencrop_user_id_real(token) or user_id
+    if not _uid:
+        return pd.DataFrame(), ["No se pudo averiguar el usuario de Sencrop (/me)."]
+    frames, avisos = [], []
+    _ini = _s
+    while _ini <= _e:
+        _fin = min(_ini + pd.Timedelta(days=int(trozo_dias) - 1), _e)
+        if status_placeholder is not None:
+            status_placeholder.info(f"Zona Río: descargando {_ini:%d/%m/%Y} → {_fin:%d/%m/%Y}…")
+        df, err = sencrop_get_statistics_publica(
+            token, _uid, SENCROP_SENSOR_RIO["id"], _ini.date(), _fin.date(),
+            measures=SENCROP_SENSOR_RIO["measures"],
+        )
+        if err in ("TOKEN_EXPIRED", "USER_MISMATCH"):
+            return pd.DataFrame(), [err]
+        if err:
+            avisos.append(f"Zona Río {_ini:%d/%m}–{_fin:%d/%m}: {err}")
+        elif df is not None and not df.empty:
+            frames.append(df)
+        _ini = _fin + pd.Timedelta(days=1)
+    if not frames:
+        return pd.DataFrame(), avisos
+    return compact_history(pd.concat(frames, ignore_index=True)), avisos
+
+
+def render_zona_rio_descarga(token, user_id=""):
+    """Bloque «Zona Río» dentro de Sencrop → Actualizar datos."""
+    st.divider()
+    st.markdown("#### 🌊 Zona Río — sensor «Gallinal Los Pinos»")
+    st.caption(
+        "Temperatura, humedad y lluvia de la vega del Aboño (Viaducto, Campazón, Los Pinos "
+        "1-5), en un histórico **aparte** del de la Nave. Por ahora solo se guarda y se "
+        "compara en **📈 Comparador**; los cálculos de esos campos empezarán a usarlo el "
+        "**1 de noviembre de 2026**.")
+    rio = st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+    if rio is None or rio.empty:
+        st.caption("Todavía no hay datos guardados de la Zona Río.")
+    else:
+        _fh = pd.to_datetime(rio["fecha_hora"], errors="coerce").dropna()
+        st.caption(f"Guardado: **{len(rio):,} horas** · del {_fh.min():%d/%m/%Y} al "
+                   f"{_fh.max():%d/%m/%Y %H:%M}".replace(",", "."))
+    if not token:
+        st.info("ℹ️ Conecta Sencrop en la pestaña ⚙️ **Conexión** para descargar la Zona Río.")
+        return
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        _todo = st.button(
+            f"⬇️ Descargar todo desde el {ZONA_RIO_INICIO_DATOS:%d/%m/%Y}",
+            key="rio_dl_todo", use_container_width=True,
+            help="Carga inicial, o para rehacerlo entero si falta algo. Reemplaza lo guardado.")
+    with _c2:
+        _nuevo = st.button(
+            "🔄 Traer solo lo nuevo", key="rio_dl_nuevo", use_container_width=True,
+            disabled=(rio is None or rio.empty),
+            help="Desde la última hora guardada hasta hoy. Lo hace solo el informe de cada mañana.")
+    if not (_todo or _nuevo):
+        return
+    _hoy = pd.Timestamp.today().normalize().date()
+    if _todo or rio is None or rio.empty:
+        _desde = ZONA_RIO_INICIO_DATOS.date()
+    else:
+        _desde = pd.to_datetime(rio["fecha_hora"], errors="coerce").max().date()
+    _status = st.empty()
+    with st.spinner("Descargando la Zona Río de Sencrop…"):
+        df_new, avisos = sencrop_download_rio(token, _desde, _hoy, user_id=user_id or "",
+                                              status_placeholder=_status)
+    _status.empty()
+    if avisos in (["TOKEN_EXPIRED"], ["USER_MISMATCH"]):
+        _t, _d = sencrop_auth_diagnostico()
+        st.error(f"**{_t}**\n\n{_d}")
+        return
+    for _a in avisos:
+        st.warning(_a)
+    if df_new is None or df_new.empty:
+        st.warning("Sencrop no devolvió datos del sensor del Río para ese periodo.")
+        return
+    final = fusionar_historico(rio, df_new, reemplazar=bool(_todo))
+    st.session_state.history_rio_df = final
+    _fh = pd.to_datetime(final["fecha_hora"], errors="coerce").dropna()
+    _n = {c: int(pd.to_numeric(df_new[c], errors="coerce").notna().sum())
+          for c in ("temp_media", "hr_media", "lluvia_mm")}
+    st.success(
+        f"✅ Zona Río: {len(df_new):,} horas descargadas · histórico {len(final):,} horas "
+        f"({_fh.min():%d/%m/%Y} → {_fh.max():%d/%m/%Y})".replace(",", "."))
+    st.caption(f"Horas con dato: temperatura {_n['temp_media']} · humedad {_n['hr_media']} · "
+               f"lluvia {_n['lluvia_mm']}")
+    if supabase_is_configured():
+        ok, msg = upload_climate_rio_to_supabase(final)
+        if ok:
+            st.caption(f"☁️ Guardado en Supabase · {msg}")
+        else:
+            st.warning(f"⚠️ No se pudo guardar la Zona Río en Supabase: {msg}")
+
+
 def import_panel():
     # ── Inicialización silenciosa: auto-conectar desde Secrets ───────────────
     if "sencrop_token"   not in st.session_state: st.session_state.sencrop_token   = None
@@ -7543,6 +7728,9 @@ def import_panel():
                     )
                     # Guardado automático del snapshot en Supabase (sin pasos manuales)
                     autosave_climate_snapshot_to_supabase()
+
+        # ── Zona Río (histórico aparte) ──────────────────────────────────────
+        render_zona_rio_descarga(token, user_id)
 
         # ── Sección Supabase ─────────────────────────────────────────────────
         st.divider()
@@ -9142,12 +9330,209 @@ def _clim_to_csv(data, metric):
     return pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
 
 
+_MESES_CORTO = ["ene", "feb", "mar", "abr", "may", "jun",
+                "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
+def _diario_por_zona(h, desde, hasta):
+    """Resumen DIARIO de un histórico horario entre dos fechas: horas con dato, T media,
+    mínima y máxima, HR media y lluvia total."""
+    cols = ["fecha_hora", "temp_media", "temp_min", "temp_max", "hr_media", "lluvia_mm"]
+    d = h.reindex(columns=cols).copy()
+    d["fecha_hora"] = pd.to_datetime(d["fecha_hora"], errors="coerce")
+    d = d[(d["fecha_hora"] >= desde) & (d["fecha_hora"] < hasta)]
+    d = d.drop_duplicates("fecha_hora", keep="last")
+    for c in cols[1:]:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    # La mínima/máxima de la hora si Sencrop la da; si no, la media de esa hora.
+    d["_tmin"] = d["temp_min"].fillna(d["temp_media"])
+    d["_tmax"] = d["temp_max"].fillna(d["temp_media"])
+    d["dia"] = d["fecha_hora"].dt.normalize()
+    return d.groupby("dia").agg(
+        horas_t=("temp_media", "count"), t_media=("temp_media", "mean"),
+        t_min=("_tmin", "min"), t_max=("_tmax", "max"), hr=("hr_media", "mean"),
+        horas_ll=("lluvia_mm", "count"), lluvia=("lluvia_mm", "sum"))
+
+
+def comparacion_nave_rio(nave, rio, umbral_lluvia=1.0, min_horas=20):
+    """Compara los dos sensores sobre los días que AMBOS tienen completos.
+
+    Un día cuenta solo si los dos sensores tienen al menos `min_horas` horas de ese dato:
+    un día a medias en uno de ellos (corte de batería, descarga incompleta) haría parecer
+    diferencia de clima lo que es falta de datos. Día de lluvia = al menos `umbral_lluvia`
+    mm (1 mm, el criterio habitual: por debajo es ruido del pluviómetro).
+
+    Devuelve dict: diario, mensual_t, mensual_ll, por_hora, desde, hasta.
+    """
+    out = {"diario": pd.DataFrame(), "mensual_t": pd.DataFrame(),
+           "mensual_ll": pd.DataFrame(), "por_hora": pd.DataFrame(),
+           "desde": None, "hasta": None}
+    if nave is None or rio is None or nave.empty or rio.empty:
+        return out
+    _fn = pd.to_datetime(nave["fecha_hora"], errors="coerce").dropna()
+    _fr = pd.to_datetime(rio["fecha_hora"], errors="coerce").dropna()
+    if _fn.empty or _fr.empty:
+        return out
+    desde = max(_fn.min(), _fr.min()).normalize()
+    hasta = min(_fn.max(), _fr.max()).normalize() + pd.Timedelta(days=1)
+    if hasta <= desde:
+        return out
+    dia = _diario_por_zona(nave, desde, hasta).join(
+        _diario_por_zona(rio, desde, hasta), how="inner", lsuffix="_nave", rsuffix="_rio")
+    if dia.empty:
+        return out
+    dia["ok_t"] = (dia["horas_t_nave"] >= min_horas) & (dia["horas_t_rio"] >= min_horas)
+    dia["ok_ll"] = (dia["horas_ll_nave"] >= min_horas) & (dia["horas_ll_rio"] >= min_horas)
+    dia["mes"] = dia.index.to_period("M")
+
+    def _mes_txt(m):
+        return m if isinstance(m, str) else f"{_MESES_CORTO[m.month - 1]} {m.year}"
+
+    filas_t = []
+    _t = dia[dia["ok_t"]]
+    for mes, g in list(_t.groupby("mes")) + [("Total", _t)]:
+        if g.empty:
+            continue
+        fila = {"Mes": _mes_txt(mes), "Días": int(len(g))}
+        for etq, col in (("T media", "t_media"), ("T mín", "t_min"),
+                         ("T máx", "t_max"), ("HR %", "hr")):
+            _n, _r = g[f"{col}_nave"].mean(), g[f"{col}_rio"].mean()
+            fila[f"{etq} Nave"] = round(_n, 1)
+            fila[f"{etq} Río"] = round(_r, 1)
+            fila[f"{etq} dif."] = round(_r - _n, 1)
+        fila["Días con mínima más baja en el Río"] = int((g["t_min_rio"] < g["t_min_nave"]).sum())
+        filas_t.append(fila)
+
+    filas_ll = []
+    _l = dia[dia["ok_ll"]]
+    for mes, g in list(_l.groupby("mes")) + [("Total", _l)]:
+        if g.empty:
+            continue
+        _ln, _lr = g["lluvia_nave"], g["lluvia_rio"]
+        _dn, _dr = _ln >= umbral_lluvia, _lr >= umbral_lluvia
+        _sn, _sr = float(_ln.sum()), float(_lr.sum())
+        filas_ll.append({
+            "Mes": _mes_txt(mes), "Días": int(len(g)),
+            "Lluvia Nave mm": round(_sn, 1), "Lluvia Río mm": round(_sr, 1),
+            "Río vs Nave %": (round(100.0 * (_sr - _sn) / _sn) if _sn > 0 else None),
+            "Días de lluvia Nave": int(_dn.sum()), "Días de lluvia Río": int(_dr.sum()),
+            "Llovió en las dos": int((_dn & _dr).sum()),
+            "Solo en la Nave": int((_dn & ~_dr).sum()),
+            "Solo en el Río": int((~_dn & _dr).sum()),
+        })
+
+    # Diferencia según la HORA DEL DÍA, sobre las horas que tienen los dos sensores.
+    def _horario(h):
+        x = h.reindex(columns=["fecha_hora", "temp_media", "hr_media"]).copy()
+        x["fecha_hora"] = pd.to_datetime(x["fecha_hora"], errors="coerce")
+        x = x[(x["fecha_hora"] >= desde) & (x["fecha_hora"] < hasta)]
+        for c in ("temp_media", "hr_media"):
+            x[c] = pd.to_numeric(x[c], errors="coerce")
+        return x.drop_duplicates("fecha_hora", keep="last")
+
+    m = _horario(nave).merge(_horario(rio), on="fecha_hora", suffixes=("_nave", "_rio"))
+    m = m.dropna(subset=["temp_media_nave", "temp_media_rio"])
+    por_hora = pd.DataFrame()
+    if not m.empty:
+        m["hora"] = m["fecha_hora"].dt.hour
+        m["dif_t"] = m["temp_media_rio"] - m["temp_media_nave"]
+        m["dif_hr"] = m["hr_media_rio"] - m["hr_media_nave"]
+        por_hora = (m.groupby("hora")
+                    .agg(dif_t=("dif_t", "mean"), dif_hr=("dif_hr", "mean"),
+                         horas=("dif_t", "count"))
+                    .reset_index())
+
+    out.update(diario=dia, mensual_t=pd.DataFrame(filas_t), mensual_ll=pd.DataFrame(filas_ll),
+               por_hora=por_hora, desde=desde, hasta=hasta - pd.Timedelta(days=1))
+    return out
+
+
+def render_comparacion_nave_rio(nave, rio):
+    """Bloque del Comparador: cuánto se diferencian los dos sensores."""
+    st.caption(
+        "El sensor del Río (vega del Aboño) frente a los de la Nave, **sobre los mismos "
+        "días**. Solo cuentan los días con al menos 20 h de datos en los dos sensores. "
+        "*Dif.* = Río − Nave: negativo, el Río está más frío o más seco. "
+        "*T mín* es la media de las mínimas diarias. Día de lluvia = al menos 1 mm.")
+    if rio is None or rio.empty:
+        st.info("Todavía no hay datos de la **Zona Río**. Se descargan en **🌦️ Sencrop → "
+                "⬇️ Actualizar datos → Zona Río**.")
+        return
+    res = comparacion_nave_rio(nave, rio)
+    if res["mensual_t"].empty and res["mensual_ll"].empty:
+        st.info("Los dos sensores todavía no tienen días completos en común para comparar.")
+        return
+    st.markdown(f"**Periodo comparado:** {res['desde']:%d/%m/%Y} → {res['hasta']:%d/%m/%Y}")
+
+    _tot_t = res["mensual_t"].iloc[-1] if not res["mensual_t"].empty else None
+    _tot_l = res["mensual_ll"].iloc[-1] if not res["mensual_ll"].empty else None
+    _c = st.columns(4)
+    if _tot_t is not None:
+        _c[0].metric("Temperatura media · Río − Nave", f"{_tot_t['T media dif.']:+.1f} °C")
+        _c[1].metric("Mínimas · Río − Nave", f"{_tot_t['T mín dif.']:+.1f} °C")
+        _c[2].metric("Máximas · Río − Nave", f"{_tot_t['T máx dif.']:+.1f} °C")
+    if _tot_l is not None:
+        _pct = _tot_l["Río vs Nave %"]
+        _c[3].metric("Lluvia · Río vs Nave",
+                     "—" if _pct is None or pd.isna(_pct) else f"{_pct:+.0f} %",
+                     help=f"Río {_tot_l['Lluvia Río mm']:.0f} mm · Nave "
+                          f"{_tot_l['Lluvia Nave mm']:.0f} mm en los mismos días")
+
+    try:
+        import plotly.graph_objects as go
+    except Exception:
+        go = None
+
+    _ph = res["por_hora"]
+    if go is not None and not _ph.empty:
+        st.markdown("**🕐 Diferencia de temperatura según la hora del día** (Río − Nave)")
+        _fig = go.Figure()
+        _fig.add_trace(go.Bar(
+            x=[f"{int(h):02d}h" for h in _ph["hora"]], y=_ph["dif_t"].round(2),
+            marker_color=["#2f6fb0" if v < 0 else "#d9822b" for v in _ph["dif_t"]],
+            hovertemplate="%{x}: %{y:+.2f} °C<extra></extra>"))
+        _fig.add_hline(y=0, line_color="#888", line_width=1)
+        _fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10),
+                           yaxis_title="°C (Río − Nave)", showlegend=False)
+        st.plotly_chart(_fig, use_container_width=True)
+        st.caption("Azul: a esa hora el Río está más frío que la Nave. Naranja: más cálido.")
+
+    st.markdown("**🌡️ Temperatura y humedad por mes**")
+    st.dataframe(res["mensual_t"], hide_index=True, use_container_width=True)
+    st.markdown("**🌧️ Lluvia por mes**")
+    st.dataframe(res["mensual_ll"], hide_index=True, use_container_width=True)
+
+    _d = res["diario"]
+    _d = _d[_d["ok_ll"]] if not _d.empty else _d
+    if go is not None and not _d.empty:
+        st.markdown("**🌧️ Lluvia día a día**")
+        _fig2 = go.Figure()
+        _fig2.add_trace(go.Bar(x=_d.index, y=_d["lluvia_nave"], name="Nave", marker_color="#8c7a5b"))
+        _fig2.add_trace(go.Bar(x=_d.index, y=_d["lluvia_rio"], name="Río", marker_color="#2f6fb0"))
+        _fig2.update_layout(height=300, barmode="group", margin=dict(l=10, r=10, t=10, b=10),
+                            yaxis_title="mm", hovermode="x unified",
+                            legend=dict(orientation="h", y=1.08))
+        st.plotly_chart(_fig2, use_container_width=True)
+
+    if not res["diario"].empty:
+        _csv = (res["diario"].drop(columns=["mes"]).round(2).reset_index()
+                .rename(columns={"dia": "Fecha"}))
+        st.download_button("⬇️ Comparación diaria Nave vs Río (CSV)",
+                           _csv.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="comparacion_nave_rio_diaria.csv", mime="text/csv",
+                           key="dl_nave_rio_diario_v1")
+
+
 def comparator_tab(history, soil_type, hoja_threshold):
     st.subheader("Comparador climático")
 
     if history.empty:
         st.info("Carga primero el histórico.")
         return
+
+    with st.expander("🌊 Zona Nave vs Zona Río — cuánto se diferencian los dos sensores",
+                     expanded=False):
+        render_comparacion_nave_rio(history, st.session_state.get("history_rio_df", pd.DataFrame()))
 
     with st.expander("Comparar campañas de frío", expanded=False):
         chill_years_cmp = available_chill_analysis_years(history)
@@ -18698,6 +19083,10 @@ def settings_tab():
 # This prevents first-load errors if Streamlit reaches the layout before the normal initialization block.
 if "history_df" not in st.session_state:
     st.session_state.history_df = pd.DataFrame(columns=CANONICAL_COLUMNS)
+# Zona Río: histórico APARTE. Ninguna pestaña lo recibe todavía (fase 1: solo se guarda
+# y se compara); `history_df` sigue siendo el de la Nave, igual que siempre.
+if "history_rio_df" not in st.session_state:
+    st.session_state.history_rio_df = pd.DataFrame(columns=CANONICAL_COLUMNS)
 if "last_import_errors" not in st.session_state:
     st.session_state.last_import_errors = []
 if "last_import_diagnostics" not in st.session_state:
@@ -20168,6 +20557,16 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         _hist_df, _ = load_climate_snapshot_from_supabase(use_cache=False)
         if _hist_df is not None and not _hist_df.empty:
             st.session_state.history_df = _hist_df
+
+    # Zona Río (sensor «Gallinal Los Pinos»), de su propio fichero. Si aún no existe se
+    # queda vacío sin avisar: no afecta a nada de lo demás.
+    if st.session_state.get("history_rio_df", pd.DataFrame()).empty:
+        try:
+            _rio_df, _ = load_climate_rio_from_supabase(use_cache=False)
+            if _rio_df is not None and not _rio_df.empty:
+                st.session_state.history_rio_df = _rio_df
+        except Exception:
+            pass
 
     # Agroptima
     if st.session_state.activities_df.empty:
@@ -24715,6 +25114,7 @@ def windguru_wrf9_daily_rain_cached():
 # cayera fuera de la más fina). Verificado 2026-07-20: la finca cae dentro de la de 1 km.
 METEOSIX_URL    = "https://servizos.meteogalicia.gal/apiv5/getNumericForecastInfo"
 METEOSIX_COORDS = "-5.7985,43.481583"   # lon,lat de El Gallinal (Serín, Gijón)
+METEOSIX_COORDS_RIO = "-5.7874,43.491"  # lon,lat del sensor de la Zona Río (vega del Aboño)
 
 
 def _get_meteosix_key():
@@ -24971,7 +25371,7 @@ def purge_mg_hourly_archive():
         return False, f"{type(e).__name__}: {str(e)[:120]}"
 
 
-def archive_mg_hourly_forecast():
+def archive_mg_hourly_forecast(coords=METEOSIX_COORDS, path=SUPABASE_MG_HOURLY_PATH):
     """Guarda (1 vez al día) la previsión horaria de MeteoGalicia para poder medirla.
 
     Solo corre de verdad desde el informe diario: Streamlit Cloud no consigue conectar
@@ -24998,7 +25398,7 @@ def archive_mg_hourly_forecast():
             _ahora = pd.Timestamp.now()
         _hoy = _ahora.normalize()
         _issue = _hoy.strftime("%Y-%m-%d")
-        df, err = meteosix_wrf_hourly_diag()
+        df, err = meteosix_wrf_hourly_diag(coords=coords)
         if df is None or df.empty:
             return False, err or "sin datos de MeteoGalicia"
         d = df.copy()
@@ -25017,14 +25417,14 @@ def archive_mg_hourly_forecast():
             "mg_hr": pd.to_numeric(d.get("hr_media"), errors="coerce"),
             "mg_rain": pd.to_numeric(d.get("lluvia_mm"), errors="coerce"),
         })
-        old = load_mg_hourly_archive()
+        old = load_mg_hourly_archive(path)
         if old is not None and not old.empty:
             out = pd.concat([old, out], ignore_index=True)
             out = out.drop_duplicates(subset=["issue_date", "target_dt"], keep="last")
         buf = io.BytesIO()
         out.to_parquet(buf, index=False, compression="snappy", engine="pyarrow")
         buf.seek(0)
-        endpoint = climate_snapshot_storage_url(SUPABASE_MG_HOURLY_PATH)
+        endpoint = climate_snapshot_storage_url(path)
         headers = supabase_headers()
         headers["Content-Type"] = "application/octet-stream"
         headers["x-upsert"] = "true"

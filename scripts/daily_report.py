@@ -222,6 +222,68 @@ def refresh_sencrop_data(app, history):
         return history
 
 
+def refresh_rio_data(app):
+    """Zona Río (sensor «Gallinal Los Pinos»): baja las horas nuevas y guarda su histórico
+    APARTE en Supabase. Bloque aislado a propósito: si falla, la descarga de la Nave, el
+    informe y Telegram siguen igual. Nunca lanza."""
+    print("-" * 60)
+    print("DESCARGA ZONA RÍO (sensor Gallinal Los Pinos)")
+    try:
+        if not app.sencrop_is_configured():
+            print("  Sencrop no configurado. Se omite.")
+            return None
+        token = app.sencrop_get_token_from_secrets()
+        if not token:
+            print("  Sin token de Sencrop. Se omite.")
+            return None
+        ss = app.st.session_state
+        rio = ss.get("history_rio_df", pd.DataFrame())
+        if rio is None or rio.empty:
+            try:
+                rio, _ = app.load_climate_rio_from_supabase(use_cache=False)
+            except Exception as _e:
+                print(f"  (no se pudo leer el histórico del Río: {_e})")
+                rio = pd.DataFrame()
+        today = pd.Timestamp.today().normalize().date()
+        if rio is not None and not rio.empty:
+            _ult = pd.to_datetime(rio["fecha_hora"]).max()
+            start = _ult.date()
+            print(f"  Última hora registrada: {_ult}")
+        else:
+            start = app.ZONA_RIO_INICIO_DATOS.date()
+            print(f"  Sin histórico del Río: carga inicial desde {start}.")
+        # Un solo reintento: si Sencrop estaba caído, la descarga de la Nave ya ha
+        # esperado sus ~4 minutos y no hay que comerse el tiempo del job.
+        import time as _time
+        df_new, errs = None, None
+        for _intento, _espera in enumerate([30, 0], start=1):
+            df_new, errs = app.sencrop_download_rio(token, start, today)
+            if df_new is not None and not df_new.empty:
+                break
+            if errs in (["TOKEN_EXPIRED"], ["USER_MISMATCH"]):
+                break
+            print(f"  Intento {_intento}/2 sin datos (errs={errs}).")
+            if _espera:
+                _time.sleep(_espera)
+        if errs:
+            print(f"  Avisos Zona Río: {errs}")
+        if df_new is None or df_new.empty:
+            print("  Sin datos nuevos del Río; se conserva lo que había.")
+            return rio
+        n_prev = 0 if rio is None or rio.empty else len(rio)
+        merged = app.fusionar_historico(rio, df_new, reemplazar=False)
+        ss["history_rio_df"] = merged
+        print(f"  Histórico Río: {n_prev} → {len(merged)} filas (+{len(merged) - n_prev} nuevas)")
+        ok, msg = app.upload_climate_rio_to_supabase(merged)
+        print(f"  Snapshot Río Supabase: {'OK' if ok else 'FALLO'} · {msg}")
+        return merged
+    except Exception as exc:
+        import traceback as _tb
+        print(f"  EXCEPCIÓN en la descarga del Río: {exc}")
+        _tb.print_exc()
+        return None
+
+
 def refresh_vegga_irrigation(app):
     """Login ROPC a VEGGA + descarga del historial de riego de los 3 cabezales y lo
     fusiona (REEMPLAZANDO por Campo·Fecha) con el irrigation_log de Supabase. Silencioso:
@@ -327,9 +389,17 @@ def maybe_weekly_backup(app, history, activities, traps, biofix):
             damage = _d
     except Exception as e:
         print(f"  carpocapsa daño falló: {e}")
+    rio = pd.DataFrame()
+    try:
+        rio = _as_df(app.st.session_state.get("history_rio_df", pd.DataFrame()))
+        if rio.empty:
+            rio = _as_df(app.load_climate_rio_from_supabase(use_cache=False))
+    except Exception as e:
+        print(f"  zona río falló: {e}")
 
     sources = {
         "clima_historico.csv":       history,
+        "clima_zona_rio.csv":        rio,
         "agroptima_actuaciones.csv": activities,
         "produccion.csv":            produccion,
         "carpocapsa_capturas.csv":   traps,
@@ -445,6 +515,9 @@ def main():
     # actualizado en Supabase, para que el informe use datos frescos.
     history = refresh_sencrop_data(app, history)
 
+    # ── Zona Río: su histórico va APARTE (no se mezcla con el de la Nave) ─────
+    refresh_rio_data(app)
+
     # ── Descarga automática de RIEGO desde VEGGA (actualiza irrigation_log) ────
     refresh_vegga_irrigation(app)
 
@@ -479,6 +552,14 @@ def main():
             print(f"  MeteoGalicia horaria: {'OK' if _ok_h else 'no archivada'} — {_msg_h}")
         except Exception as _eh:
             print(f"  MeteoGalicia horaria: error — {_eh}")
+        # El mismo archivo para el punto de la Zona Río, en su propio fichero: solo
+        # recogida de datos, para saber cuánto acierta allí antes de que mande.
+        try:
+            _ok_r, _msg_r = app.archive_mg_hourly_forecast(
+                coords=app.METEOSIX_COORDS_RIO, path=app.SUPABASE_MG_HOURLY_RIO_PATH)
+            print(f"  MeteoGalicia horaria Zona Río: {'OK' if _ok_r else 'no archivada'} — {_msg_r}")
+        except Exception as _er:
+            print(f"  MeteoGalicia horaria Zona Río: error — {_er}")
     except Exception as _e:
         print(f"  (archivado de previsión falló: {_e})")
 
