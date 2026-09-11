@@ -3072,6 +3072,20 @@ def zona_de_campo(campo):
     return ZONA_RIO if _clave_campo(campo) in _ZONA_RIO_CLAVES else ZONA_NAVE
 
 
+def es_nombre_de_zona_rio(nombre):
+    """True si el nombre es un campo del Río o un grupo de trampas formado SOLO por
+    campos del Río (p. ej. «Campazón + Pinos»)."""
+    if zona_de_campo(nombre) == ZONA_RIO:
+        return True
+    _g = globals().get("CARPOCAPSA_GRUPOS", {}).get(str(nombre or "").strip())
+    return bool(_g) and all(zona_de_campo(c) == ZONA_RIO for c in _g)
+
+
+def marca_zona(nombre):
+    """El nombre con 🌊 detrás si es de la Zona Río (para listas de avisos)."""
+    return f"{nombre} 🌊" if es_nombre_de_zona_rio(nombre) else f"{nombre}"
+
+
 # Lo que el sensor del Río sí mide, por grupos. Se sustituye POR GRUPO y por hora: si en
 # una hora el Río tiene temperatura, se toman del Río la media, la mínima y la máxima; si
 # no la tiene (hueco del sensor), se queda el grupo entero de la Nave. Así nunca se mezcla
@@ -8404,10 +8418,10 @@ def home_today_tab(history, soil_type, hoja_threshold):
     else:
         if not carpo_peligro.empty:
             st.error("🔴 **PELIGRO — cierran en ≤3 días SIN tratar (última oportunidad):** "
-                     + ", ".join(carpo_peligro["Campo/Zona"].astype(str).unique()))
+                     + ", ".join(marca_zona(c) for c in carpo_peligro["Campo/Zona"].astype(str).unique()))
         if not carpo_activa.empty:
             st.warning("🟠 **Ventanas activas para tratar:** "
-                       + ", ".join(carpo_activa["Campo/Zona"].astype(str).unique()))
+                       + ", ".join(marca_zona(c) for c in carpo_activa["Campo/Zona"].astype(str).unique()))
         if carpo_peligro.empty and carpo_activa.empty:
             st.success("✅ Sin ventanas activas hoy.")
 
@@ -8417,14 +8431,14 @@ def home_today_tab(history, soil_type, hoja_threshold):
     else:
         if not fung_hoy.empty:
             st.error("🔴 **Tratar HOY (infección prevista):** "
-                     + ", ".join(fung_hoy["Campo"].astype(str)))
+                     + ", ".join(marca_zona(c) for c in fung_hoy["Campo"].astype(str)))
         if not fung_pronto.empty:
             st.warning("🟠 **Tratar pronto (cobertura caducada):** "
-                       + ", ".join(fung_pronto["Campo"].astype(str)))
+                       + ", ".join(marca_zona(c) for c in fung_pronto["Campo"].astype(str)))
         if not fung_vigilar.empty:
             st.info("🟡 **Vigilar (cubiertos hoy, pero con infección prevista — la "
                     "cobertura terminará pronto):** "
-                    + ", ".join(fung_vigilar["Campo"].astype(str)))
+                    + ", ".join(marca_zona(c) for c in fung_vigilar["Campo"].astype(str)))
         if fung_hoy.empty and fung_pronto.empty and fung_vigilar.empty:
             st.success("✅ Todos los campos con cobertura vigente y sin infección prevista.")
 
@@ -8445,11 +8459,50 @@ def home_today_tab(history, soil_type, hoja_threshold):
                     return f"{float(v):.{d}f}{s}"
                 except Exception:
                     return "—"
-            cc1, cc2, cc3, cc4 = st.columns(4)
-            cc1.metric("🌡️ Temp media", _n(_m.get("temp_mean"), 1, " °C"))
-            cc2.metric("🌧️ Lluvia", _n(_m.get("rain_total"), 1, " mm"))
-            cc3.metric("🍄 Moteado (ev.≥1)", int(_m.get("scab_events_ge1", 0)))
-            cc4.metric("🟤 Monilia (ev.≥1)", int(_m.get("monilia_events_ge1", 0)))
+            try:
+                _mr = resumen_clima_zona_rio_7d(
+                    history, st.session_state.get("history_rio_df", pd.DataFrame()), _ini, _fin)
+            except Exception:
+                _mr = {}
+            if not _mr:
+                cc1, cc2, cc3, cc4 = st.columns(4)
+                cc1.metric("🌡️ Temp media", _n(_m.get("temp_mean"), 1, " °C"))
+                cc2.metric("🌧️ Lluvia", _n(_m.get("rain_total"), 1, " mm"))
+                cc3.metric("🍄 Moteado (ev.≥1)", int(_m.get("scab_events_ge1", 0)))
+                cc4.metric("🟤 Monilia (ev.≥1)", int(_m.get("monilia_events_ge1", 0)))
+            else:
+                def _dif(a, b, d=1, s=""):
+                    try:
+                        return f"{float(a) - float(b):+.{d}f}{s} vs Nave"
+                    except Exception:
+                        return None
+                _zn, _zr = st.columns(2)
+                with _zn:
+                    st.markdown(f"**🏠 {ZONA_NAVE}**")
+                    _a, _b = st.columns(2)
+                    _a.metric("🌡️ Temp media", _n(_m.get("temp_mean"), 1, " °C"))
+                    _b.metric("🌧️ Lluvia", _n(_m.get("rain_total"), 1, " mm"))
+                    _c, _d = st.columns(2)
+                    _c.metric("🍄 Moteado (ev.≥1)", int(_m.get("scab_events_ge1", 0)))
+                    _d.metric("🟤 Monilia (ev.≥1)", int(_m.get("monilia_events_ge1", 0)))
+                with _zr:
+                    st.markdown(f"**🌊 {ZONA_RIO}**")
+                    _a, _b = st.columns(2)
+                    _a.metric("🌡️ Temp media", _n(_mr.get("temp_mean"), 1, " °C"),
+                              delta=_dif(_mr.get("temp_mean"), _m.get("temp_mean"), 1, " °C"),
+                              delta_color="off")
+                    _b.metric("🌧️ Lluvia", _n(_mr.get("rain_total"), 1, " mm"),
+                              delta=_dif(_mr.get("rain_total"), _m.get("rain_total"), 1, " mm"),
+                              delta_color="off")
+                    _c, _d = st.columns(2)
+                    _c.metric("🍄 Moteado (ev.≥1)", int(_mr.get("scab_events_ge1", 0)))
+                    _d.metric("🟤 Monilia (ev.≥1)", int(_mr.get("monilia_events_ge1", 0)))
+                st.caption(
+                    "🌊 Zona Río: temperatura, humedad y lluvia de su sensor; la hoja mojada es la "
+                    "de Huertona. Sus eventos de moteado y monilia son **informativos**: las "
+                    "decisiones de fungicida por campo todavía se calculan con la Nave."
+                    + (f" · {_mr['horas_rellenadas']} h sin dato del sensor del Río, puestas de la Nave."
+                       if _mr.get("horas_rellenadas") else ""))
         else:
             st.caption("Sin datos suficientes para el resumen de 7 días.")
 
@@ -28161,8 +28214,135 @@ def telegram_discover_chats():
         return None
 
 
+def resumen_clima_7d(hist, start_date, end_date):
+    """Las mismas cifras de clima que build_weekly_executive_report (temperatura, HR,
+    lluvia y eventos de hoja mojada), SIN la tabla de prioridades por campo, que es lo
+    caro. Sirve para la Zona Río, donde solo hacen falta las cifras."""
+    if hist is None or hist.empty:
+        return {}
+    h = hist.copy()
+    h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+    h = h.dropna(subset=["fecha_hora"]).sort_values("fecha_hora")
+    start_ts = pd.to_datetime(start_date)
+    end_ts = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    p = h[(h["fecha_hora"] >= start_ts) & (h["fecha_hora"] <= end_ts)].copy()
+    if p.empty:
+        return {}
+    events = detect_leaf_wetness_events(p) if has_sensor(p, "Humectación de hoja") else pd.DataFrame()
+    if not events.empty:
+        _rs = pd.to_numeric(events.get("Ratio moteado", 0), errors="coerce").fillna(0)
+        _rm = pd.to_numeric(events.get("Ratio monilia", 0), errors="coerce").fillna(0)
+        max_scab, max_monilia = _rs.max(), _rm.max()
+        scab_ge1, monilia_ge1 = int((_rs >= 1.0).sum()), int((_rm >= 1.0).sum())
+    else:
+        max_scab = max_monilia = 0.0
+        scab_ge1 = monilia_ge1 = 0
+    return {
+        "temp_mean": safe_num(p.get("temp_media", pd.Series(dtype=float)), "mean"),
+        "temp_min": safe_num(p.get("temp_min", p.get("temp_media", pd.Series(dtype=float))), "min"),
+        "temp_max": safe_num(p.get("temp_max", p.get("temp_media", pd.Series(dtype=float))), "max"),
+        "hr_mean": safe_num(p.get("hr_media", pd.Series(dtype=float)), "mean"),
+        "rain_total": safe_num(p.get("lluvia_mm", pd.Series(dtype=float)), "sum"),
+        "leaf_events": int(len(events)),
+        "max_scab_ratio": float(max_scab),
+        "max_monilia_ratio": float(max_monilia),
+        "scab_events_ge1": scab_ge1,
+        "monilia_events_ge1": monilia_ge1,
+    }
+
+
+def oidio_semana(hist, ini, fin):
+    """(favorabilidad máxima de oídio, días favorables ≥50) entre dos fechas.
+    Oídio va aparte porque favorece tiempo cálido y seco, no hoja mojada."""
+    vals = []
+    try:
+        _ho = hist.copy()
+        _ho["fecha_hora"] = pd.to_datetime(_ho["fecha_hora"], errors="coerce")
+        _ho = _ho.dropna(subset=["fecha_hora"])
+        _ho = _ho[(_ho["fecha_hora"].dt.date >= ini) & (_ho["fecha_hora"].dt.date <= fin)]
+        for _dd, _gg in _ho.groupby(_ho["fecha_hora"].dt.date):
+            _tm = pd.to_numeric(_gg["temp_media"], errors="coerce").mean()
+            _hm = pd.to_numeric(_gg["hr_media"],   errors="coerce").mean()
+            _ll = pd.to_numeric(_gg["lluvia_mm"],  errors="coerce").sum()
+            vals.append(_dec_oidio_value(_tm, _hm, _ll))
+    except Exception:
+        vals = []
+    return (max(vals) if vals else 0.0), sum(1 for v in vals if v >= 50)
+
+
+def interpretacion_sanitaria_semana(scab_ev, monilia_ev, max_scab, max_monilia, oidio_max):
+    """Valoración del riesgo sanitario de la semana (la misma regla para las dos zonas)."""
+    if scab_ev > 0 or monilia_ev > 0:
+        return "🔴 Semana con evento(s) de infección — revisar cobertura fungicida."
+    if max_scab >= 0.75 or max_monilia >= 0.75 or oidio_max >= 60:
+        return "🟡 Riesgo sanitario moderado — conviene vigilar la evolución."
+    return "🟢 Semana de bajo riesgo sanitario."
+
+
+def resumen_clima_zona_rio_7d(nave, rio, ini, fin):
+    """Resumen de 7 días de la Zona Río (temperatura, humedad y lluvia de su sensor; hoja
+    mojada de Huertona). {} si el sensor del Río no tiene datos en esas fechas.
+
+    Usa el Río desde su primer dato (ZONA_RIO_INICIO_DATOS): es para VER la diferencia,
+    no un cálculo de campaña."""
+    _s = pd.to_datetime(ini)
+    _e = pd.to_datetime(fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    _h_rio = horas_rio_en_periodo(rio, _s, _e)
+    if not _h_rio or nave is None or nave.empty:
+        return {}
+
+    def _tramo(d):
+        _f = pd.to_datetime(d["fecha_hora"], errors="coerce")
+        return d[(_f >= _s) & (_f <= _e)]
+
+    hz = historico_zona(ZONA_RIO, _tramo(nave), _tramo(rio), rio_desde=ZONA_RIO_INICIO_DATOS)
+    out = resumen_clima_7d(hz, ini, fin)
+    if not out:
+        return {}
+    out["oidio_max"], out["oidio_dias"] = oidio_semana(hz, ini, fin)
+    out["horas_rio"] = int(_h_rio)
+    out["horas_rellenadas"] = int(hz.attrs.get("horas_rellenadas", 0))
+    return out
+
+
+def lineas_informe_zona_rio(mr, mn):
+    """Bloque corto de la Zona Río para Telegram: lo que mide su sensor y la diferencia
+    con la Nave. Viento, radiación y hoja mojada no se repiten (son los de la Nave)."""
+    def _n(v, dec=1, suf=""):
+        try:
+            return f"{float(v):.{dec}f}{suf}"
+        except Exception:
+            return "—"
+
+    def _d(a, b, dec=1, suf=""):
+        try:
+            return f"{float(a) - float(b):+.{dec}f}{suf}"
+        except Exception:
+            return "—"
+
+    _sc, _mo = int(mr.get("scab_events_ge1", 0)), int(mr.get("monilia_events_ge1", 0))
+    _ms = float(mr.get("max_scab_ratio", 0) or 0)
+    _mm = float(mr.get("max_monilia_ratio", 0) or 0)
+    _om, _od = float(mr.get("oidio_max", 0) or 0), int(mr.get("oidio_dias", 0))
+    out = [
+        "",
+        f"🌊 <b>{ZONA_RIO}</b> (sensor de la vega)",
+        f"  🌡️ Temp: media {_n(mr.get('temp_mean'))}°C (mín {_n(mr.get('temp_min'))} / "
+        f"máx {_n(mr.get('temp_max'))}) · {_d(mr.get('temp_mean'), mn.get('temp_mean'))}°C vs Nave",
+        f"  💧 HR media: {_n(mr.get('hr_mean'))}% ({_d(mr.get('hr_mean'), mn.get('hr_mean'))}) · "
+        f"🌧️ Lluvia: {_n(mr.get('rain_total'))} mm ({_d(mr.get('rain_total'), mn.get('rain_total'))} mm)",
+        f"  🍄 Moteado: ratio máx {_n(_ms, 2)} · {_sc} evento(s) · "
+        f"🍑 Monilia: ratio máx {_n(_mm, 2)} · {_mo} evento(s)",
+        f"  🌬️ Oídio: favorabilidad máx {_n(_om, 0)}/100 · {_od} día(s) favorable(s)",
+    ]
+    if mr.get("horas_rellenadas"):
+        out.append(f"  ⚠️ {int(mr['horas_rellenadas'])} h sin dato del sensor del Río (puestas de la Nave)")
+    out.append(f"  <b>{interpretacion_sanitaria_semana(_sc, _mo, _ms, _mm, _om)}</b>")
+    return out
+
+
 def build_daily_report_text(history_df, traps_df, activities_df,
-                            forecast_df=None, persistence_days=16):
+                            forecast_df=None, persistence_days=16, rio_df=None):
     """Construye el texto del informe diario centrado en lo urgente:
     carpocapsa (ventanas activas; aviso si cierran en ≤3 días sin tratar) +
     fungicidas (tratar hoy / sin cobertura). Formato HTML para Telegram."""
@@ -28170,6 +28350,9 @@ def build_daily_report_text(history_df, traps_df, activities_df,
 
     def _esc(v):
         return _html.escape(str(v))
+
+    def _marca_rio(nombre):
+        return " 🌊" if es_nombre_de_zona_rio(nombre) else ""
 
     today_str = pd.Timestamp.today().strftime("%d/%m/%Y")
     lines = ["🌳 <b>Finca Gallinal — Informe diario</b>", f"📅 {today_str}", ""]
@@ -28198,6 +28381,7 @@ def build_daily_report_text(history_df, traps_df, activities_df,
         for _, r in cw.iterrows():
             e     = str(r.get("Estado", ""))
             campo = _esc(r.get("Campo/Zona", ""))
+            _mz   = _marca_rio(r.get("Campo/Zona", ""))
             dd    = r.get("DD actual", "")
             info  = _esc(r.get("Info", ""))
             if "Activa" not in e:        # solo ventanas activas SIN tratar
@@ -28210,10 +28394,10 @@ def build_daily_report_text(history_df, traps_df, activities_df,
                     dias_cierre = int((_de.normalize() - _today_n).days)
             if dias_cierre is not None and dias_cierre <= _CIERRE_AVISO_DIAS:
                 carpo_orange.append(
-                    f"  🟠 <b>{campo}</b> — CIERRA EN {max(0, dias_cierre)}d sin tratar · {dd} DD")
+                    f"  🟠 <b>{campo}</b>{_mz} — CIERRA EN {max(0, dias_cierre)}d sin tratar · {dd} DD")
             else:
                 _cola = f" · cierra en {dias_cierre}d" if dias_cierre is not None else ""
-                carpo_red.append(f"  🔴 <b>{campo}</b> — {dd} DD{_cola}")
+                carpo_red.append(f"  🔴 <b>{campo}</b>{_mz} — {dd} DD{_cola}")
 
     lines.append("🐛 <b>CARPOCAPSA</b>")
     if carpo_orange:
@@ -28267,16 +28451,17 @@ def build_daily_report_text(history_df, traps_df, activities_df,
         if not red.empty:
             lines.append("<b>🔴 TRATAR HOY:</b>")
             for _, r in red.iterrows():
-                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b> "
+                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b>{_marca_rio(r.get('Campo',''))} "
                              f"({r.get('Días sin trat.','')}d sin trat.) → <b>{_esc(_prod_fc(r))}</b>")
         if not orange.empty:
             lines.append("<b>🟠 Tratar pronto (mantener escudo):</b>")
             for _, r in orange.iterrows():
-                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b> "
+                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b>{_marca_rio(r.get('Campo',''))} "
                              f"({r.get('Días sin trat.','')}d) → <b>{_esc(_prod_fc(r))}</b>")
         if not yellow.empty:
             lines.append("<b>🟡 Vigilar</b> (por si la previsión se confirma):")
-            lines.append("  " + ", ".join(_esc(r.get("Campo", "")) for _, r in yellow.iterrows()))
+            lines.append("  " + ", ".join(_esc(r.get("Campo", "")) + _marca_rio(r.get("Campo", ""))
+                                         for _, r in yellow.iterrows()))
         if red.empty and orange.empty and yellow.empty:
             lines.append("  ✅ Sin acción: sin eventos recientes ni cobertura caducada.")
     else:
@@ -28298,6 +28483,15 @@ def build_daily_report_text(history_df, traps_df, activities_df,
                     return "—"
             lines.append("")
             lines.append(f"📊 <b>RESUMEN 7 DÍAS</b> ({_ini.strftime('%d/%m')}–{_fin.strftime('%d/%m')})")
+            # Zona Río: su propio resumen, si su sensor tiene datos esta semana.
+            try:
+                _rio_src = rio_df if rio_df is not None else st.session_state.get(
+                    "history_rio_df", pd.DataFrame())
+                _mr = resumen_clima_zona_rio_7d(history_df, _rio_src, _ini, _fin)
+            except Exception:
+                _mr = {}
+            if _mr:
+                lines.append(f"🏠 <b>{ZONA_NAVE}</b>")
             lines.append(
                 f"  🌡️ Temp: media {_n(_m.get('temp_mean'))}°C "
                 f"(mín {_n(_m.get('temp_min'))} / máx {_n(_m.get('temp_max'))})"
@@ -28326,34 +28520,17 @@ def build_daily_report_text(history_df, traps_df, activities_df,
             )
 
             # Oídio: se calcula aparte (favorece cálido y seco, no hoja mojada).
-            _oidio_vals = []
-            try:
-                _ho = history_df.copy()
-                _ho["fecha_hora"] = pd.to_datetime(_ho["fecha_hora"], errors="coerce")
-                _ho = _ho.dropna(subset=["fecha_hora"])
-                _ho = _ho[(_ho["fecha_hora"].dt.date >= _ini) & (_ho["fecha_hora"].dt.date <= _fin)]
-                for _dd, _gg in _ho.groupby(_ho["fecha_hora"].dt.date):
-                    _tm = pd.to_numeric(_gg["temp_media"], errors="coerce").mean()
-                    _hm = pd.to_numeric(_gg["hr_media"],   errors="coerce").mean()
-                    _ll = pd.to_numeric(_gg["lluvia_mm"],  errors="coerce").sum()
-                    _oidio_vals.append(_dec_oidio_value(_tm, _hm, _ll))
-            except Exception:
-                _oidio_vals = []
-            _oidio_max  = max(_oidio_vals) if _oidio_vals else 0.0
-            _oidio_days = sum(1 for v in _oidio_vals if v >= 50)
+            _oidio_max, _oidio_days = oidio_semana(history_df, _ini, _fin)
             lines.append(
                 f"  🌬️ Oídio: favorabilidad máx {_n(_oidio_max, 0)}/100 "
                 f"· {_oidio_days} día(s) favorable(s)"
             )
 
             # ── Interpretación global del riesgo sanitario de la semana ───────
-            if _sc > 0 or _mo > 0:
-                _interp = "🔴 Semana con evento(s) de infección — revisar cobertura fungicida."
-            elif _max_scab >= 0.75 or _max_mon >= 0.75 or _oidio_max >= 60:
-                _interp = "🟡 Riesgo sanitario moderado — conviene vigilar la evolución."
-            else:
-                _interp = "🟢 Semana de bajo riesgo sanitario."
+            _interp = interpretacion_sanitaria_semana(_sc, _mo, _max_scab, _max_mon, _oidio_max)
             lines.append(f"  <b>{_interp}</b>")
+            if _mr:
+                lines.extend(lineas_informe_zona_rio(_mr, _m))
     except Exception:
         pass  # el resumen semanal nunca debe romper el informe diario
 
