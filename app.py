@@ -10664,6 +10664,60 @@ def run_soil_depletion(daily_df, taw_mm, p=APPLE_DEPLETION_P, cover=1.0, irr_by_
     return out, meta
 
 
+def comparacion_riego_zona_rio(history, rio, eff, end_ts):
+    """Reserva de los campos de la Zona Río con el clima de la NAVE frente a su PROPIO clima,
+    desde el primer dato del sensor del Río hasta `end_ts`. Mismo suelo, raíz y riego real en
+    las dos; solo cambia el clima. Es para VER la diferencia: el balance oficial de estos
+    campos usa el Río a partir de ZONA_RIO_MANDA_DESDE.
+
+    Devuelve (DataFrame por campo, resumen {lluvia_nave, lluvia_rio, etc_nave, etc_rio})."""
+    _end = pd.Timestamp(end_ts).normalize()
+    if (rio is None or rio.empty or history is None or history.empty
+            or _end < ZONA_RIO_INICIO_DATOS or eff is None or eff.empty):
+        return pd.DataFrame(), {}
+    dn, _ = daily_et_frame(history, _end)
+    dr, _ = daily_et_frame(historico_zona(ZONA_RIO, history, rio, rio_desde=ZONA_RIO_INICIO_DATOS), _end)
+    if dn is None or dn.empty or dr is None or dr.empty:
+        return pd.DataFrame(), {}
+
+    def _ventana(d):
+        _f = pd.to_datetime(d["Fecha"])
+        return (_f >= ZONA_RIO_INICIO_DATOS) & (_f <= _end)
+
+    def _suma(d, col):
+        return round(float(pd.to_numeric(d.loc[_ventana(d), col], errors="coerce").sum()))
+
+    resumen = {"lluvia_nave": _suma(dn, "Lluvia"), "lluvia_rio": _suma(dr, "Lluvia"),
+               "etc_nave": _suma(dn, "ETc"), "etc_rio": _suma(dr, "ETc")}
+    filas = []
+    for _, pr in eff.iterrows():
+        campo = pr["Campo"]
+        if zona_de_campo(campo) != ZONA_RIO:
+            continue
+        taw = pr.get("TAW mm")
+        if not taw or pd.isna(taw):
+            continue
+        cov = field_cover_factor(campo)
+        irr = field_irrigation_by_date(campo)
+        on, mn = run_soil_depletion(dn, taw, cover=cov, irr_by_date=irr)
+        orr, mr = run_soil_depletion(dr, taw, cover=cov, irr_by_date=irr)
+        if not mn or not mr:
+            continue
+        _, mbn = field_model_b_reserve(dn, pr, irr)
+        _, mbr = field_model_b_reserve(dr, pr, irr)
+        filas.append({
+            "Campo": f"{campo} 🌊",
+            "Riego": pr.get("Riego") or "—",
+            "Reserva hoy · con clima Nave %": int(round(mn["reserva_pct"])),
+            "Reserva hoy · con clima Río %": int(round(mr["reserva_pct"])),
+            "Reserva mín · Nave %": int(pd.to_numeric(on.loc[_ventana(on), "Reserva %"], errors="coerce").min()),
+            "Reserva mín · Río %": int(pd.to_numeric(orr.loc[_ventana(orr), "Reserva %"], errors="coerce").min()),
+            "Goteo hoy · Nave %": (int(round(mbn["reserva_pct"])) if mbn else None),
+            "Goteo hoy · Río %": (int(round(mbr["reserva_pct"])) if mbr else None),
+        })
+    return pd.DataFrame(filas), resumen
+
+
 def render_water_balance(history, soil_type, start_ts, end_ts):
     """Riego por balance hídrico FAO-56 POR PARCELA. Clima/ET0 (Penman-Monteith, con
     Hargreaves de respaldo) es de finca (un sensor); la reserva de suelo es por campo
@@ -10673,6 +10727,19 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
     if daily is None or daily.empty:
         st.info("No hay datos de temperatura/lluvia suficientes para el balance hídrico.")
         return
+
+    # Zona Río: SU serie (temperatura, humedad y lluvia de su sensor; radiación y viento de la
+    # Nave) en cuanto su sensor manda. Hasta entonces no existe y todo va como siempre.
+    _rio_wb = st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+    daily_rio, metodo_rio, per_r = pd.DataFrame(), "—", pd.DataFrame()
+    if horas_rio_en_periodo(_rio_wb, ZONA_RIO_MANDA_DESDE, _end + pd.Timedelta(hours=23, minutes=59)):
+        daily_rio, metodo_rio = daily_et_frame(historico_zona(ZONA_RIO, history, _rio_wb), _end)
+
+    def _daily_de(campo):
+        """La serie diaria que le toca a un campo: la de su zona."""
+        if zona_de_campo(campo) == ZONA_RIO and daily_rio is not None and not daily_rio.empty:
+            return daily_rio
+        return daily
 
     # Fase y Kc de hoy (compartidos)
     _phase_lbl = "—"
@@ -10694,14 +10761,37 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
     etc_sum = float(pd.to_numeric(per["ETc"], errors="coerce").sum())
     rain_sum = float(pd.to_numeric(per["Lluvia"], errors="coerce").sum())
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("ET0 periodo", f"{et0_sum:.0f} mm", help="Demanda de la atmósfera (evapotranspiración de referencia).")
-    c2.metric("ETc manzano", f"{etc_sum:.0f} mm", help="Agua que gastó el manzano (ET0×Kc) en el periodo.")
-    c3.metric("Lluvia periodo", f"{rain_sum:.0f} mm")
-    c4.metric("Déficit (ETc−lluvia)", f"{etc_sum - rain_sum:+.0f} mm",
-              help="Positivo = gastó más de lo que llovió (tira de la reserva del suelo).")
-    st.caption(f"**Fase:** {_phase_lbl} · **Kc hoy** {kc_now:.2f} · **ET0:** {metodo} · "
-               "clima de finca (un sensor); la reserva es por campo según su suelo.")
+    if daily_rio is None or daily_rio.empty:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("ET0 periodo", f"{et0_sum:.0f} mm", help="Demanda de la atmósfera (evapotranspiración de referencia).")
+        c2.metric("ETc manzano", f"{etc_sum:.0f} mm", help="Agua que gastó el manzano (ET0×Kc) en el periodo.")
+        c3.metric("Lluvia periodo", f"{rain_sum:.0f} mm")
+        c4.metric("Déficit (ETc−lluvia)", f"{etc_sum - rain_sum:+.0f} mm",
+                  help="Positivo = gastó más de lo que llovió (tira de la reserva del suelo).")
+        st.caption(f"**Fase:** {_phase_lbl} · **Kc hoy** {kc_now:.2f} · **ET0:** {metodo} · "
+                   "clima de finca (un sensor); la reserva es por campo según su suelo.")
+    else:
+        per_r = daily_rio[(daily_rio["Fecha"] >= _s0) & (daily_rio["Fecha"] <= _end)]
+        if per_r.empty:
+            per_r = daily_rio.tail(14)
+        _zonas_wb = [(f"🏠 {ZONA_NAVE}", per), (f"🌊 {ZONA_RIO}", per_r)]
+        for _zcol, (_ztit, _zper) in zip(st.columns(2), _zonas_wb):
+            _z_et0 = float(pd.to_numeric(_zper["ET0"], errors="coerce").sum())
+            _z_etc = float(pd.to_numeric(_zper["ETc"], errors="coerce").sum())
+            _z_ll = float(pd.to_numeric(_zper["Lluvia"], errors="coerce").sum())
+            with _zcol:
+                st.markdown(f"**{_ztit}**")
+                _za, _zb = st.columns(2)
+                _za.metric("ET0 periodo", f"{_z_et0:.0f} mm", help="Demanda de la atmósfera (evapotranspiración de referencia).")
+                _zb.metric("ETc manzano", f"{_z_etc:.0f} mm", help="Agua que gastó el manzano (ET0×Kc) en el periodo.")
+                _zc, _zd = st.columns(2)
+                _zc.metric("Lluvia periodo", f"{_z_ll:.0f} mm")
+                _zd.metric("Déficit (ETc−lluvia)", f"{_z_etc - _z_ll:+.0f} mm",
+                           help="Positivo = gastó más de lo que llovió (tira de la reserva del suelo).")
+        st.caption(f"**Fase:** {_phase_lbl} · **Kc hoy** {kc_now:.2f} · **ET0:** {metodo} (Nave) · "
+                   f"{metodo_rio} (Río) · cada campo usa el clima de SU zona (🌊 Río: temperatura, "
+                   "humedad y lluvia de su sensor; radiación y viento de la Nave); la reserva es por "
+                   "campo según su suelo.")
 
     with st.expander("💧 ¿Qué es la evapotranspiración? (explicado muy fácil)", expanded=False):
         st.markdown(
@@ -11119,7 +11209,10 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             continue
         _irr = field_irrigation_by_date(pr["Campo"])
         _cov = field_cover_factor(pr["Campo"])
-        _, m = run_soil_depletion(daily, _taw, cover=_cov, irr_by_date=_irr)
+        _dd = _daily_de(pr["Campo"])
+        _etc_rec_f = (_etc_recent if _dd is daily
+                      else pd.to_numeric(_dd.tail(7)["ETc"], errors="coerce").mean())
+        _, m = run_soil_depletion(_dd, _taw, cover=_cov, irr_by_date=_irr)
         if not m:
             continue
         Dr, raw = m["Dr"], m["RAW"]
@@ -11129,12 +11222,13 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             estado = "🟠 Vigilar"; _n_vig += 1
         else:
             estado = "🟢 OK"
-        _dias = int((raw - Dr) / _etc_recent) if (_etc_recent and _etc_recent > 0 and Dr < raw) else 0
+        _dias = int((raw - Dr) / _etc_rec_f) if (_etc_rec_f and _etc_rec_f > 0 and Dr < raw) else 0
         # Modelo B "goteo/árbol": ETc×Kd (cobertura) + raíz profunda por patrón + riego×0.90
-        _, _mB = field_model_b_reserve(daily, pr, _irr)
+        _, _mB = field_model_b_reserve(_dd, pr, _irr)
         _resB = int(round(_mB["reserva_pct"])) if _mB else None
         _rows.append({
-            "Campo": (pr["Campo"] + " *") if str(pr.get("Fuente", "")).endswith("*") else pr["Campo"],
+            "Campo": (((pr["Campo"] + " *") if str(pr.get("Fuente", "")).endswith("*") else pr["Campo"])
+                      + (" 🌊" if zona_de_campo(pr["Campo"]) == ZONA_RIO else "")),
             "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
             "Reserva % (clásico)": int(round(m["reserva_pct"])),
             "Reserva % (goteo)": (_resB if _resB is not None else "—"),
@@ -11234,8 +11328,9 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             if not _irr:
                 continue                        # solo campos con riego REAL cargado
             _cov = field_cover_factor(pr["Campo"])
-            _dfc, _mc = run_soil_depletion(daily, _taw, cover=_cov, irr_by_date=_irr)
-            _dfs, _ms = run_soil_depletion(daily, _taw, cover=_cov, irr_by_date=None)
+            _dd = _daily_de(pr["Campo"])
+            _dfc, _mc = run_soil_depletion(_dd, _taw, cover=_cov, irr_by_date=_irr)
+            _dfs, _ms = run_soil_depletion(_dd, _taw, cover=_cov, irr_by_date=None)
             _mincon = int(pd.to_numeric(_dfc["Reserva %"], errors="coerce").min())
             _minsin = int(pd.to_numeric(_dfs["Reserva %"], errors="coerce").min())
             if _mincon >= 50:
@@ -11260,7 +11355,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             _deficit25 = max(0.0, (_dr_now - 0.75 * _taw)) if _dr_now is not None else 0.0
             _h_25 = round(_deficit25 * _dm["min_per_mm"] / 60.0, 1) if (_dm and _dm.get("min_per_mm")) else None
             _val_rows.append({
-                "Campo": pr["Campo"], "Riego real (mm)": round(_mc.get("riego_total", 0)),
+                "Campo": marca_zona(pr["Campo"]), "Riego real (mm)": round(_mc.get("riego_total", 0)),
                 "Reserva hoy %": int(round(_mc["reserva_pct"])),
                 "Res. mín (con riego)": _mincon, "Res. mín (sin riego)": _minsin,
                 "Aporte riego (ptos)": f"+{_aporte}" if _aporte > 0 else str(_aporte),
@@ -11302,9 +11397,16 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 continue
             _riego_sea = float(sum(v for d, v in _irr.items()
                                    if pd.Timestamp(d) >= _season_start))
-            _cub = _rain_sea + _riego_sea
-            _pct = round(_cub / _etc_sea * 100) if _etc_sea > 0 else None
-            _defi = max(0.0, _etc_sea - _cub)
+            _dd = _daily_de(pr["Campo"])
+            if _dd is daily:
+                _etc_f, _rain_f = _etc_sea, _rain_sea
+            else:
+                _ds_f = _dd[pd.to_datetime(_dd["Fecha"]) >= _season_start]
+                _etc_f = float(pd.to_numeric(_ds_f["ETc"], errors="coerce").sum())
+                _rain_f = float(pd.to_numeric(_ds_f["Lluvia"], errors="coerce").sum())
+            _cub = _rain_f + _riego_sea
+            _pct = round(_cub / _etc_f * 100) if _etc_f > 0 else None
+            _defi = max(0.0, _etc_f - _cub)
             if _pct is None:
                 _lec = "—"
             elif _pct >= 100:
@@ -11314,7 +11416,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             else:
                 _lec = "🔴 Por debajo del ETc de libro (clima húmedo + raíz + sidra lo compensan)."
             _cov_rows.append({
-                "Campo": pr["Campo"],
+                "Campo": marca_zona(pr["Campo"]),
                 "Riego (mm)": round(_riego_sea, 1),
                 "Cubierto lluvia+riego (mm)": round(_cub),
                 "Cobertura de la ETc %": _pct,
@@ -11323,11 +11425,20 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             })
         if _cov_rows:
             st.markdown("##### 💧🌧️ ¿Cuánto de la necesidad (ETc) cubres con lluvia + riego?")
-            st.caption(
-                f"**Necesidad de la temporada** (ETc del manzano, 1-abr → hoy): "
-                f"**{round(_etc_sea)} mm** · **Lluvia caída**: **{round(_rain_sea)} mm**. "
-                "La lluvia y el ETc son comunes a toda la finca (un solo sensor); lo que cambia por "
-                "campo es **tu riego**.")
+            if daily_rio is None or daily_rio.empty:
+                st.caption(
+                    f"**Necesidad de la temporada** (ETc del manzano, 1-abr → hoy): "
+                    f"**{round(_etc_sea)} mm** · **Lluvia caída**: **{round(_rain_sea)} mm**. "
+                    "La lluvia y el ETc son comunes a toda la finca (un solo sensor); lo que cambia por "
+                    "campo es **tu riego**.")
+            else:
+                _dsr = daily_rio[pd.to_datetime(daily_rio["Fecha"]) >= _season_start]
+                st.caption(
+                    f"**Necesidad de la temporada** (ETc del manzano, 1-abr → hoy) y **lluvia**: "
+                    f"🏠 Nave **{round(_etc_sea)} mm** / **{round(_rain_sea)} mm** · 🌊 Río "
+                    f"**{round(float(pd.to_numeric(_dsr['ETc'], errors='coerce').sum()))} mm** / "
+                    f"**{round(float(pd.to_numeric(_dsr['Lluvia'], errors='coerce').sum()))} mm**. "
+                    "Cada campo usa el clima de su zona; además cambia **tu riego**.")
             st.dataframe(pd.DataFrame(_cov_rows), use_container_width=True, hide_index=True)
             st.caption(
                 "**Qué es esto:** el **balance BRUTO** de la temporada — toda el agua que ha entrado "
@@ -11344,19 +11455,42 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 "necesidad real más baja. **El calibre de septiembre es el juez.**"
             )
 
+        # ── Zona Río: reserva con su propio clima frente al de la Nave ─────────
+        with st.expander(f"🌊 Zona Río: la reserva con su propio clima frente al de la Nave "
+                         f"(desde el {ZONA_RIO_INICIO_DATOS:%d/%m/%Y})", expanded=False):
+            _cmp_r, _res_r = comparacion_riego_zona_rio(
+                history, st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS)),
+                eff, end_ts)
+            if _cmp_r.empty:
+                st.info("Todavía no hay datos del sensor del Río para comparar.")
+            else:
+                st.caption(
+                    f"Del **{ZONA_RIO_INICIO_DATOS:%d/%m/%Y}** al **{pd.Timestamp(end_ts):%d/%m/%Y}** · "
+                    f"lluvia: 🏠 Nave **{_res_r['lluvia_nave']} mm** · 🌊 Río **{_res_r['lluvia_rio']} mm** · "
+                    f"necesidad del manzano (ETc): Nave **{_res_r['etc_nave']} mm** · Río "
+                    f"**{_res_r['etc_rio']} mm**.")
+                st.dataframe(_cmp_r, use_container_width=True, hide_index=True)
+                st.caption(
+                    "Mismo suelo, raíz y riego real en las dos columnas: **solo cambia el clima**. "
+                    "**Reserva mín** = lo más bajo en ese tramo. Es una comparación para ver la "
+                    "diferencia; el balance de arriba usa el clima del Río en estos campos a partir "
+                    f"del {ZONA_RIO_MANDA_DESDE:%d/%m/%Y}.")
+
         # ── Evolución anual de la reserva por campo (gráfica) ──────────────────
         st.markdown("##### 📈 Evolución de la reserva durante el año (por campo)")
         _campos_g = list(dict.fromkeys(str(c) for c in eff["Campo"].tolist()))
         if _campos_g:
             _def_ix = _campos_g.index("GY") if "GY" in _campos_g else 0
-            _sel_g = st.selectbox("Campo", _campos_g, index=_def_ix, key="wb_chart_campo")
+            _sel_g = st.selectbox("Campo", _campos_g, index=_def_ix, key="wb_chart_campo",
+                                  format_func=marca_zona)
             _prg = eff[eff["Campo"].astype(str) == _sel_g]
             _tawg = _prg["TAW mm"].iloc[0] if not _prg.empty else None
-            if _tawg and not pd.isna(_tawg) and not daily.empty:
+            _dg = _daily_de(_sel_g)
+            if _tawg and not pd.isna(_tawg) and not _dg.empty:
                 _covg = field_cover_factor(_sel_g)
                 _irrg = field_irrigation_by_date(_sel_g)
-                _outg, _mg = run_soil_depletion(daily, _tawg, cover=_covg, irr_by_date=_irrg)
-                _outg_B, _mgB = field_model_b_reserve(daily, _prg.iloc[0], _irrg)   # Modelo B
+                _outg, _mg = run_soil_depletion(_dg, _tawg, cover=_covg, irr_by_date=_irrg)
+                _outg_B, _mgB = field_model_b_reserve(_dg, _prg.iloc[0], _irrg)   # Modelo B
                 if not _outg.empty:
                     import plotly.graph_objects as go
                     _x = pd.to_datetime(_outg["Fecha"])
@@ -11446,9 +11580,18 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 )
 
     with st.expander("📈 Detalle diario del clima y ETc (finca)", expanded=False):
-        _show = per[["Fecha", "ET0", "Kc", "ETc", "Lluvia"]].copy()
-        _show["Fecha"] = pd.to_datetime(_show["Fecha"]).dt.strftime("%d/%m")
-        st.dataframe(_show, use_container_width=True, hide_index=True)
+        def _tabla_detalle(_p):
+            _show = _p[["Fecha", "ET0", "Kc", "ETc", "Lluvia"]].copy()
+            _show["Fecha"] = pd.to_datetime(_show["Fecha"]).dt.strftime("%d/%m")
+            st.dataframe(_show, use_container_width=True, hide_index=True)
+        if daily_rio is None or daily_rio.empty:
+            _tabla_detalle(per)
+        else:
+            _tdn, _tdr = st.tabs([f"🏠 {ZONA_NAVE}", f"🌊 {ZONA_RIO}"])
+            with _tdn:
+                _tabla_detalle(per)
+            with _tdr:
+                _tabla_detalle(per_r)
 
     st.caption(
         "**Método FAO-56.** **ETc = ET0 × Kc**. **ET0** por **Penman-Monteith** completa "
