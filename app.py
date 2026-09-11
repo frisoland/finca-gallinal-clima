@@ -3171,6 +3171,46 @@ def horas_rio_en_periodo(rio, desde, hasta):
     return int(((_fh >= pd.Timestamp(desde)) & (_fh <= pd.Timestamp(hasta)) & _t.notna()).sum())
 
 
+def selector_zona(key):
+    """Selector «Zona Nave / Zona Río» para las pantallas de CONSULTA. Solo cambia lo que se
+    ve en esa pantalla: el periodo elegido y los cálculos de otras pestañas no se tocan."""
+    return st.radio(
+        "Zona", [ZONA_NAVE, ZONA_RIO], horizontal=True, key=key,
+        help=(f"Zona Río: temperatura, humedad y lluvia del sensor de la vega del Aboño (desde "
+              f"el {ZONA_RIO_INICIO_DATOS:%d/%m/%Y}). Lo que ese sensor no mide (hoja mojada, "
+              "viento, radiación) se toma de la Nave."))
+
+
+def historico_para_ver(zona, nave=None, rio=None):
+    """Histórico para CONSULTAR una zona. La Nave, tal cual. El Río, desde su primer dato
+    (antes no hay sensor, y enseñar datos de la Nave como si fueran del Río confundiría),
+    con su temperatura, humedad y lluvia y, para lo demás, la Nave."""
+    nave = nave if nave is not None else st.session_state.get("history_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+    if zona != ZONA_RIO:
+        return nave
+    rio = rio if rio is not None else st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+    if rio is None or rio.empty or nave is None or nave.empty:
+        return pd.DataFrame(columns=CANONICAL_COLUMNS)
+    hz = historico_zona(ZONA_RIO, nave, rio, rio_desde=ZONA_RIO_INICIO_DATOS)
+    return hz[pd.to_datetime(hz["fecha_hora"], errors="coerce") >= ZONA_RIO_INICIO_DATOS].reset_index(drop=True)
+
+
+def disponibilidad_zona_rio(rio, avail_zona, start, end):
+    """Calidad del dato de la Zona Río: temperatura/humedad/lluvia medidas por SU sensor
+    (con sus huecos a la vista) y el resto de bloques rotulados como de la Nave."""
+    _bloque = next(iter(SENSOR_BLOCKS))
+    r = pd.DataFrame(columns=CANONICAL_COLUMNS) if rio is None else rio
+    _f = pd.to_datetime(r["fecha_hora"], errors="coerce") if not r.empty else pd.Series(dtype="datetime64[ns]")
+    r = r[(_f >= pd.Timestamp(start)) & (_f <= pd.Timestamp(end))] if not r.empty else r
+    propio = availability_table(r, start, end)
+    propio = propio[propio["Sensor"] == _bloque].assign(Sensor=f"{_bloque} · sensor del Río")
+    resto = pd.DataFrame()
+    if avail_zona is not None and not avail_zona.empty:
+        resto = avail_zona[avail_zona["Sensor"] != _bloque].copy()
+        resto["Sensor"] = resto["Sensor"].astype(str) + " · de la Nave"
+    return pd.concat([propio, resto], ignore_index=True)
+
+
 def huecos_sensor_rio(rio):
     """(horas que debería haber entre el primer y el último dato, horas con temperatura,
     horas sin temperatura). Las que faltan son las que se rellenarán con la Nave."""
@@ -8573,11 +8613,66 @@ def home_today_tab(history, soil_type, hoja_threshold):
                "correspondiente (Carpocapsa, Decisiones, Sanidad…).")
 
 
+def _render_dashboard_zona_rio(history, soil_type, hoja_threshold):
+    """Dashboard de la Zona Río: registros, huecos, CSV y calidad del SENSOR del Río tal cual;
+    el resumen de 30 días, con su temperatura, humedad y lluvia y lo demás de la Nave."""
+    rio = st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+    if rio is None or rio.empty:
+        st.info("Todavía no hay datos del sensor del Río. Se descargan en **🌦️ Sencrop → "
+                "⬇️ Actualizar datos → Zona Río**.")
+        return
+    r = rio.copy()
+    r["fecha_hora"] = pd.to_datetime(r["fecha_hora"], errors="coerce")
+    r = r.dropna(subset=["fecha_hora"]).sort_values("fecha_hora").reset_index(drop=True)
+    min_dt, max_dt = r["fecha_hora"].min(), r["fecha_hora"].max()
+    st.caption("🌊 Sensor de la vega del Aboño: mide temperatura, humedad y lluvia. Hoja mojada, "
+               "viento y radiación no los mide; en el resumen de 30 días se usan los de la Nave.")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Registros horarios", len(r))
+    c2.metric("Desde", str(min_dt))
+    c3.metric("Hasta", str(max_dt))
+    _esp, _con, _hue = huecos_sensor_rio(r)
+    st.caption(f"Horas sin temperatura entre el primer y el último dato: **{_hue}** de {_esp}"
+               + (f" ({100 * _hue / _esp:.1f} %)" if _esp else ""))
+
+    _cols = [c for c in ("fecha_hora", "temp_media", "temp_min", "temp_max",
+                         "hr_media", "hr_min", "hr_max", "lluvia_mm") if c in r.columns]
+    st.download_button(
+        "⬇️ Descargar histórico de la Zona Río (CSV)",
+        data=r[_cols].to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"historico_zona_rio_{pd.Timestamp.now():%Y%m%d}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="dash_dl_rio",
+        help="Lo que midió el sensor del Río, hora a hora, sin rellenar nada.",
+    )
+
+    with st.expander("🔍 Calidad del dato", expanded=False):
+        _a = availability_table(r, min_dt, max_dt)
+        st.dataframe(_a[_a["Sensor"] == next(iter(SENSOR_BLOCKS))], use_container_width=True)
+
+    st.markdown("#### Resumen últimos 30 días")
+    hz = historico_para_ver(ZONA_RIO, history, rio)
+    last_start = max_dt - pd.Timedelta(days=30)
+    last_df = hz[(hz["fecha_hora"] >= last_start) & (hz["fecha_hora"] <= max_dt)].copy()
+    if not last_df.empty:
+        last_df = add_risk_columns(last_df, hoja_humeda_threshold=hoja_threshold)
+        last_summary = period_summary(last_df, soil_type, last_start, max_dt)
+        _summary_v = last_summary.T.reset_index()
+        _summary_v.columns = ["Indicador", "Valor"]
+        st.dataframe(_summary_v, use_container_width=True, hide_index=True)
+
+
 def dashboard_tab(history, soil_type, hoja_threshold):
     st.subheader("Dashboard general")
 
     if history.empty:
         st.info("Carga primero el histórico en la pestaña Importación.")
+        return
+
+    if selector_zona("dash_zona") == ZONA_RIO:
+        _render_dashboard_zona_rio(history, soil_type, hoja_threshold)
         return
 
     min_dt = history["fecha_hora"].min()
@@ -8622,7 +8717,19 @@ def analysis_tab(history, soil_type, hoja_threshold):
         return
 
     period_selector(history)
-    period, period_df, avail, summary, global_summary = get_period_data(history, soil_type, hoja_threshold)
+    # La zona solo cambia lo que se ve AQUÍ: el periodo es el mismo, y Sanidad y Riego
+    # siguen leyendo el histórico de la Nave con su propio get_period_data.
+    _zona_a = selector_zona("anal_zona")
+    _hist_a = history
+    if _zona_a == ZONA_RIO:
+        _hist_a = historico_para_ver(ZONA_RIO, history)
+        if _hist_a.empty:
+            st.info("Todavía no hay datos del sensor del Río. Se descargan en **🌦️ Sencrop → "
+                    "⬇️ Actualizar datos → Zona Río**.")
+            return
+        st.caption(f"🌊 **{ZONA_RIO}**: temperatura, humedad y lluvia de su sensor (desde el "
+                   f"{ZONA_RIO_INICIO_DATOS:%d/%m/%Y}); hoja mojada, viento y radiación de la Nave.")
+    period, period_df, avail, summary, global_summary = get_period_data(_hist_a, soil_type, hoja_threshold)
 
     if period is None:
         st.info("Configura un periodo y pulsa **Analizar periodo**.")
@@ -8631,11 +8738,18 @@ def analysis_tab(history, soil_type, hoja_threshold):
     st.write(f"Periodo analizado: **{period['start_ts']}** a **{period['end_ts']}**")
 
     if period_df.empty:
-        st.warning("No hay datos en el periodo seleccionado.")
+        st.warning("No hay datos en el periodo seleccionado."
+                   + (f" El sensor del Río empieza el {ZONA_RIO_INICIO_DATOS:%d/%m/%Y}."
+                      if _zona_a == ZONA_RIO else ""))
         return
 
     with st.expander("🔍 Calidad de datos", expanded=False):
-        st.dataframe(avail, use_container_width=True)
+        if _zona_a == ZONA_RIO:
+            st.dataframe(disponibilidad_zona_rio(
+                st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS)),
+                avail, period["start_ts"], period["end_ts"]), use_container_width=True)
+        else:
+            st.dataframe(avail, use_container_width=True)
 
     st.markdown("#### Resumen global del periodo")
     # Tabla HTML con primera columna sticky + cabecera verde (igual que Previsión)
