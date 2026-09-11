@@ -2224,7 +2224,7 @@ def _season_gdh_daily(df, analysis_year, end_md=None):
     return daily[["fecha", "gdh_dia", "gdh_cum"]]
 
 
-def variety_bloom_predictions(df, analysis_year, today=None, gdh_end_md=None):
+def variety_bloom_predictions(df, analysis_year, today=None, gdh_end_md=None, variedades=None):
     """Modelo SECUENCIAL e independiente por variedad (como mide el SERIDA):
       1) Sale de reposo cuando se cumple SU frío (Chill Portions ≥ requerimiento).
       2) Desde esa fecha acumula SU calor (GDH) hasta cubrir su requerimiento → floración prevista.
@@ -2253,7 +2253,7 @@ def variety_bloom_predictions(df, analysis_year, today=None, gdh_end_md=None):
     cutoff = min(today, last_data)  # acumulado "a la fecha de consulta"
 
     rows = []
-    for v in FINCA_VARIETIES:
+    for v in (FINCA_VARIETIES if variedades is None else variedades):
         cp_req = chill_requirement_cp(v)
         cp_mark = ("†" if v in CHILL_REQ_ESTIMATED
                    else "" if CHILL_REQ_BY_VARIETY_CP.get(v) is not None else "*")
@@ -2548,6 +2548,28 @@ def iso_week_period(year, week):
     start = pd.Timestamp.fromisocalendar(int(year), int(week), 1)
     end = pd.Timestamp.fromisocalendar(int(year), int(week), 7) + pd.Timedelta(hours=23)
     return start, end
+
+
+def comparar_frio_por_zona(nave, rio, years, cmp_nave=None):
+    """Campañas de frío de la Nave y, para las que tienen datos de su sensor, del Río.
+
+    Columna «Zona». Orden: por campaña, la Nave primero. `cmp_nave` evita recalcular
+    la Nave si el llamador ya la tiene."""
+    base = (compare_chill_campaigns(nave, years) if cmp_nave is None else cmp_nave).copy()
+    base["Zona"] = ZONA_NAVE
+    años_rio = []
+    for y in years:
+        _s, _e = winter_period_from_analysis_year(int(y))
+        if horas_rio_en_periodo(rio, max(_s, ZONA_RIO_MANDA_DESDE), _e) > 0:
+            años_rio.append(int(y))
+    if not años_rio:
+        return base
+    _r = compare_chill_campaigns(historico_zona(ZONA_RIO, nave, rio), años_rio)
+    _r["Zona"] = ZONA_RIO
+    out = pd.concat([base, _r], ignore_index=True)
+    out["_orden_zona"] = (out["Zona"] == ZONA_RIO).astype(int)
+    return (out.sort_values(["Año análisis", "_orden_zona"], kind="stable")
+               .drop(columns="_orden_zona").reset_index(drop=True))
 
 
 def compare_chill_campaigns(history, years):
@@ -3113,6 +3135,26 @@ def historico_de_campo(campo, rio_desde=None):
                           st.session_state.get("history_df", pd.DataFrame(columns=CANONICAL_COLUMNS)),
                           st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS)),
                           rio_desde=rio_desde)
+
+
+def variedades_de_zona(zona):
+    """Variedades plantadas en los campos de una zona, en el orden de FINCA_VARIETIES."""
+    plantadas = set()
+    for fr in FIELDS_BASE_ROWS:
+        if zona_de_campo(fr.get("Campo")) == zona:
+            plantadas |= {v.strip() for v in str(fr.get("Variedades actuales", "")).split(",") if v.strip()}
+    return [v for v in FINCA_VARIETIES if v in plantadas]
+
+
+def horas_rio_en_periodo(rio, desde, hasta):
+    """Horas con temperatura del sensor del Río entre dos instantes (incluidos)."""
+    if rio is None or rio.empty or "fecha_hora" not in rio.columns:
+        return 0
+    _fh = pd.to_datetime(rio["fecha_hora"], errors="coerce")
+    _t = pd.to_numeric(rio["temp_media"], errors="coerce") if "temp_media" in rio.columns else None
+    if _t is None:
+        return 0
+    return int(((_fh >= pd.Timestamp(desde)) & (_fh <= pd.Timestamp(hasta)) & _t.notna()).sum())
 
 
 def huecos_sensor_rio(rio):
@@ -8623,6 +8665,228 @@ def analysis_tab(history, soil_type, hoja_threshold):
         )
 
 
+def _render_frio_zona(hist, zona, selected_chill_year, selected_season):
+    """Cálculo y tablas de una campaña de frío para UNA zona (antes vivía dentro de
+    cold_tab). La Zona Nave recibe el histórico de siempre y sale igual que antes; lo
+    único que cambia es que las variedades son las plantadas en esa zona."""
+    variedades = variedades_de_zona(zona)
+    _zk = "rio" if zona == ZONA_RIO else "nave"
+    chill_summary, chill_daily, chill_start, chill_end = winter_chill_summary(hist, selected_chill_year)
+
+    if chill_summary.empty:
+        st.warning("No hay datos de temperatura para esa campaña.")
+    else:
+        # ── Preparar tabla ────────────────────────────────────────────────
+        _cs = chill_summary.copy()
+        _cs_drop = [c for c in ["Horas esperadas", "Horas con datos temperatura"]
+                    if c in _cs.columns]
+        _cs = _cs.drop(columns=_cs_drop)
+        if "Cobertura temperatura %" in _cs.columns:
+            _cs = _cs.rename(columns={"Cobertura temperatura %": "Calidad del dato %"})
+        if "Campaña frío" in _cs.columns:
+            _cs = _cs[["Campaña frío"] + [c for c in _cs.columns if c != "Campaña frío"]]
+        _cs = _cs.reset_index(drop=True)
+
+        # ── Tabla HTML sticky ─────────────────────────────────────────────
+        _cs_cols = list(_cs.columns)
+        _cs_th   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                    "white-space:nowrap;font-weight:600;font-size:13px;")
+        _cs_ths  = "position:sticky;left:0;z-index:2;" + _cs_th
+        _cs_hdr  = "".join(
+            f'<th style="{_cs_ths if i == 0 else _cs_th}">{c}</th>'
+            for i, c in enumerate(_cs_cols)
+        )
+        _cs_body = ""
+        for _, _r in _cs.iterrows():
+            _cells = ""
+            for _i, _c in enumerate(_cs_cols):
+                _v = _r[_c]
+                if isinstance(_v, float) and not pd.isna(_v):
+                    _disp = f"{_v:.1f}"
+                elif isinstance(_v, float) and pd.isna(_v):
+                    _disp = "—"
+                elif hasattr(_v, "strftime"):
+                    _disp = _v.strftime("%d/%m/%Y")
+                else:
+                    _disp = str(_v)
+                _bg = "#eef2ee" if _i == 0 else "white"
+                _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                       f"background:{_bg};padding:7px 12px;"
+                       f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+                _cells += f"<td style='{_td}'>{_disp}</td>"
+            _cs_body += f"<tr>{_cells}</tr>"
+        st.markdown(
+            f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+            f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+            f'<table style="border-collapse:collapse;width:100%;">'
+            f'<thead><tr>{_cs_hdr}</tr></thead>'
+            f'<tbody>{_cs_body}</tbody>'
+            f'</table></div>',
+            unsafe_allow_html=True,
+        )
+
+        comparison_df = chill_column_comparison(hist, selected_chill_year)
+        st.markdown("#### Comprobación por columna de temperatura")
+
+        # ── Preparar tabla comparación ────────────────────────────────────
+        _cmp = comparison_df.copy()
+        _cmp_drop = [c for c in ["Horas esperadas campaña", "Horas con dato"]
+                     if c in _cmp.columns]
+        _cmp = _cmp.drop(columns=_cmp_drop).reset_index(drop=True)
+
+        # ── Tabla HTML sticky ─────────────────────────────────────────────
+        _cmp_cols = list(_cmp.columns)
+        _cmp_th   = ("background:#1a2e1e;color:white;padding:8px 12px;"
+                     "white-space:nowrap;font-weight:600;font-size:13px;")
+        _cmp_ths  = "position:sticky;left:0;z-index:2;" + _cmp_th
+        _cmp_hdr  = "".join(
+            f'<th style="{_cmp_ths if i == 0 else _cmp_th}">{c}</th>'
+            for i, c in enumerate(_cmp_cols)
+        )
+        _cmp_body = ""
+        for _, _r in _cmp.iterrows():
+            _cells = ""
+            for _i, _c in enumerate(_cmp_cols):
+                _v = _r[_c]
+                if isinstance(_v, float) and not pd.isna(_v):
+                    _disp = f"{_v:.1f}"
+                elif isinstance(_v, float) and pd.isna(_v):
+                    _disp = "—"
+                else:
+                    _disp = str(_v)
+                _bg = "#eef2ee" if _i == 0 else "white"
+                _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
+                       f"background:{_bg};padding:7px 12px;"
+                       f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
+                _cells += f"<td style='{_td}'>{_disp}</td>"
+            _cmp_body += f"<tr>{_cells}</tr>"
+        st.markdown(
+            f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+            f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+            f'<table style="border-collapse:collapse;width:100%;">'
+            f'<thead><tr>{_cmp_hdr}</tr></thead>'
+            f'<tbody>{_cmp_body}</tbody>'
+            f'</table></div>',
+            unsafe_allow_html=True,
+        )
+
+        if not chill_daily.empty:
+            chart_df = chill_daily.set_index("fecha_hora")[["horas_menor_7_acum", "utah_acum", "chill_portions_acum"]]
+            st.line_chart(chart_df)
+
+            # ── Cumplimiento de frío por variedad (Chill Portions) ────────
+            # Modelo de referencia (SERIDA): Dynamic / Chill Portions.
+            _cp_acum = float(chill_daily["chill_portions_acum"].dropna().iloc[-1]) \
+                if chill_daily["chill_portions_acum"].notna().any() else 0.0
+            st.markdown("#### Cumplimiento de frío por variedad (Chill Portions)")
+            st.caption(
+                f"Frío acumulado esta campaña: **{_cp_acum:.0f} CP** · media histórica de la "
+                f"zona {int(CHILL_HIST_AVG_CP)} CP (SERIDA 1978-2019). El modelo de "
+                "referencia es **Chill Portions (Dynamic)**: las horas de frío sobreestiman "
+                "el declive en clima templado y conviene no fiarse solo de ellas."
+            )
+            _rows = []
+            for _v in variedades:
+                _req = chill_requirement_cp(_v)
+                _forcing = CHILL_REQ_BY_VARIETY_CP.get(_v) is not None and _v not in CHILL_REQ_ESTIMATED
+                _est = _v in CHILL_REQ_ESTIMATED
+                _mark = "" if _forcing else (" †" if _est else " *")
+                _ok = _cp_acum >= _req
+                _margin = _cp_acum - _req
+                _rows.append({
+                    "Variedad": _v,
+                    "Req. (CP)": f"{_req:.0f}{_mark}",
+                    "Acumulado (CP)": f"{_cp_acum:.0f}",
+                    "Margen": f"{_margin:+.0f}",
+                    "Estado": "✅ Cumple" if _ok else "❌ No cumple",
+                })
+            _req_df = pd.DataFrame(_rows).sort_values("Variedad").reset_index(drop=True)
+            st.dataframe(_req_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "Req. por variedad: forcing de SERIDA/Delgado 2021 (Regona 90 · Collaos 85 · "
+                "Xuanina 80 · De la Riega 72). **†** = estimado (Verdialona 75, PLS+offset). "
+                "**\\*** = sin dato → máximo conocido (90 CP)."
+            )
+
+            # ── Floración prevista por variedad: modelo SECUENCIAL frío → calor ──
+            def _miles(_x):
+                # Separador de miles con ESPACIO (no punto), para que 10 543 GDH
+                # no se confunda con un decimal.
+                return f"{_x:,.0f}".replace(",", " ")
+
+            _bloom_df, _bmeta = variety_bloom_predictions(hist, selected_chill_year, variedades=variedades)
+            st.markdown("#### Floración prevista por variedad (frío → calor)")
+            if not _bmeta.get("ok"):
+                st.info("No hay datos suficientes (frío y/o temperatura de primavera) "
+                        "para estimar la floración de esta campaña.")
+            else:
+                _cut_txt = pd.Timestamp(_bmeta["cutoff"]).strftime("%d/%m/%Y")
+                st.caption(
+                    "Cada variedad por separado: **sale del reposo** cuando cumple SU frío "
+                    "(Chill Portions) y, **desde esa fecha**, acumula SU calor (GDH, Anderson "
+                    "1986) hasta cubrir su requerimiento → **floración prevista**. Por eso las "
+                    "de frío bajo (De la Riega, Gallinal) salen antes aunque pidan mucho calor."
+                )
+                # Orden por floración prevista (calendario de floración)
+                _bsort = _bloom_df.copy()
+                _bsort["_k"] = pd.to_datetime(_bsort["floracion"], errors="coerce")
+                _bsort = _bsort.sort_values("_k", na_position="last")
+                _rows = []
+                for _, _r in _bsort.iterrows():
+                    _sale = _r["sale_reposo"]
+                    _flor = _r["floracion"]
+                    _ga = _r["gdh_a_hoy"]
+                    _rows.append({
+                        "Variedad": _r["variedad"],
+                        "Frío req. (CP)": f"{_r['cp_req']:.0f}{_r['cp_mark']}",
+                        "Sale de reposo": (pd.Timestamp(_sale).strftime("%d/%m")
+                                           if pd.notna(_sale) else "❄️ no cumple"),
+                        "Calor req. (GDH)": f"{_miles(_r['gdh_req'])}{_r['gdh_mark']}",
+                        "Floración prevista": (pd.Timestamp(_flor).strftime("%d/%m")
+                                               if pd.notna(_flor)
+                                               else ("— aún" if _r["frio_cumplido"] else "—")),
+                        f"GDH acum. ({_cut_txt})": (_miles(_ga) if pd.notna(_ga) else "—"),
+                    })
+                st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+                st.caption(
+                    f"Última columna = GDH acumulados **desde la salida de reposo** hasta la fecha "
+                    f"de consulta ({_cut_txt}). El conteo de GDH **termina en el inicio del cuajado** "
+                    "(22 may por defecto en la fenología): a partir de ahí el calor ya no influye en "
+                    "la floración. Si ves una variedad sin dato oficial floreciendo en campo, ese "
+                    "número es una **pista de su calor real**. — Marcas: sin marca = forcing (Regona, "
+                    "Collaos, Xuanina, De la Riega); **†** = aproximado (Verdialona 75 CP · Gallinal ≈ "
+                    "De la Riega); **\\*** = sin dato → máximo conocido (90 CP / 11 770 GDH). "
+                    "Orientativo: el calor del estudio se midió de fin de reposo a plena flor."
+                )
+
+        st.download_button(
+            f"Descargar frío invernal · {zona}",
+            data=chill_summary.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"frio_invernal_{_zk}_{selected_season.replace('/', '_')}.csv",
+            mime="text/csv",
+            key=f"dl_frio_{_zk}",
+        )
+
+
+def _render_frio_franja_zonas(nave, hist_rio, analysis_year):
+    """Resumen «Río − Nave» de una campaña de frío, sobre las mismas fechas."""
+    _sn, _, _, _ = winter_chill_summary(nave, analysis_year)
+    _sr, _, _, _ = winter_chill_summary(hist_rio, analysis_year)
+    if _sn.empty or _sr.empty:
+        return
+    _n, _r = _sn.iloc[0], _sr.iloc[0]
+    st.markdown(f"**🌊 {ZONA_RIO} frente a 🏠 {ZONA_NAVE}** — misma campaña, mismas fechas")
+    _cols = st.columns(4)
+    for _c, (_etq, _clave, _fmt, _dec) in zip(_cols, [
+            ("Chill Portions", "Chill Portions", "{:+.1f}", 1),
+            ("Horas de frío <7 ºC", "Horas frío <7 ºC", "{:+.0f}", 0),
+            ("Utah", "Utah Chill Units", "{:+.0f}", 0),
+            ("Temp. media", "Temp media periodo frío ºC", "{:+.2f} °C", 2)]):
+        _vn, _vr = float(_n[_clave]), float(_r[_clave])
+        _c.metric(f"{_etq} · Río − Nave", _fmt.format(_vr - _vn),
+                  help=f"Nave {_vn:.{_dec}f} · Río {_vr:.{_dec}f}")
+
+
 def cold_tab(history):
     st.subheader("Campañas de frío")
 
@@ -8666,204 +8930,39 @@ def cold_tab(history):
     selected_season = winter_label_from_analysis_year(selected_chill_year)
 
     if st.button("Calcular campaña de frío", type="primary"):
-        chill_summary, chill_daily, chill_start, chill_end = winter_chill_summary(history, selected_chill_year)
+        _ini, _fin = winter_period_from_analysis_year(selected_chill_year)
+        st.write(f"Campaña seleccionada: **{selected_season}** ({_ini.strftime('%d/%m/%Y')} - {_fin.strftime('%d/%m/%Y')})")
 
-        st.write(f"Campaña seleccionada: **{selected_season}** ({chill_start.strftime('%d/%m/%Y')} - {chill_end.strftime('%d/%m/%Y')})")
-        if chill_summary.empty:
-            st.warning("No hay datos de temperatura para esa campaña.")
-        else:
-            # ── Preparar tabla ────────────────────────────────────────────────
-            _cs = chill_summary.copy()
-            _cs_drop = [c for c in ["Horas esperadas", "Horas con datos temperatura"]
-                        if c in _cs.columns]
-            _cs = _cs.drop(columns=_cs_drop)
-            if "Cobertura temperatura %" in _cs.columns:
-                _cs = _cs.rename(columns={"Cobertura temperatura %": "Calidad del dato %"})
-            if "Campaña frío" in _cs.columns:
-                _cs = _cs[["Campaña frío"] + [c for c in _cs.columns if c != "Campaña frío"]]
-            _cs = _cs.reset_index(drop=True)
+        # Zona Río: solo si su sensor tiene datos en ESTA campaña (y desde que manda).
+        _rio = st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+        _h_rio = horas_rio_en_periodo(_rio, max(_ini, ZONA_RIO_MANDA_DESDE), _fin)
+        _hist_rio = historico_zona(ZONA_RIO, history, _rio) if _h_rio else None
+        if _hist_rio is not None:
+            _render_frio_franja_zonas(history, _hist_rio, selected_chill_year)
 
-            # ── Tabla HTML sticky ─────────────────────────────────────────────
-            _cs_cols = list(_cs.columns)
-            _cs_th   = ("background:#1a2e1e;color:white;padding:8px 12px;"
-                        "white-space:nowrap;font-weight:600;font-size:13px;")
-            _cs_ths  = "position:sticky;left:0;z-index:2;" + _cs_th
-            _cs_hdr  = "".join(
-                f'<th style="{_cs_ths if i == 0 else _cs_th}">{c}</th>'
-                for i, c in enumerate(_cs_cols)
-            )
-            _cs_body = ""
-            for _, _r in _cs.iterrows():
-                _cells = ""
-                for _i, _c in enumerate(_cs_cols):
-                    _v = _r[_c]
-                    if isinstance(_v, float) and not pd.isna(_v):
-                        _disp = f"{_v:.1f}"
-                    elif isinstance(_v, float) and pd.isna(_v):
-                        _disp = "—"
-                    elif hasattr(_v, "strftime"):
-                        _disp = _v.strftime("%d/%m/%Y")
-                    else:
-                        _disp = str(_v)
-                    _bg = "#eef2ee" if _i == 0 else "white"
-                    _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
-                           f"background:{_bg};padding:7px 12px;"
-                           f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
-                    _cells += f"<td style='{_td}'>{_disp}</td>"
-                _cs_body += f"<tr>{_cells}</tr>"
-            st.markdown(
-                f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
-                f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
-                f'<table style="border-collapse:collapse;width:100%;">'
-                f'<thead><tr>{_cs_hdr}</tr></thead>'
-                f'<tbody>{_cs_body}</tbody>'
-                f'</table></div>',
-                unsafe_allow_html=True,
-            )
-
-            comparison_df = chill_column_comparison(history, selected_chill_year)
-            st.markdown("#### Comprobación por columna de temperatura")
-
-            # ── Preparar tabla comparación ────────────────────────────────────
-            _cmp = comparison_df.copy()
-            _cmp_drop = [c for c in ["Horas esperadas campaña", "Horas con dato"]
-                         if c in _cmp.columns]
-            _cmp = _cmp.drop(columns=_cmp_drop).reset_index(drop=True)
-
-            # ── Tabla HTML sticky ─────────────────────────────────────────────
-            _cmp_cols = list(_cmp.columns)
-            _cmp_th   = ("background:#1a2e1e;color:white;padding:8px 12px;"
-                         "white-space:nowrap;font-weight:600;font-size:13px;")
-            _cmp_ths  = "position:sticky;left:0;z-index:2;" + _cmp_th
-            _cmp_hdr  = "".join(
-                f'<th style="{_cmp_ths if i == 0 else _cmp_th}">{c}</th>'
-                for i, c in enumerate(_cmp_cols)
-            )
-            _cmp_body = ""
-            for _, _r in _cmp.iterrows():
-                _cells = ""
-                for _i, _c in enumerate(_cmp_cols):
-                    _v = _r[_c]
-                    if isinstance(_v, float) and not pd.isna(_v):
-                        _disp = f"{_v:.1f}"
-                    elif isinstance(_v, float) and pd.isna(_v):
-                        _disp = "—"
-                    else:
-                        _disp = str(_v)
-                    _bg = "#eef2ee" if _i == 0 else "white"
-                    _td = (f"{'position:sticky;left:0;z-index:1;' if _i == 0 else ''}"
-                           f"background:{_bg};padding:7px 12px;"
-                           f"border-bottom:1px solid #e8e8e8;white-space:nowrap;font-size:13px;")
-                    _cells += f"<td style='{_td}'>{_disp}</td>"
-                _cmp_body += f"<tr>{_cells}</tr>"
-            st.markdown(
-                f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
-                f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
-                f'<table style="border-collapse:collapse;width:100%;">'
-                f'<thead><tr>{_cmp_hdr}</tr></thead>'
-                f'<tbody>{_cmp_body}</tbody>'
-                f'</table></div>',
-                unsafe_allow_html=True,
-            )
-
-            if not chill_daily.empty:
-                chart_df = chill_daily.set_index("fecha_hora")[["horas_menor_7_acum", "utah_acum", "chill_portions_acum"]]
-                st.line_chart(chart_df)
-
-                # ── Cumplimiento de frío por variedad (Chill Portions) ────────
-                # Modelo de referencia (SERIDA): Dynamic / Chill Portions.
-                _cp_acum = float(chill_daily["chill_portions_acum"].dropna().iloc[-1]) \
-                    if chill_daily["chill_portions_acum"].notna().any() else 0.0
-                st.markdown("#### Cumplimiento de frío por variedad (Chill Portions)")
+        _tab_nave, _tab_rio = st.tabs([f"🏠 {ZONA_NAVE}", f"🌊 {ZONA_RIO}"])
+        with _tab_nave:
+            _render_frio_zona(history, ZONA_NAVE, selected_chill_year, selected_season)
+        with _tab_rio:
+            if _hist_rio is None:
+                st.info(
+                    f"El sensor del Río no tiene datos de la campaña **{selected_season}**. Empieza "
+                    f"a contar el **{ZONA_RIO_MANDA_DESDE:%d/%m/%Y}** (campaña "
+                    f"{ZONA_RIO_MANDA_DESDE.year}/{ZONA_RIO_MANDA_DESDE.year + 1}); hasta entonces "
+                    "los campos del Río se calculan con la Nave — mira la pestaña de al lado.")
+            else:
+                _fh_r = pd.to_datetime(_hist_rio["fecha_hora"], errors="coerce")
+                _en = (_fh_r >= _ini) & (_fh_r <= _fin)
+                _tot = int(pd.to_numeric(_hist_rio.loc[_en, "temp_media"], errors="coerce").notna().sum())
+                _rell = max(_tot - _h_rio, 0)
                 st.caption(
-                    f"Frío acumulado esta campaña: **{_cp_acum:.0f} CP** · media histórica de la "
-                    f"zona {int(CHILL_HIST_AVG_CP)} CP (SERIDA 1978-2019). El modelo de "
-                    "referencia es **Chill Portions (Dynamic)**: las horas de frío sobreestiman "
-                    "el declive en clima templado y conviene no fiarse solo de ellas."
-                )
-                _rows = []
-                for _v in FINCA_VARIETIES:
-                    _req = chill_requirement_cp(_v)
-                    _forcing = CHILL_REQ_BY_VARIETY_CP.get(_v) is not None and _v not in CHILL_REQ_ESTIMATED
-                    _est = _v in CHILL_REQ_ESTIMATED
-                    _mark = "" if _forcing else (" †" if _est else " *")
-                    _ok = _cp_acum >= _req
-                    _margin = _cp_acum - _req
-                    _rows.append({
-                        "Variedad": _v,
-                        "Req. (CP)": f"{_req:.0f}{_mark}",
-                        "Acumulado (CP)": f"{_cp_acum:.0f}",
-                        "Margen": f"{_margin:+.0f}",
-                        "Estado": "✅ Cumple" if _ok else "❌ No cumple",
-                    })
-                _req_df = pd.DataFrame(_rows).sort_values("Variedad").reset_index(drop=True)
-                st.dataframe(_req_df, use_container_width=True, hide_index=True)
-                st.caption(
-                    "Req. por variedad: forcing de SERIDA/Delgado 2021 (Regona 90 · Collaos 85 · "
-                    "Xuanina 80 · De la Riega 72). **†** = estimado (Verdialona 75, PLS+offset). "
-                    "**\\*** = sin dato → máximo conocido (90 CP)."
-                )
+                    f"Temperatura del sensor del Río: **{_h_rio} h**"
+                    + (f" · **{_rell} h** rellenadas con la Nave por huecos del sensor "
+                       f"({100 * _rell / _tot:.1f} %)" if _rell and _tot else " · sin huecos"))
+                _render_frio_zona(_hist_rio, ZONA_RIO, selected_chill_year, selected_season)
 
-                # ── Floración prevista por variedad: modelo SECUENCIAL frío → calor ──
-                def _miles(_x):
-                    # Separador de miles con ESPACIO (no punto), para que 10 543 GDH
-                    # no se confunda con un decimal.
-                    return f"{_x:,.0f}".replace(",", " ")
-
-                _bloom_df, _bmeta = variety_bloom_predictions(history, selected_chill_year)
-                st.markdown("#### Floración prevista por variedad (frío → calor)")
-                if not _bmeta.get("ok"):
-                    st.info("No hay datos suficientes (frío y/o temperatura de primavera) "
-                            "para estimar la floración de esta campaña.")
-                else:
-                    _cut_txt = pd.Timestamp(_bmeta["cutoff"]).strftime("%d/%m/%Y")
-                    st.caption(
-                        "Cada variedad por separado: **sale del reposo** cuando cumple SU frío "
-                        "(Chill Portions) y, **desde esa fecha**, acumula SU calor (GDH, Anderson "
-                        "1986) hasta cubrir su requerimiento → **floración prevista**. Por eso las "
-                        "de frío bajo (De la Riega, Gallinal) salen antes aunque pidan mucho calor."
-                    )
-                    # Orden por floración prevista (calendario de floración)
-                    _bsort = _bloom_df.copy()
-                    _bsort["_k"] = pd.to_datetime(_bsort["floracion"], errors="coerce")
-                    _bsort = _bsort.sort_values("_k", na_position="last")
-                    _rows = []
-                    for _, _r in _bsort.iterrows():
-                        _sale = _r["sale_reposo"]
-                        _flor = _r["floracion"]
-                        _ga = _r["gdh_a_hoy"]
-                        _rows.append({
-                            "Variedad": _r["variedad"],
-                            "Frío req. (CP)": f"{_r['cp_req']:.0f}{_r['cp_mark']}",
-                            "Sale de reposo": (pd.Timestamp(_sale).strftime("%d/%m")
-                                               if pd.notna(_sale) else "❄️ no cumple"),
-                            "Calor req. (GDH)": f"{_miles(_r['gdh_req'])}{_r['gdh_mark']}",
-                            "Floración prevista": (pd.Timestamp(_flor).strftime("%d/%m")
-                                                   if pd.notna(_flor)
-                                                   else ("— aún" if _r["frio_cumplido"] else "—")),
-                            f"GDH acum. ({_cut_txt})": (_miles(_ga) if pd.notna(_ga) else "—"),
-                        })
-                    st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
-                    st.caption(
-                        f"Última columna = GDH acumulados **desde la salida de reposo** hasta la fecha "
-                        f"de consulta ({_cut_txt}). El conteo de GDH **termina en el inicio del cuajado** "
-                        "(22 may por defecto en la fenología): a partir de ahí el calor ya no influye en "
-                        "la floración. Si ves una variedad sin dato oficial floreciendo en campo, ese "
-                        "número es una **pista de su calor real**. — Marcas: sin marca = forcing (Regona, "
-                        "Collaos, Xuanina, De la Riega); **†** = aproximado (Verdialona 75 CP · Gallinal ≈ "
-                        "De la Riega); **\\*** = sin dato → máximo conocido (90 CP / 11 770 GDH). "
-                        "Orientativo: el calor del estudio se midió de fin de reposo a plena flor."
-                    )
-
-            st.download_button(
-                "Descargar frío invernal",
-                data=chill_summary.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"frio_invernal_{selected_season.replace('/', '_')}.csv",
-                mime="text/csv",
-            )
-
-            with st.expander("📖 Explicación de modelos de frío", expanded=False):
-                st.markdown("""
+        with st.expander("📖 Explicación de modelos de frío", expanded=False):
+            st.markdown("""
 **Los tres modelos cuantifican el frío acumulado durante el invierno, pero con distintos criterios:**
 
 ---
@@ -8906,22 +9005,22 @@ El modelo más avanzado y preciso para climas mediterráneos y subtropicales, de
 ---
 
 > 💡 **¿Cuál usar?** Para tomar decisiones agronómicas en zonas con inviernos suaves, se recomienda dar más peso a las **Chill Portions**. Las horas frío < 7 ºC son útiles para comparar con recomendaciones históricas de catálogos varietales.
-                """)
+            """)
 
 
 MONTH_NAMES_ES = {
-    1: "Enero",
-    2: "Febrero",
-    3: "Marzo",
-    4: "Abril",
-    5: "Mayo",
-    6: "Junio",
-    7: "Julio",
-    8: "Agosto",
-    9: "Septiembre",
-    10: "Octubre",
-    11: "Noviembre",
-    12: "Diciembre",
+1: "Enero",
+2: "Febrero",
+3: "Marzo",
+4: "Abril",
+5: "Mayo",
+6: "Junio",
+7: "Julio",
+8: "Agosto",
+9: "Septiembre",
+10: "Octubre",
+11: "Noviembre",
+12: "Diciembre",
 }
 
 MONTH_NUMBER_BY_NAME_ES = {v: k for k, v in MONTH_NAMES_ES.items()}
@@ -9643,17 +9742,25 @@ def comparator_tab(history, soil_type, hoja_threshold):
                 st.warning("Selecciona al menos una campaña de frío.")
             else:
                 cmp_chill = compare_chill_campaigns(history, selected_chill_years_cmp)
+                # La tabla y la descarga llevan también la Zona Río (en las campañas con datos
+                # de su sensor); la explicación y el desglose mensual siguen siendo de la Nave.
+                cmp_tabla = comparar_frio_por_zona(
+                    history, st.session_state.get("history_rio_df"), selected_chill_years_cmp,
+                    cmp_nave=cmp_chill)
 
                 # ── Preparar tabla de visualización ──────────────────────────
                 _cols_drop = [c for c in ["Comparación", "Año análisis",
                                           "Horas esperadas", "Horas con datos temperatura"]
-                              if c in cmp_chill.columns]
-                _cd = cmp_chill.drop(columns=_cols_drop).copy()
+                              if c in cmp_tabla.columns]
+                _cd = cmp_tabla.drop(columns=_cols_drop).copy()
                 if "Cobertura temperatura %" in _cd.columns:
                     _cd = _cd.rename(columns={"Cobertura temperatura %": "Calidad del dato %"})
                 # Campaña frío primera
                 if "Campaña frío" in _cd.columns:
                     _cd = _cd[["Campaña frío"] + [c for c in _cd.columns if c != "Campaña frío"]]
+                if "Zona" in _cd.columns:
+                    _resto = [c for c in _cd.columns if c != "Zona"]
+                    _cd = _cd[_resto[:1] + ["Zona"] + _resto[1:]]
                 _cd = _cd.reset_index(drop=True)
 
                 # ── Tabla HTML sticky ─────────────────────────────────────────
@@ -9692,7 +9799,7 @@ def comparator_tab(history, soil_type, hoja_threshold):
                 render_chill_comparison_explanation(cmp_chill, monthly_chill)
                 st.download_button(
                     "Descargar comparación de campañas de frío",
-                    data=cmp_chill.to_csv(index=False).encode("utf-8-sig"),
+                    data=cmp_tabla.to_csv(index=False).encode("utf-8-sig"),
                     file_name="comparacion_campanas_frio.csv",
                     mime="text/csv",
                 )
@@ -22099,7 +22206,18 @@ def gallinal_tab(history):
             st.info(f"**{_cur_year} es el año en curso**: aún sin cosecha (Kg = «sin recolectar»), "
                     "pero su clima ya acumulado (frío, calor, polinización, lluvia, sanidad) sirve "
                     "para **anticipar** cómo viene la campaña.")
-        _fdf, _fnarr = _gallinal_ficha_rows(history, prod, campo_sel, variedad_sel, años_sel)
+        # Clima del campo: el de SU zona (Río desde el 1/11/2026; antes, y la hoja mojada
+        # siempre, de la Nave). Para un campo de la Nave es el histórico de siempre.
+        _zona_campo = zona_de_campo(campo_sel)
+        _hist_campo = historico_zona(
+            _zona_campo, history,
+            st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS)))
+        if _zona_campo == ZONA_RIO:
+            st.caption(
+                f"🌊 **{campo_sel}** es de la **{ZONA_RIO}**: temperatura, humedad y lluvia del "
+                f"sensor de la vega desde el {ZONA_RIO_MANDA_DESDE:%d/%m/%Y}; antes de esa fecha "
+                "(y la hoja mojada, siempre) de la Nave.")
+        _fdf, _fnarr = _gallinal_ficha_rows(_hist_campo, prod, campo_sel, variedad_sel, años_sel)
         st.dataframe(_fdf, use_container_width=True, hide_index=True)
         st.caption(
             "**CP** = Chill Portions (frío) · **GDH** = grados-hora de calor (Anderson 1986) · "
