@@ -8393,8 +8393,8 @@ def home_today_tab(history, soil_type, hoja_threshold):
     try:
         _forecast = st.session_state.get("forecast_df", pd.DataFrame())
         _persist = int(st.session_state.get("dec_persist_days", 16))
-        _risk = build_risk_timeline(history, _forecast, days_back=60)
-        dec = daily_treatment_decision(history, activities, _risk, persistence_days=_persist)
+        dec, _ = decision_por_zonas(history, activities, _forecast,
+                                    persistence_days=_persist, days_back=60)
     except Exception:
         dec = pd.DataFrame()
     fung_hoy = fung_pronto = fung_vigilar = pd.DataFrame()
@@ -12952,10 +12952,11 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
     forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
     _modo, _fase = fenologia_modo_hoy()
     try:
-        risk_df = build_risk_timeline(history_df, forecast_df, days_back=60)
+        dec, _info_z = decision_por_zonas(history_df, activities_df, forecast_df, days_back=60)
+        risk_df = _info_z["risk_nave"]
     except Exception:
         risk_df = pd.DataFrame()
-    dec = daily_treatment_decision(history_df, activities_df, risk_df)
+        dec = daily_treatment_decision(history_df, activities_df, risk_df)
     if dec is None or dec.empty:
         st.info("No se han podido generar recomendaciones por campo (¿falta histórico o actuaciones?).")
         return
@@ -13017,6 +13018,42 @@ def _sanitary_phase_for_md(ts):
     if (5, 22) <= md <= (6, 15):
         return "Cuajado"
     return None
+
+
+def sanitary_events_history_zona_rio(nave, rio, min_dias=30):
+    """Histórico de eventos por año y fase de la Zona Río: SOLO las campañas en que el
+    sensor del Río tiene al menos `min_dias` días con dato en la ventana brotación–cuajado
+    (1 abr–15 jun). Un año sin sensor saldría con los eventos de la Nave, que confunde."""
+    if rio is None or rio.empty or "temp_media" not in rio.columns:
+        return pd.DataFrame()
+    _f = pd.to_datetime(rio["fecha_hora"], errors="coerce")
+    _t = pd.to_numeric(rio["temp_media"], errors="coerce")
+    años = []
+    for y in sorted({int(x) for x in _f.dropna().dt.year}):
+        _m = (_f >= pd.Timestamp(y, 4, 1)) & (_f <= pd.Timestamp(y, 6, 15, 23, 59)) & _t.notna()
+        if _f[_m].dt.date.nunique() >= min_dias:
+            años.append(y)
+    if not años:
+        return pd.DataFrame()
+    out = sanitary_events_history(historico_zona(ZONA_RIO, nave, rio, rio_desde=ZONA_RIO_INICIO_DATOS),
+                                  start_year=min(años))
+    return out[out["Año"].isin(años)].reset_index(drop=True) if not out.empty else out
+
+
+def eventos_hoja_zona_rio(nave, rio, desde, hasta):
+    """Eventos de hoja mojada de la Zona Río en un periodo (hoja mojada de Huertona con la
+    temperatura del Río). Devuelve (DataFrame | None, nota); None si no se puede calcular."""
+    if horas_rio_en_periodo(rio, desde, hasta) == 0:
+        return None, (f"El sensor del Río no tiene datos en este periodo (su primer dato es del "
+                      f"{ZONA_RIO_INICIO_DATOS:%d/%m/%Y}).")
+    hz = historico_zona(ZONA_RIO, nave, rio, rio_desde=ZONA_RIO_INICIO_DATOS)
+    _f = pd.to_datetime(hz["fecha_hora"], errors="coerce")
+    p = hz[(_f >= pd.Timestamp(desde)) & (_f <= pd.Timestamp(hasta))]
+    if not has_sensor(p, "Humectación de hoja"):
+        return None, "No hay datos de hoja mojada (sensor de Huertona) en este periodo."
+    return detect_leaf_wetness_events(p), (
+        "Hoja mojada de Huertona con la temperatura y la humedad del sensor del Río. "
+        "Informativo: sirve para ver si la vega se comporta distinto.")
 
 
 def sanitary_events_history(history_df, start_year=2019):
@@ -13315,25 +13352,40 @@ def health_tab(history, soil_type, hoja_threshold):
         if st.button("📊 Analizar todos los años", key="sani_hist_btn"):
             with st.spinner("Calculando eventos de todas las campañas…"):
                 st.session_state["sani_events_hist"] = sanitary_events_history(history)
+                st.session_state["sani_events_hist_rio"] = sanitary_events_history_zona_rio(
+                    history, st.session_state.get("history_rio_df", pd.DataFrame()))
         _eh = st.session_state.get("sani_events_hist")
-        if _eh is not None and not _eh.empty:
-            st.dataframe(_eh, use_container_width=True, hide_index=True)
-            _bf = (_eh["Mot. Brot."] + _eh["Mot. Flor."] + _eh["Mon. Brot."] + _eh["Mon. Flor."])
-            _cu = (_eh["Mot. Cuaj."] + _eh["Mon. Cuaj."])
-            _tot = _bf + _cu
-            _n_dom = int(((_bf >= _cu) & (_tot > 0)).sum())
-            _n_val = int((_tot > 0).sum())
-            _cuaj_years = int((_cu > 0).sum())
-            if _n_val:
-                st.markdown(
-                    f"**Lectura:** en **{_n_dom} de {_n_val}** campañas con eventos, el grueso de "
-                    f"moteado+monilia cayó en **brotación‑floración**. Pero en **{_cuaj_years}** "
-                    f"campañas hubo **eventos también en cuajado** → **no conviene relajar el "
-                    f"cuajado por calendario**: hay que tratarlo de forma **reactiva** (solo si el "
-                    f"sensor confirma evento, que en varios años ocurre)."
-                )
-            st.caption("Ventanas regionales: **Brotación** 1–20 abr · **Floración** 21 abr–21 may · "
-                       "**Cuajado** 22 may–15 jun. Oídio = días con índice ≥100 (cualitativo).")
+        _sh_nave, _sh_rio = st.tabs([f"🏠 {ZONA_NAVE}", f"🌊 {ZONA_RIO}"])
+        with _sh_nave:
+            if _eh is not None and not _eh.empty:
+                st.dataframe(_eh, use_container_width=True, hide_index=True)
+                _bf = (_eh["Mot. Brot."] + _eh["Mot. Flor."] + _eh["Mon. Brot."] + _eh["Mon. Flor."])
+                _cu = (_eh["Mot. Cuaj."] + _eh["Mon. Cuaj."])
+                _tot = _bf + _cu
+                _n_dom = int(((_bf >= _cu) & (_tot > 0)).sum())
+                _n_val = int((_tot > 0).sum())
+                _cuaj_years = int((_cu > 0).sum())
+                if _n_val:
+                    st.markdown(
+                        f"**Lectura:** en **{_n_dom} de {_n_val}** campañas con eventos, el grueso de "
+                        f"moteado+monilia cayó en **brotación‑floración**. Pero en **{_cuaj_years}** "
+                        f"campañas hubo **eventos también en cuajado** → **no conviene relajar el "
+                        f"cuajado por calendario**: hay que tratarlo de forma **reactiva** (solo si el "
+                        f"sensor confirma evento, que en varios años ocurre)."
+                    )
+                st.caption("Ventanas regionales: **Brotación** 1–20 abr · **Floración** 21 abr–21 may · "
+                           "**Cuajado** 22 may–15 jun. Oídio = días con índice ≥100 (cualitativo).")
+        with _sh_rio:
+            _ehr = st.session_state.get("sani_events_hist_rio")
+            if _ehr is None:
+                st.caption("Pulsa **«Analizar todos los años»**.")
+            elif _ehr.empty:
+                st.info("Todavía no hay ninguna campaña con el sensor del Río funcionando en "
+                        "brotación–cuajado (1 abr–15 jun). La primera será la de 2027.")
+            else:
+                st.dataframe(_ehr, use_container_width=True, hide_index=True)
+                st.caption("Hoja mojada de Huertona con la temperatura, humedad y lluvia del "
+                           "sensor del Río. Solo campañas con ese sensor funcionando.")
 
     period, period_df, avail, summary, global_summary = get_period_data(history, soil_type, hoja_threshold)
     if period is None:
@@ -13366,42 +13418,62 @@ def health_tab(history, soil_type, hoja_threshold):
     )
 
     st.markdown("#### Eventos de humectación foliar")
-    if has_sensor(period_df, "Humectación de hoja"):
-        events_df = detect_leaf_wetness_events(period_df)
-        if events_df.empty:
-            st.info("No se han detectado eventos de hoja mojada en el periodo seleccionado.")
+    _ev_nave, _ev_rio = st.tabs([f"🏠 {ZONA_NAVE}", f"🌊 {ZONA_RIO}"])
+    with _ev_nave:
+        if has_sensor(period_df, "Humectación de hoja"):
+            events_df = detect_leaf_wetness_events(period_df)
+            if events_df.empty:
+                st.info("No se han detectado eventos de hoja mojada en el periodo seleccionado.")
+            else:
+                events_explained = add_event_interpretation_columns(events_df, phases=active_phases)
+                st.dataframe(events_explained, use_container_width=True)
+                st.download_button(
+                    "Descargar eventos de humectación foliar explicados",
+                    data=events_explained.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="eventos_humectacion_foliar_explicados.csv",
+                    mime="text/csv",
+                )
+
+                render_wetness_audit(history)
+                render_threshold_simulator(history)
+
+                with st.expander("Resumen de actuación sugerida por evento", expanded=True):
+                    for i, row in events_explained.iterrows():
+                        inicio = row.get("Inicio", "")
+                        fin = row.get("Fin", "")
+                        st.markdown(f"**Evento {i + 1}:** {inicio} → {fin}")
+                        if "Ratio moteado" in row:
+                            st.write(
+                                f"- **Moteado:** ratio {row.get('Ratio moteado', 's/d')} · "
+                                f"{row.get('Interpretación ratio moteado', '')}"
+                            )
+                            st.write(f"  - Acción: {row.get('Acción sugerida moteado', '')}")
+                        if "Ratio monilia" in row:
+                            st.write(
+                                f"- **Monilia:** ratio {row.get('Ratio monilia', 's/d')} · "
+                                f"{row.get('Interpretación ratio monilia', '')}"
+                            )
+                            st.write(f"  - Acción: {row.get('Acción sugerida monilia', '')}")
         else:
-            events_explained = add_event_interpretation_columns(events_df, phases=active_phases)
-            st.dataframe(events_explained, use_container_width=True)
+            st.warning("Para este periodo no disponemos de datos de humectación de hoja.")
+    with _ev_rio:
+        _ev_r, _nota_ev_r = eventos_hoja_zona_rio(
+            history, st.session_state.get("history_rio_df", pd.DataFrame()), period_start, period_end)
+        if _ev_r is None:
+            st.info(_nota_ev_r)
+        elif _ev_r.empty:
+            st.info("No se han detectado eventos de hoja mojada en la Zona Río en el periodo seleccionado.")
+        else:
+            _ev_r_exp = add_event_interpretation_columns(_ev_r, phases=active_phases)
+            st.caption(_nota_ev_r)
+            st.dataframe(_ev_r_exp, use_container_width=True)
             st.download_button(
-                "Descargar eventos de humectación foliar explicados",
-                data=events_explained.to_csv(index=False).encode("utf-8-sig"),
-                file_name="eventos_humectacion_foliar_explicados.csv",
+                "Descargar eventos de humectación foliar · Zona Río",
+                data=_ev_r_exp.to_csv(index=False).encode("utf-8-sig"),
+                file_name="eventos_humectacion_foliar_zona_rio.csv",
                 mime="text/csv",
+                key="dl_eventos_hoja_rio",
             )
-
-            render_wetness_audit(history)
-            render_threshold_simulator(history)
-
-            with st.expander("Resumen de actuación sugerida por evento", expanded=True):
-                for i, row in events_explained.iterrows():
-                    inicio = row.get("Inicio", "")
-                    fin = row.get("Fin", "")
-                    st.markdown(f"**Evento {i + 1}:** {inicio} → {fin}")
-                    if "Ratio moteado" in row:
-                        st.write(
-                            f"- **Moteado:** ratio {row.get('Ratio moteado', 's/d')} · "
-                            f"{row.get('Interpretación ratio moteado', '')}"
-                        )
-                        st.write(f"  - Acción: {row.get('Acción sugerida moteado', '')}")
-                    if "Ratio monilia" in row:
-                        st.write(
-                            f"- **Monilia:** ratio {row.get('Ratio monilia', 's/d')} · "
-                            f"{row.get('Interpretación ratio monilia', '')}"
-                        )
-                        st.write(f"  - Acción: {row.get('Acción sugerida monilia', '')}")
-    else:
-        st.warning("Para este periodo no disponemos de datos de humectación de hoja.")
 
     st.markdown("#### Riesgos resumidos del periodo")
     st.dataframe(global_summary[[
@@ -20695,7 +20767,10 @@ def resultado_sanitario_tab():
     with _cc2:
         var_sel = st.selectbox("Variedad", ["(todas)"] + _vars_campo, key="rs_chart_var")
 
-    _hist_rs = st.session_state.get("history_df", pd.DataFrame())
+    # Clima del campo: el de SU zona (Río desde el 1/11/2026; antes, la Nave).
+    _hist_rs = historico_zona(
+        zona_de_campo(campo_sel), st.session_state.get("history_df", pd.DataFrame()),
+        st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS)))
     _today_norm = pd.Timestamp.now().normalize()
     _w0 = pd.Timestamp(int(year), 4, 1)             # brotación
     _w1 = min(pd.Timestamp(int(year), 11, 15), _today_norm)   # cosecha (o hoy si la campaña va por la mitad)
@@ -20914,6 +20989,16 @@ if not st.session_state.autoload_forecast_done:
                 st.session_state["forecast_model"] = "🌍 Previsión MeteoGalicia (WRF 1 km)"
                 st.session_state["_forecast_src"]  = "meteogalicia"
             st.session_state["_forecast_mg_nota"] = _mg_nota
+    # Zona Río: previsión de MeteoGalicia en SU punto, de su archivo propio. Si no hay,
+    # sus campos usan la de la Nave (decision_por_zonas lo avisa).
+    try:
+        _arch_rio = load_mg_hourly_archive(SUPABASE_MG_HOURLY_RIO_PATH)
+        _mgr_df, _mgr_nota = forecast_desde_mg(
+            archive_df=_arch_rio if _arch_rio is not None else pd.DataFrame())
+        st.session_state["forecast_rio_df"] = _mgr_df if _mgr_df is not None else pd.DataFrame()
+        st.session_state["_forecast_rio_nota"] = _mgr_nota
+    except Exception:
+        st.session_state["forecast_rio_df"] = pd.DataFrame()
 
 # Main layout
 if not _HEADLESS:
@@ -24352,18 +24437,69 @@ def current_open_wet_event(history_df, lookback_days=5, gap_hours=6):
         return 0.0, 0.0, False
 
 
-def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16):
+def campos_de_zona(zona):
+    """Campos de una zona, en el orden de FIELDS_BASE_ROWS."""
+    return tuple(fr["Campo"] for fr in FIELDS_BASE_ROWS if zona_de_campo(fr["Campo"]) == zona)
+
+
+def decision_por_zonas(history_df, activities_df, forecast_df, persistence_days=16, days_back=60,
+                       rio_df=None, forecast_rio_df=None):
+    """Motor de decisión por campo con el clima de la ZONA de cada campo.
+
+    Antes de ZONA_RIO_MANDA_DESDE es exactamente el cálculo de siempre: un riesgo para toda
+    la finca. Desde esa fecha, los campos de la Nave con su histórico y su previsión, y los
+    del Río con historico_zona() (temperatura, humedad y lluvia de su sensor, hoja mojada de
+    Huertona) y la previsión de MeteoGalicia en su punto — o la de la Nave si ese día no la
+    hay. La curva que estima la hoja mojada PREVISTA sale del histórico que recibe
+    build_risk_timeline, así que para el Río relaciona la humedad del Río con la hoja mojada
+    de Huertona: lo previsto se mide con la misma regla que lo real (decisión del usuario,
+    11/09/2026).
+
+    Devuelve (DataFrame de decisión, info) con info = {por_zonas, risk_nave, risk_rio,
+    prevision_rio: "propia" | "nave" | None}.
+    """
+    forecast_df = forecast_df if forecast_df is not None else pd.DataFrame()
+    risk_nave = build_risk_timeline(history_df, forecast_df, days_back=days_back)
+    info = {"por_zonas": False, "risk_nave": risk_nave, "risk_rio": None, "prevision_rio": None}
+    if pd.Timestamp.now().normalize() < ZONA_RIO_MANDA_DESDE:
+        return daily_treatment_decision(history_df, activities_df, risk_nave,
+                                        persistence_days=persistence_days), info
+
+    rio = rio_df if rio_df is not None else st.session_state.get("history_rio_df", pd.DataFrame())
+    fc_rio = (forecast_rio_df if forecast_rio_df is not None
+              else st.session_state.get("forecast_rio_df", pd.DataFrame()))
+    if fc_rio is None or fc_rio.empty:
+        fc_rio, info["prevision_rio"] = forecast_df, "nave"
+    else:
+        info["prevision_rio"] = "propia"
+    hist_rio = historico_zona(ZONA_RIO, history_df, rio)
+    risk_rio = build_risk_timeline(hist_rio, fc_rio, days_back=days_back)
+    dn = daily_treatment_decision(history_df, activities_df, risk_nave,
+                                  persistence_days=persistence_days, campos=campos_de_zona(ZONA_NAVE))
+    dr = daily_treatment_decision(hist_rio, activities_df, risk_rio,
+                                  persistence_days=persistence_days, campos=campos_de_zona(ZONA_RIO))
+    partes = [d for d in (dn, dr) if d is not None and not d.empty]
+    dec = pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
+    if not dec.empty and "_priority" in dec.columns:
+        dec = dec.sort_values("_priority", kind="stable").reset_index(drop=True)
+    info.update(por_zonas=True, risk_rio=risk_rio)
+    return dec, info
+
+
+def daily_treatment_decision(history_df, activities_df, risk_df, persistence_days=16, campos=None):
     """Envoltorio: resuelve el catálogo de fungicidas desde `session_state` (única
     dependencia de estado que tenía esta función) y delega en la versión CACHEADA.
-    Si editas el catálogo en la tabla, cambia su hash y se recalcula automáticamente."""
+    Si editas el catálogo en la tabla, cambia su hash y se recalcula automáticamente.
+    `campos`: si se pasa, solo esos campos (para decidir cada zona con su clima)."""
     return _daily_treatment_decision_cached(
         history_df, activities_df, risk_df, persistence_days,
-        st.session_state.get("fungicide_catalog_df"))
+        st.session_state.get("fungicide_catalog_df"),
+        tuple(campos) if campos is not None else None)
 
 
-@st.cache_data(ttl=900, max_entries=6, show_spinner=False)
+@st.cache_data(ttl=900, max_entries=12, show_spinner=False)
 def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persistence_days,
-                                     fung_df):
+                                     fung_df, campos=None):
     """
     Para cada campo de la finca, calcula el estado de protección FUNGICIDA y
     la acción recomendada para hoy.
@@ -24471,6 +24607,8 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
 
     for field_row in FIELDS_BASE_ROWS:
         campo      = field_row["Campo"]
+        if campos is not None and campo not in campos:
+            continue
         variedades = field_row.get("Variedades actuales", "")
 
         # ── Última pasada fungicida ───────────────────────────────────────────
@@ -24821,6 +24959,8 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
             "_posible_lavado":   bool(_posible_lavado),
         })
 
+    if not rows:
+        return pd.DataFrame()
     df = (pd.DataFrame(rows)
           .sort_values(["_priority", "_days_sort"], ascending=[True, False])
           .drop(columns=["_days_sort"])
@@ -28412,14 +28552,10 @@ def build_daily_report_text(history_df, traps_df, activities_df,
 
     # ── 2. Fungicidas: campos que requieren acción ────────────────────────────
     try:
-        _risk = build_risk_timeline(
-            history_df,
+        dec, _ = decision_por_zonas(
+            history_df, activities_df,
             forecast_df if forecast_df is not None else pd.DataFrame(),
-            days_back=60,
-        )
-        dec = daily_treatment_decision(
-            history_df, activities_df, _risk, persistence_days=persistence_days
-        )
+            persistence_days=persistence_days, days_back=60, rio_df=rio_df)
     except Exception:
         dec = pd.DataFrame()
 
@@ -28537,6 +28673,73 @@ def build_daily_report_text(history_df, traps_df, activities_df,
     lines.append("")
     lines.append("<i>Generado automáticamente desde la app Finca Gallinal.</i>")
     return "\n".join(lines)
+
+
+def risk_zona_rio_para_ver(history_df, forecast_df, days_back=60, base_temp=10.0, upper_temp=31.1,
+                           rio_df=None, forecast_rio_df=None):
+    """Riesgo diario de la Zona Río para las GRÁFICAS: es para ver, así que usa el Río desde
+    su primer dato. Devuelve (DataFrame, nota); DataFrame vacío si no hay datos del Río."""
+    rio = rio_df if rio_df is not None else st.session_state.get("history_rio_df", pd.DataFrame())
+    if rio is None or rio.empty:
+        return pd.DataFrame(), ("Todavía no hay datos del sensor del Río: las gráficas muestran "
+                                "la Zona Nave.")
+    fc = (forecast_rio_df if forecast_rio_df is not None
+          else st.session_state.get("forecast_rio_df", pd.DataFrame()))
+    propia = fc is not None and not fc.empty
+    if not propia:
+        fc = forecast_df if forecast_df is not None else pd.DataFrame()
+    hz = historico_zona(ZONA_RIO, history_df, rio, rio_desde=ZONA_RIO_INICIO_DATOS)
+    risk = build_risk_timeline(hz, fc, days_back=days_back, base_temp=base_temp, upper_temp=upper_temp)
+    nota = (f"🌊 **{ZONA_RIO}**: temperatura, humedad y lluvia de su sensor (desde el "
+            f"{ZONA_RIO_INICIO_DATOS:%d/%m/%Y}) con la hoja mojada de Huertona · previsión: "
+            + ("MeteoGalicia en el punto del Río." if propia
+               else "⚠️ la de la Nave (aún no hay previsión propia del Río).")
+            + " La gráfica de carpocapsa sigue siendo de la Nave hasta adaptar Carpocapsa.")
+    return risk, nota
+
+
+def render_fiabilidad_mg_zona_rio():
+    """MeteoGalicia en el punto del Río frente al sensor del Río. Solo acumula datos."""
+    st.caption(
+        "Cada mañana se guarda la previsión horaria de MeteoGalicia en el punto del sensor del "
+        "Río y, cuando llega la hora, se compara con lo que midió ese sensor. **De momento solo "
+        "acumula datos**: no interviene en ninguna decisión. Se lee igual que el bloque de la Nave.")
+    _arch = load_mg_hourly_archive(SUPABASE_MG_HOURLY_RIO_PATH)
+    if _arch is None or _arch.empty:
+        st.info("Aún no hay previsiones archivadas para el punto del Río: el informe de cada "
+                "mañana las va guardando.")
+        return
+    _ed = pd.to_datetime(_arch.get("issue_date"), errors="coerce").dropna()
+    _fc = st.session_state.get("forecast_rio_df", pd.DataFrame())
+    _hasta = (pd.to_datetime(_fc["fecha_hora"], errors="coerce").max()
+              if _fc is not None and not _fc.empty else None)
+    st.caption(
+        f"Archivo: **{_ed.dt.normalize().nunique()} emisiones**"
+        + (f" ({_ed.min():%d/%m} → {_ed.max():%d/%m})" if not _ed.empty else "")
+        + (f" · previsión del Río en uso hasta el {_hasta:%d/%m %Hh}" if _hasta is not None and pd.notna(_hasta)
+           else " · hoy sin previsión del Río en uso (sus campos usarían la de la Nave)"))
+    _rio = st.session_state.get("history_rio_df", pd.DataFrame())
+    if _rio is None or _rio.empty:
+        st.info("No hay datos del sensor del Río cargados para comparar.")
+        return
+    _h, _m = mg_hourly_vs_sensor(_rio, archive_df=_arch)
+    if _h is None or _h.empty:
+        st.info("Todavía no hay horas previstas que ya hayan pasado para compararlas con el sensor.")
+        return
+    st.dataframe(_h, use_container_width=True, hide_index=True)
+    _hu = _m.get("horas_unicas")
+    st.caption(
+        f"**{_m.get('n', 0)} comparaciones** sobre **{_hu if _hu else '?'} horas** distintas"
+        + (f" ({_m['desde']:%d/%m} → {_m['hasta']:%d/%m})" if _m.get("desde") is not None else "")
+        + ". · **Sesgo** = si se pasa (+) o se queda corta (−) de media · **Error** = cuánto se "
+        "equivoca de media. Temperatura en °C, humedad en puntos de %.")
+    _l, _ml = mg_lluvia_vs_sensor(_rio, archive_df=_arch)
+    if _l is not None and not _l.empty:
+        st.markdown("**🌧️ Lluvia: ¿acierta QUÉ HORAS llueve en el Río?**")
+        st.dataframe(_l, use_container_width=True, hide_index=True)
+    if _m.get("n", 0) < 200:
+        st.info("⏳ Muestra aún pequeña. Con **2 semanas** se ve la tendencia; con un mes se "
+                "puede decidir si fiarse de ella.")
 
 
 def render_decisiones_panel():
@@ -29385,6 +29588,9 @@ def render_decisiones_panel():
                 _okp, _msgp = purge_mg_hourly_archive()
                 (st.success if _okp else st.error)(_msgp)
 
+        with st.expander("🌊 Zona Río: MeteoGalicia en el punto del Río frente a su sensor (acumulando datos)"):
+            render_fiabilidad_mg_zona_rio()
+
         with st.expander("🗑️ Reiniciar archivo de fiabilidad (empezar de cero)"):
             st.caption(
                 "Borra TODO el archivo de previsiones guardado (incluidos los valores antiguos "
@@ -30058,11 +30264,19 @@ def render_decisiones_panel():
         key="dec_persist_days",
     )
 
-    # Construir risk_df rápido (solo los últimos 60 días + forecast) para el panel
-    _risk_quick = build_risk_timeline(history_df, forecast_df, days_back=60)
+    # Decisión por campo con el clima de SU zona (igual que siempre hasta que manda el Río).
+    _dec_df, _dec_info = decision_por_zonas(history_df, activities_df, forecast_df,
+                                            persistence_days=_persist_days, days_back=60)
+    _risk_quick = _dec_info["risk_nave"]
 
     _catalog_df = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
-    _dec_df = daily_treatment_decision(history_df, activities_df, _risk_quick, persistence_days=_persist_days)
+    if _dec_info.get("por_zonas"):
+        st.caption(
+            "🌊 Los campos de la **Zona Río** se deciden con su propio clima (temperatura, "
+            "humedad y lluvia de su sensor; hoja mojada de Huertona) y "
+            + ("la previsión de MeteoGalicia en su punto."
+               if _dec_info.get("prevision_rio") == "propia"
+               else "⚠️ **hoy con la previsión de la Nave** (no hay previsión propia del Río)."))
 
     if _dec_df.empty:
         st.info("Carga el histórico y las actuaciones de Agroptima para generar el panel de decisión.")
@@ -30362,6 +30576,23 @@ def render_decisiones_panel():
         st.warning("No hay suficientes datos para construir el análisis de riesgo.")
         return
 
+    # ── Zona de las gráficas de ENFERMEDAD (la de carpocapsa sigue siendo de la Nave) ──
+    _zona_graf = st.radio(
+        "Zona de las gráficas de enfermedad", [ZONA_NAVE, ZONA_RIO], horizontal=True,
+        key="dec_zona_graficas",
+        help="Moteado, monilia y oídio con el clima de cada zona. La Zona Río usa temperatura, "
+             "humedad y lluvia de su sensor y la hoja mojada de Huertona.")
+    risk_enf = risk_df
+    if _zona_graf == ZONA_RIO:
+        _risk_rio_g, _nota_rio_g = risk_zona_rio_para_ver(
+            history_df, forecast_df, days_back=int(days_back),
+            base_temp=float(base_temp_d), upper_temp=float(upper_temp_d))
+        if _risk_rio_g is None or _risk_rio_g.empty:
+            st.info(_nota_rio_g)
+        else:
+            risk_enf = _risk_rio_g
+            st.caption(_nota_rio_g)
+
     # ── Tratamientos del período ──────────────────────────────────────────────
     treats_all   = pd.DataFrame()
     treats_carpo = pd.DataFrame()
@@ -30467,7 +30698,7 @@ def render_decisiones_panel():
             "calibran con tu sensor — por eso existe el panel de **fiabilidad**. En los días pasados, "
             "la mojada es **medida** por tu sensor."
         )
-        fig_m = _dec_disease_chart(risk_df, "Mills_valor", "Moteado", today, treats_fungi, chart_h)
+        fig_m = _dec_disease_chart(risk_enf, "Mills_valor", "Moteado", today, treats_fungi, chart_h)
         st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
         st.divider()
@@ -30476,7 +30707,7 @@ def render_decisiones_panel():
     if _ver_monilia:
         st.markdown("#### 🍑 Monilia · *Monilinia* spp.")
         st.caption("Umbral 50 = riesgo moderado · **100 = riesgo alto**. Requiere T>15°C + hoja mojada ≥3h o HR>85%.")
-        fig_mo = _dec_disease_chart(risk_df, "Monilia_valor", "Monilia", today, treats_fungi, chart_h)
+        fig_mo = _dec_disease_chart(risk_enf, "Monilia_valor", "Monilia", today, treats_fungi, chart_h)
         st.plotly_chart(fig_mo, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
         st.divider()
@@ -30485,7 +30716,7 @@ def render_decisiones_panel():
     if _ver_oidio:
         st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
         st.caption("Favorece condiciones cálidas y secas (T 17-25°C, HR 50-80%). La lluvia intensa frena el riesgo.")
-        fig_o = _dec_disease_chart(risk_df, "Oidio_valor", "Oídio", today, treats_fungi, chart_h, scale_max=105)
+        fig_o = _dec_disease_chart(risk_enf, "Oidio_valor", "Oídio", today, treats_fungi, chart_h, scale_max=105)
         st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
         st.divider()
