@@ -14522,6 +14522,19 @@ def _phenology_stage_svg():
             + "".join(p) + '</div>')
 
 
+def clima_del_campo_fenologia(campo, history):
+    """Histórico con el que analizar un campo en Fenología: el de SU zona (Río desde el
+    1/11/2026; antes, y la hoja mojada siempre, la Nave). Devuelve (histórico, aviso)."""
+    _z = zona_de_campo(campo)
+    _h = historico_zona(_z, history,
+                        st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS)))
+    if _z != ZONA_RIO:
+        return _h, ""
+    return _h, (f"🌊 **{campo}** es de la **{ZONA_RIO}**: la temperatura, la humedad y la lluvia "
+                f"de cada fase salen del sensor de la vega desde el {ZONA_RIO_MANDA_DESDE:%d/%m/%Y}; "
+                f"antes de esa fecha (y la hoja mojada, siempre) de la Nave.")
+
+
 def phenology_tab(history, soil_type, hoja_threshold):
     st.subheader("Fenología por campo y variedad")
     st.write(
@@ -14794,15 +14807,19 @@ def phenology_tab(history, soil_type, hoja_threshold):
             if sel_campo_u in ("—", "") or sel_var_u in ("—", ""):
                 st.warning("Selecciona un campo y una variedad válidos.")
             else:
+                _hist_u, _ = clima_del_campo_fenologia(sel_campo_u, history)
                 _ps = phenology_phase_summary(
-                    history, pheno_now, soil_type, hoja_threshold,
+                    _hist_u, pheno_now, soil_type, hoja_threshold,
                     campo=sel_campo_u, variedad=sel_var_u, selected_year=sel_year_u,
                 )
                 st.session_state["last_phase_summary"] = _ps
 
         phase_df = st.session_state.get("last_phase_summary", pd.DataFrame())
         if not phase_df.empty:
-            st.markdown(f"#### Resumen climático · {sel_campo_u} · {sel_var_u} · {sel_year_u}")
+            st.markdown(f"#### Resumen climático · {marca_zona(sel_campo_u)} · {sel_var_u} · {sel_year_u}")
+            _av_u = clima_del_campo_fenologia(sel_campo_u, history)[1]
+            if _av_u:
+                st.caption(_av_u)
             st.dataframe(phase_df, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar resumen por fases",
@@ -14843,10 +14860,12 @@ def phenology_tab(history, soil_type, hoja_threshold):
             st.markdown(f"#### {sel_var_vcf} · {sel_year_vcf} · Fechas por campo")
             st.caption(
                 "Cada columna es un campo. Las celdas muestran inicio → fin de la fase. "
-                "Los '—' indican que ese campo no tiene fechas registradas para esa fase."
+                "Los '—' indican que ese campo no tiene fechas registradas para esa fase. "
+                f"Aquí solo hay **fechas registradas**, sin clima, así que las dos zonas se "
+                f"comparan directamente; 🌊 marca los campos de la {ZONA_RIO}."
             )
             # Sticky HTML table
-            _vc = list(vcf_df.columns)
+            _vc = [marca_zona(c) for c in vcf_df.columns]
             _vth  = "background:#1a2e1e;color:white;padding:8px 12px;white-space:nowrap;font-weight:600;font-size:13px;"
             _vths = "position:sticky;left:0;z-index:2;" + _vth
             _vhdr = "".join(
@@ -14856,7 +14875,7 @@ def phenology_tab(history, soil_type, hoja_threshold):
             _vbody = ""
             for _, _r in vcf_df.iterrows():
                 _cells = ""
-                for _i, _c in enumerate(_vc):
+                for _i, _c in enumerate(vcf_df.columns):     # los valores, por su nombre real
                     _v    = str(_r[_c])
                     _bg   = "#eef2ee" if _i == 0 else ("white" if _v != "—" else "#f9f9f9")
                     _clr  = "#888" if _v == "—" else "inherit"
@@ -14910,15 +14929,19 @@ def phenology_tab(history, soil_type, hoja_threshold):
             if sel_campo_evo in ("—", "") or sel_var_evo in ("—", ""):
                 st.warning("Selecciona un campo y una variedad válidos.")
             else:
+                _hist_evo, _ = clima_del_campo_fenologia(sel_campo_evo, history)
                 _evo = phenology_phase_across_years(
                     pheno_now, sel_campo_evo, sel_var_evo, sel_fase_evo,
-                    history, soil_type, hoja_threshold,
+                    _hist_evo, soil_type, hoja_threshold,
                 )
                 st.session_state["last_evo_df"] = _evo
 
         evo_df = st.session_state.get("last_evo_df", pd.DataFrame())
         if not evo_df.empty:
-            st.markdown(f"#### {sel_fase_evo} · {sel_campo_evo} · {sel_var_evo} — por año")
+            st.markdown(f"#### {sel_fase_evo} · {marca_zona(sel_campo_evo)} · {sel_var_evo} — por año")
+            _av_e = clima_del_campo_fenologia(sel_campo_evo, history)[1]
+            if _av_e:
+                st.caption(_av_e)
             st.dataframe(evo_df, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar evolución temporal",
