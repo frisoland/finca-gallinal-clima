@@ -13235,7 +13235,13 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
                  else "En **cuajado en adelante** solo dispara un **evento real** ya producido; la "
                       "previsión solo avisa." if _modo == "reactivo"
                  else "Fuera de campaña fúngica (reposo).")
-    st.info(f"🌿 **Fase de hoy: {_fase} → modo {_modo}.** {_modo_txt}")
+    _n_pheno_s = 0
+    if dec is not None and not dec.empty and "Fase" in dec.columns:
+        _n_pheno_s = int(sum(1 for _f in dec["Fase"].astype(str)
+                             if _f.split(" (")[0].strip() not in ("", _fase)))
+    st.info(f"🌿 **Fase de hoy: {_fase} → modo {_modo}.** {_modo_txt}"
+            + (f"  ✏️ **{_n_pheno_s} campo(s)** van por la fenología que registraste, con su "
+               "propia fase (columna *Fase* de la tabla)." if _n_pheno_s else ""))
     st.caption(
         "Mismo **motor, criterio, prioridad y producto** que **Decisiones** (no hay dos lógicas). "
         "Solo cuenta como cobertura un **fungicida** (la carpocapsa va en su item)."
@@ -24641,27 +24647,149 @@ def is_fungicide_activity(producto_str, trabajo_str=""):
     return False
 
 
+# Fin de la campaña fúngica cuando NO hay cosecha registrada. El usuario (11/09/2026):
+# «salvo excepción, el fin de la campaña siempre será en septiembre». Antes se alargaba
+# hasta el 20 de octubre. Si registras la cosecha de un campo, manda esa fecha.
+FIN_CAMPANA_FUNGICA_MD = (9, 30)
+
+# Fases del MOTOR de fungicidas y su modo. Son las ventanas de literatura; la fenología
+# que el usuario registra por campo/variedad manda sobre ellas.
+FENOLOGIA_MOTOR_FASES = [
+    ("brotacion",  "Brotación",  "preventivo", (4, 1),  (4, 20)),
+    ("floracion",  "Floración",  "preventivo", (4, 21), (5, 21)),
+    ("cuajado",    "Cuajado",    "reactivo",   (5, 22), (6, 15)),
+    ("engorde",    "Engorde",    "reactivo",   (6, 16), (8, 31)),
+    ("maduracion", "Maduración", "reactivo",   (9, 1),  FIN_CAMPANA_FUNGICA_MD),
+]
+_FENOLOGIA_RANGO_MODO = {"preventivo": 0, "reactivo": 1, "reposo": 2}
+
+
 def fenologia_modo_hoy(today=None):
-    """Modo de tratamiento según la FASE fenológica de HOY (ventanas regionales):
+    """Modo de tratamiento según la FASE fenológica de HOY, con las ventanas de LITERATURA
+    (finca entera). Para la fase de un CAMPO concreto, con lo que el usuario haya
+    registrado, usar `fenologia_modo_campo`.
        · 'preventivo' (brotación 1–20 abr + floración 21 abr–21 may): el disparador es
          la COBERTURA caducada; la previsión solo INFORMA (no dispara sola).
-       · 'reactivo' (cuajado 22 may → maduración 20 oct): solo un EVENTO REAL ya
-         producido dispara; la previsión solo avisa.
+       · 'reactivo' (cuajado 22 may → fin de campaña): solo un EVENTO REAL ya producido
+         dispara; la previsión solo avisa.
        · 'reposo' (resto): fuera de campaña fúngica.
     Devuelve (modo, etiqueta_fase)."""
     t = pd.Timestamp.now().normalize() if today is None else pd.Timestamp(today).normalize()
     md = (t.month, t.day)
-    if (4, 1) <= md <= (4, 20):
-        return "preventivo", "Brotación"
-    if (4, 21) <= md <= (5, 21):
-        return "preventivo", "Floración"
-    if (5, 22) <= md <= (6, 15):
-        return "reactivo", "Cuajado"
-    if (6, 16) <= md <= (8, 31):
-        return "reactivo", "Engorde"
-    if (9, 1) <= md <= (10, 20):
-        return "reactivo", "Maduración"
+    for _pid, _lbl, _modo, _ini, _fin in FENOLOGIA_MOTOR_FASES:
+        if _ini <= md <= _fin:
+            return _modo, _lbl
     return "reposo", "Reposo"
+
+
+def _fenologia_cosecha_registrada(campo, variedad, year):
+    """Fecha de FIN de la cosecha registrada (item Fenología) de un campo/variedad, o None
+    si no está registrada o la fila sigue igual que la plantilla."""
+    pheno = st.session_state.get("phenology_df", pd.DataFrame())
+    if pheno is None or getattr(pheno, "empty", True):
+        return None
+    try:
+        p = normalize_phenology_df(pheno).dropna(subset=["Inicio", "Fin"])
+        if p.empty:
+            return None
+        hit = p[(p["Año"] == int(year))
+                & (p["Fase"].str.strip().str.casefold() == "cosecha")
+                & (p["Campo"].str.strip().str.casefold() == str(campo).strip().casefold())
+                & (p["Variedad"].str.strip().str.casefold() == str(variedad).strip().casefold())]
+        if hit.empty:
+            return None
+        _ini, _fin = str(hit["Inicio"].iloc[0]), str(hit["Fin"].iloc[0])
+        for r in default_phenology_rows_for_campo_variedad_year(campo, variedad, int(year)):
+            if str(r.get("Fase", "")).strip().casefold() == "cosecha" and (_ini, _fin) == (str(r.get("Inicio")), str(r.get("Fin"))):
+                return None            # sin tocar (plantilla) → no cuenta
+        _t = pd.Timestamp(_fin)
+        return None if pd.isna(_t) else _t.normalize()
+    except Exception:
+        return None
+
+
+def fenologia_fase_variedad(campo, variedad, today=None, year=None):
+    """Fase de HOY de una variedad en un campo. Manda lo REGISTRADO en el item Fenología;
+    lo que no esté registrado se toma de la literatura ENCAJADA con lo registrado (si la
+    floración registrada acabó el 10 de mayo, el cuajado empieza el 11 aunque la literatura
+    diga el 22). La cosecha registrada cierra la campaña.
+    Devuelve {pid, fase, modo, origen, variedad}."""
+    t = pd.Timestamp.now().normalize() if today is None else pd.Timestamp(today).normalize()
+    y = int(year) if year else int(t.year)
+    _reg = {}
+    for _pid, _lbl, _modo, _i, _f in FENOLOGIA_MOTOR_FASES:
+        w = registered_phenology_window(y, campo, variedad, _pid)
+        if w:
+            _reg[_pid] = (pd.Timestamp(w[0]).normalize(), pd.Timestamp(w[1]).normalize())
+    _cos = _fenologia_cosecha_registrada(campo, variedad, y)
+    ventanas, _prev_fin = [], None
+    for _k, (_pid, _lbl, _modo, _i, _f) in enumerate(FENOLOGIA_MOTOR_FASES):
+        if _pid in _reg:
+            _ini, _fin = _reg[_pid]
+            _origen = "registro"
+        else:
+            _ini, _fin = pd.Timestamp(y, *_i), pd.Timestamp(y, *_f)
+            _origen = "literatura"
+            # Encadenadas, sin huecos: empieza justo al día siguiente de acabar la anterior…
+            if _prev_fin is not None and (_prev_fin + pd.Timedelta(days=1)) != _ini:
+                _ini = _prev_fin + pd.Timedelta(days=1)
+                _origen = "literatura+registro"
+            # …y acaba justo antes de que empiece la siguiente fase REGISTRADA.
+            for _pid2, *_r2 in FENOLOGIA_MOTOR_FASES[_k + 1:]:
+                if _pid2 in _reg:
+                    _nf = _reg[_pid2][0] - pd.Timedelta(days=1)
+                    if _nf != _fin:
+                        _fin = _nf
+                        _origen = "literatura+registro"
+                    break
+            if _fin < _ini:                       # la registrada no le deja sitio: fase vacía
+                _fin = _ini - pd.Timedelta(days=1)
+        if _pid == "maduracion" and _cos is not None:
+            _fin = _cos                                          # la cosecha cierra la campaña
+            _origen = "registro" if _origen == "registro" else "literatura+registro"
+        ventanas.append((_pid, _lbl, _modo, _ini, _fin, _origen))
+        _prev_fin = _fin
+    for _pid, _lbl, _modo, _ini, _fin, _origen in ventanas:
+        if _ini <= t <= _fin:
+            return {"pid": _pid, "fase": _lbl, "modo": _modo, "origen": _origen, "variedad": variedad}
+    # Hueco entre dos fases REGISTRADAS (p. ej. floración hasta el 5/5 y cuajado desde el
+    # 1/6): manda la SIGUIENTE, porque el árbol ya ha pasado de fase.
+    _sig = [v for v in ventanas if v[3] > t]
+    if _sig and any(v[3] <= t for v in ventanas):
+        _pid, _lbl, _modo, _ini, _fin, _origen = _sig[0]
+        return {"pid": _pid, "fase": _lbl, "modo": _modo,
+                "origen": ("literatura+registro" if _origen == "literatura" else _origen),
+                "variedad": variedad}
+    _fuera = "registro" if (_cos is not None and t > _cos) else ("literatura+registro" if _reg else "literatura")
+    return {"pid": None, "fase": "Reposo", "modo": "reposo", "origen": _fuera, "variedad": variedad}
+
+
+def fenologia_modo_campo(campo, today=None, year=None):
+    """Fase y modo de HOY de un CAMPO. Manda la variedad en la fase MÁS SENSIBLE
+    (preventivo > reactivo > reposo): un tratamiento cubre el campo entero, así que si una
+    variedad está en floración, el campo se trata como floración. Decisión del usuario."""
+    _vars = [v.strip() for fr in FIELDS_BASE_ROWS if fr["Campo"] == campo
+             for v in str(fr.get("Variedades actuales", "")).split(",") if v.strip()]
+    if not _vars:
+        _m, _f = fenologia_modo_hoy(today)
+        return {"pid": None, "fase": _f, "modo": _m, "origen": "literatura", "variedad": ""}
+    _orden = {p[0]: i for i, p in enumerate(FENOLOGIA_MOTOR_FASES)}
+    _mejor, _clave = None, None
+    for v in _vars:
+        r = fenologia_fase_variedad(campo, v, today, year)
+        k = (_FENOLOGIA_RANGO_MODO.get(r["modo"], 9), _orden.get(r["pid"], 99))
+        if _clave is None or k < _clave:
+            _mejor, _clave = r, k
+    return _mejor
+
+
+def fenologia_fases_por_campo(today=None, year=None):
+    """Tupla (campo, modo, fase, origen, variedad) para TODOS los campos. Se calcula fuera
+    del motor cacheado y se le pasa como argumento: así, al editar la fenología, cambia el
+    hash y el motor se recalcula."""
+    return tuple((fr["Campo"],) + tuple(fenologia_modo_campo(fr["Campo"], today, year)[k]
+                                        for k in ("modo", "fase", "origen", "variedad"))
+                 for fr in FIELDS_BASE_ROWS)
 
 
 def current_open_wet_event(history_df, lookback_days=5, gap_hours=6):
@@ -24751,12 +24879,13 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
     return _daily_treatment_decision_cached(
         history_df, activities_df, risk_df, persistence_days,
         st.session_state.get("fungicide_catalog_df"),
-        tuple(campos) if campos is not None else None)
+        tuple(campos) if campos is not None else None,
+        fenologia_fases_por_campo())
 
 
 @st.cache_data(ttl=900, max_entries=12, show_spinner=False)
 def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persistence_days,
-                                     fung_df, campos=None):
+                                     fung_df, campos=None, fases_campo=None):
     """
     Para cada campo de la finca, calcula el estado de protección FUNGICIDA y
     la acción recomendada para hoy.
@@ -24771,7 +24900,9 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
     """
     today = pd.Timestamp.now().normalize()
     rows  = []
-    _modo, _fase_label = fenologia_modo_hoy(today)   # mismo criterio de fase para toda la finca
+    # Fase de cada campo (fenología registrada del usuario; literatura donde no haya).
+    _fases_map = {r[0]: r[1:] for r in (fases_campo or ())}
+    _modo_lit, _fase_lit = fenologia_modo_hoy(today)   # respaldo y referencia de la finca
 
     # Mapa de persistencia por producto, desde el catálogo de fungicidas (el mismo
     # que normaliza los productos). Base = DEFAULT_FUNGICIDE_CATALOG; si la sesión
@@ -24867,6 +24998,8 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
         if campos is not None and campo not in campos:
             continue
         variedades = field_row.get("Variedades actuales", "")
+        _modo, _fase_label, _fase_origen, _fase_var = _fases_map.get(
+            campo, (_modo_lit, _fase_lit, "literatura", ""))
 
         # ── Última pasada fungicida ───────────────────────────────────────────
         # Matching EXACTO de campo. Agrupa por fecha para recoger TODOS los
@@ -25201,7 +25334,8 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
             "Lluvia prevista mm": round(fc_rain, 1),
             "Pases campaña":     _pases_label,
             "Riesgo principal":  _riesgo_principal,
-            "Fase":              f"{_fase_label} ({_modo})",
+            "Fase":              (f"{_fase_label} ({_modo})"
+                                  + (f" ✏️ {_fase_var}" if _fase_origen != "literatura" and _fase_var else "")),
             "🎯 Acción":         action,
             "📋 Motivo":         _narrative,
             "_priority":         priority,
@@ -28824,6 +28958,19 @@ def build_daily_report_text(history_df, traps_df, activities_df,
                  if _modo_fc == "reactivo" else "fuera de campaña fúngica")
     lines.append(f"  📍 Fase: <b>{_esc(_fase_fc)}</b> → modo {_modo_txt}")
 
+    def _fase_campo_txt(r):
+        """La fase del campo, solo si NO es la de la finca (fenología propia registrada)."""
+        _f = str(r.get("Fase", ""))
+        _lbl = _f.split(" (")[0].strip()
+        return f" · {_esc(_lbl)} ✏️" if (_lbl and _lbl != _fase_fc) else ""
+
+    _n_pheno = 0
+    if dec is not None and not dec.empty and "Fase" in dec.columns:
+        _n_pheno = int(sum(1 for _f in dec["Fase"].astype(str)
+                           if _f.split(" (")[0].strip() not in ("", _fase_fc)))
+    if _n_pheno:
+        lines.append(f"  ✏️ {_n_pheno} campo(s) con fenología propia registrada (fase distinta)")
+
     _cat_fc = pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG)   # headless: sin session_state
 
     def _prod_fc(r):
@@ -28844,12 +28991,14 @@ def build_daily_report_text(history_df, traps_df, activities_df,
         if not red.empty:
             lines.append("<b>🔴 TRATAR HOY:</b>")
             for _, r in red.iterrows():
-                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b>{_marca_rio(r.get('Campo',''))} "
+                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b>{_marca_rio(r.get('Campo',''))}"
+                             f"{_fase_campo_txt(r)} "
                              f"({r.get('Días sin trat.','')}d sin trat.) → <b>{_esc(_prod_fc(r))}</b>")
         if not orange.empty:
             lines.append("<b>🟠 Tratar pronto (mantener escudo):</b>")
             for _, r in orange.iterrows():
-                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b>{_marca_rio(r.get('Campo',''))} "
+                lines.append(f"  • <b>{_esc(r.get('Campo',''))}</b>{_marca_rio(r.get('Campo',''))}"
+                             f"{_fase_campo_txt(r)} "
                              f"({r.get('Días sin trat.','')}d) → <b>{_esc(_prod_fc(r))}</b>")
         if not yellow.empty:
             lines.append("<b>🟡 Vigilar</b> (por si la previsión se confirma):")
