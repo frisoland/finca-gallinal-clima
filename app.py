@@ -21730,6 +21730,7 @@ def produccion_tab(history):
         "Campos a comparar",
         options=sorted(por_campo["Campo"].unique()),
         default=sorted(por_campo["Campo"].unique())[:6],
+        format_func=marca_zona,
         key="prod_campos_sel",
     )
     metrica_campo = st.radio("Métrica", ["Kg", "Kg/Ha"], horizontal=True, key="prod_metrica_campo")
@@ -21738,8 +21739,8 @@ def produccion_tab(history):
         pivot_campo = por_campo[por_campo["Campo"].isin(campos_sel)].pivot(
             index="Año", columns="Campo", values=metrica_campo
         )
-        st.line_chart(pivot_campo.rename(index=str))
-        render_year_table(pivot_campo.round(0))
+        st.line_chart(pivot_campo.rename(index=str, columns=marca_zona))
+        render_year_table(pivot_campo.round(0).rename(columns=marca_zona))
 
     # ── 4. Por variedad ───────────────────────────────────────────────────────
     st.markdown("### 3. Producción por variedad")
@@ -21788,25 +21789,57 @@ def produccion_tab(history):
         "Esta sección irá creciendo con nuevas correlaciones (horas frío, floración, carpocapsa...)."
     )
 
-    if history is None or history.empty:
+    # Zona: los kilos de los campos de esa zona frente al clima de esa zona (mezclar los
+    # kilos de toda la finca con el clima de 7 campos no correlaciona nada). «Toda la
+    # finca» es lo de siempre: kilos de todos los campos y clima de la Nave.
+    _OPC_ZONA_CORR = ["Toda la finca", f"🏠 {ZONA_NAVE}", f"🌊 {ZONA_RIO}"]
+    _sel_zona_corr = st.radio("Zona", _OPC_ZONA_CORR, horizontal=True, key="prod_corr_zona")
+    if _sel_zona_corr == _OPC_ZONA_CORR[0]:
+        _zona_corr, df_corr, hist_corr = None, df, history
+    else:
+        _zona_corr = ZONA_NAVE if _sel_zona_corr == _OPC_ZONA_CORR[1] else ZONA_RIO
+        df_corr = df[df["Campo"].map(zona_de_campo) == _zona_corr].copy()
+        hist_corr = history if (history is None or history.empty) else historico_zona(
+            _zona_corr, history,
+            st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS)))
+        _campos_z = sorted(df_corr["Campo"].dropna().astype(str).unique())
+        st.caption(f"Campos con producción en la **{_zona_corr}**: "
+                   + (", ".join(marca_zona(c) for c in _campos_z) if _campos_z else "ninguno") + ".")
+        # Un nombre del Excel que no case con ningún campo caería en la Nave sin avisar.
+        _conocidos = {_clave_campo(r["Campo"]) for r in FIELDS_BASE_ROWS}
+        _raros = sorted({str(c) for c in df["Campo"].dropna().unique() if _clave_campo(c) not in _conocidos})
+        if _raros:
+            st.caption("⚠️ Nombres del Excel de producción que no coinciden con ningún campo de "
+                       f"la finca (cuentan como {ZONA_NAVE}): " + ", ".join(_raros) + ".")
+        if _zona_corr == ZONA_RIO:
+            st.caption(
+                f"🌊 El sensor de la vega se instaló en junio de 2026 y manda desde el "
+                f"{ZONA_RIO_MANDA_DESDE:%d/%m/%Y}: hasta la **campaña 2027** (frío de noviembre "
+                "de 2026 a marzo de 2027) las columnas de clima son las de la Nave. Los kilos, en "
+                "cambio, ya son solo los de la vega en todos los años.")
+    años_corr = sorted(df_corr["Año"].unique()) if not df_corr.empty else []
+
+    if df_corr.empty:
+        st.info(f"No hay producción registrada en los campos de la {_zona_corr}.")
+    elif hist_corr is None or hist_corr.empty:
         st.info("Carga el histórico climático para activar las correlaciones.")
     else:
         temp_col = None
         for c in ["temp_media", "temp", "temperatura", "Temperatura", "temp_avg"]:
-            if c in history.columns:
+            if c in hist_corr.columns:
                 temp_col = c
                 break
 
         if temp_col:
-            hist_risk = history.copy()
+            hist_risk = hist_corr.copy()
             if "polinizacion_score" not in hist_risk.columns:
                 try:
                     hist_risk = add_risk_columns(hist_risk)
                 except Exception:
-                    hist_risk = history.copy()
+                    hist_risk = hist_corr.copy()
 
             correlacion_rows = []
-            for año in años_disponibles:
+            for año in años_corr:
                 # ── Frío invernal: Nov(año-1) → Mar(año) ──────────────────
                 inicio_frio, fin_frio = winter_period_from_analysis_year(año)
                 mask_frio = (hist_risk["fecha_hora"] >= inicio_frio) & (hist_risk["fecha_hora"] <= fin_frio)
@@ -21856,8 +21889,8 @@ def produccion_tab(history):
                             horas_ventana = int(flor_data["en_ventana_polinizacion"].sum())
                         calidad_polinizacion = pollination_quality_from_score(score_medio, horas_fav, horas_ventana)
 
-                kg_año = df[df["Año"] == año]["Kg"].sum()
-                ha_año = df[df["Año"] == año]["Ha"].sum()
+                kg_año = df_corr[df_corr["Año"] == año]["Kg"].sum()
+                ha_año = df_corr[df_corr["Año"] == año]["Ha"].sum()
                 kg_ha = round(kg_año / ha_año, 0) if ha_año > 0 else np.nan
 
                 correlacion_rows.append({
@@ -21892,25 +21925,25 @@ def produccion_tab(history):
             año_peor = mejor_año.idxmin()
 
             # Por campo
-            por_campo_total = df.groupby("Campo")["Kg"].sum()
+            por_campo_total = df_corr.groupby("Campo")["Kg"].sum()
             campo_mejor = por_campo_total.idxmax()
             campo_peor = por_campo_total.idxmin()
 
             # Kg/Ha por campo
-            por_campo_kgha = df.groupby("Campo").apply(
+            por_campo_kgha = df_corr.groupby("Campo").apply(
                 lambda x: x["Kg"].sum() / x["Ha"].sum() if x["Ha"].sum() > 0 else np.nan
             )
             campo_mejor_kgha = por_campo_kgha.idxmax()
 
             # Por variedad
-            por_var_kgha = df.groupby("Variedad_nombre").apply(
+            por_var_kgha = df_corr.groupby("Variedad_nombre").apply(
                 lambda x: x["Kg"].sum() / x["Ha"].sum() if x["Ha"].sum() > 0 else np.nan
             )
             var_mejor = por_var_kgha.idxmax()
             var_peor = por_var_kgha.idxmin()
 
             # Por portainjerto
-            por_porta_kgha = df.groupby("Portainjerto_nombre").apply(
+            por_porta_kgha = df_corr.groupby("Portainjerto_nombre").apply(
                 lambda x: x["Kg"].sum() / x["Ha"].sum() if x["Ha"].sum() > 0 else np.nan
             ).dropna()
             porta_mejor = por_porta_kgha.idxmax() if not por_porta_kgha.empty else "—"
@@ -21937,7 +21970,7 @@ def produccion_tab(history):
             cp_mejor = chill_series.get(año_mejor, np.nan)
 
             resumen_años = []
-            for año in años_disponibles:
+            for año in años_corr:
                 row = corr_df.loc[año]
                 kg_ha_val = pd.to_numeric(row["Kg/Ha"], errors="coerce")
                 score_val = pd.to_numeric(row["Score polinización"], errors="coerce")
