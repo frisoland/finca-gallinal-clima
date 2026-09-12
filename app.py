@@ -3005,33 +3005,59 @@ def render_chill_comparison_explanation(cmp_df, monthly_df=None):
 
 
 # Base limpia de campos revisada manualmente desde Agroptima.
+# DOS superficies por campo, las dos buenas y con usos distintos (usuario, 12/09/2026):
+#   · "Superficie ha"          = el RECINTO, lo que mide la parcela.
+#   · "Superficie arbolada ha" = lo que ocupan los MANZANOS dentro de ese recinto.
+# El riego trabaja con la arbolada (el gotero solo moja la línea de árboles, no el
+# recinto entero) y la carpocapsa también (la trampa cuenta donde hay fruta). En las
+# plantaciones nuevas (Los Pinos) solo se dio de alta la superficie plantada, así que
+# las dos coinciden a propósito.
+# Sector 10 (2,26 / 1,66) y Sector 12 (1,95 / 1,48) tenían las dos cifras cambiadas de
+# sitio entre esta tabla y la de carpocapsa; corregido.
 FIELDS_BASE_ROWS = [
-    {"Campo": "Campazón", "Superficie ha": 1.99, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
-    {"Campo": "GY", "Superficie ha": 1.92, "Variedades actuales": "Amariega, Gallinal"},
-    {"Campo": "Huertona", "Superficie ha": 0.80, "Variedades actuales": "Regona"},
-    {"Campo": "Los Pinos 1", "Superficie ha": 0.80, "Variedades actuales": "Collaos, Raxona Dulce"},
-    {"Campo": "Los Pinos 2", "Superficie ha": 0.68, "Variedades actuales": "Durona de Tresali, Regona"},
-    {"Campo": "Los Pinos 3", "Superficie ha": 0.20, "Variedades actuales": "Carrió"},
-    {"Campo": "Los Pinos 4", "Superficie ha": 0.52, "Variedades actuales": "Gallinal, Verdialona"},
-    {"Campo": "Los Pinos 5", "Superficie ha": 0.74, "Variedades actuales": "Carrió, Collaos"},
-    {"Campo": "Piedrona 1", "Superficie ha": 1.15, "Variedades actuales": "Durona de Tresali, Regona, Xuanina"},
-    {"Campo": "Piedrona 2", "Superficie ha": 0.19, "Variedades actuales": "Madiedo"},
-    {"Campo": "Piedrona Rincón", "Superficie ha": 1.68, "Variedades actuales": "Durona de Tresali, Regona"},
-    {"Campo": "Sector 1", "Superficie ha": 1.06, "Variedades actuales": "De la Riega, Verdialona"},
-    {"Campo": "Sector 10", "Superficie ha": 1.66, "Variedades actuales": "De la Riega, Verdialona"},
-    {"Campo": "Sector 10-B", "Superficie ha": 0.72, "Variedades actuales": "Carrió"},
-    {"Campo": "Sector 11", "Superficie ha": 1.43, "Variedades actuales": "Madiedo, Regona, Xuanina"},
-    {"Campo": "Sector 12", "Superficie ha": 1.48, "Variedades actuales": "De la Riega, Verdialona, Xuanina"},
-    {"Campo": "Sector 2", "Superficie ha": 0.87, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
-    {"Campo": "Sector 3", "Superficie ha": 0.92, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
-    {"Campo": "Sector 4", "Superficie ha": 1.77, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
-    {"Campo": "Sector 5", "Superficie ha": 1.34, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
-    {"Campo": "Sector 6", "Superficie ha": 1.97, "Variedades actuales": "Durona de Tresali, Regona, Verdialona, Xuanina"},
-    {"Campo": "Sector 7", "Superficie ha": 0.34, "Variedades actuales": "Experimental"},
-    {"Campo": "Sector 8", "Superficie ha": 0.77, "Variedades actuales": "Durona de Tresali"},
-    {"Campo": "Sector 9", "Superficie ha": 0.31, "Variedades actuales": "Raxao"},
-    {"Campo": "Viaducto", "Superficie ha": 1.19, "Variedades actuales": "De la Riega, Verdialona, Xuanina"},
+    {"Campo": "Campazón", "Superficie ha": 1.99, "Superficie arbolada ha": 1.71, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
+    {"Campo": "GY", "Superficie ha": 1.92, "Superficie arbolada ha": 1.72, "Variedades actuales": "Amariega, Gallinal"},
+    {"Campo": "Huertona", "Superficie ha": 0.80, "Superficie arbolada ha": 0.67, "Variedades actuales": "Regona"},
+    {"Campo": "Los Pinos 1", "Superficie ha": 0.80, "Superficie arbolada ha": 0.80, "Variedades actuales": "Collaos, Raxona Dulce"},
+    {"Campo": "Los Pinos 2", "Superficie ha": 0.68, "Superficie arbolada ha": 0.68, "Variedades actuales": "Durona de Tresali, Regona"},
+    {"Campo": "Los Pinos 3", "Superficie ha": 0.20, "Superficie arbolada ha": 0.20, "Variedades actuales": "Carrió"},
+    {"Campo": "Los Pinos 4", "Superficie ha": 0.52, "Superficie arbolada ha": 0.52, "Variedades actuales": "Gallinal, Verdialona"},
+    {"Campo": "Los Pinos 5", "Superficie ha": 0.74, "Superficie arbolada ha": 0.74, "Variedades actuales": "Carrió, Collaos"},
+    {"Campo": "Piedrona 1", "Superficie ha": 1.15, "Superficie arbolada ha": 1.01, "Variedades actuales": "Durona de Tresali, Regona, Xuanina"},
+    {"Campo": "Piedrona 2", "Superficie ha": 0.19, "Superficie arbolada ha": 0.15, "Variedades actuales": "Madiedo"},
+    {"Campo": "Piedrona Rincón", "Superficie ha": 1.68, "Superficie arbolada ha": 0.95, "Variedades actuales": "Durona de Tresali, Regona"},
+    {"Campo": "Sector 1", "Superficie ha": 1.06, "Superficie arbolada ha": 0.76, "Variedades actuales": "De la Riega, Verdialona"},
+    {"Campo": "Sector 10", "Superficie ha": 2.26, "Superficie arbolada ha": 1.66, "Variedades actuales": "De la Riega, Verdialona"},
+    {"Campo": "Sector 10-B", "Superficie ha": 0.72, "Superficie arbolada ha": 0.57, "Variedades actuales": "Carrió"},
+    {"Campo": "Sector 11", "Superficie ha": 1.43, "Superficie arbolada ha": 0.75, "Variedades actuales": "Madiedo, Regona, Xuanina"},
+    {"Campo": "Sector 12", "Superficie ha": 1.95, "Superficie arbolada ha": 1.48, "Variedades actuales": "De la Riega, Verdialona, Xuanina"},
+    {"Campo": "Sector 2", "Superficie ha": 0.87, "Superficie arbolada ha": 0.74, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
+    {"Campo": "Sector 3", "Superficie ha": 0.92, "Superficie arbolada ha": 0.78, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
+    {"Campo": "Sector 4", "Superficie ha": 1.77, "Superficie arbolada ha": 1.74, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
+    {"Campo": "Sector 5", "Superficie ha": 1.34, "Superficie arbolada ha": 1.25, "Variedades actuales": "Durona de Tresali, Raxao, Regona"},
+    {"Campo": "Sector 6", "Superficie ha": 1.97, "Superficie arbolada ha": 1.94, "Variedades actuales": "Durona de Tresali, Regona, Verdialona, Xuanina"},
+    {"Campo": "Sector 7", "Superficie ha": 0.34, "Superficie arbolada ha": 0.34, "Variedades actuales": "Experimental"},
+    {"Campo": "Sector 8", "Superficie ha": 0.77, "Superficie arbolada ha": 0.77, "Variedades actuales": "Durona de Tresali"},
+    {"Campo": "Sector 9", "Superficie ha": 0.31, "Superficie arbolada ha": 0.28, "Variedades actuales": "Raxao"},
+    {"Campo": "Viaducto", "Superficie ha": 1.19, "Superficie arbolada ha": 1.09, "Variedades actuales": "De la Riega, Verdialona, Xuanina"},
 ]
+
+
+def superficies_arboladas():
+    """{campo: superficie ARBOLADA ha}. Lo que ocupan los árboles, no el recinto."""
+    return {str(r["Campo"]).strip(): float(r["Superficie arbolada ha"]) for r in FIELDS_BASE_ROWS}
+
+
+def superficie_arbolada(campo, default=None):
+    """Superficie ARBOLADA de un campo (ha); si faltara, el recinto."""
+    _c = str(campo).strip()
+    for r in FIELDS_BASE_ROWS:
+        if str(r.get("Campo", "")).strip() == _c:
+            for _k in ("Superficie arbolada ha", "Superficie ha"):
+                _v = pd.to_numeric(r.get(_k), errors="coerce")
+                if pd.notna(_v) and float(_v) > 0:
+                    return float(_v)
+    return default
 
 
 def get_fields_base_df():
@@ -3448,7 +3474,9 @@ def fields_tab():
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Campos activos", len(fields_df))
-    c2.metric("Superficie total", f"{fields_df['Superficie ha'].sum():.2f} ha")
+    c2.metric("Superficie total", f"{fields_df['Superficie ha'].sum():.2f} ha",
+              help="Suma de los RECINTOS. Debajo, lo que ocupan los árboles.")
+    c2.caption(f"🌳 {fields_df['Superficie arbolada ha'].sum():.2f} ha arboladas")
     c3.metric("Variedades distintas", len(sorted({v.strip() for txt in fields_df["Variedades actuales"] for v in str(txt).split(",") if v.strip()})))
 
     # La zona se añade SOLO a lo que se ve: get_fields_base_df() lo usan otras pestañas
@@ -3464,6 +3492,11 @@ def fields_tab():
         f"🏠 **{ZONA_NAVE}**: {int((~_es_rio).sum())} campos · "
         f"{_vista.loc[~_es_rio, 'Superficie ha'].sum():.2f} ha — los sensores de siempre.")
     st.dataframe(_vista, use_container_width=True)
+    st.caption(
+        "**Superficie ha** = el recinto que mide la parcela. **Superficie arbolada ha** = "
+        "lo que ocupan los manzanos dentro de él. El **riego** convierte los litros del "
+        "gotero a mm sobre la arbolada, y la **carpocapsa** cuenta hectáreas arboladas. "
+        "En las plantaciones nuevas las dos coinciden porque solo se dio de alta lo plantado.")
 
     st.download_button(
         "Descargar base limpia de campos",
@@ -11561,6 +11594,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 continue
             _drip_rows.append({
                 "Campo": _c,
+                "Sup. arbolada ha": round((_dmc.get("area_m2") or 0) / 10000.0, 2),
                 "Manguera m": int(round(_dmc.get("metros") or 0)),
                 "Zonas": _dmc.get("zonas"),
                 "Goteros": int(round(_dmc["n_emitters"])),
@@ -11574,7 +11608,8 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                 st.dataframe(pd.DataFrame(_drip_rows), use_container_width=True, hide_index=True)
                 st.caption(
                     "Caudal del sistema = (metros ÷ distancia goteros) × caudal por gotero. "
-                    "Pluviometría = caudal ÷ superficie del campo (1 mm = 1 L/m²). "
+                    "Pluviometría = caudal ÷ superficie **arbolada** (1 mm = 1 L/m²), que es "
+                    "donde cae el agua; el recinto puede ser bastante mayor. "
                     "**Min por mm** = 60 ÷ pluviometría → los minutos de riego salen de "
                     "*Regar mm × Min por mm*. Datos editables (dímelos y los ajusto)."
                 )
@@ -16776,24 +16811,23 @@ CARPOCAPSA_GRUPOS = {
     "Campazón + Pinos": ["Campazón", "Los Pinos 1", "Los Pinos 2", "Los Pinos 5"],
 }
 
-# Superficie por campo (ha). Los Pinos 3 y 4 no tienen trampa pero se tratan con
-# su grupo, así que cuentan para la superficie aunque no para la media.
-CARPOCAPSA_SUP_HA = {
-    "Piedrona 1": 1.01, "Piedrona 2": 0.15, "Piedrona Rincón": 0.95,
-    "Sector 1": 0.76, "Sector 2": 0.74, "Sector 3": 0.78,
-    "Sector 4": 1.74, "Sector 5": 1.25, "Sector 9": 0.28,
-    "GY - Gallinal": 1.20, "GY - Amariega": 0.52, "Sector 11": 0.75,
-    "Sector 12": 1.95, "Sector 10": 2.26, "Sector 10-B": 0.57,
-    "Sector 6": 1.94, "Huertona": 0.67, "Sector 7": 0.34, "Sector 8": 0.77,
-    "Viaducto": 1.09, "Campazón": 1.71,
-    "Los Pinos 1": 0.80, "Los Pinos 2": 0.68, "Los Pinos 5": 0.74,
-}
-# Campos SIN trampa que se tratan con un grupo: {campo: (grupo, ha)}. Cuentan para
-# la superficie del grupo pero no para la media (no hay lectura que promediar).
-CARPOCAPSA_SUP_SIN_TRAMPA = {
-    "Los Pinos 3": ("Campazón + Pinos", 0.20),
-    "Los Pinos 4": ("Campazón + Pinos", 0.52),
-}
+# Superficie por campo (ha) = la ARBOLADA de FIELDS_BASE_ROWS, no el recinto: la trampa
+# cuenta lo que pasa donde hay manzanos. Se DERIVA de la tabla de campos para que no haya
+# dos listas que se puedan desincronizar (pasó con el Sector 10 y el 12, que tenían el
+# recinto y la arbolada cambiados de sitio entre las dos tablas hasta el 12/09/2026).
+# GY va aparte porque tiene UNA trampa por variedad (1,20 + 0,52 = 1,72 ha, la arbolada
+# de GY en la tabla).
+CARPOCAPSA_SUP_GY = {"GY - Gallinal": 1.20, "GY - Amariega": 0.52}
+# Campos SIN trampa que se tratan con un grupo: cuentan para la superficie del grupo
+# pero no para la media (no hay lectura que promediar).
+CARPOCAPSA_SIN_TRAMPA_GRUPO = {"Los Pinos 3": "Campazón + Pinos",
+                               "Los Pinos 4": "Campazón + Pinos"}
+CARPOCAPSA_SUP_HA = {_c: _ha for _c, _ha in superficies_arboladas().items()
+                     if _c != "GY" and _c not in CARPOCAPSA_SIN_TRAMPA_GRUPO}
+CARPOCAPSA_SUP_HA.update(CARPOCAPSA_SUP_GY)
+# {campo: (grupo, ha)}
+CARPOCAPSA_SUP_SIN_TRAMPA = {_c: (_g, superficie_arbolada(_c))
+                             for _c, _g in CARPOCAPSA_SIN_TRAMPA_GRUPO.items()}
 
 # Plantación EN FORMACIÓN: poca o ninguna manzana, así que su trampa no debe
 # arrastrar la decisión del grupo (una lectura alta ahí hacía tratar hectáreas
@@ -20461,11 +20495,14 @@ def autosave_irrigation_config_to_supabase():
 
 
 def _field_area_m2(campo):
-    for fr in FIELDS_BASE_ROWS:
-        if str(fr.get("Campo", "")).strip() == str(campo).strip():
-            ha = pd.to_numeric(fr.get("Superficie ha"), errors="coerce")
-            return float(ha) * 10000.0 if pd.notna(ha) else None
-    return None
+    """Superficie del campo en m² para pasar litros a mm (1 mm = 1 L/m²).
+
+    Se usa la ARBOLADA, no el recinto: el agua del gotero cae en la línea de manzanos y
+    es ahí donde el árbol la consume. Repartirla por el recinto entero (que en Piedrona
+    Rincón o el Sector 11 es casi el doble) hacía salir los mm de riego cortos.
+    """
+    ha = superficie_arbolada(campo)
+    return float(ha) * 10000.0 if ha else None
 
 
 def field_irrigation_zones(campo):
