@@ -15096,8 +15096,30 @@ def build_weekly_priority_table_all_fields(hist, activities_df, period_df, start
     return out
 
 
-def build_weekly_executive_report(history_df, activities_df, start_date, end_date):
-    """Genera datos y texto para un informe semanal descargable."""
+def notas_zona_rio_informe(metrics):
+    """Avisos de la Zona Río del informe semanal (mismo texto en pantalla, MD y PDF)."""
+    mr = (metrics or {}).get("rio") or {}
+    if not mr:
+        return []
+    out = [f"🌊 {ZONA_RIO} ({', '.join(ZONA_RIO_CAMPOS)}): la temperatura, la humedad y la "
+           f"lluvia salen de su propio sensor en la vega del Aboño. El viento, la radiación y "
+           f"la hoja mojada no se desdoblan — de humectación solo hay un sensor (Huertona) y "
+           f"vale para las dos zonas."]
+    if metrics.get("rio_informativo"):
+        out.append(f"Hasta el {ZONA_RIO_MANDA_DESDE:%d/%m/%Y} la Zona Río es informativa: los "
+                   f"cálculos de la app se siguen haciendo con el sensor de la Nave.")
+    _h = int(mr.get("horas_rellenadas", 0) or 0)
+    if _h:
+        out.append(f"Al sensor del Río le faltan {_h} h en este periodo; esas horas se han "
+                   f"rellenado con el dato de la Nave.")
+    return out
+
+
+def build_weekly_executive_report(history_df, activities_df, start_date, end_date, rio_df=None):
+    """Genera datos y texto para un informe semanal descargable.
+
+    `rio_df` (histórico del sensor de la vega) es opcional: si trae datos en el periodo, el
+    resumen climático sale a dos columnas, Zona Nave y Zona Río."""
     if history_df is None or history_df.empty:
         return {}, "No hay histórico climático cargado.", pd.DataFrame(), pd.DataFrame()
 
@@ -15144,6 +15166,13 @@ def build_weekly_executive_report(history_df, activities_df, start_date, end_dat
         acts_period = acts[(acts["Fecha_dt"] >= start_ts.normalize()) & (acts["Fecha_dt"] <= end_ts.normalize())].copy()
 
     priority_table = build_weekly_priority_table_all_fields(hist, activities_df, period_df, start_ts, end_ts)
+    # Los campos de la vega, marcados como en el Panel de hoy y en el Telegram.
+    if not priority_table.empty and "Campo" in priority_table.columns:
+        priority_table["Campo"] = priority_table["Campo"].map(marca_zona)
+
+    # Zona Río: solo si su sensor tiene datos en estas fechas (no existía antes de junio).
+    rio_metrics = resumen_clima_zona_rio_7d(hist, rio_df, start_date, end_date) if (
+        rio_df is not None and not rio_df.empty) else {}
 
     metrics = {
         "period_start": start_ts.date().isoformat(),
@@ -15169,6 +15198,8 @@ def build_weekly_executive_report(history_df, activities_df, start_date, end_dat
         "fields_treated_count": int(len(set(",".join(acts_period.get("Campos reconocidos", pd.Series(dtype=str)).fillna("").astype(str)).replace("; ", ",").split(",")) - {""})) if not acts_period.empty else 0,
         "priority_high_count": int((priority_table.get("Prioridad", pd.Series(dtype=str)) == "Alta").sum()) if not priority_table.empty else 0,
         "priority_review_count": int(priority_table.get("Prioridad", pd.Series(dtype=str)).isin(["Alta", "Media-alta", "Media"]).sum()) if not priority_table.empty else 0,
+        "rio": rio_metrics,
+        "rio_informativo": bool(rio_metrics) and pd.to_datetime(end_date) < ZONA_RIO_MANDA_DESDE,
     }
 
     def fmt(value, suffix="", nd=1):
@@ -15199,21 +15230,56 @@ def build_weekly_executive_report(history_df, activities_df, start_date, end_dat
     else:
         act_lines.append("- No hay actuaciones registradas en este periodo.")
 
+    # Clima: una lista de siempre, o una tabla Nave | Río cuando el sensor de la vega
+    # tiene datos en el periodo.
+    if rio_metrics:
+        def _dif(a, b, suf="", nd=1):
+            try:
+                return f"{float(a) - float(b):+.{nd}f}{suf}"
+            except Exception:
+                return "—"
+
+        _filas_clima = [
+            ("Temperatura media", fmt(temp_mean, " ºC"), fmt(rio_metrics.get("temp_mean"), " ºC"),
+             _dif(rio_metrics.get("temp_mean"), temp_mean, " ºC")),
+            ("Temperatura mínima", fmt(temp_min, " ºC"), fmt(rio_metrics.get("temp_min"), " ºC"),
+             _dif(rio_metrics.get("temp_min"), temp_min, " ºC")),
+            ("Temperatura máxima", fmt(temp_max, " ºC"), fmt(rio_metrics.get("temp_max"), " ºC"),
+             _dif(rio_metrics.get("temp_max"), temp_max, " ºC")),
+            ("Humedad relativa media", fmt(hr_mean, " %"), fmt(rio_metrics.get("hr_mean"), " %"),
+             _dif(rio_metrics.get("hr_mean"), hr_mean, " pts")),
+            ("Lluvia acumulada", fmt(rain_total, " mm"), fmt(rio_metrics.get("rain_total"), " mm"),
+             _dif(rio_metrics.get("rain_total"), rain_total, " mm")),
+            ("Registros horarios analizados", str(metrics["records"]), "—", ""),
+            ("Viento medio", fmt(wind_mean, ""), "—", ""),
+            ("Racha máxima", fmt(gust_max, ""), "—", ""),
+            ("Radiación acumulada", fmt(radiation_sum, " MJ/m²"), "—", ""),
+        ]
+        climate_block = "\n".join(
+            ["| Indicador | 🏠 " + ZONA_NAVE + " | 🌊 " + ZONA_RIO + " | Diferencia |",
+             "|---|---|---|---|"] +
+            [f"| {a} | {b} | {c} | {d} |" for a, b, c, d in _filas_clima])
+        climate_block += "\n\n" + "\n".join(f"> {n}" + "  " for n in notas_zona_rio_informe(metrics))
+    else:
+        climate_block = "\n".join([
+            f"- Registros horarios analizados: **{metrics['records']}**",
+            f"- Temperatura media: **{fmt(temp_mean, ' ºC')}**",
+            f"- Temperatura mínima: **{fmt(temp_min, ' ºC')}**",
+            f"- Temperatura máxima: **{fmt(temp_max, ' ºC')}**",
+            f"- Humedad relativa media: **{fmt(hr_mean, ' %')}**",
+            f"- Lluvia acumulada: **{fmt(rain_total, ' mm')}**",
+            f"- Viento medio: **{fmt(wind_mean, '')}**",
+            f"- Racha máxima: **{fmt(gust_max, '')}**",
+            f"- Radiación acumulada: **{fmt(radiation_sum, ' MJ/m²')}**",
+        ])
+
     report_md = f"""# Informe semanal · Finca Gallinal
 
 **Periodo:** {metrics['period_start']} a {metrics['period_end']}
 
 ## 1. Resumen climático
 
-- Registros horarios analizados: **{metrics['records']}**
-- Temperatura media: **{fmt(temp_mean, ' ºC')}**
-- Temperatura mínima: **{fmt(temp_min, ' ºC')}**
-- Temperatura máxima: **{fmt(temp_max, ' ºC')}**
-- Humedad relativa media: **{fmt(hr_mean, ' %')}**
-- Lluvia acumulada: **{fmt(rain_total, ' mm')}**
-- Viento medio: **{fmt(wind_mean, '')}**
-- Racha máxima: **{fmt(gust_max, '')}**
-- Radiación acumulada: **{fmt(radiation_sum, ' MJ/m²')}**
+{climate_block}
 
 ## 2. Sanidad vegetal
 
@@ -15529,6 +15595,13 @@ def build_weekly_pdf_report(metrics, report_md, acts_period, priority_table):
             return "Sin datos"
         return f"{float(value):.{nd}f}{suffix}"
 
+    def sin_emoji(txt):
+        """Helvetica no tiene emoji (saldrían como cuadraditos): en el PDF la marca de la
+        Zona Río va en texto."""
+        return (str(txt).replace(" 🌊", " (Rio)")     # marca al final de un campo
+                .replace("🌊 ", "").replace("🌊", "")   # marca al principio
+                .replace("🏠 ", "").replace("🏠", ""))
+
     story = []
 
     logo_path = find_finca_logo_path()
@@ -15577,19 +15650,48 @@ def build_weekly_pdf_report(metrics, report_md, acts_period, priority_table):
     story.append(Spacer(1, 0.45 * cm))
 
     story.append(Paragraph("1. Resumen climático", styles["FGSection"]))
-    climate_rows = [
-        ["Indicador", "Valor"],
-        ["Registros horarios analizados", str(metrics.get("records", 0))],
-        ["Temperatura media", fmt(metrics.get("temp_mean"), " ºC")],
-        ["Temperatura mínima", fmt(metrics.get("temp_min"), " ºC")],
-        ["Temperatura máxima", fmt(metrics.get("temp_max"), " ºC")],
-        ["Humedad relativa media", fmt(metrics.get("hr_mean"), " %")],
-        ["Lluvia acumulada", fmt(metrics.get("rain_total"), " mm")],
-        ["Viento medio", fmt(metrics.get("wind_mean"), "")],
-        ["Racha máxima", fmt(metrics.get("gust_max"), "")],
-        ["Radiación acumulada", fmt(metrics.get("radiation_sum"), " MJ/m²")],
-    ]
-    climate_table = Table(climate_rows, colWidths=[8.0 * cm, 8.5 * cm])
+    _rio = metrics.get("rio") or {}
+
+    def _dif_pdf(a, b, suf="", nd=1):
+        try:
+            return f"{float(a) - float(b):+.{nd}f}{suf}"
+        except Exception:
+            return "-"
+
+    if _rio:
+        climate_rows = [
+            ["Indicador", ZONA_NAVE, ZONA_RIO, "Diferencia"],
+            ["Temperatura media", fmt(metrics.get("temp_mean"), " ºC"), fmt(_rio.get("temp_mean"), " ºC"),
+             _dif_pdf(_rio.get("temp_mean"), metrics.get("temp_mean"), " ºC")],
+            ["Temperatura mínima", fmt(metrics.get("temp_min"), " ºC"), fmt(_rio.get("temp_min"), " ºC"),
+             _dif_pdf(_rio.get("temp_min"), metrics.get("temp_min"), " ºC")],
+            ["Temperatura máxima", fmt(metrics.get("temp_max"), " ºC"), fmt(_rio.get("temp_max"), " ºC"),
+             _dif_pdf(_rio.get("temp_max"), metrics.get("temp_max"), " ºC")],
+            ["Humedad relativa media", fmt(metrics.get("hr_mean"), " %"), fmt(_rio.get("hr_mean"), " %"),
+             _dif_pdf(_rio.get("hr_mean"), metrics.get("hr_mean"), " pts")],
+            ["Lluvia acumulada", fmt(metrics.get("rain_total"), " mm"), fmt(_rio.get("rain_total"), " mm"),
+             _dif_pdf(_rio.get("rain_total"), metrics.get("rain_total"), " mm")],
+            ["Registros horarios analizados", str(metrics.get("records", 0)), "-", ""],
+            ["Viento medio", fmt(metrics.get("wind_mean"), ""), "-", ""],
+            ["Racha máxima", fmt(metrics.get("gust_max"), ""), "-", ""],
+            ["Radiación acumulada", fmt(metrics.get("radiation_sum"), " MJ/m²"), "-", ""],
+        ]
+        _climate_widths = [6.6 * cm, 4.2 * cm, 4.2 * cm, 3.4 * cm]
+    else:
+        climate_rows = [
+            ["Indicador", "Valor"],
+            ["Registros horarios analizados", str(metrics.get("records", 0))],
+            ["Temperatura media", fmt(metrics.get("temp_mean"), " ºC")],
+            ["Temperatura mínima", fmt(metrics.get("temp_min"), " ºC")],
+            ["Temperatura máxima", fmt(metrics.get("temp_max"), " ºC")],
+            ["Humedad relativa media", fmt(metrics.get("hr_mean"), " %")],
+            ["Lluvia acumulada", fmt(metrics.get("rain_total"), " mm")],
+            ["Viento medio", fmt(metrics.get("wind_mean"), "")],
+            ["Racha máxima", fmt(metrics.get("gust_max"), "")],
+            ["Radiación acumulada", fmt(metrics.get("radiation_sum"), " MJ/m²")],
+        ]
+        _climate_widths = [8.0 * cm, 8.5 * cm]
+    climate_table = Table(climate_rows, colWidths=_climate_widths)
     climate_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2F5D50")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -15602,6 +15704,8 @@ def build_weekly_pdf_report(metrics, report_md, acts_period, priority_table):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
     story.append(climate_table)
+    for _nota in notas_zona_rio_informe(metrics):
+        story.append(Paragraph(sin_emoji(_nota), styles["FGSmall"]))
 
     story.append(Paragraph("2. Sanidad vegetal", styles["FGSection"]))
     sanitary_rows = [
@@ -15673,7 +15777,7 @@ def build_weekly_pdf_report(metrics, report_md, acts_period, priority_table):
         ]]
         for _, row in priority_table.iterrows():
             rows.append([
-                Paragraph(str(row.get("Campo", "")), styles["FGSmall"]),
+                Paragraph(sin_emoji(row.get("Campo", "")), styles["FGSmall"]),
                 Paragraph(str(row.get("Prioridad", "")), styles["FGSmall"]),
                 Paragraph(str(row.get("Tratado registrado", "")), styles["FGSmall"]),
                 Paragraph(str(row.get("Último tratamiento", "")), styles["FGSmall"]),
@@ -15726,7 +15830,9 @@ def weekly_report_tab(history, soil_type, hoja_threshold):
 
     st.info(
         "Genera un informe práctico combinando clima, eventos sanitarios, actuaciones Agroptima "
-        "y campos prioritarios para revisar. Ahora también puede descargarse en PDF con el logo de Finca Gallinal."
+        "y campos prioritarios para revisar. Ahora también puede descargarse en PDF con el logo de Finca Gallinal. "
+        f"Si el sensor de la vega tiene datos en el periodo, el resumen climático sale a dos columnas "
+        f"({ZONA_NAVE} y {ZONA_RIO}); los campos del Río van marcados con 🌊."
     )
 
     hist = history.copy()
@@ -15748,7 +15854,8 @@ def weekly_report_tab(history, soil_type, hoja_threshold):
 
     activities_df = st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS))
     metrics, report_md, acts_period, priority_table = build_weekly_executive_report(
-        history, activities_df, start_date, end_date
+        history, activities_df, start_date, end_date,
+        rio_df=st.session_state.get("history_rio_df", pd.DataFrame()),
     )
 
     if not metrics:
