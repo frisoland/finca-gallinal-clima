@@ -19808,21 +19808,49 @@ def carpocapsa_tab(history):
         "la fase sigue en curso ahora mismo. Las líneas de puntos marcan hitos concretos dentro "
         "de cada zona. *Fuente: Utah State University Extension (Steffan), tablas de fenología.*"
     )
+    # QUÉ BIOFIX USA ESTA GRÁFICA. El mismo que los puntos 6 y 7: el calculado de las
+    # capturas de cada campo (1ª captura sostenida ≥ CARPOCAPSA_BIOFIX_THRESHOLD, con
+    # carpocapsa_compute_biofix_by_field, la función del botón «📌 Fijar»). Antes leía la
+    # TABLA de biofix, que al importar el Excel deja campos sin fecha: esos campos salían
+    # sin cuadro de pases y con la línea roja de la finca en vez de la suya (Huertona,
+    # 13/09/2026), y además podían no coincidir con el punto 7.
     _bf_camp = carpocapsa_filter_campaign(st.session_state.carpocapsa_biofix_df, campaign_year)
-    _campos_chart = (sorted(_bf_camp["Campo/Zona"].dropna().astype(str).unique())
-                     if (not _bf_camp.empty and "Campo/Zona" in _bf_camp.columns) else [])
+    _traps_camp = carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, campaign_year)
+    _bf_auto = carpocapsa_compute_biofix_by_field(_traps_camp, campaign_year)
+    _auto_por_campo = ({str(r["Campo/Zona"]): pd.Timestamp(r["Fecha biofix"]).normalize()
+                        for _, r in _bf_auto.iterrows()} if not _bf_auto.empty else {})
+    _tabla_por_campo = {}
+    if not _bf_camp.empty and {"Campo/Zona", "Fecha biofix"} <= set(_bf_camp.columns):
+        for _c, _g in _bf_camp.groupby(_bf_camp["Campo/Zona"].astype(str)):
+            _d = pd.to_datetime(_g["Fecha biofix"], errors="coerce").dropna()
+            _tabla_por_campo[_c] = _d.min().normalize() if not _d.empty else None
+    _campos_chart = sorted(set(_auto_por_campo) | set(_tabla_por_campo))
     if not _campos_chart:
-        st.info("Necesitas biofix por campo. Pulsa **«📌 Fijar estos biofix»** de arriba (o sube "
-                "capturas) y aquí aparecerá el selector de campo.")
+        st.info("Todavía no hay capturas ni biofix de esta campaña: en cuanto importes las "
+                "lecturas de las trampas aparecerá aquí el selector de campo.")
     elif history is None or history.empty:
         st.info("Sin histórico climático suficiente para calcular los grados-día.")
     else:
+        _vacios = sorted(c for c, d in _tabla_por_campo.items() if d is None)
+        if _vacios:
+            st.caption(
+                "ℹ️ Campos **sin fecha en la tabla de biofix**: " + ", ".join(_vacios) + ". No pasa "
+                "nada: aquí, como en los puntos 6 y 7, se usa el biofix **calculado de sus capturas**.")
         _sel_cc = st.selectbox("Campo", _campos_chart, key="carpo_field_chart_sel")
         _base_cc, _upper_cc = 10.0, 31.1
-        # 1) Biofix del campo seleccionado (una fila)
-        _bf_one = _bf_camp[_bf_camp["Campo/Zona"].astype(str) == _sel_cc].copy()
+        # 1) Biofix del campo seleccionado: el calculado de sus capturas; solo si no tiene
+        #    capturas suficientes, el de la tabla. Se pasa a la gráfica como una fila.
+        _bf_auto_cc = _auto_por_campo.get(_sel_cc)
+        _bf_tabla_cc = _tabla_por_campo.get(_sel_cc)
+        if _bf_auto_cc is not None:
+            _bf_date_cc, _bf_origen = _bf_auto_cc, "auto"
+        elif _bf_tabla_cc is not None:
+            _bf_date_cc, _bf_origen = _bf_tabla_cc, "tabla"
+        else:
+            _bf_date_cc, _bf_origen = None, "ninguno"
+        _bf_one = (pd.DataFrame({"Campo/Zona": [_sel_cc], "Fecha biofix": [_bf_date_cc]})
+                   if _bf_date_cc is not None else pd.DataFrame(columns=["Campo/Zona", "Fecha biofix"]))
         # 2) Capturas de ESE campo
-        _traps_camp = carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, campaign_year)
         _traps_one = (_traps_camp[_traps_camp["Campo/Zona"].astype(str) == _sel_cc].copy()
                       if (not _traps_camp.empty and "Campo/Zona" in _traps_camp.columns) else pd.DataFrame())
 
@@ -19859,7 +19887,6 @@ def carpocapsa_tab(history):
             _treats_one = _a
 
         # 4) Serie de DD (finca; el DD diario es climático, común) + previsión de sesión
-        _bf_date_cc = pd.to_datetime(_bf_one["Fecha biofix"], errors="coerce").min() if not _bf_one.empty else None
         _dback_disp = 100
         if _bf_date_cc is not None and pd.notna(_bf_date_cc):
             _dback_disp = min(140, max(45, (pd.Timestamp.now().normalize() - _bf_date_cc).days + 10))
@@ -19875,11 +19902,27 @@ def carpocapsa_tab(history):
             st.plotly_chart(_fig_cc, use_container_width=True,
                             config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
             _bf_txt = (_bf_date_cc.strftime("%d/%m/%Y") if _bf_date_cc is not None and pd.notna(_bf_date_cc) else "—")
+            if _bf_origen == "auto":
+                _bf_de = (f"calculado de sus capturas (1ª captura sostenida ≥{CARPOCAPSA_BIOFIX_THRESHOLD}), "
+                          "el mismo que usan los puntos 6 y 7")
+                if _bf_tabla_cc is not None and _bf_tabla_cc != _bf_auto_cc:
+                    _bf_de += f"; la tabla de biofix dice **{_bf_tabla_cc:%d/%m/%Y}**"
+                elif _bf_tabla_cc is None and _sel_cc in _tabla_por_campo:
+                    _bf_de += "; la tabla de biofix no tiene fecha para este campo"
+                _linea = "línea roja = sus DD desde SU biofix"
+            elif _bf_origen == "tabla":
+                _bf_de = ("de la tabla de biofix: sus capturas no llegan a una captura sostenida "
+                          f"≥{CARPOCAPSA_BIOFIX_THRESHOLD}, así que los puntos 6 y 7 no lo miden")
+                _linea = "línea roja = sus DD desde SU biofix"
+            else:
+                _bf_de = "sin biofix"
+                _linea = ("⚠️ sin biofix, la línea roja son los DD de la finca, no los de este campo, "
+                          "y no se puede situar cada pase en la eclosión")
             st.caption(
-                f"**{_sel_cc}** · biofix **{_bf_txt}** · **{len(_treats_one)}** tratamiento(s) de "
+                f"**{_sel_cc}** · biofix **{_bf_txt}** ({_bf_de}) · **{len(_treats_one)}** tratamiento(s) de "
                 "carpocapsa en este campo (líneas moradas). Círculos azules = capturas de ESTE campo "
                 "(tamaño y nº = capturas); **○ gris = lectura hecha sin capturas (0)** — así se ve que "
-                "la trampa SÍ se revisó aunque no cayera nada; línea roja = sus DD desde SU biofix.\n\n"
+                f"la trampa SÍ se revisó aunque no cayera nada; {_linea}.\n\n"
                 "**Líneas horizontales de color** = bordes de la eclosión de cada generación: la "
                 "sólida marca **desde dónde tratar sirve**, la punteada **dónde deja de servir**. "
                 "**▲ triángulos al pie** = calendario teórico de pases (uno cada 7 días mientras "
@@ -19890,6 +19933,8 @@ def carpocapsa_tab(history):
             # La fecha sola no contesta a eso: el mismo 4 de agosto es pronto en un
             # campo tardío y tarde en uno adelantado. Lo que lo dice es el DD del
             # campo ese día, comparado con SU banda de eclosión.
+            if _bf_date_cc is not None and pd.notna(_bf_date_cc) and _treats_one.empty:
+                st.caption("Sin tratamientos de carpocapsa registrados en este campo: no hay pases que situar.")
             if _bf_date_cc is not None and pd.notna(_bf_date_cc) and not _treats_one.empty:
                 _dd_cc = carpocapsa_daily_degree_days(
                     carpocapsa_filter_history_campaign(history, campaign_year),
