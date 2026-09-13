@@ -8719,6 +8719,56 @@ def instructions_tab():
     st.caption("v8.9.7 · Finca Gallinal · Plataforma agroclimática")
 
 
+# Qué pasa en la app si falta cada dato, y cómo saber si sigue faltando.
+CARGAS_VIGILADAS = {
+    "actuaciones": ("las actuaciones de Agroptima", "activities_df",
+                    "los campos salen como **no tratados** en Decisiones, Sanidad, Carpocapsa y el Panel de hoy"),
+    "carpocapsa":  ("las capturas y biofix de carpocapsa", "carpocapsa_traps_df",
+                    "Carpocapsa y el Panel de hoy no tienen capturas, ventanas ni biofix"),
+    "fenologia":   ("la fenología registrada", "phenology_df",
+                    "Decisiones usa las fechas de la literatura en todos los campos"),
+    "riego":       ("el riego real (VEGGA y motobomba)", "irrigation_log_df",
+                    "el balance de riego cuenta solo la lluvia, como si no se hubiera regado"),
+}
+
+
+def cargas_que_siguen_fallando():
+    """[(clave, nombre, consecuencia, motivo)] de las cargas del arranque que fallaron y
+    cuyo dato SIGUE vacío en la sesión (si se recargó a mano, deja de avisar)."""
+    out = []
+    for clave, motivo in (st.session_state.get("_cargas_fallidas") or {}).items():
+        if clave not in CARGAS_VIGILADAS:
+            continue
+        nombre, clave_sesion, consecuencia = CARGAS_VIGILADAS[clave]
+        _df = st.session_state.get(clave_sesion)
+        if _df is None or not isinstance(_df, pd.DataFrame) or _df.empty:
+            out.append((clave, nombre, consecuencia, str(motivo or "sin detalle")))
+    return out
+
+
+def render_aviso_cargas_fallidas():
+    """Aviso arriba de todas las pantallas si al abrir la app no se cargó algún dato."""
+    _f = cargas_que_siguen_fallando()
+    if not _f:
+        return
+    _lineas = "\n".join(f"- **{n.capitalize()}**: {c}." for _, n, c, _m in _f)
+    st.error(
+        "⚠️ **Al abrir la app no se pudieron cargar " + ", ".join(n for _, n, _c, _m in _f) + ".** "
+        "Mientras tanto la app sigue funcionando como si esos datos no existieran:\n\n"
+        + _lineas + "\n\n**Pulsa «Reintentar la carga»** (o recarga la página). No guardes nada en "
+        "Supabase desde esas pantallas hasta que se carguen, para no pisar lo que hay guardado.")
+    _c1, _c2 = st.columns([1, 3])
+    with _c1:
+        if st.button("🔄 Reintentar la carga", key="reintentar_cargas", use_container_width=True):
+            # Solo vuelve a pedir lo que está vacío: lo que ya se cargó no se toca.
+            st.session_state.autoload_supabase_done = False
+            st.rerun()
+    with _c2:
+        with st.expander("Detalle técnico del fallo"):
+            for _, n, _c, m in _f:
+                st.caption(f"**{n}** · {m[:300]}")
+
+
 def home_today_tab(history, soil_type, hoja_threshold):
     """Panel de inicio: reúne lo urgente de toda la finca (carpocapsa, fungicidas,
     clima) para saber QUÉ HACER HOY sin entrar item por item. Solo resume; el
@@ -21879,8 +21929,13 @@ def resultado_sanitario_tab():
 if "autoload_supabase_done" not in st.session_state:
     st.session_state.autoload_supabase_done = False
 
+# CÓMO FUE CADA CARGA. Si una falla, la app sigue funcionando como si ese dato no existiera
+# (campos «sin tratar», riego «sin regar»…) y nadie lo nota. Se anota aquí y
+# render_aviso_cargas_fallidas() lo dice arriba mientras el dato siga vacío.
+# {clave: motivo}. Solo se anotan los que fallaron.
 if not st.session_state.autoload_supabase_done and supabase_is_configured():
     st.session_state.autoload_supabase_done = True
+    st.session_state["_cargas_fallidas"] = {}
 
     # Histórico climático (snapshot). use_cache=False: al abrir una sesión nueva
     # forzamos la descarga del snapshot MÁS RECIENTE de Supabase (sin caché), para
@@ -21902,9 +21957,14 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
 
     # Agroptima
     if st.session_state.activities_df.empty:
-        _act_df, _ = load_activities_from_supabase()
+        try:
+            _act_df, _act_msg = load_activities_from_supabase()
+        except Exception as _e:
+            _act_df, _act_msg = pd.DataFrame(), f"{type(_e).__name__}: {_e}"
         if not _act_df.empty:
             st.session_state.activities_df = _act_df
+        else:
+            st.session_state["_cargas_fallidas"]["actuaciones"] = _act_msg
 
     # Producción
     if "produccion_df" not in st.session_state or st.session_state.get("produccion_df", pd.DataFrame()).empty:
@@ -21914,9 +21974,15 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
 
     # Fenología (calendario fenológico por campo × variedad × año)
     if st.session_state.get("phenology_df", pd.DataFrame()).empty:
-        _phen_df, _ = load_phenology_from_supabase()
+        try:
+            _phen_df, _phen_msg = load_phenology_from_supabase()
+        except Exception as _e:
+            _phen_df, _phen_msg = None, f"Error: {type(_e).__name__}: {_e}"
         if _phen_df is not None and not _phen_df.empty:
             st.session_state.phenology_df = normalize_phenology_df(_phen_df)
+        elif str(_phen_msg).startswith("Error"):
+            # Solo si es un ERROR: no tener fenología guardada todavía es normal.
+            st.session_state["_cargas_fallidas"]["fenologia"] = _phen_msg
 
     # Perfiles de suelo por parcela (para el balance de riego)
     if st.session_state.get("soil_profiles_df", pd.DataFrame()).empty:
@@ -21926,9 +21992,15 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
 
     # Historial de riego real (Agronic/Vegga) para el balance
     if st.session_state.get("irrigation_log_df", pd.DataFrame()).empty:
-        _il_df, _ = load_irrigation_log_from_supabase()
+        try:
+            _il_df, _il_msg = load_irrigation_log_from_supabase()
+        except Exception as _e:
+            _il_df, _il_msg = None, f"{type(_e).__name__}: {_e}"
         if _il_df is not None and not _il_df.empty:
             st.session_state.irrigation_log_df = normalize_irrigation_log_df(_il_df)
+        else:
+            # El informe diario lo escribe cada mañana: vacío es un fallo, no «aún no hay».
+            st.session_state["_cargas_fallidas"]["riego"] = _il_msg
 
     # Overrides de config de goteo (edición de emergencia del usuario)
     if st.session_state.get("irrigation_config_df", pd.DataFrame()).empty:
@@ -21942,13 +22014,19 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
 
     # Carpocapsa (capturas, biofix y daños)
     if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
-        _t, _b, _d, _ = load_carpocapsa_snapshot_from_supabase()
+        try:
+            _t, _b, _d, _carpo_msg = load_carpocapsa_snapshot_from_supabase()
+        except Exception as _e:
+            _t = _b = _d = None
+            _carpo_msg = f"{type(_e).__name__}: {_e}"
         if _t is not None and not _t.empty:
             st.session_state.carpocapsa_traps_df = _t
         if _b is not None and not _b.empty:
             st.session_state.carpocapsa_biofix_df = _b
         if _d is not None and not _d.empty:
             st.session_state.carpocapsa_damage_df = _d
+        if st.session_state.carpocapsa_traps_df.empty:
+            st.session_state["_cargas_fallidas"]["carpocapsa"] = _carpo_msg
 
 # ── Auto-carga predicción Sencrop al arrancar (una sola vez por sesión) ────────
 # Descarga la Previsión Sencrop automáticamente si el token está disponible
@@ -32430,6 +32508,12 @@ if not _HEADLESS:
                         f"⚠️ **Última lectura del sensor: hace {_age_h:.0f} h** ({_stamp}). "
                         f"Puede que la actualización diaria aún no haya corrido hoy; si el retraso "
                         f"sigue creciendo, revisa **Actualizar datos**.")
+    except Exception:
+        pass
+
+    # ── Aviso de cargas fallidas al abrir (Agroptima, carpocapsa, fenología, riego) ──
+    try:
+        render_aviso_cargas_fallidas()
     except Exception:
         pass
 
