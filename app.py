@@ -439,7 +439,7 @@ _DESKTOP_CHROME_JS = """
 
         var mnItems = [
           {ic:'🔎', lb:'Análisis',  tx:'🔎 Análisis'},
-          {ic:'🌤️', lb:'Clima',     tx:'🌦️ Sencrop'},
+          {ic:'🌤️', lb:'Clima',     tx:'🌦️ Sencrop y MeteoGalicia'},
           {ic:'🧾', lb:'Agroptima', tx:'🧾 Agroptima'},
           {ic:'🍎', lb:'Producción',tx:'🍎 Producción'}
         ];
@@ -514,7 +514,7 @@ _DESKTOP_CHROME_JS = """
             /* Determinar grupo activo a partir del texto de la página */
             var textToKey = {
               '🔎 Análisis':'analisis',
-              '📊 Dashboard':'clima','🌦️ Sencrop':'clima',
+              '📊 Dashboard':'clima','🌦️ Sencrop y MeteoGalicia':'clima',
               '📈 Comparador':'clima','❄️ Frío':'clima',
               '🧾 Agroptima':'agroptima',
               '🍎 Producción':'produccion',
@@ -5929,6 +5929,10 @@ SENCROP_MEASURE_MAP = {
     "rainfall":             "lluvia_mm",
 }
 
+# Nombre del item donde se descargan los datos y se mide/ajusta la previsión. En una
+# constante porque lo citan muchos textos de otras pantallas.
+NOMBRE_ITEM_PREVISION = "🌦️ Sencrop y MeteoGalicia"
+
 SENCROP_SENSORS = [
     # ⚠️ Los IDs numéricos NO son estables y estaban equivocados: el 20/08/2026 el
     # soporte de Sencrop confirmó que RC0028091 es 89669 y no 11653, lo que provocaba
@@ -7449,7 +7453,7 @@ def render_sencrop_forecast_panel():
     st.caption(
         "Sobre la previsión se aplican los modelos de riesgo: Mills (moteado), monilia y grados-día "
         "de carpocapsa. La hoja mojada prevista se estima con la humedad, el rocío y la lluvia "
-        "previstos (🎯 Decisiones → 🍃 Modelo de hoja mojada)."
+        "previstos (pestaña **🎯 Fiabilidad y hoja mojada** → 🍃 Modelo de hoja mojada)."
     )
 
     _hay_token = bool(st.session_state.get("sencrop_token"))
@@ -8007,11 +8011,16 @@ def import_panel():
             else:
                 st.session_state.sencrop_user_id = _imp_stored_uid or None
 
-    tab_prev, tab_act, tab_con = st.tabs(["📡 Previsión", "⬇️ Actualizar datos", "⚙️ Conexión"])
+    tab_prev, tab_fiab, tab_act, tab_con = st.tabs(
+        ["📡 Previsión", "🎯 Fiabilidad y hoja mojada", "⬇️ Actualizar datos", "⚙️ Conexión"])
 
     # ── TAB 1: PREVISIÓN ──────────────────────────────────────────────────────
     with tab_prev:
         render_sencrop_forecast_panel()
+
+    # ── TAB 2: FIABILIDAD DE LA PREVISIÓN Y HOJA MOJADA (antes en 🎯 Decisiones) ──
+    with tab_fiab:
+        render_prevision_y_fiabilidad()
 
     # ── TAB 2: ACTUALIZAR DATOS ───────────────────────────────────────────────
     with tab_act:
@@ -8539,7 +8548,7 @@ def instructions_tab():
             | Pestaña | Para qué | Cuándo |
             |---|---|---|
             | **📊 Dashboard** | Estado del histórico: desde/hasta, huecos, calidad del dato, resumen de 30 días y descarga en CSV. | Si sospechas que faltan datos |
-            | **🌦️ Sencrop** | *Previsión* (MeteoGalicia y riesgo previsto a 7 días) · *Actualizar datos* (descarga manual de la Nave y del Río, Supabase, CSV) · *Conexión* (diagnóstico de sensores). | Solo si falló la descarga automática |
+            | **🌦️ Sencrop y MeteoGalicia** | *Previsión* (de dónde sale y riesgo previsto) · *Fiabilidad y hoja mojada* (cuánto acierta la previsión y cómo se estima la hoja mojada que no trae) · *Actualizar datos* (descarga manual de la Nave y del Río) · *Conexión* (sensores y diagnóstico). | Para revisar la previsión, o si falló la descarga automática |
             | **🔎 Análisis** | Informe interpretado de un periodo: temperatura, humedad y hoja, lluvia, viento, radiación, polinización e infecciones. | Para revisar una semana o un mes |
             | **📈 Comparador** | Nave frente a Río, campañas de frío, el mismo mes, semana o quincena en varios años, y climatología mensual con anomalías. | Para comparar años |
             | **❄️ Frío** | Horas frío, unidades Utah y Chill Portions de la campaña (1 nov – 31 mar), cumplimiento por variedad y floración prevista. | En invierno |
@@ -8550,7 +8559,7 @@ def instructions_tab():
             |---|---|---|
             | **🌱 Fenología** | Calendario de fases por campo, variedad y año (con guía BBCH) y clima de cada fase. | Primavera: registrar fases |
             | **🍄 Sanidad** | Semáforo del periodo, recomendación por campo, eventos de hoja mojada con auditoría y simulador de umbral, histórico de infecciones por año y fase, rotación FRAC y seguimiento de fitosanitarios. | Para entender el porqué de un riesgo |
-            | **🎯 Decisiones** | Panel diario de fungicidas por campo (🔴🟠🟡🟢, producto recomendado, pases de campaña, combinación con carpocapsa), gráficas de riesgo, modelo de hoja mojada prevista y fiabilidad de la previsión. | Cada mañana en campaña |
+            | **🎯 Decisiones** | Qué hacer hoy: panel diario de fungicidas por campo (🔴🟠🟡🟢, producto recomendado, pases de campaña, combinación con carpocapsa) y gráficas de riesgo. Arriba, una línea con la previsión y un aviso si algún día es *frágil*. | Cada mañana en campaña |
             | **🐛 Carpocapsa** | Capturas, biofix, grados-día, ventanas de tratamiento por campo, vista por grupos (en pruebas), tratamientos, DD al tratar, cobertura real de la eclosión y muestreo de daños. | Cada semana durante el vuelo |
             | **🩺 Resultado sanitario** | Fungicidas del año por campo y variedad frente a tu valoración visual, con la gráfica de infecciones y tratamientos. | Antes de cosechar |
             | **💧 Riego** | Balance hídrico por campo (modelo clásico y de goteo), reserva del suelo, riego real (VEGGA, Excel o motobomba), perfiles de suelo y configuración de goteo. | En verano, 1-2 veces por semana |
@@ -8609,6 +8618,11 @@ def instructions_tab():
               el 50 % contra esa enfermedad, lluvia caída desde entonces, máximo legal de pases y
               rotación FRAC.
             - **El riesgo se calcula con el sensor real.** La previsión solo adelanta avisos.
+            - **Aviso frágil:** si la hoja mojada prevista de un día depende casi solo de la lluvia
+              anunciada, Decisiones lo avisa arriba. Antes de tratar por ese día, conviene esperar
+              a ver si llueve de verdad.
+            - **Cuánto acierta la previsión y cómo se estima la hoja mojada** se mira y se ajusta en
+              🌦️ Sencrop y MeteoGalicia → 🎯 Fiabilidad y hoja mojada.
 
             ### 🐛 Carpocapsa
 
@@ -8653,21 +8667,21 @@ def instructions_tab():
 
             **Sale el aviso «⚠️ Última lectura del sensor» o «🔴 El sensor no trae datos nuevos»**  
             El proceso de la mañana no corrió o falló (comprueba si llegó el Telegram). Para
-            recuperarlo a mano: **🌦️ Sencrop → ⬇️ Actualizar datos** → descargar los 4 sensores
+            recuperarlo a mano: **🌦️ Sencrop y MeteoGalicia → ⬇️ Actualizar datos** → descargar los 4 sensores
             → en *🌊 Zona Río*, **🔄 Traer solo lo nuevo** → guardar en Supabase y **actualizar el
             snapshot**.
 
             **El histórico climático está vacío al abrir**  
-            **🌦️ Sencrop → ⬇️ Actualizar datos → ☁️ Guardar/cargar desde Supabase →
+            **🌦️ Sencrop y MeteoGalicia → ⬇️ Actualizar datos → ☁️ Guardar/cargar desde Supabase →
             Cargar histórico completo desde snapshot**.
 
             **Sencrop no descarga o da «UNAUTHORIZED»**  
-            Los números internos de los sensores pueden cambiar. **🌦️ Sencrop → ⚙️ Conexión →
+            Los números internos de los sensores pueden cambiar. **🌦️ Sencrop y MeteoGalicia → ⚙️ Conexión →
             🔍 Diagnóstico: listar mis dispositivos** los vuelve a casar con la etiqueta física
             de cada aparato.
 
             **La Zona Río sale vacía**  
-            **🌦️ Sencrop → ⬇️ Actualizar datos → 🌊 Zona Río → Descargar todo desde…** y
+            **🌦️ Sencrop y MeteoGalicia → ⬇️ Actualizar datos → 🌊 Zona Río → Descargar todo desde…** y
             guardar.
 
             **Agroptima da error al descargar**  
@@ -8926,7 +8940,7 @@ def _render_dashboard_zona_rio(history, soil_type, hoja_threshold):
     el resumen de 30 días, con su temperatura, humedad y lluvia y lo demás de la Nave."""
     rio = st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
     if rio is None or rio.empty:
-        st.info("Todavía no hay datos del sensor del Río. Se descargan en **🌦️ Sencrop → "
+        st.info("Todavía no hay datos del sensor del Río. Se descargan en **🌦️ Sencrop y MeteoGalicia → "
                 "⬇️ Actualizar datos → Zona Río**.")
         return
     r = rio.copy()
@@ -9032,7 +9046,7 @@ def analysis_tab(history, soil_type, hoja_threshold):
     if _zona_a == ZONA_RIO:
         _hist_a = historico_para_ver(ZONA_RIO, history)
         if _hist_a.empty:
-            st.info("Todavía no hay datos del sensor del Río. Se descargan en **🌦️ Sencrop → "
+            st.info("Todavía no hay datos del sensor del Río. Se descargan en **🌦️ Sencrop y MeteoGalicia → "
                     "⬇️ Actualizar datos → Zona Río**.")
             return
         st.caption(f"🌊 **{ZONA_RIO}**: temperatura, humedad y lluvia de su sensor (desde el "
@@ -10124,7 +10138,7 @@ def render_comparacion_nave_rio(nave, rio):
         "*Dif.* = Río − Nave: negativo, el Río está más frío o más seco. "
         "*T mín* es la media de las mínimas diarias. Día de lluvia = al menos 1 mm.")
     if rio is None or rio.empty:
-        st.info("Todavía no hay datos de la **Zona Río**. Se descargan en **🌦️ Sencrop → "
+        st.info("Todavía no hay datos de la **Zona Río**. Se descargan en **🌦️ Sencrop y MeteoGalicia → "
                 "⬇️ Actualizar datos → Zona Río**.")
         return
     res = comparacion_nave_rio(nave, rio)
@@ -29626,187 +29640,18 @@ def render_fiabilidad_mg_zona_rio():
                 "puede decidir si fiarse de ella.")
 
 
-def render_decisiones_panel():
-    """Panel de decisiones agronómicas con 4 gráficas estilo RIMpro."""
-    try:
-        import plotly.graph_objects as _go_test  # noqa: F401
-    except ImportError:
-        st.error(
-            "📦 **Plotly no está instalado.** Haz clic en **Manage app → Reboot app** "
-            "para que Streamlit Cloud instale las nuevas dependencias."
-        )
-        return
-
-    history_df  = st.session_state.get("history_df",  pd.DataFrame())
-    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
-    activities_df = st.session_state.get("activities_df", pd.DataFrame())
-    biofix_df   = st.session_state.get("carpocapsa_biofix_df", pd.DataFrame())
-    traps_df    = st.session_state.get("carpocapsa_traps_df",  pd.DataFrame())
-
-    if history_df.empty and forecast_df.empty:
-        st.warning("⚠️ Sin datos climáticos. Carga el histórico desde Supabase o Sencrop y la predicción desde la pestaña 🌦️ Sencrop.")
-        return
-
-    # SIN PREVISIÓN: DECIRLO. Hasta ahora el panel se quedaba MUDO — las gráficas y la
-    # tabla de fiabilidad simplemente acababan en el último día real, sin ninguna marca,
-    # y había que darse cuenta contando días. Pasó el 19-20/08/2026: Sencrop empezó a
-    # devolver la previsión vacía y el panel siguió pintando como si nada.
-    # La autocarga del arranque también falla en silencio (no avisa si no baja nada),
-    # así que este es el único sitio donde el hueco se ve.
-    # DE QUÉ FUENTE ES LA PREVISIÓN. Desde que Sencrop dejó de servirla, el futuro sale
-    # de MeteoGalicia, y eso cambia cómo hay que leer los avisos: es un modelo de malla
-    # de 1 km sin calibrar con la estación, no la fusión calibrada de Sencrop. Decirlo
-    # cada vez evita que dentro de un mes nadie recuerde de dónde salen estos números.
-    if (forecast_df is not None and not forecast_df.empty
-            and st.session_state.get("_forecast_src") == "meteogalicia"):
-        _mg_hasta = ""
-        try:
-            _mh = pd.to_datetime(forecast_df["fecha_hora"], errors="coerce").max()
-            if pd.notna(_mh):
-                _mg_hasta = f" Llega hasta el **{_mh:%d/%m %H:%M}**."
-        except Exception:
-            pass
-        st.info(
-            "🌍 **La previsión es de MeteoGalicia** (WRF 1 km en el punto de la finca), "
-            "no de Sencrop, que ya no la sirve por API." + _mg_hasta +
-            " La actualiza el **informe diario** cada mañana.\n\n"
-            "Léela con esta cautela: es un modelo de malla **sin calibrar con tu "
-            "estación**. Con una semana de datos, la **temperatura** y la **lluvia** "
-            "salen muy ajustadas; la **humedad** es el punto flojo y tiende a quedarse "
-            "**algo por debajo** de la real, lo que puede hacer que se pierda alguna hora "
-            "de hoja mojada. Míralo en «¿Sirve MeteoGalicia…?», más abajo — ahí está "
-            "medido y actualizado, que es lo que vale.")
-        # QUÉ HAY DEBAJO DE CADA NÚMERO. Sin esto, un «moteado previsto = 0» en un día
-        # con lluvia anunciada no se puede ni confirmar ni desmentir: hay que poder ver
-        # la lluvia y la humedad HORARIAS que entran al modelo, que no son las mismas que
-        # el total diario de la tabla de fiabilidad (son dos consultas distintas a MG).
-        with st.expander("🔍 Ver la previsión que se está usando (día a día)"):
-            st.caption(
-                "Lo que de verdad entra al modelo, resumido por día. La **lluvia** y la "
-                "**humedad** de aquí son las de la serie **horaria**; la columna «Lluvia MG» "
-                "de la tabla de fiabilidad es el **total diario**, otra consulta distinta. "
-                "Si un día sale con lluvia y aun así el riesgo es 0, aquí se ve por qué.")
-            try:
-                _fx = forecast_df.copy()
-                _fx["fecha_hora"] = pd.to_datetime(_fx["fecha_hora"], errors="coerce")
-                _fx = _fx.dropna(subset=["fecha_hora"])
-                _pw = st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS))
-                _fx["_wet"] = estimate_leaf_wetness_minutes(_fx, _pw)
-                # ¿CUÁNTO DEL AVISO SE SOSTIENE SIN LA LLUVIA PREVISTA? En el estimador la
-                # primera condición es «lluvia > 0,1 mm», así que una hora con lluvia
-                # anunciada cuenta como hoja mojada aunque la humedad no acompañe. Si el
-                # modelo se pasa con la lluvia —MeteoGalicia anunció 4,5 mm el 28/08 y
-                # cayeron 0,5— se inventa mojadura y el riesgo se dispara sin motivo.
-                # Recalcular con lluvia 0 dice qué parte del aviso aguanta por humedad y
-                # rocío, que es lo que no depende de acertar los milímetros.
-                # Esto NO corrige nada: solo señala qué avisos son frágiles.
-                _fx_sin = _fx.copy()
-                _fx_sin["lluvia_mm"] = 0.0
-                _fx["_wet_sin"] = estimate_leaf_wetness_minutes(_fx_sin, _pw)
-                _fx["_d"] = _fx["fecha_hora"].dt.normalize()
-                _g = _fx.groupby("_d").agg(
-                    Horas=("fecha_hora", "size"),
-                    Lluvia_mm=("lluvia_mm", "sum"),
-                    HR_media=("hr_media", "mean"),
-                    HR_max=("hr_media", "max"),
-                    T_min=("temp_media", "min"),
-                    T_max=("temp_media", "max"),
-                    Horas_mojadura=("_wet", lambda s: int((pd.to_numeric(s) > 0).sum())),
-                    Horas_sin_lluvia=("_wet_sin", lambda s: int((pd.to_numeric(s) > 0).sum())),
-                ).reset_index()
-
-                def _solidez(r):
-                    """Un día es FRÁGIL si su mojadura la sostiene sobre todo la lluvia
-                    prevista: si el modelo se pasa con los milímetros, ese aviso se cae."""
-                    _t, _s = int(r["Horas_mojadura"]), int(r["Horas_sin_lluvia"])
-                    if _t == 0:
-                        return "—"
-                    _p = _s / _t
-                    if _p >= 0.7:
-                        return "🟢 Sólido (humedad)"
-                    if _p >= 0.3:
-                        return "🟡 Mixto"
-                    return "🔴 Frágil (solo lluvia)"
-
-                _g["Solidez"] = _g.apply(_solidez, axis=1)
-                _g["_d"] = _g["_d"].dt.strftime("%d/%m")
-                _g = _g.rename(columns={"_d": "Día", "Lluvia_mm": "Lluvia (mm)",
-                                        "HR_media": "HR media", "HR_max": "HR máx",
-                                        "T_min": "T mín", "T_max": "T máx",
-                                        "Horas_mojadura": "Horas hoja mojada",
-                                        "Horas_sin_lluvia": "…sin la lluvia"})
-                for _c in ("Lluvia (mm)", "HR media", "HR máx", "T mín", "T máx"):
-                    _g[_c] = pd.to_numeric(_g[_c], errors="coerce").round(1)
-                st.dataframe(_g, use_container_width=True, hide_index=True)
-                _frag = _g[_g["Solidez"].astype(str).str.startswith("🔴")]
-                if not _frag.empty:
-                    st.warning(
-                        "🔴 **Aviso frágil** en: **" + ", ".join(_frag["Día"].astype(str)) +
-                        "**. Esos días la hoja mojada la sostiene casi solo la **lluvia "
-                        "prevista**, sin humedad que acompañe. Si el modelo se pasa con los "
-                        "milímetros —le ha pasado— ese riesgo no llega a existir.\n\n"
-                        "**Antes de tratar por uno de estos, espera a ver si llueve de "
-                        "verdad.** Un día 🟢 sólido no depende de acertar los milímetros.")
-                # NO VENDER LA ETIQUETA POR MÁS DE LO QUE ES. «Sólido» solo dice que el
-                # aviso no depende de la lluvia; NO que vaya a acertar. El 31/08/2026 la
-                # lluvia estuvo perfecta (0 previstos, 0 reales) y aun así previó 144
-                # contra un real de 21: el error vino de la humedad y la temperatura de
-                # madrugada, que es justo la franja donde MeteoGalicia infla (HR +1,7 y
-                # temperatura −1,1 → se alcanza antes el rocío → más horas de mojadura).
-                # El sesgo global de HR (−4,6) engaña porque lo domina la tarde, que no
-                # pinta nada en la mojadura.
-                st.caption(
-                    "⚠️ **«Sólido» no quiere decir «acertará».** Solo dice que ese aviso **no "
-                    "depende de la lluvia**. Puede fallar igual si la humedad o la temperatura "
-                    "previstas se desvían: de madrugada MeteoGalicia da la humedad algo más "
-                    "alta y la temperatura algo más baja, y las dos cosas adelantan el rocío e "
-                    "inflan las horas de hoja mojada.\n\n"
-                    "Además, **la previsión va ahora mismo sin corregir**: el estimador de hoja "
-                    "mojada sobreestima con cualquier fuente (con Sencrop se midió ×1,65) y para "
-                    "MeteoGalicia el factor está en 1,0 hasta que haya datos para medirlo. Por "
-                    "eso los números previstos salen altos frente a los reales.")
-                st.caption(
-                    f"Umbral de mojadura configurado: **HR ≥ {_pw.get('rh_thr', 92):.0f} %** "
-                    f"· rocío ≤ {_pw.get('dew_depr', 1.5):.1f} °C · lluvia > 0,1 mm. "
-                    "**Horas hoja mojada** es lo que alimenta el moteado y la monilia: si "
-                    "sale 0, el riesgo será 0 por mucha lluvia que anuncie el total diario. "
-                    "· **Horas** = cuántas horas de ese día trae la previsión: si son pocas, "
-                    "el día está incompleto y sus totales se quedan cortos.")
-            except Exception as _e:
-                st.warning(f"No se pudo resumir la previsión: {type(_e).__name__}: {_e}")
-
-    if forecast_df is None or forecast_df.empty:
-        _ult_txt = ""
-        try:
-            _u = pd.to_datetime(history_df["fecha_hora"], errors="coerce").max()
-            if pd.notna(_u):
-                _ult_txt = f" Lo que ves llega hasta el **{_u:%d/%m %H:%M}** y ahí se corta."
-        except Exception:
-            pass
-        st.warning(
-            "🔮 **No hay previsión cargada: el riesgo que se ve aquí es todo pasado.**" + _ult_txt +
-            "\n\nSin la previsión horaria de Sencrop no se puede calcular riesgo hacia "
-            "adelante: moteado, monilia y oídio necesitan **temperatura y HR hora a hora**, "
-            "y eso no lo da ninguna otra fuente. Tampoco se archiva la previsión de hoy, "
-            "así que ese día quedará como hueco al medir la fiabilidad.\n\n"
-            "**Sí sigues teniendo lluvia prevista**: WRF9 y MeteoGalicia son independientes "
-            "de Sencrop y aparecen en la tabla día a día, más abajo.\n\n"
-            "Ve a **🌦️ Sencrop → ⬇️ Actualizar datos** y pulsa Descargar para ver el "
-            "diagnóstico concreto.")
-
-    # Archiva (1 vez al día) la previsión de riesgo, para medir su fiabilidad con el
-    # tiempo. Silencioso: si Supabase falla, no afecta al panel.
-    # OJO AL ORDEN: se archiva ANTES de mezclar la lluvia de MeteoGalicia, para que el
-    # archivo siga guardando la previsión de Sencrop PURA. Si no, la comparación de
-    # fiabilidad entre las tres fuentes dejaría de tener sentido: estaríamos midiendo
-    # a Sencrop con la lluvia de MG ya metida dentro.
-    archive_today_forecast(history_df, forecast_df)
-
-    # Lluvia de MeteoGalicia dentro de la previsión horaria, para que el estimador de
-    # hoja mojada no se pierda los episodios que a Sencrop se le escapan (11 de 18 en
-    # el archivo, frente a 2 de 9 de MG). Ver forecast_merge_rain_mg para el reparto
-    # horario y sus asunciones. El selector está en el expander de abajo; en el primer
-    # render aún no existe y se usa el valor recomendado ("max").
+# ═══════════════════════════════════════════════════════════════════════════════
+# PREVISIÓN: preparación común, fiabilidad y modelo de hoja mojada
+# Vivían dentro de 🎯 Decisiones. Desde el 13/09/2026 se consultan y ajustan en
+# 🌦️ Sencrop y MeteoGalicia → 🎯 Fiabilidad y hoja mojada, y Decisiones solo usa el
+# resultado. El código de cada bloque es el mismo que había; solo se envolvió en funciones.
+# ═══════════════════════════════════════════════════════════════════════════════
+def preparar_prevision_para_riesgo(forecast_df):
+    """Previsión horaria lista para calcular riesgo: mete la lluvia de MeteoGalicia si la
+    previsión es de Sencrop y la recorta al horizonte de MG. La usan 🎯 Decisiones y la
+    pantalla de fiabilidad, para que las dos vean exactamente la misma previsión.
+    Deja en sesión `_lw_mg_aplicada` y `_lw_mg_hasta`. NO archiva nada: el archivo diario
+    se guarda en Decisiones, ANTES de llamar a esto."""
     _rain_src = st.session_state.get("lw_rain_source", "mg")
     _mg_aplicada = False
     _mg_hasta = None
@@ -29831,7 +29676,7 @@ def render_decisiones_panel():
                 # El ARCHIVO no se toca (se guarda antes): sigue conservando los 7 días
                 # de Sencrop y las tres fuentes de lluvia, para poder seguir comparando
                 # cuál acierta más cuando esos días pasen.
-                if st.session_state.get("fc_cut_mg", True):
+                if st.session_state.get("fc_cut_mg_valor", True):
                     _hoy0 = pd.Timestamp.now().normalize()
                     _fut = [pd.Timestamp(d).normalize() for d in _mg_now
                             if pd.Timestamp(d).normalize() >= _hoy0]
@@ -29843,13 +29688,128 @@ def render_decisiones_panel():
             pass
     st.session_state["_lw_mg_aplicada"] = _mg_aplicada
     st.session_state["_lw_mg_hasta"] = _mg_hasta
+    return forecast_df
 
-    st.markdown(
-        "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
-        f"**previsión meteorológica** ({st.session_state.get('forecast_model') or 'sin previsión cargada'}) "
-        "— para tomar decisiones de tratamiento con días de antelación."
-    )
 
+def resumen_prevision_por_dia(forecast_df, _pw):
+    """Lo que de verdad entra al modelo de riesgo, resumido por día, con la «Solidez» de cada
+    día (🔴 frágil = su hoja mojada la sostiene casi solo la lluvia prevista)."""
+    _fx = forecast_df.copy()
+    _fx["fecha_hora"] = pd.to_datetime(_fx["fecha_hora"], errors="coerce")
+    _fx = _fx.dropna(subset=["fecha_hora"])
+    _fx["_wet"] = estimate_leaf_wetness_minutes(_fx, _pw)
+    # ¿CUÁNTO DEL AVISO SE SOSTIENE SIN LA LLUVIA PREVISTA? En el estimador la
+    # primera condición es «lluvia > 0,1 mm», así que una hora con lluvia
+    # anunciada cuenta como hoja mojada aunque la humedad no acompañe. Si el
+    # modelo se pasa con la lluvia —MeteoGalicia anunció 4,5 mm el 28/08 y
+    # cayeron 0,5— se inventa mojadura y el riesgo se dispara sin motivo.
+    # Recalcular con lluvia 0 dice qué parte del aviso aguanta por humedad y
+    # rocío, que es lo que no depende de acertar los milímetros.
+    # Esto NO corrige nada: solo señala qué avisos son frágiles.
+    _fx_sin = _fx.copy()
+    _fx_sin["lluvia_mm"] = 0.0
+    _fx["_wet_sin"] = estimate_leaf_wetness_minutes(_fx_sin, _pw)
+    _fx["_d"] = _fx["fecha_hora"].dt.normalize()
+    _g = _fx.groupby("_d").agg(
+        Horas=("fecha_hora", "size"),
+        Lluvia_mm=("lluvia_mm", "sum"),
+        HR_media=("hr_media", "mean"),
+        HR_max=("hr_media", "max"),
+        T_min=("temp_media", "min"),
+        T_max=("temp_media", "max"),
+        Horas_mojadura=("_wet", lambda s: int((pd.to_numeric(s) > 0).sum())),
+        Horas_sin_lluvia=("_wet_sin", lambda s: int((pd.to_numeric(s) > 0).sum())),
+    ).reset_index()
+
+    def _solidez(r):
+        """Un día es FRÁGIL si su mojadura la sostiene sobre todo la lluvia
+        prevista: si el modelo se pasa con los milímetros, ese aviso se cae."""
+        _t, _s = int(r["Horas_mojadura"]), int(r["Horas_sin_lluvia"])
+        if _t == 0:
+            return "—"
+        _p = _s / _t
+        if _p >= 0.7:
+            return "🟢 Sólido (humedad)"
+        if _p >= 0.3:
+            return "🟡 Mixto"
+        return "🔴 Frágil (solo lluvia)"
+
+    _g["Solidez"] = _g.apply(_solidez, axis=1)
+    _g["_d"] = _g["_d"].dt.strftime("%d/%m")
+    _g = _g.rename(columns={"_d": "Día", "Lluvia_mm": "Lluvia (mm)",
+                            "HR_media": "HR media", "HR_max": "HR máx",
+                            "T_min": "T mín", "T_max": "T máx",
+                            "Horas_mojadura": "Horas hoja mojada",
+                            "Horas_sin_lluvia": "…sin la lluvia"})
+    for _c in ("Lluvia (mm)", "HR media", "HR máx", "T mín", "T máx"):
+        _g[_c] = pd.to_numeric(_g[_c], errors="coerce").round(1)
+    return _g
+
+
+def dias_prevision_fragiles(forecast_df):
+    """Días («dd/mm») cuya hoja mojada prevista depende casi solo de la lluvia anunciada."""
+    if forecast_df is None or forecast_df.empty:
+        return []
+    try:
+        _g = resumen_prevision_por_dia(forecast_df, st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS)))
+        return _g[_g["Solidez"].astype(str).str.startswith("🔴")]["Día"].astype(str).tolist()
+    except Exception:
+        return []
+
+
+def render_prevision_dia_a_dia(forecast_df):
+    """Desplegable «🔍 Ver la previsión que se está usando (día a día)»."""
+    with st.expander("🔍 Ver la previsión que se está usando (día a día)"):
+        st.caption(
+            "Lo que de verdad entra al modelo, resumido por día. La **lluvia** y la "
+            "**humedad** de aquí son las de la serie **horaria**; la columna «Lluvia MG» "
+            "de la tabla de fiabilidad es el **total diario**, otra consulta distinta. "
+            "Si un día sale con lluvia y aun así el riesgo es 0, aquí se ve por qué.")
+        try:
+            _pw = st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS))
+            _g = resumen_prevision_por_dia(forecast_df, _pw)
+            st.dataframe(_g, use_container_width=True, hide_index=True)
+            _frag = _g[_g["Solidez"].astype(str).str.startswith("🔴")]
+            if not _frag.empty:
+                st.warning(
+                    "🔴 **Aviso frágil** en: **" + ", ".join(_frag["Día"].astype(str)) +
+                    "**. Esos días la hoja mojada la sostiene casi solo la **lluvia "
+                    "prevista**, sin humedad que acompañe. Si el modelo se pasa con los "
+                    "milímetros —le ha pasado— ese riesgo no llega a existir.\n\n"
+                    "**Antes de tratar por uno de estos, espera a ver si llueve de "
+                    "verdad.** Un día 🟢 sólido no depende de acertar los milímetros.")
+            # NO VENDER LA ETIQUETA POR MÁS DE LO QUE ES. «Sólido» solo dice que el
+            # aviso no depende de la lluvia; NO que vaya a acertar. El 31/08/2026 la
+            # lluvia estuvo perfecta (0 previstos, 0 reales) y aun así previó 144
+            # contra un real de 21: el error vino de la humedad y la temperatura de
+            # madrugada, que es justo la franja donde MeteoGalicia infla (HR +1,7 y
+            # temperatura −1,1 → se alcanza antes el rocío → más horas de mojadura).
+            # El sesgo global de HR (−4,6) engaña porque lo domina la tarde, que no
+            # pinta nada en la mojadura.
+            st.caption(
+                "⚠️ **«Sólido» no quiere decir «acertará».** Solo dice que ese aviso **no "
+                "depende de la lluvia**. Puede fallar igual si la humedad o la temperatura "
+                "previstas se desvían: de madrugada MeteoGalicia da la humedad algo más "
+                "alta y la temperatura algo más baja, y las dos cosas adelantan el rocío e "
+                "inflan las horas de hoja mojada.\n\n"
+                "Además, **la previsión va ahora mismo sin corregir**: el estimador de hoja "
+                "mojada sobreestima con cualquier fuente (con Sencrop se midió ×1,65) y para "
+                "MeteoGalicia el factor está en 1,0 hasta que haya datos para medirlo. Por "
+                "eso los números previstos salen altos frente a los reales.")
+            st.caption(
+                f"Umbral de mojadura configurado: **HR ≥ {_pw.get('rh_thr', 92):.0f} %** "
+                f"· rocío ≤ {_pw.get('dew_depr', 1.5):.1f} °C · lluvia > 0,1 mm. "
+                "**Horas hoja mojada** es lo que alimenta el moteado y la monilia: si "
+                "sale 0, el riesgo será 0 por mucha lluvia que anuncie el total diario. "
+                "· **Horas** = cuántas horas de ese día trae la previsión: si son pocas, "
+                "el día está incompleto y sus totales se quedan cortos.")
+        except Exception as _e:
+            st.warning(f"No se pudo resumir la previsión: {type(_e).__name__}: {_e}")
+
+
+def render_ajustes_hoja_mojada(history_df):
+    """Desplegable «🍃 Modelo de hoja mojada en la previsión» (modelo, fuente de lluvia,
+    recorte y calibración con el sensor). Sus ajustes los usa 🎯 Decisiones."""
     with st.expander("🍃 Modelo de hoja mojada en la previsión (afina el riesgo de moteado)"):
         _cur_model = st.session_state.get("lw_forecast_model", "rimpro")
         _opts = ["RIMpro (HR + rocío + secado)", "Clásico — respaldo (HR≥92 o lluvia)"]
@@ -29888,7 +29848,10 @@ def render_decisiones_panel():
         st.session_state["lw_rain_source"] = next(
             k for k, v in _rain_opts.items() if v == _sel_rain)
         _src_now = st.session_state["lw_rain_source"]
-        if _src_now != "sencrop":
+        if _src_now != "sencrop" and st.session_state.get("_forecast_src") == "meteogalicia":
+            st.info("ℹ️ La previsión **ya es de MeteoGalicia**, así que su lluvia es la que se usa. "
+                    "Este selector y el recorte solo actúan si vuelve la previsión de Sencrop.")
+        elif _src_now != "sencrop":
             if st.session_state.get("_lw_mg_aplicada"):
                 st.success("✅ Lluvia de MeteoGalicia aplicada a la previsión.")
             else:
@@ -29896,14 +29859,19 @@ def render_decisiones_panel():
                     "⚠️ **No se ha podido aplicar**: no hay datos de MeteoGalicia ni en vivo "
                     "ni en el archivo. Se está usando la lluvia de Sencrop. Si esto persiste, "
                     "revisa que el informe diario esté archivando la previsión de MG.")
-            st.checkbox(
-                "Cortar la previsión donde acaba MeteoGalicia", value=True, key="fc_cut_mg",
+            # Streamlit BORRA el valor de una casilla cuando sales de la pantalla donde está.
+            # Como el recorte se aplica en 🎯 Decisiones, el valor se guarda aparte
+            # (fc_cut_mg_valor) y es ese el que se lee al preparar la previsión.
+            _cut = st.checkbox(
+                "Cortar la previsión donde acaba MeteoGalicia",
+                value=st.session_state.get("fc_cut_mg_valor", True), key="fc_cut_mg",
                 help="Más allá del horizonte de MG (~3,5 días) la lluvia vuelve a ser solo de "
                      "Sencrop, que se deja 11 de 18 episodios. Un riesgo de infección calculado "
                      "sobre esa lluvia es ruido con pinta de dato. Desmárcalo solo si prefieres "
                      "ver el horizonte largo aun sabiendo que no es de fiar.")
+            st.session_state["fc_cut_mg_valor"] = bool(_cut)
             _hasta = st.session_state.get("_lw_mg_hasta")
-            if st.session_state.get("fc_cut_mg", True) and _hasta is not None:
+            if st.session_state.get("fc_cut_mg_valor", True) and _hasta is not None:
                 st.caption(f"✂️ Previsión de riesgo recortada hasta el **{_hasta:%d/%m}** "
                            f"(hasta donde llega MeteoGalicia). El **archivo sí guarda los 7 días** "
                            f"de Sencrop y las tres fuentes de lluvia, para poder seguir comparando "
@@ -29975,6 +29943,9 @@ def render_decisiones_panel():
             st.caption("Usando el modelo **clásico de respaldo** (mojada si llueve o HR≥92). "
                        "Selecciona **RIMpro** arriba para el estimador afinado (recomendado).")
 
+
+def render_fiabilidad_prevision(history_df, forecast_df):
+    """Desplegable «📡 Fiabilidad de la previsión» y todo lo que cuelga de él."""
     with st.expander("📡 Fiabilidad de la previsión (¿cuánto me puedo fiar del riesgo previsto?)"):
         st.caption(
             "Cada día se **archiva** el riesgo que la previsión anuncia para los próximos días; "
@@ -30994,6 +30965,131 @@ def render_decisiones_panel():
                 "(1 km oficial)**."
             )
 
+
+def render_prevision_y_fiabilidad():
+    """🌦️ Sencrop y MeteoGalicia → 🎯 Fiabilidad y hoja mojada."""
+    history_df = st.session_state.get("history_df", pd.DataFrame())
+    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
+    st.markdown("### 🎯 Fiabilidad de la previsión y hoja mojada")
+    st.caption(
+        "Aquí se **mide** cuánto acierta la previsión y se **ajusta** cómo se estima la hoja "
+        "mojada que no trae. Lo que cambies aquí lo usa **🎯 Decisiones** la próxima vez que lo "
+        "abras. Allí solo queda lo necesario para decidir.")
+    if (forecast_df is not None and not forecast_df.empty
+            and st.session_state.get("_forecast_src") == "meteogalicia"):
+        _mg_hasta = ""
+        try:
+            _mh = pd.to_datetime(forecast_df["fecha_hora"], errors="coerce").max()
+            if pd.notna(_mh):
+                _mg_hasta = f" Llega hasta el **{_mh:%d/%m %H:%M}**."
+        except Exception:
+            pass
+        st.info(
+            "🌍 **La previsión es de MeteoGalicia** (WRF 1 km en el punto de la finca), "
+            "no de Sencrop, que ya no la sirve por API." + _mg_hasta +
+            " La actualiza el **informe diario** cada mañana.\n\n"
+            "Léela con esta cautela: es un modelo de malla **sin calibrar con tu "
+            "estación**. Con una semana de datos, la **temperatura** y la **lluvia** "
+            "salen muy ajustadas; la **humedad** es el punto flojo y tiende a quedarse "
+            "**algo por debajo** de la real, lo que puede hacer que se pierda alguna hora "
+            "de hoja mojada. Míralo en «¿Sirve MeteoGalicia…?», más abajo — ahí está "
+            "medido y actualizado, que es lo que vale.")
+        # QUÉ HAY DEBAJO DE CADA NÚMERO. Sin esto, un «moteado previsto = 0» en un día
+        # con lluvia anunciada no se puede ni confirmar ni desmentir: hay que poder ver
+        # la lluvia y la humedad HORARIAS que entran al modelo, que no son las mismas que
+        # el total diario de la tabla de fiabilidad (son dos consultas distintas a MG).
+    if forecast_df is None or forecast_df.empty:
+        st.warning("🔮 **No hay previsión cargada.** Sale del archivo de MeteoGalicia que guarda "
+                   "cada mañana el proceso automático. Mira **📡 Previsión**.")
+    else:
+        render_prevision_dia_a_dia(forecast_df)
+        forecast_df = preparar_prevision_para_riesgo(forecast_df)
+    render_ajustes_hoja_mojada(history_df)
+    render_fiabilidad_prevision(history_df, forecast_df)
+
+
+def render_decisiones_panel():
+    """Panel de decisiones agronómicas con 4 gráficas estilo RIMpro."""
+    try:
+        import plotly.graph_objects as _go_test  # noqa: F401
+    except ImportError:
+        st.error(
+            "📦 **Plotly no está instalado.** Haz clic en **Manage app → Reboot app** "
+            "para que Streamlit Cloud instale las nuevas dependencias."
+        )
+        return
+
+    history_df  = st.session_state.get("history_df",  pd.DataFrame())
+    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
+    activities_df = st.session_state.get("activities_df", pd.DataFrame())
+    biofix_df   = st.session_state.get("carpocapsa_biofix_df", pd.DataFrame())
+    traps_df    = st.session_state.get("carpocapsa_traps_df",  pd.DataFrame())
+
+    if history_df.empty and forecast_df.empty:
+        st.warning(f"⚠️ Sin datos climáticos. Carga el histórico y la previsión desde **{NOMBRE_ITEM_PREVISION}**.")
+        return
+
+    # LA PREVISIÓN, EN UNA LÍNEA. De dónde sale, cuánto acierta y cómo se estima la hoja
+    # mojada se ve en 🌦️ Sencrop y MeteoGalicia → 🎯 Fiabilidad y hoja mojada (13/09/2026:
+    # Decisiones es la receta, no el cultivo de las fabas). Aquí queda lo que sirve para
+    # decidir hoy: de qué fuente es, hasta cuándo llega y si algún aviso es frágil.
+    if forecast_df is not None and not forecast_df.empty:
+        _hasta_fc = ""
+        try:
+            _mh = pd.to_datetime(forecast_df["fecha_hora"], errors="coerce").max()
+            if pd.notna(_mh):
+                _hasta_fc = f", hasta el **{_mh:%d/%m %H:%M}**"
+        except Exception:
+            pass
+        _fuente_fc = ("MeteoGalicia (WRF 1 km)" if st.session_state.get("_forecast_src") == "meteogalicia"
+                      else (st.session_state.get("forecast_model") or "cargada"))
+        st.info(f"🌍 Previsión: **{_fuente_fc}**{_hasta_fc}. De dónde sale, cuánto acierta y la hoja "
+                f"mojada prevista: **{NOMBRE_ITEM_PREVISION} → 🎯 Fiabilidad y hoja mojada**.")
+        _frag_fc = dias_prevision_fragiles(forecast_df)
+        if _frag_fc:
+            st.warning(
+                "🔴 **Aviso frágil** el **" + ", ".join(_frag_fc) + "**: la hoja mojada de esos días "
+                "la sostiene casi solo la **lluvia prevista**, sin humedad que acompañe. **Antes de "
+                "tratar por uno de estos, espera a ver si llueve de verdad.**")
+
+    # SIN PREVISIÓN: DECIRLO. Si no, las gráficas acaban en el último día real sin ninguna
+    # marca y hay que darse cuenta contando días (pasó el 19-20/08/2026). La autocarga del
+    # arranque falla en silencio, así que este es el único sitio donde el hueco se ve.
+    if forecast_df is None or forecast_df.empty:
+        _ult_txt = ""
+        try:
+            _u = pd.to_datetime(history_df["fecha_hora"], errors="coerce").max()
+            if pd.notna(_u):
+                _ult_txt = f" Lo que ves llega hasta el **{_u:%d/%m %H:%M}** y ahí se corta."
+        except Exception:
+            pass
+        st.warning(
+            "🔮 **No hay previsión cargada: el riesgo que se ve aquí es todo pasado.**" + _ult_txt +
+            "\n\nSin previsión horaria no se puede calcular riesgo hacia adelante: moteado, "
+            "monilia y oídio necesitan **temperatura y HR hora a hora**. Tampoco se archiva la "
+            "previsión de hoy, así que ese día quedará como hueco al medir la fiabilidad.\n\n"
+            "La previsión sale del **archivo de MeteoGalicia** que guarda cada mañana el proceso "
+            "automático: si falta, ese proceso no corrió o MeteoGalicia no respondió. Mira "
+            f"**{NOMBRE_ITEM_PREVISION} → 📡 Previsión**.")
+
+    # Archiva (1 vez al día) la previsión de riesgo, para medir su fiabilidad con el
+    # tiempo. Silencioso: si Supabase falla, no afecta al panel.
+    # OJO AL ORDEN: se archiva ANTES de mezclar la lluvia de MeteoGalicia, para que el
+    # archivo siga guardando la previsión de Sencrop PURA. Si no, la comparación de
+    # fiabilidad entre las tres fuentes dejaría de tener sentido: estaríamos midiendo
+    # a Sencrop con la lluvia de MG ya metida dentro.
+    archive_today_forecast(history_df, forecast_df)
+
+    # Lluvia de MeteoGalicia y recorte a su horizonte (solo si la previsión es de Sencrop).
+    # Los ajustes están en 🌦️ Sencrop y MeteoGalicia → 🎯 Fiabilidad y hoja mojada.
+    forecast_df = preparar_prevision_para_riesgo(forecast_df)
+
+    st.markdown(
+        "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
+        f"**previsión meteorológica** ({st.session_state.get('forecast_model') or 'sin previsión cargada'}) "
+        "— para tomar decisiones de tratamiento con días de antelación."
+    )
+
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
         st.markdown(
             "**¿Qué hace?** Para cada campo cruza el **clima real + la previsión meteorológica** "
@@ -31561,8 +31657,8 @@ def render_decisiones_panel():
                 f"futuro pintaba picos que luego se quedaban en la mitad. Ahora **lo que ves a la "
                 f"derecha es comparable con lo de la izquierda**: si la previsión marca 100, es "
                 f"que se espera una infección de verdad, no un susto. Los días pasados no se "
-                f"tocan — ahí la mojadura la mide el sensor. Factor revisable en Decisiones → "
-                f"*Fiabilidad* → *¿Y si corregimos el número...?*")
+                f"tocan — ahí la mojadura la mide el sensor. Factor revisable en "
+                f"{NOMBRE_ITEM_PREVISION} → *🎯 Fiabilidad y hoja mojada* → *¿Y si corregimos el número...?*")
         st.caption(
             "ℹ️ **¿Cómo se cuenta una infección?** El moteado necesita que la hoja esté mojada "
             "durante un rato seguido. La app agrupa esas horas en un **«evento» de mojada**:\n\n"
@@ -31838,7 +31934,7 @@ if not _HEADLESS:
     _PAGE_META: dict = {
         "hoy":           ("🏠", "",        "Panel de hoy"),
         "dashboard":     ("📊", "Clima",   "Dashboard"),
-        "sencrop":       ("🌦️", "Clima",   "Sencrop"),
+        "sencrop":       ("🌦️", "Clima",   "Sencrop y MeteoGalicia"),
         "analisis":      ("🔎", "Clima",   "Análisis"),
         "comparador":    ("📈", "Clima",   "Comparador"),
         "frio":          ("❄️", "Clima",   "Frío"),
@@ -31988,7 +32084,7 @@ if not _HEADLESS:
 
             with st.expander("🌤️  Clima", expanded=True, key="grp_clima"):
                 _nav_btn("📊 Dashboard",   "dashboard")
-                _nav_btn("🌦️ Sencrop",    "sencrop")
+                _nav_btn(NOMBRE_ITEM_PREVISION, "sencrop")
                 _nav_btn("🔎 Análisis",    "analisis")
                 _nav_btn("📈 Comparador",  "comparador")
                 _nav_btn("❄️ Frío",        "frio")
