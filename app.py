@@ -18452,8 +18452,12 @@ def carpocapsa_tab(history):
         )
 
     st.info(
-        "Módulo inicial para seguimiento de carpocapsa en manzano: capturas, biofix, grados-día y ventanas de eclosión. "
-        "Está pensado para validar el flujo antes de guardar datos en Supabase."
+        "Seguimiento de carpocapsa por campo: capturas, biofix, grados-día, ventanas de tratamiento "
+        "y cobertura real de la eclosión. Las capturas, el biofix y los daños se guardan en Supabase "
+        "con **⬆️ Guardar snapshot carpocapsa en Supabase** y se cargan solos al abrir la app.  \n"
+        f"🌊 **Zonas:** de momento **todos los campos**, también los de la {ZONA_RIO}, se calculan "
+        "con los grados-día del sensor de la Nave. Se adaptará en enero de 2027, junto con la "
+        "estrategia de tratamientos de esa campaña."
     )
 
     st.warning(
@@ -29681,7 +29685,8 @@ def render_decisiones_panel():
 
     st.markdown(
         "Evolución del riesgo sanitario y grado-día carpocapsa combinando datos reales con la "
-        "**predicción Sencrop** — para tomar decisiones de tratamiento con días de antelación."
+        f"**previsión meteorológica** ({st.session_state.get('forecast_model') or 'sin previsión cargada'}) "
+        "— para tomar decisiones de tratamiento con días de antelación."
     )
 
     with st.expander("🍃 Modelo de hoja mojada en la previsión (afina el riesgo de moteado)"):
@@ -30830,15 +30835,24 @@ def render_decisiones_panel():
 
     with st.expander("📖 Guía: cómo leer este panel y qué significa cada columna"):
         st.markdown(
-            "**¿Qué hace?** Para cada campo cruza el **clima real + la previsión Sencrop** "
+            "**¿Qué hace?** Para cada campo cruza el **clima real + la previsión meteorológica** "
             "con tus **tratamientos de Agroptima** y te dice si hay que **tratar fungicida** "
             "(y con qué), con días de antelación. Mira primero los **🔴 rojos**.\n\n"
-            "**Fase (criterio según fenología):**\n"
+            "**Fase (criterio según fenología):** la columna **Fase** es la de **cada campo**. Sale "
+            "de lo que registres en 🌱 Fenología (✏️ junto a la fase = registrada, con la variedad "
+            "que manda); lo no registrado va por las fechas de la literatura. Si un campo tiene "
+            "varias variedades, manda la que esté en la fase **más sensible**, porque el tratamiento "
+            "cubre el campo entero.\n"
             "- **Brotación/Floración → preventivo:** dispara la **cobertura caducada** (mantener "
             "escudo); la previsión solo informa.\n"
-            "- **Cuajado en adelante → reactivo:** solo dispara un **evento real** de los **últimos "
-            "4 días** (ventana curativa; después el aviso se apaga solo porque tratar ya no rescata "
-            "la infección). La previsión solo avisa.\n\n"
+            "- **Cuajado hasta el 30 de septiembre → reactivo:** solo dispara un **evento real** de "
+            "los **últimos 4 días** (ventana curativa; después el aviso se apaga solo porque tratar "
+            "ya no rescata la infección). La previsión solo avisa.\n"
+            "- **Octubre a marzo → reposo**, sin avisos. Si registras la **cosecha** de un campo, su "
+            "campaña se cierra en esa fecha.\n\n"
+            f"**Zonas:** desde el {ZONA_RIO_MANDA_DESDE:%d/%m/%Y} los campos de la {ZONA_RIO} (🌊) "
+            "se calculan con la temperatura, la humedad y la lluvia de su sensor; la hoja mojada es "
+            "la de la Nave para todos.\n\n"
             "**Acción (color):**\n"
             "- 🔴 **Tratar HOY** — hay que actuar ya (preventivo: sin cobertura con riesgo a la "
             "vista · reactivo: evento real en ventana curativa).\n"
@@ -31376,7 +31390,8 @@ def render_decisiones_panel():
         st.markdown("#### 🍄 Moteado · *Venturia inaequalis* (Modelo de Mills)")
         st.caption(
             f"Umbral 25 = riesgo ligero · 50 = moderado · **100 = infección confirmada**. "
-            f"Zona azul = predicción Sencrop. {_treats_info}")
+            f"Zona azul = previsión ({st.session_state.get('forecast_model') or 'sin previsión cargada'}). "
+            f"{_treats_info}")
         _bias_mo = FORECAST_BIAS_DEFAULTS.get("mills", 1.0)
         if abs(_bias_mo - 1.0) > 0.01:
             st.caption(
@@ -31469,7 +31484,7 @@ def render_decisiones_panel():
 #### 📅 Zonas del gráfico
 - **Parte izquierda (hasta la línea naranja)** = datos reales del pasado. Muestra qué ocurrió.
 - **Línea naranja vertical** = hoy.
-- **Zona azul claro (a la derecha)** = predicción Sencrop. Muestra qué puede ocurrir.
+- **Zona azul claro (a la derecha)** = previsión meteorológica (la que esté cargada; hoy, MeteoGalicia). Muestra qué puede ocurrir.
 - **Líneas moradas verticales** = tratamientos registrados en Agroptima.
 
 #### 💡 Cómo tomar la decisión de tratar
