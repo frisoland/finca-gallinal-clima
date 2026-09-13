@@ -3105,6 +3105,7 @@ def copia_de_seguridad_datos(dados=None):
         ("perfiles_suelo.csv",        "soil_profiles_df",       load_soil_profiles_from_supabase),
         ("config_goteo_cambios.csv",  "irrigation_config_df",   load_irrigation_config_from_supabase),
         ("resultado_sanitario.csv",   "resultado_sanitario_df", load_resultado_sanitario_from_supabase),
+        ("carpocapsa_frutos_marcados.csv", "frutos_marcados_df", load_frutos_marcados_from_supabase),
     ]
     out = {}
     for fichero, clave, cargar in fuentes:
@@ -8466,7 +8467,8 @@ def instructions_tab():
             |---|---|---|---|
             | **Tratamientos y labores** | 🧾 Agroptima | Cada vez que registres tratamientos (al menos una vez por semana en campaña) | **⬇️ Descargar e importar actuaciones de Agroptima**, o subir el Excel → **Guardar actuaciones actuales en Supabase** |
             | **Capturas de las trampas** | 🐛 Carpocapsa → *0. Importar* | Tras cada lectura, durante el vuelo | Subir el Excel → importar → **⬆️ Guardar snapshot carpocapsa en Supabase** |
-            | **Muestreo de daños** | 🐛 Carpocapsa, al final | Antes de cosechar | Solo fruto del **árbol**, mínimo 100 por variedad y parcela |
+            | **Muestreo de daños** | 🐛 Carpocapsa, al final | Antes de cosechar | Solo fruto del **árbol**, mínimo 100 por variedad y parcela. Las marcas que no sean seguro de carpocapsa, en **Dudoso / otra plaga** |
+            | **Frutos marcados** | 🐛 Carpocapsa → *🏷️ Seguimiento de frutos marcados* | Al marcar y en cada revisión hasta la cosecha | Una fila por grupo (con **testigo sin daño**) y una más en cada revisión → **☁️ Guardar seguimiento en Supabase** |
             | **Fases fenológicas** | 🌱 Fenología | En primavera, campo por campo y variedad por variedad | Editar el calendario → **☁️ Guardar fenología en Supabase** |
             | **Riego con motobomba** | 💧 Riego → *🕹️ Riego manual* | Cada riego en las Piedronas | Fecha + minutos → **💾 Guardar riego manual** |
             | **Valoración visual** | 🩺 Resultado sanitario | Antes de cosechar | Rellenar la tabla → **☁️ Guardar en Supabase** |
@@ -16309,14 +16311,22 @@ CARPOCAPSA_DEFAULT_BIOFIX_COLUMNS = [
 #      - Con larva dentro
 #      - Salida vacía (galería): la larva completó el ciclo y salió. Fruta perdida Y
 #        población que se va a invernar.
-#      - Picadura superficial: la galería NO llega al corazón — la larva se paró a 1-2 cm.
-#        OJO: el muestreo del 03/09/2026 aclaró que NO son picaduras de piel de pocos
-#        milímetros, son galerías abandonadas. Encaja con una larva envenenada por Bt
-#        (deja de comer en horas, muere en 1-3 días: hace camino y se para). Y NO es
-#        daño cosmético: un túnel de 2 cm es una puerta abierta a podredumbre.
-#    Esa última distinción es la que decide si un 30 % de frutos marcados es un desastre
-#    o es el producto haciendo su trabajo. En el muestreo del 02/09 el ~90 % llegaba al
-#    corazón, o sea ciclos completados.
+#      - Picadura superficial: la galería NO llega al corazón.
+#    DEFINICIÓN DE LA LITERATURA (revisada el 13/09/2026). Se distinguen dos daños, y los
+#    dos son de carpocapsa (UC IPM, WSU, OKSIR):
+#      · «sting» / picadura: entrada superficial en la que la larva muere o abandona el
+#        sitio y prueba en otro;
+#      · «deep entry» / entrada profunda: la larva llega al corazón y come las semillas.
+#    SERIDA (Miñarro y Dapena 2000, Bol. San. Veg. Plagas 26: 305-316) contó como dañado
+#    todo fruto en el que la carpocapsa había llegado a penetrar, sin separar profundidad.
+#    ANTES decía que la picadura «encaja con una larva envenenada por Bt»: no está
+#    respaldado. Las picaduras están documentadas con granulovirus (la larva no muere al
+#    instante, USU) y UC IPM indica que el Bt no ha resultado eficaz contra carpocapsa.
+#    La picadura aparece también de forma natural. Tampoco hay fuente que fije cuánto pesa
+#    una picadura en manzana de SIDRA: para eso está el seguimiento de frutos marcados.
+#  · Dudoso / otra plaga — marcas que no se pueden atribuir con seguridad a carpocapsa
+#    (gorgojo violeta, orugas, hoplocampa…). NO entra en «Frutos dañados» ni en el
+#    desglose. Vacío = no se anotó (muestreos anteriores al 13/09/2026), no «cero».
 CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS = [
     "Fecha",
     "Campo/Zona",
@@ -16327,13 +16337,17 @@ CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS = [
     "Con larva dentro",
     "Salida vacía (galería)",
     "Picadura superficial",
+    "Dudoso / otra plaga",
     "Observaciones",
     "Campaña",
 ]
 CARPOCAPSA_DAMAGE_NUM_COLS = [
     "Frutos revisados", "Frutos dañados",
     "Con larva dentro", "Salida vacía (galería)", "Picadura superficial",
+    "Dudoso / otra plaga",
 ]
+# Columnas numéricas en las que vacío NO es cero (no se anotaba): no se rellenan.
+CARPOCAPSA_DAMAGE_OPTIONAL_NUM_COLS = ["Dudoso / otra plaga"]
 
 
 def carpocapsa_default_traps_df():
@@ -16405,7 +16419,7 @@ def carpocapsa_limpiar_danos_fantasma(df):
     tiene_campo = _campo.notna() & (_campo != "") & (_campo.str.lower() != "nan")
     tiene_datos = pd.Series(False, index=out.index)
     for _c in ["Frutos revisados", "Frutos dañados", "Con larva dentro",
-               "Salida vacía (galería)", "Picadura superficial"]:
+               "Salida vacía (galería)", "Picadura superficial", "Dudoso / otra plaga"]:
         if _c in out.columns:
             tiene_datos |= pd.to_numeric(out[_c], errors="coerce").fillna(0) > 0
     return out[tiene_campo | tiene_datos].reset_index(drop=True)
@@ -16421,7 +16435,9 @@ def carpocapsa_prepare_damage_df(df):
     out = out[CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS].copy()
     out["Fecha"] = pd.to_datetime(out["Fecha"], errors="coerce")
     for _c in CARPOCAPSA_DAMAGE_NUM_COLS:
-        out[_c] = pd.to_numeric(out[_c], errors="coerce").fillna(0)
+        out[_c] = pd.to_numeric(out[_c], errors="coerce")
+        if _c not in CARPOCAPSA_DAMAGE_OPTIONAL_NUM_COLS:
+            out[_c] = out[_c].fillna(0)
     # Por defecto ÁRBOL: es el criterio acordado, y una fila sin origen casi siempre lo es.
     out["Origen"] = (out["Origen"].astype("string").str.strip()
                      .replace({"": pd.NA, "nan": pd.NA}).fillna("Árbol"))
@@ -16431,15 +16447,19 @@ def carpocapsa_prepare_damage_df(df):
         lambda r: round(float(r["Frutos dañados"]) / float(r["Frutos revisados"]) * 100, 2) if float(r["Frutos revisados"]) > 0 else np.nan,
         axis=1,
     )
-    # % con galería = daño REAL (larva dentro + ciclo completado), sin las picaduras.
-    # Es el número que hay que mirar: una picadura es una larva muerta al entrar, y en
-    # sidra —que va a prensa— no cuenta como fruta perdida.
+    # % con galería = larva dentro + ciclo completado, sin las picaduras. Se aproxima a las
+    # «entradas profundas» de la literatura. Cuánto pesa una picadura en SIDRA no lo fija
+    # ninguna fuente encontrada: se mide con el seguimiento de frutos marcados.
     _prof = out["Con larva dentro"] + out["Salida vacía (galería)"]
     out["% con galería"] = np.where(
         out["Frutos revisados"] > 0, (100.0 * _prof / out["Frutos revisados"]).round(2), np.nan)
     # Si el desglose está relleno, tiene que sumar los dañados. Se avisa en vez de
     # corregir en silencio: un descuadre es un error de conteo que hay que ver.
     _suma = _prof + out["Picadura superficial"]
+    out["% dudoso"] = np.where(
+        (out["Frutos revisados"] > 0) & out["Dudoso / otra plaga"].notna(),
+        (100.0 * out["Dudoso / otra plaga"].fillna(0) / out["Frutos revisados"].where(out["Frutos revisados"] > 0, 1)).round(2),
+        np.nan)
     out["Descuadre"] = np.where(
         (_suma > 0) & (_suma != out["Frutos dañados"]),
         "⚠️ el desglose suma " + _suma.astype(int).astype(str) + " y dañados dice "
@@ -16674,6 +16694,190 @@ SUPABASE_CARPOCAPSA_BUCKET = "climate-snapshots"
 SUPABASE_CARPOCAPSA_TRAPS_FILE   = "carpocapsa_traps.parquet"
 SUPABASE_CARPOCAPSA_BIOFIX_FILE  = "carpocapsa_biofix.parquet"
 SUPABASE_CARPOCAPSA_DAMAGE_FILE  = "carpocapsa_damage.parquet"
+SUPABASE_CARPOCAPSA_MARCADOS_FILE = "carpocapsa_frutos_marcados.parquet"
+
+# ── Seguimiento de frutos marcados (13/09/2026) ─────────────────────────────────
+# Para medir con datos propios lo que la literatura no dice para sidra: ¿un fruto con
+# picadura acaba cayendo o pudriéndose antes de la cosecha? Cada fila es UNA revisión de
+# un grupo de frutos marcados (mismo campo, variedad, tipo de marca y fecha de marcado).
+# El TESTIGO (frutos sin daño marcados a la vez) es imprescindible: en sidra hay caída
+# natural (guía SERIDA), y sin testigo no se sabe qué parte de la caída es por la marca.
+MARCADOS_TIPOS = ["Picadura superficial", "Entrada profunda", "Dudoso / otra plaga",
+                  "Sin daño (testigo)"]
+MARCADOS_COLUMNS = ["Fecha marcado", "Campo/Zona", "Variedad", "Tipo de marca",
+                    "Frutos marcados", "Fecha revisión", "En el árbol sanos",
+                    "En el árbol podridos", "Caídos", "Observaciones", "Campaña"]
+MARCADOS_NUM_COLS = ["Frutos marcados", "En el árbol sanos", "En el árbol podridos", "Caídos"]
+
+
+def _marcados_vacio():
+    """Tabla vacía CON TIPOS: el editor de Streamlit rechaza una columna de fecha o de
+    número si la columna vacía es de tipo «object»."""
+    return pd.DataFrame({c: pd.Series(dtype=("datetime64[ns]" if c.startswith("Fecha") else
+                                             "float64" if c in MARCADOS_NUM_COLS else
+                                             "int64" if c == "Campaña" else "object"))
+                         for c in MARCADOS_COLUMNS})
+
+
+def normalizar_frutos_marcados(df):
+    """Tabla de frutos marcados con tipos y columnas canónicas (vacía si no hay nada)."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return _marcados_vacio()
+    out = df.copy()
+    for c in MARCADOS_COLUMNS:
+        if c not in out.columns:
+            out[c] = np.nan if c in MARCADOS_NUM_COLS else ""
+    out = out[MARCADOS_COLUMNS].copy()
+    for c in ("Fecha marcado", "Fecha revisión"):
+        out[c] = pd.to_datetime(out[c], errors="coerce")
+    for c in MARCADOS_NUM_COLS:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    _campo = out["Campo/Zona"].astype("string").str.strip()
+    _tiene = (_campo.notna() & (_campo != "") & (_campo.str.lower() != "nan")) | (out["Frutos marcados"].fillna(0) > 0)
+    out = out[_tiene].reset_index(drop=True)
+    if out.empty:
+        return _marcados_vacio()
+    _anio = out["Fecha marcado"].dt.year
+    out["Campaña"] = pd.to_numeric(out["Campaña"], errors="coerce").fillna(_anio).fillna(
+        pd.Timestamp.today().year).astype(int)
+    return out
+
+
+def resumen_frutos_marcados(df):
+    """Última revisión de cada grupo y, por tipo de marca: frutos, % caídos, % podridos y
+    la diferencia con el testigo sin daño (lo único que dice si la marca empeora el fruto)."""
+    d = normalizar_frutos_marcados(df)
+    d = d[d["Frutos marcados"].fillna(0) > 0]
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    _g = ["Campo/Zona", "Variedad", "Tipo de marca", "Fecha marcado"]
+    d = d.sort_values("Fecha revisión", na_position="first")
+    ult = d.groupby(_g, dropna=False, as_index=False).tail(1).copy()
+    ult["Revisados"] = ult[["En el árbol sanos", "En el árbol podridos", "Caídos"]].fillna(0).sum(axis=1)
+    ult["Sin encontrar"] = (ult["Frutos marcados"] - ult["Revisados"]).clip(lower=0)
+    por_tipo = ult.groupby("Tipo de marca", as_index=False).agg(
+        Grupos=("Frutos marcados", "size"), Marcados=("Frutos marcados", "sum"),
+        Caidos=("Caídos", "sum"), Podridos=("En el árbol podridos", "sum"),
+        Encontrados=("Revisados", "sum"))
+    por_tipo["% caídos"] = np.where(por_tipo["Encontrados"] > 0,
+                                    (100 * por_tipo["Caidos"] / por_tipo["Encontrados"]).round(1), np.nan)
+    por_tipo["% podridos en árbol"] = np.where(por_tipo["Encontrados"] > 0,
+                                               (100 * por_tipo["Podridos"] / por_tipo["Encontrados"]).round(1), np.nan)
+    _t = por_tipo[por_tipo["Tipo de marca"] == "Sin daño (testigo)"]
+    if not _t.empty:
+        por_tipo["Caídos vs testigo (puntos)"] = (por_tipo["% caídos"] - float(_t["% caídos"].iloc[0])).round(1)
+    else:
+        por_tipo["Caídos vs testigo (puntos)"] = np.nan
+    _orden = {t: i for i, t in enumerate(MARCADOS_TIPOS)}
+    por_tipo = por_tipo.sort_values("Tipo de marca", key=lambda s: s.map(_orden).fillna(99))
+    por_tipo = por_tipo.rename(columns={"Caidos": "Caídos", "Podridos": "Podridos en árbol"})
+    return ult, por_tipo
+
+
+def load_frutos_marcados_from_supabase():
+    """(DataFrame, mensaje). DataFrame vacío si no hay fichero todavía."""
+    if not supabase_is_configured():
+        return _marcados_vacio(), "Supabase no está configurado."
+    try:
+        _h = supabase_headers()
+        _h.pop("Prefer", None)
+        r = requests.get(_carpocapsa_storage_url(SUPABASE_CARPOCAPSA_MARCADOS_FILE), headers=_h, timeout=60)
+        if r.status_code == 200 and r.content:
+            return normalizar_frutos_marcados(_parquet_bytes_to_df(r.content)), "Cargado de Supabase."
+        return _marcados_vacio(), "Todavía no hay seguimiento guardado."
+    except Exception as exc:
+        return None, f"No se pudo leer de Supabase: {exc}"
+
+
+def upload_frutos_marcados_to_supabase(df):
+    """Guarda el seguimiento FUSIONANDO POR CAMPAÑA con lo guardado: la sesión manda en sus
+    años y los demás se conservan (mismo criterio que el resto de carpocapsa)."""
+    if not supabase_is_configured():
+        return False, "Supabase no está configurado."
+    _prev, _msg = load_frutos_marcados_from_supabase()
+    if _prev is None:
+        return False, f"No se guardó para no pisar lo que hay: {_msg}"
+    fusion = normalizar_frutos_marcados(_carpocapsa_merge_by_year(normalizar_frutos_marcados(df), _prev))
+    content = _df_to_parquet_bytes(fusion)
+    if not content:
+        return False, "No había nada que guardar."
+    headers = supabase_headers()
+    headers["Content-Type"] = "application/octet-stream"
+    headers["x-upsert"] = "true"
+    try:
+        r = requests.post(_carpocapsa_storage_url(SUPABASE_CARPOCAPSA_MARCADOS_FILE),
+                          headers=headers, data=content, timeout=60)
+    except Exception as exc:
+        return False, f"Error subiendo: {exc}"
+    if r.status_code not in (200, 201):
+        return False, f"Error subiendo: {r.status_code} · {r.text[:200]}"
+    return True, f"Seguimiento guardado ({len(fusion)} filas)."
+
+
+def render_frutos_marcados(campaign_year):
+    """🏷️ Seguimiento de frutos marcados, dentro de Carpocapsa."""
+    st.markdown("### 🏷️ Seguimiento de frutos marcados")
+    st.caption(
+        "**Para qué:** la literatura cuenta la picadura como daño de carpocapsa, pero **no "
+        "hemos encontrado ninguna fuente que diga cuánto pesa en manzana de sidra**, donde la "
+        "pérdida gorda es la fruta que cae antes de cosechar. Esto lo mide en tu finca.\n\n"
+        "**Cómo:** en los mismos árboles, marca (cinta o rotulador) varios frutos de cada tipo "
+        "— por ejemplo **20 con picadura** y **20 sin daño**, que son el **testigo** — y anota "
+        "una fila por grupo. En cada revisión (y en cosecha) añade una fila nueva con cuántos "
+        "siguen **sanos en el árbol**, **podridos en el árbol** y **caídos**. **Sin testigo no "
+        "vale**: en sidra hay caída natural, y solo comparando con frutos sanos se sabe qué "
+        "parte de la caída es por la marca.")
+    if "frutos_marcados_df" not in st.session_state:
+        _df, _m = load_frutos_marcados_from_supabase()
+        st.session_state["frutos_marcados_df"] = normalizar_frutos_marcados(_df)
+    _todo = normalizar_frutos_marcados(st.session_state["frutos_marcados_df"])
+    _anio = _todo[_todo["Campaña"] == int(campaign_year)] if not _todo.empty else _todo
+    _edit = st.data_editor(
+        _anio[MARCADOS_COLUMNS], use_container_width=True, hide_index=True, num_rows="dynamic",
+        key="carpo_frutos_marcados_editor",
+        column_config={
+            "Fecha marcado": st.column_config.DateColumn("Fecha marcado"),
+            "Tipo de marca": st.column_config.SelectboxColumn(
+                "Tipo de marca", options=MARCADOS_TIPOS,
+                help="«Sin daño (testigo)» = frutos sanos marcados a la vez, en los mismos árboles."),
+            "Frutos marcados": st.column_config.NumberColumn("Frutos marcados", min_value=0, step=1),
+            "Fecha revisión": st.column_config.DateColumn("Fecha revisión"),
+            "En el árbol sanos": st.column_config.NumberColumn("En el árbol sanos", min_value=0, step=1),
+            "En el árbol podridos": st.column_config.NumberColumn("En el árbol podridos", min_value=0, step=1),
+            "Caídos": st.column_config.NumberColumn("Caídos", min_value=0, step=1),
+            "Campaña": st.column_config.NumberColumn("Campaña", disabled=True),
+        })
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        if st.button("💾 Guardar seguimiento en sesión", key="carpo_marcados_sesion", use_container_width=True):
+            _nuevo = normalizar_frutos_marcados(_edit)
+            _nuevo["Campaña"] = int(campaign_year)
+            _otros = _todo[_todo["Campaña"] != int(campaign_year)] if not _todo.empty else _todo
+            st.session_state["frutos_marcados_df"] = pd.concat([_otros, _nuevo], ignore_index=True)
+            st.success("Seguimiento guardado en la sesión.")
+    with _c2:
+        if st.button("☁️ Guardar seguimiento en Supabase", key="carpo_marcados_supabase", use_container_width=True):
+            _nuevo = normalizar_frutos_marcados(_edit)
+            _nuevo["Campaña"] = int(campaign_year)
+            _otros = _todo[_todo["Campaña"] != int(campaign_year)] if not _todo.empty else _todo
+            st.session_state["frutos_marcados_df"] = pd.concat([_otros, _nuevo], ignore_index=True)
+            _ok, _msg = upload_frutos_marcados_to_supabase(st.session_state["frutos_marcados_df"])
+            (st.success if _ok else st.error)(("☁️ " if _ok else "⚠️ ") + _msg)
+    _ult, _tipo = resumen_frutos_marcados(_edit)
+    if _tipo.empty:
+        st.info("Todavía no hay frutos marcados en esta campaña.")
+        return
+    st.markdown("**Resultado a la última revisión de cada grupo**")
+    st.dataframe(_tipo, use_container_width=True, hide_index=True)
+    _sin = int(_ult["Sin encontrar"].sum())
+    st.caption(
+        "**Caídos vs testigo** = puntos de diferencia en el % de caídos respecto a los frutos "
+        "sanos marcados: si una picadura sale con +2 y otra con +25, dice cosas muy distintas. "
+        + ("⚠️ **No hay testigo** en esta campaña: sin él, el % de caídos no se puede atribuir a "
+           "la marca. " if "Sin daño (testigo)" not in set(_tipo["Tipo de marca"]) else "")
+        + (f"Hay **{_sin}** fruto(s) marcados sin encontrar en la última revisión; no cuentan en los %. "
+           if _sin else "")
+        + "Con pocos frutos por grupo (20), diferencias de pocos puntos no son concluyentes.")
 
 
 def _carpocapsa_storage_url(filename):
@@ -19990,20 +20194,30 @@ def carpocapsa_tab(history):
         "antes) — se registra con Origen «Suelo» y **no se mezcla** con el del árbol al "
         "comparar campos; sirve para saber si la caída de un campo es por gusano o por "
         "hábito de la variedad.\n\n"
-        "**Frutos dañados** = todo fruto con orificio de entrada. Las tres columnas del "
+        "**Qué cuenta como daño de carpocapsa (literatura).** Se distinguen dos tipos y los "
+        "dos son carpocapsa: la **entrada profunda**, cuando la larva llega al corazón y come "
+        "las semillas, y la **picadura** (*sting*), una entrada superficial en la que la larva "
+        "muere o abandona el sitio. El SERIDA, en pumaradas de Asturias, contó como dañado todo "
+        "fruto en el que la carpocapsa llegó a penetrar. *Fuentes: UC IPM, WSU; Miñarro y "
+        "Dapena (2000), Bol. San. Veg. Plagas 26.*\n\n"
+        "**Frutos dañados** = frutos con entrada **de carpocapsa**. Las tres columnas del "
         "desglose deben sumar esa cifra:\n"
         "- **Con larva dentro** — sigue en el fruto.\n"
         "- **Salida vacía (galería)** — galería hasta el corazón y larva ya salida: **ciclo "
         "completado**, fruta perdida y población que se va a invernar en la finca.\n"
-        "- **Picadura superficial** — la galería **NO llega al corazón**: la larva entró, "
-        "comió uno o dos centímetros y se paró. Encaja con una larva envenenada por Bt, que "
-        "deja de comer a las pocas horas y muere en uno a tres días — por eso hace camino y "
-        "se detiene, en vez de quedarse en la piel.\n\n"
-        "**% con galería** mide el daño COMPLETO (llega al corazón) y **% daño** todo el "
-        "fruto perforado. Mira los dos: una galería a medias no es fruta perdida como una "
-        "completa, pero tampoco es cosmética — es una puerta abierta a podredumbre. "
-        "⚠️ El objetivo del **1 %** es un estándar de manzana de MESA; para sidra habrá que "
-        "fijar uno propio.")
+        "- **Picadura superficial** — hay entrada pero la galería **NO llega al corazón**. En la "
+        "literatura, la larva murió o se fue a otro sitio. Puede pasar con o sin tratamiento; "
+        "no indica por sí sola que el producto funcionara.\n\n"
+        "**Dudoso / otra plaga** — marcas que no puedes atribuir con seguridad a carpocapsa. "
+        "**No** se suman a «Frutos dañados». Para distinguirlas, **abre el fruto**: una galería "
+        "desde un orificio apunta a carpocapsa; **varios pinchazos** cicatrizados con una ligera "
+        "depresión, al gorgojo violeta (*Rhynchites bacchus*, guía SERIDA); una **cicatriz en la "
+        "piel sin túnel**, a mordisco de oruga; una **cicatriz en forma de cinta** bajo la piel, a "
+        "hoplocampa. Si hay duda, fotos o muestras al SERIDA.\n\n"
+        "**% con galería** se acerca a las entradas profundas y **% daño** incluye las picaduras. "
+        "Cuánto pesa una picadura en **sidra** no lo fija ninguna fuente encontrada: para eso "
+        "sirve el **seguimiento de frutos marcados** de abajo. ⚠️ El objetivo del **1 %** es un "
+        "estándar de manzana de MESA; para sidra habrá que fijar uno propio.")
     # Orden canónico. Al importar se concatena lo nuevo con lo que ya había guardado, que
     # traía el juego de columnas viejo: pandas deja las columnas nuevas pegadas AL FINAL,
     # así que el editor mostraba «Variedad», «Origen» y el desglose detrás de
@@ -20040,9 +20254,12 @@ def carpocapsa_tab(history):
                 help="Galería hasta el corazón, larva ya salida: ciclo completado."),
             "Picadura superficial": st.column_config.NumberColumn(
                 "Picadura superficial", min_value=0, step=1,
-                help="La galería NO llega al corazón: la larva se paró a 1-2 cm. "
-                     "Compatible con una larva muerta por el Bt, que deja de comer a "
-                     "las pocas horas de ingerirlo."),
+                help="Entrada de carpocapsa cuya galería NO llega al corazón («sting» en la "
+                     "literatura: la larva murió o abandonó el sitio). Entra en «Frutos dañados»."),
+            "Dudoso / otra plaga": st.column_config.NumberColumn(
+                "Dudoso / otra plaga", min_value=0, step=1,
+                help="Marcas que no puedes atribuir con seguridad a carpocapsa. NO se suman a "
+                     "«Frutos dañados». Déjalo vacío si no lo anotaste."),
         },
     )
     st.caption("⬆️ Aquí se **escribe** (añade, corrige o borra filas) · ⬇️ abajo se **lee** "
@@ -20067,14 +20284,18 @@ def carpocapsa_tab(history):
         # otra, y no se entendía para qué servía cada una. Lo único que esta aporta es lo
         # que el editor no puede mostrar, porque se recalcula solo.
         _cols_calc = [c for c in ["Fecha", "Campo/Zona", "Variedad", "Origen",
-                                  "% daño", "% con galería", "Estado objetivo <1%", "Descuadre"]
+                                  "% daño", "% con galería", "% dudoso", "Estado objetivo <1%", "Descuadre"]
                       if c in damage_show.columns]
         st.dataframe(damage_show[_cols_calc], use_container_width=True, hide_index=True,
                      column_config={
                          "% con galería": st.column_config.NumberColumn(
                              "% con galería", format="%.1f %%",
-                             help="Daño REAL: larva dentro + ciclo completado, sin las "
-                                  "picaduras. Es el número que decide."),
+                             help="Larva dentro + ciclo completado, sin las picaduras: se "
+                                  "acerca a las «entradas profundas» de la literatura."),
+                         "% dudoso": st.column_config.NumberColumn(
+                             "% dudoso", format="%.1f %%",
+                             help="Marcas no atribuibles con seguridad a carpocapsa. No entran "
+                                  "en % daño. Vacío = no se anotó."),
                          "% daño": st.column_config.NumberColumn(
                              "% daño", format="%.1f %%",
                              help="Todos los frutos con orificio, picaduras incluidas."),
@@ -20098,6 +20319,9 @@ def carpocapsa_tab(history):
             file_name=f"carpocapsa_danos_{campaign_year}.csv",
             mime="text/csv",
         )
+
+    st.divider()
+    render_frutos_marcados(campaign_year)
 
     with st.expander("Siguiente evolución prevista del módulo", expanded=False):
         st.markdown(
@@ -20141,7 +20365,8 @@ def settings_tab():
             "Descarga **todos tus datos** en un único ZIP de CSVs: clima de la Zona Nave y de la "
             "Zona Río, Agroptima, producción, carpocapsa (capturas, biofix y daños), fenología, "
             "riego real, perfiles de suelo, cambios en la configuración de goteo, resultado "
-            "sanitario y catálogo de fungicidas. Es lo mismo que llega cada domingo por Telegram. "
+            "sanitario, seguimiento de frutos marcados y catálogo de fungicidas. Es lo mismo que "
+            "llega cada domingo por Telegram. "
             "Se genera solo al pulsar el botón."
         )
         if st.button("🗜️ Generar copia de seguridad", key="gen_backup"):
