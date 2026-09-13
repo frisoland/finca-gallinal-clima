@@ -7966,12 +7966,24 @@ def render_zona_rio_descarga(token, user_id=""):
         f"({_fh.min():%d/%m/%Y} → {_fh.max():%d/%m/%Y})".replace(",", "."))
     st.caption(f"Horas con dato: temperatura {_n['temp_media']} · humedad {_n['hr_media']} · "
                f"lluvia {_n['lluvia_mm']}")
+    # Mismos avisos que la Nave (autosave_climate_snapshot_to_supabase): recuadro mientras
+    # sube, aviso flotante al terminar y línea con el detalle.
     if supabase_is_configured():
-        ok, msg = upload_climate_rio_to_supabase(final)
-        if ok:
-            st.caption(f"☁️ Guardado en Supabase · {msg}")
-        else:
-            st.warning(f"⚠️ No se pudo guardar la Zona Río en Supabase: {msg}")
+        try:
+            _box = st.empty()
+            _box.info("☁️ Guardando el histórico de la Zona Río en Supabase…")
+            ok, msg = upload_climate_rio_to_supabase(final)
+            _box.empty()
+            if ok:
+                try:
+                    st.toast(f"☁️ Histórico de la {ZONA_RIO} guardado en Supabase", icon="✅")
+                except Exception:
+                    pass
+                st.caption(f"☁️ Histórico de la {ZONA_RIO} guardado automáticamente en Supabase · {msg}")
+            else:
+                st.warning(f"⚠️ No se pudo guardar la Zona Río en Supabase: {msg}")
+        except Exception as e:
+            st.warning(f"⚠️ Error guardando la Zona Río en Supabase: {e}")
 
 
 def import_panel():
