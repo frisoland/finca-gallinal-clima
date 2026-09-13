@@ -8223,208 +8223,321 @@ def get_period_data(history, soil_type, hoja_threshold):
 
 
 def instructions_tab():
-    st.subheader("Instrucciones de uso · Finca Gallinal")
+    st.subheader("📘 Instrucciones de uso · Finca Gallinal")
+    st.caption(
+        "Manual revisado el 13/09/2026 con la app tal como está hoy: dos zonas climáticas, "
+        "decisiones por campo, riego automático desde VEGGA e informe diario por Telegram.")
 
     st.markdown(
         """
-        ## 1. Al abrir la app — carga automática
+        **La app hace sola casi todo el trabajo con los datos.** Cada mañana descarga el clima,
+        el riego y la previsión, recalcula los riesgos y te manda el resumen por Telegram.
 
-        Desde la versión actual la app **carga automáticamente al arrancar** (si Supabase está configurado):
-
-        - 📦 **Histórico climático** — snapshot comprimido desde Supabase Storage
-        - 🧾 **Agroptima** — actuaciones / tratamientos desde la tabla Supabase
-        - 🍎 **Producción** — histórico de producción desde Supabase Storage
-        - 🐛 **Carpocapsa** — capturas, biofix y daños desde Supabase Storage
-
-        No hay que pulsar ningún botón para cargar estos datos en una sesión normal.
-        Si algo no cargó, ir a la pestaña correspondiente y usar el botón de carga manual.
+        Lo que queda en tus manos es lo que solo sabes tú: qué has tratado, qué cazan las
+        trampas, en qué fase está cada campo y cuánto has cosechado.
         """
     )
 
-    with st.expander("¿Qué es el snapshot climático?", expanded=False):
+    t_sola, t_tu, t_zonas, t_pest, t_crit, t_prob = st.tabs([
+        "🔁 Qué hace sola", "✍️ Qué haces tú", "🌊 Dos zonas",
+        "🗂️ Pestaña a pestaña", "📐 Criterios", "🛠️ Problemas",
+    ])
+
+    # ── Qué hace sola ────────────────────────────────────────────────────────
+    with t_sola:
         st.markdown(
             """
-            El snapshot climático es un archivo Parquet comprimido con todo el histórico.
-            Es mucho más rápido que descargar filas de la tabla REST.
+            ### Cada mañana, sin abrir la app (≈ 06:15)
 
-            - **Snapshot (recomendado):** descarga el archivo comprimido de una vez.
-            - **Tabla Supabase REST:** descarga fila a fila; útil como respaldo o para depuración.
+            Un programador externo (cron-job.org) lanza el proceso diario, que:
 
-            En la pestaña **Sencrop** puedes elegir entre ambos métodos con el selector de carga.
+            1. **Descarga el clima de Sencrop** de las horas nuevas y lo guarda en Supabase:
+                - los **4 sensores de la Zona Nave** — temperatura/humedad/lluvia, viento,
+                  hoja mojada y radiación;
+                - el **sensor de la Zona Río**, que se guarda en su propio histórico, aparte.
+            2. **Descarga el riego real de VEGGA** de los tres cabezales (Nave, Contenedor y
+               Río), con los últimos 45 días.
+            3. **Archiva la previsión de MeteoGalicia** (WRF 1 km) del día, para la finca y
+               para el punto del Río. Con ese archivo se mide después cuánto acierta.
+            4. Calcula carpocapsa, fungicidas por campo y el clima de 7 días de cada zona, y
+               **te envía el informe por Telegram**.
+            5. **Los domingos** manda además por Telegram una **copia de seguridad** en ZIP:
+               clima de las dos zonas, Agroptima, producción, carpocapsa y fenología.
+
+            ### Al abrir la app
+
+            Carga sola desde Supabase, sin pulsar nada:
+
+            - histórico climático de la **Zona Nave** y de la **Zona Río**;
+            - actuaciones de **Agroptima**;
+            - **producción**, **fenología** y **carpocapsa** (capturas, biofix y daños);
+            - **riego real**, perfiles de suelo y configuración de goteo;
+            - la **previsión de MeteoGalicia**, para la finca y para el Río.
+
+            La previsión de Sencrop no se usa: Sencrop no la ofrece por API.
+
+            ### Aviso de datos viejos
+
+            Encima de cada pestaña aparece un aviso si el sensor no trae datos nuevos:
+
+            - ⚠️ **más de 42 horas** — puede que el proceso de la mañana aún no haya corrido;
+            - 🔴 **más de ~4 días** — casi seguro que falló. Ver *🛠️ Problemas*.
             """
         )
 
-    st.markdown(
-        """
-        ## 2. Actualizar el histórico climático con datos nuevos de Sencrop
-
-        Cuando haya datos nuevos de la estación:
-
-        1. Ir a la pestaña **🌦️ Sencrop**.
-        2. Seleccionar el periodo a descargar (o usar "Últimos 7 días").
-        3. Pulsar **⬇️ Descargar e importar los 4 sensores de Sencrop**.
-        4. Pulsar **Guardar histórico actual en Supabase**.
-        5. Pulsar **Crear/actualizar snapshot climático comprimido**.
-
-        El orden importa: actualizar tabla y después regenerar el snapshot para que la próxima carga automática use los datos nuevos.
-        """
-    )
-
-    with st.expander("Botones de la sección Supabase en Sencrop", expanded=False):
+    # ── Qué haces tú ─────────────────────────────────────────────────────────
+    with t_tu:
         st.markdown(
             """
-            | Botón | Para qué sirve | Cuándo usarlo |
+            ### Lo que la app no puede saber sola
+
+            | Qué | Dónde | Cuándo | Cómo |
+            |---|---|---|---|
+            | **Tratamientos y labores** | 🧾 Agroptima | Cada vez que registres tratamientos (al menos una vez por semana en campaña) | **⬇️ Descargar e importar actuaciones de Agroptima**, o subir el Excel → **Guardar actuaciones actuales en Supabase** |
+            | **Capturas de las trampas** | 🐛 Carpocapsa → *0. Importar* | Tras cada lectura, durante el vuelo | Subir el Excel → importar → **⬆️ Guardar snapshot carpocapsa en Supabase** |
+            | **Muestreo de daños** | 🐛 Carpocapsa, al final | Antes de cosechar | Solo fruto del **árbol**, mínimo 100 por variedad y parcela |
+            | **Fases fenológicas** | 🌱 Fenología | En primavera, campo por campo y variedad por variedad | Editar el calendario → **☁️ Guardar fenología en Supabase** |
+            | **Riego con motobomba** | 💧 Riego → *🕹️ Riego manual* | Cada riego en las Piedronas | Fecha + minutos → **💾 Guardar riego manual** |
+            | **Valoración visual** | 🩺 Resultado sanitario | Antes de cosechar | Rellenar la tabla → **☁️ Guardar en Supabase** |
+            | **Producción** | 🍎 Producción | Tras la cosecha | Excel con una hoja por año → **⬆️ Guardar en Supabase** |
+            | **Productos nuevos** | ⚙️ Configuración · 🎯 Decisiones | Al empezar a usar un producto | Comprobar que no sale en *Productos de Agroptima no reconocidos* y revisar su persistencia en *⚙️ Catálogo de fungicidas* |
+
+            ### Tres detalles que evitan errores
+
+            - **Fenología:** lo que no registres se toma de la literatura, así que no pasa nada
+              si se te olvida un campo. Pero lo que registres **manda** sobre la literatura en
+              las decisiones de fungicida de ese campo.
+            - **Excel de producción:** escribe los campos **exactamente como en 🌳 Campos**
+              («Los Pinos 1», no «Pinos 1» ni «LP1») y siempre igual todos los años. Los campos
+              que aún no producen se dejan fuera o con Kg 0.
+            - **Sencrop y VEGGA no hay que tocarlos:** se actualizan solos. Sus botones manuales
+              quedan para recuperar un día que falló.
+            """
+        )
+
+    # ── Dos zonas ────────────────────────────────────────────────────────────
+    with t_zonas:
+        _campos_rio = ", ".join(ZONA_RIO_CAMPOS)
+        st.markdown(
+            f"""
+            ### Dos zonas climáticas
+
+            La vega del Aboño se comporta distinto que el núcleo de la finca, a solo 3 km. Por
+            eso tiene su propio sensor y la app calcula cada campo con el clima de su zona.
+
+            | Zona | Campos | Temperatura, humedad y lluvia |
             |---|---|---|
-            | **Cargar histórico completo desde snapshot** | Carga el Parquet comprimido. | Carga manual si no arrancó sola. |
-            | **Limpiar caché y recargar snapshot** | Fuerza descarga nueva del snapshot. | Si sospechas datos desactualizados. |
-            | **Crear/actualizar snapshot climático comprimido** | Sube el histórico actualizado como Parquet. | Después de añadir datos nuevos. |
-            | **Guardar histórico actual en Supabase** | Guarda en la tabla `climate_hourly`. | Después de importar datos nuevos. |
-            | **Cargar histórico desde tabla Supabase REST** | Carga directa de la tabla, fila a fila. | Respaldo o depuración. |
+            | 🏠 **{ZONA_NAVE}** | Todos los demás | Los sensores de siempre |
+            | 🌊 **{ZONA_RIO}** | {_campos_rio} | Sensor «Gallinal Los Pinos», en la vega (desde junio de 2026) |
+
+            ### Reglas
+
+            - **Desde el {ZONA_RIO_MANDA_DESDE:%d/%m/%Y}** cada campo se calcula con el clima de
+              su zona: frío, grados-día, riesgo de enfermedades, riego, fenología y producción.
+            - **Antes de esa fecha** todo sale de la Nave. Los datos del Río del verano de 2026
+              se guardan y se pueden ver y comparar, pero no deciden nada.
+            - **Hoja mojada, viento y radiación** solo se miden en la Nave (hay un único sensor
+              de humectación, en Huertona), así que valen para las dos zonas.
+            - **Si el sensor del Río pierde horas**, se rellenan con el dato de la Nave y la app
+              dice cuántas.
+            - El Río tiene su **propia previsión de MeteoGalicia** para su punto.
+            - En las tablas, **🌊 marca los campos del Río**.
+
+            ### Dónde se ve
+
+            | Pestaña | Qué cambia con las zonas |
+            |---|---|
+            | 🏠 Panel de hoy y Telegram | Clima de 7 días de cada zona |
+            | 📊 Dashboard · 🔎 Análisis | Selector de zona arriba |
+            | 📈 Comparador | Bloque *Zona Nave vs Zona Río* |
+            | ❄️ Frío | Una pestaña por zona |
+            | 🍄 Sanidad · 🎯 Decisiones | Decisión de cada campo con su clima; selector de zona en las gráficas |
+            | 💧 Riego | Lluvia y evapotranspiración de su zona; comparación del Río |
+            | 🌱 Fenología · 🩺 Resultado sanitario · 🍏 Análisis Gallinal | Cada campo con su clima |
+            | 🍎 Producción | Selector de zona en la correlación clima–producción |
+            | 📝 Informe semanal | Resumen climático a dos columnas |
+
+            > **Pendiente:** 🐛 Carpocapsa sigue calculando todos los campos con el clima de la
+            > Nave. Se adapta en enero de 2027, junto con la nueva estrategia de tratamientos.
             """
         )
 
-    st.markdown(
-        """
-        ## 3. Agroptima (actuaciones y tratamientos)
+    # ── Pestaña a pestaña ────────────────────────────────────────────────────
+    with t_pest:
+        st.markdown(
+            """
+            ### 🏠 Inicio
 
-        La pestaña **🧾 Agroptima** gestiona el histórico de tratamientos y actuaciones importado desde Agroptima.
+            | Pestaña | Para qué | Cuándo |
+            |---|---|---|
+            | **🏠 Panel de hoy** | Lo urgente de toda la finca: ventanas de carpocapsa, fungicidas por campo y clima de 7 días por zona. Envío manual del informe a Telegram. | Cada mañana |
 
-        Flujo recomendado cuando hay un Excel nuevo de Agroptima:
+            ### 🌤️ Clima
 
-        1. Ir a **🧾 Agroptima**.
-        2. Subir el Excel de Agroptima en el apartado de importación.
-        3. Revisar la vista previa y pulsar **Importar / actualizar histórico de actuaciones**.
-        4. Pulsar **Guardar actuaciones actuales en Supabase**.
+            | Pestaña | Para qué | Cuándo |
+            |---|---|---|
+            | **📊 Dashboard** | Estado del histórico: desde/hasta, huecos, calidad del dato, resumen de 30 días y descarga en CSV. | Si sospechas que faltan datos |
+            | **🌦️ Sencrop** | *Previsión* (MeteoGalicia y riesgo previsto a 7 días) · *Actualizar datos* (descarga manual de la Nave y del Río, Supabase, CSV) · *Conexión* (diagnóstico de sensores). | Solo si falló la descarga automática |
+            | **🔎 Análisis** | Informe interpretado de un periodo: temperatura, humedad y hoja, lluvia, viento, radiación, polinización e infecciones. | Para revisar una semana o un mes |
+            | **📈 Comparador** | Nave frente a Río, campañas de frío, el mismo mes, semana o quincena en varios años, y climatología mensual con anomalías. | Para comparar años |
+            | **❄️ Frío** | Horas frío, unidades Utah y Chill Portions de la campaña (1 nov – 31 mar), cumplimiento por variedad y floración prevista. | En invierno |
 
-        Las actuaciones se usan en:
+            ### 🌿 Cultivo
 
-        - **🍄 Sanidad** — cruza humectaciones y riesgo con tratamientos recientes.
-        - **🐛 Carpocapsa** — detecta tratamientos de carpocapsa y calcula DD entre captura y tratamiento.
-        - **Informe semanal** — incluye tratamientos del periodo.
-        """
-    )
+            | Pestaña | Para qué | Cuándo |
+            |---|---|---|
+            | **🌱 Fenología** | Calendario de fases por campo, variedad y año (con guía BBCH) y clima de cada fase. | Primavera: registrar fases |
+            | **🍄 Sanidad** | Semáforo del periodo, recomendación por campo, eventos de hoja mojada con auditoría y simulador de umbral, histórico de infecciones por año y fase, rotación FRAC y seguimiento de fitosanitarios. | Para entender el porqué de un riesgo |
+            | **🎯 Decisiones** | Panel diario de fungicidas por campo (🔴🟠🟡🟢, producto recomendado, pases de campaña, combinación con carpocapsa), gráficas de riesgo, modelo de hoja mojada prevista y fiabilidad de la previsión. | Cada mañana en campaña |
+            | **🐛 Carpocapsa** | Capturas, biofix, grados-día, ventanas de tratamiento por campo, vista por grupos (en pruebas), tratamientos, DD al tratar, cobertura real de la eclosión y muestreo de daños. | Cada semana durante el vuelo |
+            | **🩺 Resultado sanitario** | Fungicidas del año por campo y variedad frente a tu valoración visual, con la gráfica de infecciones y tratamientos. | Antes de cosechar |
+            | **💧 Riego** | Balance hídrico por campo (modelo clásico y de goteo), reserva del suelo, riego real (VEGGA, Excel o motobomba), perfiles de suelo y configuración de goteo. | En verano, 1-2 veces por semana |
 
-    st.markdown(
-        """
-        ## 4. Carpocapsa
+            ### 📋 Gestión
 
-        La pestaña **🐛 Carpocapsa** integra capturas de trampas, biofix, grados-día y tratamientos.
+            | Pestaña | Para qué | Cuándo |
+            |---|---|---|
+            | **🌳 Campos** | Los campos con su zona, superficie de recinto, superficie arbolada y variedades. | Consulta |
+            | **🧾 Agroptima** | Importar actuaciones, histórico, productos detectados, rotación FRAC, cruce de tratamientos con riesgo e informe sanitario por campo. | Al registrar tratamientos |
+            | **🍎 Producción** | Kilos por año, campo, variedad y portainjerto, y correlación clima–producción por zona. | Tras la cosecha |
+            | **🍏 Análisis Gallinal** | Ficha agroclimática por campo y variedad, regularidad y vecería, campo contra campo, Índice Climático e Índice Gallinal. | Análisis de fondo |
+            | **📝 Informe semanal** | Informe de un periodo (clima por zona, sanidad, actuaciones y campos prioritarios) en Markdown o PDF con logo. | Cada semana |
 
-        **Lógica de DD entre lectura y tratamiento (sección 6):**
+            ### Otros
 
-        - Se busca cada lectura de trampa con capturas ≥ umbral configurado.
-        - Para cada una, se localiza el **primer tratamiento de carpocapsa** registrado en Agroptima para ese campo, **estrictamente posterior** a la fecha de lectura.
-        - Se acumulan los DD desde la lectura hasta el tratamiento.
-        - Los DD se dejan de contar a partir del tratamiento.
-        - **Rango esperado:** 90–140 DD. Valores fuera de 80–160 DD son excepcionales.
+            - **⚙️ Configuración** — tipo de suelo, ajustes avanzados de hoja mojada, copia de
+              seguridad completa en ZIP y catálogo de productos fitosanitarios.
+            - **📱 Vista móvil** — botón al final de la barra lateral (o `?movil=1` en la
+              dirección): accesos rápidos a Hoy, Carpocapsa, Decisiones, Clima y Producción.
 
-        La detección de tratamientos de carpocapsa usa keywords específicas (Bactur, Madex, Cydia, etc.).
-        Tratamientos genéricos (fungicidas, herbicidas, abonos) no se cuentan como tratamientos de carpocapsa.
+            ### Superficies
 
-        Flujo habitual de campaña:
+            Cada campo tiene **dos superficies y las dos son válidas**: el **recinto** (lo que
+            mide la parcela) y la **superficie arbolada** (lo que ocupan los manzanos). El riego
+            y la carpocapsa trabajan con la arbolada.
+            """
+        )
 
-        1. Importar el Excel de capturas (pestaña 0 de Carpocapsa).
-        2. Configurar o revisar el biofix.
-        3. Revisar la sección de grados-día acumulados desde biofix.
-        4. Revisar la sección DD entre lectura y tratamiento.
-        5. Guardar snapshot en Supabase al finalizar la campaña.
-        """
-    )
+    # ── Criterios ────────────────────────────────────────────────────────────
+    with t_crit:
+        st.markdown(
+            f"""
+            ### 🍄 Fungicidas — 🎯 Decisiones
 
-    st.markdown(
-        """
-        ## 5. Producción
+            **La fase de cada campo** sale de lo que registres en 🌱 Fenología. Si no hay nada
+            registrado, se usan las fechas de la literatura:
 
-        La pestaña **🍎 Producción** carga el histórico de producción automáticamente desde Supabase.
+            | Fase | Fechas | Modo |
+            |---|---|---|
+            | Brotación | 1 – 20 abril | Preventivo |
+            | Floración | 21 abril – 21 mayo | Preventivo |
+            | Cuajado | 22 mayo – 15 junio | Reactivo |
+            | Engorde | 16 junio – 31 agosto | Reactivo |
+            | Maduración | 1 – 30 septiembre | Reactivo |
+            | Reposo | octubre – marzo | Sin avisos |
 
-        Para añadir un año nuevo:
+            - **Preventivo** (brotación y floración): avisa en cuanto caduca la cobertura del
+              último tratamiento.
+            - **Reactivo** (de cuajado a septiembre): solo avisa si hubo una **infección real en
+              los últimos 4 días**, que es la ventana en la que un curativo todavía sirve.
+            - **Varias variedades en un campo:** manda la que esté en la fase más sensible,
+              porque el tratamiento cubre el campo entero.
+            - **Si registras la cosecha** de un campo, su campaña se cierra en esa fecha.
+            - **Cobertura de un tratamiento:** persistencia de la etiqueta, eficacia de al menos
+              el 50 % contra esa enfermedad, lluvia caída desde entonces, máximo legal de pases y
+              rotación FRAC.
+            - **El riesgo se calcula con el sensor real.** La previsión solo adelanta avisos.
 
-        1. Ir a **🍎 Producción**.
-        2. Subir el Excel de producción (una hoja por año).
-        3. Pulsar **⬆️ Guardar en Supabase**.
-        """
-    )
+            ### 🐛 Carpocapsa
 
-    st.markdown(
-        """
-        ## 6. Sanidad y recomendaciones de tratamiento
+            - Una lectura de trampa **abre ventana** solo si llega al **umbral de capturas**.
+            - Desde esa lectura se cuentan grados-día:
+                - **menos de 80 DD** → ⏳ en espera, aún no nacen larvas;
+                - **80 – 130 DD** → 🟠 tratar, están naciendo;
+                - **cierra en 3 días o menos** → 🔴 última oportunidad;
+                - **más de 130 DD sin tratar** → 🔒 cerrada, la larva ya está dentro del fruto.
+            - Un tratamiento cuyos DD caen dentro de la ventana la da por **cubierta**.
+            - Cada lectura semanal puede abrir su propia ventana, y se siguen por separado.
+            - Un tratamiento cuenta como de carpocapsa por el **nombre del producto** (Bactur,
+              Madex, Cydia…). Fungicidas, herbicidas y abonos no cuentan.
 
-        En **🍄 Sanidad** la app muestra:
+            *(80 y 130 son los valores por defecto de los selectores DD inicio y DD fin.)*
 
-        - Eventos de hoja mojada y humectación.
-        - Riesgo de moteado (Venturia inaequalis).
-        - Riesgo de monilia y oídio.
-        - Cruce con tratamientos recientes de Agroptima.
-        - Recomendación técnica de tratamiento por campo y fase fenológica.
+            ### 💧 Riego
 
-        Las recomendaciones tienen en cuenta grupo FRAC, rotación y último tratamiento por campo.
-        """
-    )
+            - **Balance FAO-56:** evapotranspiración de referencia (Penman-Monteith, o Hargreaves
+              si faltan datos) × coeficiente del manzano, menos la lluvia, más el riego. Con eso
+              se lleva la **reserva de agua del suelo** según el perfil de cada parcela.
+            - Los litros del gotero se pasan a mm sobre la **superficie arbolada**.
+            - Hay **dos modelos**: el clásico y el de goteo, que solo moja la línea de árboles.
+            - Desde el {ZONA_RIO_MANDA_DESDE:%d/%m/%Y}, los campos del Río usan su propia lluvia
+              y evapotranspiración.
+
+            ### ❄️ Frío
+
+            - Campaña del **1 de noviembre al 31 de marzo**.
+            - Tres modelos: horas por debajo de 7 ºC, unidades Utah y **Chill Portions**
+              (modelo dinámico, el más fiable en clima atlántico).
+            - El frío acumulado se compara con el **requerimiento de cada variedad** (SERIDA) y,
+              sumando el calor posterior, se estima la **floración prevista**.
+            """
+        )
+
+    # ── Problemas ────────────────────────────────────────────────────────────
+    with t_prob:
+        st.markdown(
+            """
+            ### Problemas frecuentes
+
+            **Sale el aviso «⚠️ Última lectura del sensor» o «🔴 El sensor no trae datos nuevos»**  
+            El proceso de la mañana no corrió o falló (comprueba si llegó el Telegram). Para
+            recuperarlo a mano: **🌦️ Sencrop → ⬇️ Actualizar datos** → descargar los 4 sensores
+            → en *🌊 Zona Río*, **🔄 Traer solo lo nuevo** → guardar en Supabase y **actualizar el
+            snapshot**.
+
+            **El histórico climático está vacío al abrir**  
+            **🌦️ Sencrop → ⬇️ Actualizar datos → ☁️ Guardar/cargar desde Supabase →
+            Cargar histórico completo desde snapshot**.
+
+            **Sencrop no descarga o da «UNAUTHORIZED»**  
+            Los números internos de los sensores pueden cambiar. **🌦️ Sencrop → ⚙️ Conexión →
+            🔍 Diagnóstico: listar mis dispositivos** los vuelve a casar con la etiqueta física
+            de cada aparato.
+
+            **La Zona Río sale vacía**  
+            **🌦️ Sencrop → ⬇️ Actualizar datos → 🌊 Zona Río → Descargar todo desde…** y
+            guardar.
+
+            **Agroptima da error al descargar**  
+            Han caducado las cookies. Sigue los pasos del desplegable **🔑 ¿Da error al
+            descargar?** en 🧾 Agroptima.
+
+            **Un tratamiento no cuenta en Decisiones o en Carpocapsa**  
+            La app no reconoce el nombre del producto. **⚙️ Configuración → Productos de
+            Agroptima no reconocidos** te dice cuáles son; las listas de productos están en el
+            código, así que hay que pedir que se añadan.
+
+            **El riego real no está al día**  
+            **💧 Riego → ⬇️ Descargar riego de VEGGA → Descargar de VEGGA (con mi usuario)**.
+            Las Piedronas no están en VEGGA: su riego se apunta a mano.
+
+            **En Producción, un campo del Río aparece en la Nave**  
+            Está escrito distinto en el Excel. Al elegir una zona en la sección 5, la app lista
+            los nombres que no coinciden con ningún campo.
+
+            **La previsión de Sencrop no carga**  
+            Es normal: Sencrop no la ofrece por API. La app usa MeteoGalicia.
+
+            **El PDF del informe no refleja los datos nuevos**  
+            Comprueba en **📊 Dashboard** la fecha final del histórico antes de generarlo.
+            """
+        )
 
     st.warning(
         "Las recomendaciones de tratamiento son orientativas. "
         "Antes de aplicar cualquier producto verifica etiqueta, registro oficial, dosis, plazo de seguridad, "
         "número máximo de aplicaciones, compatibilidad de mezclas y normativa vigente."
     )
-
-    with st.expander("Resumen de pestañas", expanded=True):
-        st.markdown(
-            """
-            | Pestaña | Función principal |
-            |---|---|
-            | **📘 Instrucciones** | Flujo de uso de la app. |
-            | **📊 Dashboard** | Vista general del histórico climático y sensores. |
-            | **🌦️ Sencrop** | Importar datos de la estación + gestión Supabase climático. |
-            | **🔎 Análisis** | Resumen climático-agronómico por periodo seleccionado. |
-            | **🌱 Fenología** | Configuración y lectura de fases fenológicas de campaña. |
-            | **❄️ Frío** | Horas frío, unidades Utah y porciones de frío por campaña. |
-            | **📈 Comparador** | Comparación entre campañas, semanas o meses. |
-            | **🍄 Sanidad** | Humectaciones, riesgo sanitario y recomendaciones de tratamiento. |
-            | **🐛 Carpocapsa** | Capturas, biofix, grados-día y cruce con tratamientos. |
-            | **💧 Riego** | Demanda evaporativa y recomendación orientativa de riego. |
-            | **🌳 Campos** | Base de campos, superficies y variedades. |
-            | **🧾 Agroptima** | Histórico de actuaciones y tratamientos desde Agroptima. |
-            | **🍎 Producción** | Histórico y análisis de producción por variedad y campo. |
-            | **📝 Informe semanal** | Generación de informe semanal en PDF con logo. |
-            | **⚙️ Configuración** | Suelo, umbrales, catálogo de productos y parámetros. |
-            """
-        )
-
-    st.markdown(
-        """
-        ## 7. Flujo semanal recomendado
-
-        1. Abrir la app — los datos se cargan automáticamente.
-        2. Ir a **🌦️ Sencrop** → descargar los últimos días → guardar en Supabase → actualizar snapshot.
-        3. Si hay Excel nuevo de Agroptima → importarlo en **🧾 Agroptima** → guardar en Supabase.
-        4. Revisar **📊 Dashboard** — comprobar fecha final del histórico.
-        5. Revisar **🔎 Análisis** del periodo semanal.
-        6. Revisar **🍄 Sanidad** y recomendaciones por campo.
-        7. Revisar **🐛 Carpocapsa** si es temporada de vuelo.
-        8. Generar **📝 Informe semanal** PDF.
-        """
-    )
-
-    with st.expander("Problemas frecuentes", expanded=False):
-        st.markdown(
-            """
-            **El histórico climático está vacío al abrir la app**
-            Ve a **Sencrop** → elige "Snapshot comprimido" → pulsa "Cargar histórico completo desde snapshot".
-
-            **Los datos de Agroptima no aparecen en Carpocapsa o Sanidad**
-            Ve a **Agroptima** → pulsa "Cargar actuaciones desde Supabase". Si ya hay datos en sesión, comprueba que la campaña del selector coincide.
-
-            **Los DD entre lectura y tratamiento parecen incorrectos**
-            Verifica que el tratamiento está guardado en Agroptima con un nombre de producto de carpocapsa reconocido (Bactur, Madex, Cydia, etc.). Tratamientos genéricos no se cuentan.
-
-            **La carga desde tabla Supabase REST es lenta**
-            Es normal con muchos registros. Usa el snapshot (método por defecto).
-
-            **El informe PDF no refleja datos nuevos**
-            Comprueba que el Dashboard muestra la fecha final correcta antes de generar el informe.
-            """
-        )
-
     st.caption("v8.9.7 · Finca Gallinal · Plataforma agroclimática")
 
 
