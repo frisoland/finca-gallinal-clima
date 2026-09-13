@@ -3064,6 +3064,69 @@ def get_fields_base_df():
     return pd.DataFrame(FIELDS_BASE_ROWS)
 
 
+def copia_de_seguridad_datos(dados=None):
+    """{fichero.csv: DataFrame} con TODOS los datos que usa la app.
+
+    La usan las dos copias de seguridad (la manual de ⚙️ Configuración y la semanal por
+    Telegram) para que lleven siempre lo mismo. Toma lo que se le pase en `dados`
+    ({clave de sesión: DataFrame}); si no, lo que haya en la sesión; y si falta, lo pide a
+    Supabase. Lo que no exista sale como tabla vacía (y no entra en el ZIP)."""
+    dados = dados or {}
+
+    def _df(x):
+        if isinstance(x, pd.DataFrame):
+            return x
+        if isinstance(x, (tuple, list)) and x and isinstance(x[0], pd.DataFrame):
+            return x[0]
+        return pd.DataFrame()
+
+    _carpo = {}
+
+    def _de_carpocapsa(i):
+        if "t" not in _carpo:
+            try:
+                _carpo["t"] = load_carpocapsa_snapshot_from_supabase()
+            except Exception:
+                _carpo["t"] = (None, None, None, None)
+        return _carpo["t"][i]
+
+    fuentes = [
+        ("clima_historico.csv",       "history_df",
+         lambda: load_climate_snapshot_from_supabase(use_cache=False)),
+        ("clima_zona_rio.csv",        "history_rio_df",
+         lambda: load_climate_rio_from_supabase(use_cache=False)),
+        ("agroptima_actuaciones.csv", "activities_df",          load_activities_from_supabase),
+        ("produccion.csv",            "produccion_df",          load_produccion_from_supabase),
+        ("carpocapsa_capturas.csv",   "carpocapsa_traps_df",    lambda: _de_carpocapsa(0)),
+        ("carpocapsa_biofix.csv",     "carpocapsa_biofix_df",   lambda: _de_carpocapsa(1)),
+        ("carpocapsa_dano.csv",       "carpocapsa_damage_df",   lambda: _de_carpocapsa(2)),
+        ("fenologia.csv",             "phenology_df",           load_phenology_from_supabase),
+        ("riego_real.csv",            "irrigation_log_df",      load_irrigation_log_from_supabase),
+        ("perfiles_suelo.csv",        "soil_profiles_df",       load_soil_profiles_from_supabase),
+        ("config_goteo_cambios.csv",  "irrigation_config_df",   load_irrigation_config_from_supabase),
+        ("resultado_sanitario.csv",   "resultado_sanitario_df", load_resultado_sanitario_from_supabase),
+    ]
+    out = {}
+    for fichero, clave, cargar in fuentes:
+        df = _df(dados.get(clave))
+        if df.empty:
+            try:
+                df = _df(st.session_state.get(clave))
+            except Exception:
+                df = pd.DataFrame()
+        if df.empty and supabase_is_configured():
+            try:
+                df = _df(cargar())
+            except Exception:
+                df = pd.DataFrame()
+        out[fichero] = df
+    try:
+        out["catalogo_fungicidas.csv"] = treatment_catalog_to_dataframe(get_treatment_product_catalog())
+    except Exception:
+        out["catalogo_fungicidas.csv"] = pd.DataFrame()
+    return out
+
+
 # ── Zonas climáticas ──────────────────────────────────────────────────────────
 # Dos zonas y solo dos, aunque el riego tenga tres cabezales (VEGGA_DEVICES): esto va de
 # qué SENSOR describe el clima de cada campo, no de qué programador lo riega.
@@ -5807,19 +5870,27 @@ def render_supabase_climate_panel():
     with st.expander("Cómo usar Supabase con el histórico climático", expanded=False):
         st.markdown(
             """
-            **Flujo recomendado para histórico completo:**
+            **Lo normal: no hay que hacer nada.** Cada mañana el proceso automático descarga
+            Sencrop y guarda los históricos en Supabase Storage (bucket `climate-snapshots`):
 
-            1. Después de importar o guardar datos nuevos, pulsa **Crear/actualizar snapshot climático comprimido**.
-            2. En próximas sesiones, usa **Cargar histórico completo desde snapshot**.
-            3. Deja la carga desde tabla `climate_hourly` como respaldo o para depuración.
+            | Fichero | Qué contiene |
+            |---|---|
+            | `historico_clima_completo.parquet` | Clima de la **Zona Nave** (4 sensores) |
+            | `historico_clima_zona_rio.parquet` | Clima de la **Zona Río** (sensor de la vega) |
+            | `forecast_mg_hourly.parquet` | Previsiones de MeteoGalicia archivadas · finca |
+            | `forecast_mg_hourly_zona_rio.parquet` | Previsiones de MeteoGalicia archivadas · Río |
 
-            **Flujo recomendado para actualizaciones:**
+            Al abrir la app se cargan solos los dos históricos.
 
-            1. Sube CSV nuevos de Sencrop como siempre.
-            2. Pulsa **Guardar histórico actual en Supabase** para actualizar la tabla.
-            3. Pulsa **Crear/actualizar snapshot climático comprimido** para regenerar el archivo rápido.
+            **Solo si falló la actualización** (recuperar a mano la Nave):
 
-            La tabla usa `fecha_hora` como clave principal. Si una hora ya existe, se actualiza; si no existe, se añade.
+            1. **⬇️ Actualizar datos** → descargar los 4 sensores del periodo que falte.
+            2. **Guardar histórico actual en Supabase** (tabla `climate_hourly`).
+            3. **Crear/actualizar snapshot climático comprimido**, para que la próxima carga lo use.
+
+            La Zona Río se recupera con su propio botón (**🔄 Traer solo lo nuevo**), que ya
+            guarda en su fichero. La tabla `climate_hourly` usa `fecha_hora` como clave: si una
+            hora ya existe se actualiza y, si no, se añade.
             """
         )
 
@@ -7047,7 +7118,14 @@ def render_sencrop_panel():
 
     # ── Estado de conexión ────────────────────────────────────────────────────
     if st.session_state.sencrop_token and direct_token:
-        st.success("✅ Conectado con Sencrop via token (Secrets). La descarga de datos está operativa.")
+        if st.session_state.get("_sencrop_auth_via") == "oauth":
+            st.success("✅ Conectado con Sencrop mediante la **API key de aplicación** (Secrets "
+                       "`SENCROP_APP_ID` y `SENCROP_APP_SECRET`), que se renueva sola. La descarga "
+                       "de datos está operativa.")
+        else:
+            st.success("✅ Conectado con Sencrop mediante **token manual** (Secret `SENCROP_TOKEN`). "
+                       "La descarga funciona, pero ese token caduca cada pocas semanas: conviene "
+                       "pasar a la API key de aplicación.")
     elif st.session_state.sencrop_token:
         st.success("✅ Conectado con Sencrop.")
 
@@ -7079,7 +7157,8 @@ def render_sencrop_panel():
                 st.rerun()
 
     if not st.session_state.sencrop_token:
-        st.info("Añade SENCROP_TOKEN en Secrets para conectar automáticamente.")
+        st.info("Añade la API key de Sencrop (`SENCROP_APP_ID` y `SENCROP_APP_SECRET`) en "
+                "Secrets para conectar automáticamente.")
         return
 
     # ── Obtener user_id si no lo tenemos ─────────────────────────────────────
@@ -7133,8 +7212,29 @@ def render_sencrop_panel():
 
     # ── Info sensores + diagnóstico ──────────────────────────────────────────
     with st.expander("📡 Sensores configurados", expanded=False):
+        _override = st.session_state.get("_sencrop_id_override") or {}
+        st.markdown(
+            f"**🏠 {ZONA_NAVE} · {len(SENCROP_SENSORS)} sensores** → se juntan en un único histórico "
+            f"(`{SUPABASE_FULL_CLIMATE_SNAPSHOT}`). Dan el clima de todos los campos de la Nave; "
+            f"la hoja mojada, el viento y la radiación valen también para la {ZONA_RIO}.")
         for s in SENCROP_SENSORS:
-            st.write(f"- **{s['nombre']}** (ID: `{s['id']}`) → {', '.join(s['measures'])}")
+            _id_sesion = _override.get(s["ref"])
+            st.markdown(
+                f"- **{s['nombre']}** · etiqueta `{s['ref']}` · ID `{s['id']}`"
+                + (f" (en esta sesión se usa `{_id_sesion}`)" if _id_sesion else "")
+                + f" → {', '.join(s['measures'])}")
+        st.markdown(
+            f"**🌊 {ZONA_RIO} · 1 sensor «Gallinal Los Pinos»** → histórico aparte "
+            f"(`{SUPABASE_RIO_CLIMATE_SNAPSHOT}`), para no mezclarse con la Nave. Temperatura, "
+            f"humedad y lluvia de {', '.join(ZONA_RIO_CAMPOS)}; manda en sus cálculos desde el "
+            f"{ZONA_RIO_MANDA_DESDE:%d/%m/%Y}.")
+        st.markdown(
+            f"- **{SENCROP_SENSOR_RIO['nombre']}** · identificación `{SENCROP_SENSOR_RIO['identification']}` "
+            f"· ID `{SENCROP_SENSOR_RIO['id']}` → {', '.join(SENCROP_SENSOR_RIO['measures'])}")
+        st.caption(
+            "La **etiqueta** es la del aparato físico y no cambia. El **ID** es el número interno "
+            "de Sencrop y puede cambiar: si las descargas fallan, **🔍 Diagnóstico** los vuelve a "
+            "casar. Los dos históricos se descargan solos cada mañana.")
 
     with st.expander("🔍 Diagnóstico: listar mis dispositivos en Sencrop", expanded=False):
         st.caption("Muestra todos los dispositivos asociados a tu cuenta con sus IDs reales.")
@@ -7230,8 +7330,23 @@ def render_sencrop_panel():
                         "ID en la app": s["id"], "ID real": _real or "— no encontrada —",
                         "Estado": "✅ correcto" if _ok else ("❌ hay que cambiarlo" if _real else "⚠️ no aparece"),
                     })
+                # El sensor del Río va aparte (no se fusiona con la Nave): se coteja por su
+                # identificación, o por su ID si la identificación no aparece.
+                _ident_rio = str(SENCROP_SENSOR_RIO["identification"]).strip().upper()
+                _real_rio = _mapa.get(_ident_rio)
+                if _real_rio is None and str(SENCROP_SENSOR_RIO["id"]) in {str(v) for v in _mapa.values()}:
+                    _real_rio = str(SENCROP_SENSOR_RIO["id"])
+                _ok_rio = _real_rio is not None and _real_rio == str(SENCROP_SENSOR_RIO["id"])
+                _fila_rio = {
+                    "Sensor": SENCROP_SENSOR_RIO["nombre"], "Referencia": SENCROP_SENSOR_RIO["identification"],
+                    "ID en la app": SENCROP_SENSOR_RIO["id"], "ID real": _real_rio or "— no encontrada —",
+                    "Estado": "✅ correcto" if _ok_rio else ("❌ hay que cambiarlo" if _real_rio else "⚠️ no aparece"),
+                }
                 st.markdown("**Cotejo por referencia**")
-                st.dataframe(pd.DataFrame(_filas), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(_filas + [_fila_rio]), use_container_width=True, hide_index=True)
+                if _real_rio and not _ok_rio:
+                    st.warning(f"El ID del sensor de la {ZONA_RIO} ha cambiado: el real es `{_real_rio}`. "
+                               "Hay que corregirlo en el código (`SENCROP_SENSOR_RIO`).")
                 # OJO al «todo correcto»: antes salía también cuando NO se había
                 # encontrado ninguna referencia, que es el caso contrario. Solo se
                 # celebra si todas las referencias aparecieron Y coinciden.
@@ -7318,17 +7433,47 @@ def render_sencrop_forecast_panel():
     """Panel de predicción meteorológica Sencrop + modelos de riesgo sanitario."""
     st.markdown("### 🔭 Predicción meteorológica — Próximos días")
 
-    if not st.session_state.get("sencrop_token"):
-        st.info("ℹ️ Conecta Sencrop arriba para acceder a la predicción.")
-        return
-
+    _fm = st.session_state.get("forecast_model") or "ninguna"
+    _rio_fc = st.session_state.get("forecast_rio_df", pd.DataFrame())
+    _rio_dias = (pd.to_datetime(_rio_fc["fecha_hora"], errors="coerce").dt.normalize().nunique()
+                 if isinstance(_rio_fc, pd.DataFrame) and not _rio_fc.empty and "fecha_hora" in _rio_fc.columns
+                 else 0)
+    st.markdown(
+        f"**Previsión cargada ahora:** {_fm}.  \n"
+        "La previsión que usa la app (Decisiones, Panel de hoy, Telegram) sale de **MeteoGalicia** "
+        f"— modelo WRF a 1 km, API MeteoSIX — en dos puntos: la **finca** (`{METEOSIX_COORDS}`) y "
+        f"la **vega del Río** (`{METEOSIX_COORDS_RIO}`). Se archiva cada mañana en Supabase "
+        f"(`{SUPABASE_MG_HOURLY_PATH}` y `{SUPABASE_MG_HOURLY_RIO_PATH}`).  \n"
+        f"🌊 Previsión de la {ZONA_RIO}: "
+        + (f"**{_rio_dias} días** cargados." if _rio_dias else "todavía sin archivo."))
     st.caption(
-        "Predicción horaria de **Sencrop** (fusión de múltiples modelos meteorológicos, "
-        "calibrada con los datos de tu estación). "
-        "Se aplican modelos de riesgo agronómico: Mills moteado, Monilia y DD carpocapsa. "
-        "La hoja mojada se toma del sensor si está disponible; si no, se estima desde lluvia y HR previstas."
+        "Sobre la previsión se aplican los modelos de riesgo: Mills (moteado), monilia y grados-día "
+        "de carpocapsa. La hoja mojada prevista se estima con la humedad, el rocío y la lluvia "
+        "previstos (🎯 Decisiones → 🍃 Modelo de hoja mojada)."
     )
 
+    _hay_token = bool(st.session_state.get("sencrop_token"))
+    with st.expander("🧪 Probar la previsión de Sencrop (no disponible por API)", expanded=False):
+        st.caption(
+            "Sencrop confirmó el 23/08/2026 que su previsión **no se ofrece por API** todavía. "
+            "Estos botones solo sirven para comprobar si ya la han activado; si funciona, "
+            "sustituye a la de MeteoGalicia en esta sesión.")
+        if not _hay_token:
+            st.info("ℹ️ Conecta Sencrop en la pestaña ⚙️ **Conexión** para probarla.")
+        else:
+            _render_prueba_prevision_sencrop()
+
+    # ── Mostrar resultados si ya hay predicción en sesión ─────────────────────
+    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
+    if forecast_df.empty:
+        st.info("No hay previsión cargada: el archivo de MeteoGalicia aún no está disponible "
+                "(se genera cada mañana con el proceso automático).")
+        return
+    _render_tabla_riesgo_previsto(forecast_df)
+
+
+def _render_prueba_prevision_sencrop():
+    """Botones para comprobar si Sencrop ya ofrece su previsión por API."""
     modelo_fc = st.radio(
         "Modelo de predicción",
         ["⭐ Previsión Sencrop (fusión de modelos)", "📊 Meteoblue BASIC_MLM"],
@@ -7364,12 +7509,11 @@ def render_sencrop_forecast_panel():
         )
         st.rerun()
 
-    # ── Mostrar resultados si ya hay predicción en sesión ─────────────────────
-    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
-    if forecast_df.empty:
-        st.info("Pulsa el botón para descargar la predicción y calcular el riesgo.")
-        return
 
+def _render_tabla_riesgo_previsto(forecast_df):
+    """Riesgo sanitario de los próximos días a partir de la previsión cargada."""
+    base_temp_fc  = 10.0
+    upper_temp_fc = 31.1
     history_df = st.session_state.get("history_df", pd.DataFrame())
 
     # ── Tabla de riesgo diario ────────────────────────────────────────────────
@@ -7764,9 +7908,9 @@ def render_zona_rio_descarga(token, user_id=""):
     st.markdown("#### 🌊 Zona Río — sensor «Gallinal Los Pinos»")
     st.caption(
         "Temperatura, humedad y lluvia de la vega del Aboño (Viaducto, Campazón, Los Pinos "
-        "1-5), en un histórico **aparte** del de la Nave. Por ahora solo se guarda y se "
-        "compara en **📈 Comparador**; los cálculos de esos campos empezarán a usarlo el "
-        "**1 de noviembre de 2026**.")
+        "1-5), en un histórico **aparte** del de la Nave. **Se descarga sola cada mañana**. "
+        f"Desde el **{ZONA_RIO_MANDA_DESDE:%d/%m/%Y}** es el clima con el que se calculan esos "
+        "campos (antes, solo se guarda y se compara).")
     rio = st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
     if rio is None or rio.empty:
         st.caption("Todavía no hay datos guardados de la Zona Río.")
@@ -7864,6 +8008,10 @@ def import_panel():
 
         # ── Sección Sencrop ──────────────────────────────────────────────────
         st.markdown("#### 🌦️ Descargar desde Sencrop")
+        st.caption(
+            f"🏠 **{ZONA_NAVE}** — los {len(SENCROP_SENSORS)} sensores de siempre (temperatura/humedad/"
+            "lluvia, viento, hoja mojada y radiación). **Se descarga sola cada mañana**; usa esto "
+            "solo para recuperar un día que faltó o rehacer un periodo. La Zona Río va más abajo.")
         if not token:
             st.info("ℹ️ Conecta Sencrop en la pestaña ⚙️ **Conexión** para descargar datos.")
         elif not user_id:
@@ -8261,8 +8409,10 @@ def instructions_tab():
                para el punto del Río. Con ese archivo se mide después cuánto acierta.
             4. Calcula carpocapsa, fungicidas por campo y el clima de 7 días de cada zona, y
                **te envía el informe por Telegram**.
-            5. **Los domingos** manda además por Telegram una **copia de seguridad** en ZIP:
-               clima de las dos zonas, Agroptima, producción, carpocapsa y fenología.
+            5. **Los domingos** manda además por Telegram una **copia de seguridad** en ZIP con
+               todos los datos: clima de las dos zonas, Agroptima, producción, carpocapsa,
+               fenología, riego real, perfiles de suelo, resultado sanitario y catálogo. Es la
+               misma que puedes generar a mano en ⚙️ Configuración.
 
             ### Al abrir la app
 
@@ -11185,6 +11335,12 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         _dev_lbl = ", ".join(d[2] for d in VEGGA_DEVICES)
         st.caption(f"Baja el historial de los cabezales de VEGGA sin exportar Excel a mano. "
                    f"Cabezales: **{_dev_lbl}**.")
+        st.caption(
+            "**Se descarga sola cada mañana** (últimos 45 días); este botón es para recuperar un "
+            "rango concreto. Ojo: los nombres de los **cabezales de riego** no son las zonas "
+            f"climáticas. Riegan: *Zona Nave* → Sectores 10, 10-B, 11, 12 y GY · *Zona Contenedor* "
+            "→ Sectores 2 a 9 y Huertona · *Zona Río* → Los Pinos 1-5. Las Piedronas no están en "
+            "VEGGA (motobomba): su riego se apunta a mano.")
         _vc1, _vc2 = st.columns(2)
         _vfrom = _vc1.date_input("Desde", value=(pd.Timestamp.today() - pd.Timedelta(days=60)).date(),
                                  key="vegga_from")
@@ -15593,17 +15749,24 @@ def render_top_banner():
                 _ahora = pd.Timestamp.now()
                 _horas = (_ahora - _last).total_seconds() / 3600.0
                 _fecha_txt = _last.strftime("%d/%m/%Y · %H:%M")
+                # La Zona Río tiene su propio histórico: su fecha también, en la misma línea.
+                _rio_sufijo = ""
+                _rio_f = st.session_state.get("history_rio_df", pd.DataFrame())
+                if isinstance(_rio_f, pd.DataFrame) and not _rio_f.empty and "fecha_hora" in _rio_f.columns:
+                    _last_rio = pd.to_datetime(_rio_f["fecha_hora"], errors="coerce").max()
+                    if pd.notna(_last_rio):
+                        _rio_sufijo = f" · 🌊 {ZONA_RIO} hasta **{_last_rio:%d/%m/%Y · %H:%M}**"
                 if _horas <= 36:
-                    st.success(f"🌦️ Datos climáticos actualizados hasta **{_fecha_txt}**.")
+                    st.success(f"🌦️ Datos climáticos actualizados hasta **{_fecha_txt}**{_rio_sufijo}.")
                 elif _horas <= 24 * 7:
                     _dias = int(_horas // 24)
                     st.warning(
                         f"🌦️ Datos climáticos hasta **{_fecha_txt}** "
-                        f"(hace ~{_dias} día/s). Descarga de Sencrop para actualizar."
+                        f"(hace ~{_dias} día/s){_rio_sufijo}. Descarga de Sencrop para actualizar."
                     )
                 else:
                     st.error(
-                        f"🌦️ Datos climáticos desactualizados: último registro **{_fecha_txt}**. "
+                        f"🌦️ Datos climáticos desactualizados: último registro **{_fecha_txt}**{_rio_sufijo}. "
                         f"Conviene descargar de Sencrop."
                     )
         else:
@@ -19894,36 +20057,22 @@ def settings_tab():
 
     with st.expander("💾 Copia de seguridad completa", expanded=False):
         st.caption(
-            "Descarga **todos tus datos** en un único ZIP de CSVs (clima, Agroptima, "
-            "producción, carpocapsa, fenología y catálogo). Guárdalo de vez en cuando "
-            "como respaldo, por si falla Supabase o pierdes acceso. Se genera solo al "
-            "pulsar el botón."
+            "Descarga **todos tus datos** en un único ZIP de CSVs: clima de la Zona Nave y de la "
+            "Zona Río, Agroptima, producción, carpocapsa (capturas, biofix y daños), fenología, "
+            "riego real, perfiles de suelo, cambios en la configuración de goteo, resultado "
+            "sanitario y catálogo de fungicidas. Es lo mismo que llega cada domingo por Telegram. "
+            "Se genera solo al pulsar el botón."
         )
         if st.button("🗜️ Generar copia de seguridad", key="gen_backup"):
             import io as _io, zipfile as _zip
-            _sources = {
-                "clima_historico.csv":       st.session_state.get("history_df"),
-                "agroptima_actuaciones.csv": st.session_state.get("activities_df"),
-                "produccion.csv":            st.session_state.get("produccion_df"),
-                "carpocapsa_capturas.csv":   st.session_state.get("carpocapsa_traps_df"),
-                "carpocapsa_biofix.csv":     st.session_state.get("carpocapsa_biofix_df"),
-                "carpocapsa_dano.csv":       st.session_state.get("carpocapsa_damage_df"),
-                "fenologia.csv":             st.session_state.get("phenology_df"),
-            }
+            with st.spinner("Reuniendo todos los datos…"):
+                _sources = copia_de_seguridad_datos()
             _resumen, _buf = [], _io.BytesIO()
             with _zip.ZipFile(_buf, "w", _zip.ZIP_DEFLATED) as _z:
                 for _name, _df in _sources.items():
                     if isinstance(_df, pd.DataFrame) and not _df.empty:
                         _z.writestr(_name, _df.to_csv(index=False).encode("utf-8-sig"))
                         _resumen.append(f"{_name} ({len(_df)} filas)")
-                try:
-                    _cat_df = treatment_catalog_to_dataframe(get_treatment_product_catalog())
-                    if _cat_df is not None and not _cat_df.empty:
-                        _z.writestr("catalogo_fungicidas.csv",
-                                    _cat_df.to_csv(index=False).encode("utf-8-sig"))
-                        _resumen.append(f"catalogo_fungicidas.csv ({len(_cat_df)} filas)")
-                except Exception:
-                    pass
             _buf.seek(0)
             st.session_state["_backup_zip"] = _buf.getvalue()
             st.session_state["_backup_resumen"] = _resumen

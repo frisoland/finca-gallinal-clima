@@ -374,39 +374,12 @@ def maybe_weekly_backup(app, history, activities, traps, biofix):
             return x[0]
         return pd.DataFrame()
 
-    produccion = fenologia = damage = pd.DataFrame()
-    try:
-        produccion = _as_df(app.load_produccion_from_supabase())
-    except Exception as e:
-        print(f"  producción falló: {e}")
-    try:
-        fenologia = _as_df(app.load_phenology_from_supabase())
-    except Exception as e:
-        print(f"  fenología falló: {e}")
-    try:
-        _t, _b, _d, _ = app.load_carpocapsa_snapshot_from_supabase()
-        if _d is not None:
-            damage = _d
-    except Exception as e:
-        print(f"  carpocapsa daño falló: {e}")
-    rio = pd.DataFrame()
-    try:
-        rio = _as_df(app.st.session_state.get("history_rio_df", pd.DataFrame()))
-        if rio.empty:
-            rio = _as_df(app.load_climate_rio_from_supabase(use_cache=False))
-    except Exception as e:
-        print(f"  zona río falló: {e}")
-
-    sources = {
-        "clima_historico.csv":       history,
-        "clima_zona_rio.csv":        rio,
-        "agroptima_actuaciones.csv": activities,
-        "produccion.csv":            produccion,
-        "carpocapsa_capturas.csv":   traps,
-        "carpocapsa_biofix.csv":     biofix,
-        "carpocapsa_dano.csv":       damage,
-        "fenologia.csv":             fenologia,
-    }
+    # Mismo contenido que la copia manual de ⚙️ Configuración: lo reúne app.py, que sabe
+    # qué datos usa la app. Lo que ya viene cargado del informe se reutiliza.
+    sources = app.copia_de_seguridad_datos({
+        "history_df": history, "activities_df": activities,
+        "carpocapsa_traps_df": traps, "carpocapsa_biofix_df": biofix,
+    })
     buf, incluidos = io.BytesIO(), []
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for name, df in sources.items():
