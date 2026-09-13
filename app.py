@@ -17102,7 +17102,13 @@ def carpocapsa_posicion_en_banda(dd):
     elif _pct <= 60:
         _t = f"✅ Plena {_g}ª ({_pct:.0f} %)"
     else:
-        _t = f"🔸 Final de la {_g}ª ({_pct:.0f} % ya pasado)"
+        # «Final» NO quiere decir «tarde e inútil»: el pase protege lo que aún queda por
+        # nacer. Decir cuánto quedaba evita leerlo como un pase perdido (13/09/2026).
+        _queda = max(0.0, 100.0 - _pct)
+        if _queda < 2:
+            _t = f"🔸 Final de la {_g}ª: ya casi no quedaba nada por nacer ({_queda:.0f} %)"
+        else:
+            _t = f"🔸 Final de la {_g}ª: aún quedaba el {_queda:.0f} % por nacer"
     return (_t, round(_pct, 0))
 
 
@@ -19972,7 +19978,11 @@ def carpocapsa_tab(history):
                         st.caption(
                             f"De **{len(_dfp)}** pases, **{_fuera}** cayeron fuera de toda banda de "
                             f"eclosión (no había larvas naciendo). El calendario teórico pedía "
-                            f"**{_n_id}** pases para cubrir las dos generaciones enteras.")
+                            f"**{_n_id}** pases para cubrir las dos generaciones enteras. "
+                            "Un pase al **final** de una banda no es un pase perdido: protege lo que "
+                            "aún queda por nacer. Para el daño cuenta más que los pases vayan **seguidos** "
+                            "(sin huecos largos) que el punto exacto donde cae cada uno — eso lo mide el "
+                            "punto 7.")
 
     st.caption(
         "**Criterio de muestreo:** solo fruto cogido del **ÁRBOL**, mínimo **100 frutos por "
