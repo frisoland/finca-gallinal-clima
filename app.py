@@ -8673,6 +8673,12 @@ def instructions_tab():
             → en *🌊 Zona Río*, **🔄 Traer solo lo nuevo** → guardar en Supabase y **actualizar el
             snapshot**.
 
+            **Sale en rojo «Al abrir la app no se pudieron cargar…»**  
+            Alguna carga de Supabase falló al arrancar (actuaciones, carpocapsa, fenología o riego).
+            Mientras sale, esas pantallas funcionan como si el dato no existiera: por ejemplo, los
+            campos aparecen sin tratar. Pulsa **🔄 Reintentar la carga** o recarga la página, y **no
+            guardes nada en Supabase** hasta que desaparezca el aviso.
+
             **El histórico climático está vacío al abrir**  
             **🌦️ Sencrop y MeteoGalicia → ⬇️ Actualizar datos → ☁️ Guardar/cargar desde Supabase →
             Cargar histórico completo desde snapshot**.
