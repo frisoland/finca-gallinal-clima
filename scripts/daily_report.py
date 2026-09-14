@@ -483,6 +483,20 @@ def main():
         except Exception as _e:
             print(f"  (fallback carpocapsa falló: {_e})")
 
+    # Fenología: la carga automática del import ya la trae. Si falló, se reintenta: sin ella
+    # Decisiones usa las fechas de la literatura y la regla de la noche del moteado acaba
+    # siempre el 4 de junio, y el informe no cuadraría con la app.
+    _phen = ss.get("phenology_df", pd.DataFrame())
+    if _phen is None or _phen.empty:
+        try:
+            _p, _pmsg = app.load_phenology_from_supabase()
+            if _p is not None and not _p.empty:
+                ss["phenology_df"] = app.normalize_phenology_df(_p)
+            print(f"  (fenología reintentada: {_pmsg})")
+        except Exception as _e:
+            print(f"  (fallback fenología falló: {_e})")
+    print(f"  fenología en el informe: {len(ss.get('phenology_df', pd.DataFrame()))} filas")
+
     # ── Descarga automática de Sencrop: actualiza el histórico hasta hoy ──────
     # Descarga las horas nuevas desde la última registrada y guarda el snapshot
     # actualizado en Supabase, para que el informe use datos frescos.

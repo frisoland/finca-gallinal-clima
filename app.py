@@ -2170,10 +2170,12 @@ def add_risk_columns(df, hoja_humeda_threshold=30):
     else:
         out["moteado_hora_favorable"] = 0
 
+    # Hora favorable a oídio (Cornell/Illinois): 10-25 ºC, HR por encima del 70 % y sin
+    # agua sobre la hoja (en agua germina mal). Mismas cifras que _dec_oidio_value.
     out["oidio_hora_favorable"] = (
         (out["temp_media"] >= 10) &
         (out["temp_media"] <= 25) &
-        (out["hr_media"] >= 70) &
+        (out["hr_media"] > 70) &
         (out["hoja_humeda"] == 0)
     ).astype(int)
 
@@ -12645,7 +12647,9 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
             monilia_events = int(events_exp["Riesgo monilia evento"].astype(str).str.contains("Medio|Alto", case=False, na=False).sum())
             monilia_high = int(events_exp["Riesgo monilia evento"].astype(str).str.contains("Alto", case=False, na=False).sum())
 
-    oidium_hours = float(df.get("riesgo_oidio", pd.Series(False, index=df.index)).sum()) if "riesgo_oidio" in df.columns else 0.0
+    # Antes leía una columna «riesgo_oidio» que no se calculaba en ningún sitio: el oídio
+    # salía siempre con 0 h favorables y en «Bajo» (corregido el 14/09/2026).
+    oidium_hours = float(pd.to_numeric(df["oidio_hora_favorable"], errors="coerce").fillna(0).sum()) if "oidio_hora_favorable" in df.columns else 0.0
     evap = float(df.get("indice_evaporativo_suelo", pd.Series(np.nan, index=df.index)).mean()) if "indice_evaporativo_suelo" in df.columns else np.nan
 
     # PEOR EVENTO del periodo: ratio más alto alcanzado por un episodio de mojada,
