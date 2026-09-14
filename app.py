@@ -1122,30 +1122,75 @@ def wet_periods_hours(series, threshold=30):
     return periods
 
 
-# Tabla de Mills & Laplante (Cornell Ext. Bull. 711, rev. 1951), tal como la publica UC IPM
-# (Apple scab, Table 1): horas de hoja mojada seguidas para que las ascosporas infecten, por
-# temperatura media en ºF ENTEROS, que es como está publicada. Decisión del usuario
-# (14/09/2026): la app calcula como Mills, sin retocarla. Se usa la MISMA tabla toda la
-# campaña: la regla de Mills de «2/3 del tiempo para conidias» la refutaron MacHardy &
-# Gadoury (1989) y Stensvand et al. (1997), que recomiendan un único criterio.
-# Hasta el 14/09/2026 la app usaba una tabla propia más exigente en frío (p. ej. 20 h a
-# 8-10 ºC en vez de 14,5-17 h); copia en app_backup_20260914_pre_mills.py.
+# Tabla REVISADA de Mills (MacHardy & Gadoury 1989, Phytopathology 79:304-310): horas mínimas
+# de hoja mojada para infección de moteado por temperatura media en ºF ENTEROS. Es la
+# columna «NEWA Infection Hours» de la guía de fruticultura de Nueva Inglaterra (UMass,
+# «Apple scab infection periods»), la que usan hoy NEWA (Cornell) y UMass. Decisión del
+# usuario (14/09/2026): la app hace lo que usan los investigadores. Por debajo de 8 ºC
+# recoge los tiempos medidos por Stensvand et al. (1997).
+# Historial: hasta el 14/09/2026 (mañana) tabla propia; después, Mills original (UC IPM,
+# copia app_backup_20260914_pre_tabla_revisada.py); ahora, la revisada.
 MILLS_HORAS_POR_F = {
-    78: 13.0, 77: 11.0, 76: 9.5, **{f: 9.0 for f in range(61, 76)}, 60: 9.5,
-    59: 10.0, 58: 10.0, 57: 10.0, 56: 11.0, 55: 11.0, 54: 11.5, 53: 12.0, 52: 12.0,
-    51: 13.0, 50: 14.0, 49: 14.5, 48: 15.0, 47: 17.0, 46: 19.0, 45: 20.0, 44: 22.0,
-    43: 25.0, 42: 30.0,
+    78: 10.0, 77: 8.0, 76: 6.5, **{f: 6.0 for f in range(61, 76)}, 60: 6.5,
+    59: 7.0, 58: 7.0, 57: 7.0, 56: 8.0, 55: 8.0, 54: 8.5, 53: 9.0, 52: 9.0,
+    51: 10.0, 50: 11.0, 49: 11.5, 48: 12.0, 47: 14.0, 46: 14.0, 45: 14.0, 44: 15.0,
+    43: 18.0, 42: 20.0, 41: 21.0, 40: 21.0, 39: 28.0, 38: 29.0, 37: 30.0, 36: 33.0,
+    35: 35.0, 34: 40.0,
 }
-# Por debajo de 42 ºF (5,6 ºC) Mills no da horas: dice que hacen falta «más de 2 días».
-MILLS_HORAS_FRIO = 48.0
+# Por debajo de 34 ºF (1,1 ºC) la tabla no sigue: se usa su última fila.
+MILLS_HORAS_FRIO = 40.0
+
+# Regla de la noche (MacHardy & Gadoury 1989; UMass/NEWA): casi todas las ascosporas se
+# sueltan de día, así que si la lluvia EMPIEZA de noche el periodo se cuenta desde la mañana.
+# La guía da la noche de Nueva Inglaterra en horario de verano: 19:00-8:00 (el artículo:
+# 18:00-7:00 hora estándar en Durham, NH, a 43,1 ºN como la finca). En la finca el sol va
+# 1 h 40 min más tarde por reloj (mediodía solar 14:22 frente a 12:42), así que la noche es
+# 20:40-9:40; con datos por horas: lluvia que empieza de 21:00 a 9:59 → se cuenta desde las
+# 10:00. Ajuste al sol de aquí: decisión del usuario (14/09/2026).
+MOTEADO_NOCHE_DESDE_H = 21
+MOTEADO_NOCHE_HASTA_H = 10
+# La regla solo vale en la temporada de ascosporas: casi todas se han soltado 1-2 semanas
+# después de la caída de pétalos (Wilcox, Cornell). Se toma el fin de floración MÁS
+# TEMPRANO registrado ese año (prudente: la regla deja de aplicarse antes) + 14 días.
+MOTEADO_DIAS_TRAS_FLORACION = 14
+
+
+def fin_temporada_ascosporas_por_año(phenology_df=None):
+    """{año: fecha} en que deja de aplicarse la regla de la noche: fin de floración más
+    temprano registrado en Fenología + 14 días. Años sin registro: 21/05 (fecha de la
+    literatura que usa Decisiones) + 14 = 4 de junio, vía fin_temporada_ascosporas()."""
+    out = {}
+    try:
+        if phenology_df is None:
+            phenology_df = st.session_state.get("phenology_df", pd.DataFrame())
+        if phenology_df is None or phenology_df.empty:
+            return out
+        p = normalize_phenology_df(phenology_df)
+        p = p[p["Fase"].astype(str).str.strip().str.lower().str.startswith("flor")]
+        p = p.assign(_fin=pd.to_datetime(p["Fin"], errors="coerce")).dropna(subset=["_fin"])
+        for _y, g in p.groupby(p["_fin"].dt.year):
+            out[int(_y)] = (g["_fin"].min().normalize()
+                            + pd.Timedelta(days=MOTEADO_DIAS_TRAS_FLORACION)).strftime("%Y-%m-%d")
+    except Exception:
+        return {}
+    return out
+
+
+def fin_temporada_ascosporas(year, fines=None):
+    """Último día (Timestamp) de la temporada de ascosporas de ese año."""
+    _f = (dict(fines) if fines else {}).get(int(year))
+    if _f:
+        return pd.Timestamp(_f)
+    _md = next(f[4] for f in FENOLOGIA_MOTOR_FASES if f[0] == "floracion")
+    return pd.Timestamp(int(year), _md[0], _md[1]) + pd.Timedelta(days=MOTEADO_DIAS_TRAS_FLORACION)
 
 
 def scab_mills_threshold_hours(temp_c):
-    """Horas de hoja mojada que pide Mills para infección de moteado a esa temperatura media.
+    """Horas de hoja mojada que pide la tabla revisada de Mills (NEWA) a esa temperatura media.
 
-    - Por debajo de 5,6 ºC: 48 h («más de 2 días», Mills).
-    - Por encima de 25,6 ºC (78 ºF) la tabla no sigue: se usa su última fila (13 h). En el
-      histórico 2022-2026 no ha habido ningún episodio de hoja mojada tan cálido."""
+    - Por debajo de 1,1 ºC (34 ºF): 40 h, la última fila de la tabla.
+    - Por encima de 25,6 ºC (78 ºF): 10 h, la otra punta de la tabla. En el histórico
+      2022-2026 no ha habido ningún episodio de hoja mojada tan cálido."""
     if pd.isna(temp_c):
         return np.nan
     # Redondeo al ºF entero más cercano (x,5 hacia arriba; round() de Python iría al par).
@@ -1240,7 +1285,7 @@ def action_from_event_ratio(ratio, phases=None, rain_mm=0.0):
 
 
 def mills_tabla_celsius():
-    """Tabla de Mills pasada a ºC para enseñarla: [(desde ºC, hasta ºC, horas)]. Cada fila
+    """Tabla revisada de Mills (NEWA) pasada a ºC para enseñarla: [(desde ºC, hasta ºC, horas)]. Cada fila
     publicada es un ºF entero; la app redondea al ºF más cercano, así que la franja real de
     cada fila va de ºF − 0,5 a ºF + 0,5. None = sin límite."""
     def _c(f):
@@ -1263,16 +1308,16 @@ def mills_tabla_celsius():
 
 
 def texto_tabla_mills():
-    """La tabla de Mills en Markdown, en ºC."""
+    """La tabla revisada de Mills en Markdown, en ºC."""
     def _n(x):
         return f"{x:.1f}".replace(".", ",")
     def _h(h):
         return (f"{h:.1f}".replace(".", ",") if h % 1 else f"{h:.0f}") + " h"
-    lineas = ["| Temperatura media de las horas mojadas | Horas mojadas que pide Mills |", "|---|---|"]
+    lineas = ["| Temperatura media de las horas mojadas | Horas mojadas que hacen falta |", "|---|---|"]
     for desde, hasta, h in mills_tabla_celsius():
         if desde is None:
             franja = f"menos de {_n(hasta)} ºC"
-            h_txt = f"{_h(h)} (Mills: «más de 2 días»)"
+            h_txt = f"{_h(h)} (la tabla acaba en 34 ºF: se usa su última fila)"
         elif hasta is None:
             franja = f"{_n(desde)} ºC o más"
             h_txt = f"{_h(h)} (última fila de la tabla)"
@@ -1290,7 +1335,7 @@ def render_explicacion_infecciones(key=""):
     _mn = LEAF_WETNESS["min_minutes_to_start_event"]
     _sec = LEAF_WETNESS["dry_hours_to_close_event"]
     _sd = LEAF_WETNESS["max_unknown_hours_in_event"]
-    _ej_h, _ej_t = 13.0, 21.0
+    _ej_h, _ej_t = 9.0, 12.0
     _ej_m = scab_mills_threshold_hours(_ej_t)
     _ej_v = min(_ej_h / _ej_m * 100, 150)
     with st.expander("📖 Por qué hay infección: qué necesita cada enfermedad y cómo lo cuenta la app",
@@ -1304,7 +1349,7 @@ def render_explicacion_infecciones(key=""):
                 seguido. La app junta esas horas en un **episodio de hoja mojada**:
 
                 - **Hora mojada:** el sensor marcó la hoja mojada **{_mn} minutos o más** en esa hora.
-                  *Decisión de la app*: el sensor da minutos y Mills razona en horas mojadas o secas.
+                  *Decisión de la app*: el sensor da minutos y las tablas razonan en horas.
                 - **El episodio se cierra con {_sec} horas secas seguidas.** Ratos secos más cortos no lo
                   cortan. *Literatura* (UC IPM): se suman los ratos mojados hasta que hay al menos 6 h
                   secas seguidas.
@@ -1324,20 +1369,40 @@ def render_explicacion_infecciones(key=""):
             st.markdown(
                 f"""
                 **Qué necesita.** Las esporas del moteado infectan si la hoja está mojada **las horas
-                suficientes para la temperatura que hace**. Es la tabla de **Mills & Laplante**, la
-                que usan los avisadores de moteado. La app la usa **tal cual**:
+                suficientes para la temperatura que hace**. La app usa **tal cual** la tabla de Mills
+                **revisada por MacHardy & Gadoury (1989)**, la que usan hoy NEWA (Cornell) y UMass
+                (columna «NEWA Infection Hours»). Por debajo de 8 ºC recoge lo medido por Stensvand
+                et al. (1997):
                 """)
             st.markdown(texto_tabla_mills())
             st.markdown(
                 f"""
-                **Cómo sale el número.** Valor = horas mojadas del episodio ÷ horas que pide Mills × 100
-                (tope 150). Ejemplo: {_ej_h:.0f} h mojadas a {_ej_t:.0f} ºC → Mills pide {_ej_m:.0f} h →
-                {_ej_h:.0f} ÷ {_ej_m:.0f} = {_ej_v/100:.2f} → **{_ej_v:.0f}**.
+                **Qué horas cuentan** (método revisado; UMass y NEWA):
 
-                - **100 o más** = se cumplen las condiciones de Mills para infectar.
+                - **El periodo empieza con la lluvia.** Se cuentan las horas de hoja mojada desde la
+                  primera hora con lluvia registrada hasta que la hoja se seca. Las horas de rocío de
+                  antes no cuentan, y **un episodio solo de rocío no es periodo de infección**.
+                - **Regla de la noche**, solo en la **temporada de ascosporas**: si la lluvia empieza
+                  de noche, se cuenta **desde la mañana**, porque de noche casi no se sueltan esporas.
+                  La guía da la noche de Nueva Inglaterra (19:00–8:00 en horario de verano). *Decisión
+                  de la app:* se ajusta al sol de la finca, que va 1 h 40 min más tarde, así que es de
+                  noche la lluvia que empieza **entre las {MOTEADO_NOCHE_DESDE_H}:00 y las
+                  {MOTEADO_NOCHE_HASTA_H - 1}:59** y se cuenta **desde las {MOTEADO_NOCHE_HASTA_H}:00**.
+                - **Temporada de ascosporas:** hasta **{MOTEADO_DIAS_TRAS_FLORACION} días después del fin de
+                  floración más temprano** registrado en 🌱 Fenología (si no hay, 21 de mayo, así que
+                  hasta el 4 de junio). Casi todas las ascosporas se han soltado 1–2 semanas después
+                  de la caída de pétalos (Wilcox). Quedarse con la floración más temprana es *decisión
+                  de la app*, por prudencia. Después se cuenta desde la lluvia a cualquier hora.
+                - **La temperatura** es la media de esas horas.
+
+                **Cómo sale el número.** Valor = horas del periodo ÷ horas de la tabla × 100 (tope 150).
+                Ejemplo: {_ej_h:.0f} h mojadas a {_ej_t:.0f} ºC → la tabla pide {str(_ej_m).replace('.', ',')} h →
+                {_ej_h:.0f} ÷ {str(_ej_m).replace('.', ',')} = {_ej_v/100:.2f} → **{_ej_v:.0f}**.
+
+                - **100 o más** = se cumplen las horas de la tabla para infectar.
                 - **25 y 50** (franjas amarilla y naranja) son **avisos de la app** de que el episodio se
-                  acerca. Mills solo distingue «hay infección» o «no la hay».
-                - La **misma tabla** sirve toda la campaña. Mills decía que las esporas de verano
+                  acerca. La tabla solo distingue «hay infección» o «no la hay».
+                - La **misma tabla** sirve toda la campaña. Mills (1944) decía que las esporas de verano
                   (conidias) necesitan 2/3 del tiempo, pero estudios posteriores lo desmintieron
                   (MacHardy & Gadoury 1989; Stensvand et al. 1997).
 
@@ -1350,7 +1415,7 @@ def render_explicacion_infecciones(key=""):
                 - casi todas las esporas del invierno se han soltado **1 o 2 semanas** después de la
                   caída de pétalos.
 
-                Por eso un 146 en julio pesa mucho menos que en abril, y por eso Decisiones, de
+                Por eso un 150 en julio pesa mucho menos que en abril, y por eso Decisiones, de
                 cuajado en adelante, solo avisa si hubo una infección real.
                 """)
         with t_mon:
@@ -1392,32 +1457,40 @@ def render_explicacion_infecciones(key=""):
                   (Cornell); Illinois da 16–27 ºC para germinar;
                 - solo ataca **brotes y hojas en crecimiento**.
 
-                **Qué calcula la app.** No usa hoja mojada, sino la **media de cada día**:
+                **Qué calcula la app.** Con la **media de cada día** y las cifras de Cornell e Illinois:
 
-                - **100** con 17–25 ºC, humedad del 50 al 80 % y sin lluvia;
-                - el valor baja cuanto más se aleja de eso;
-                - **0** con más de 8 mm de lluvia, o por debajo de 10 ºC o por encima de 35 ºC.
+                - **humedad por encima del 70 %**; si no, 0;
+                - **100 entre 20 y 22 ºC**; **0 por debajo de 10 ºC o por encima de 25 ºC**.
 
-                La idea va en la línea de las fuentes, pero **la fórmula es de la app**: no hay un
-                modelo publicado igual.
+                Lo que **no dan las fuentes y es de la app**:
+
+                - cómo baja el valor entre 10 y 20 ºC y entre 22 y 25 ºC (en línea recta);
+                - cuánto frena la lluvia: baja con los milímetros y es 0 con más de 8 mm.
+
+                Hay un modelo publicado (Xu 1999, *Plant Pathology* 48:462-471), pero sus fórmulas no
+                están en abierto.
                 """)
         with t_fue:
             st.markdown(
                 """
-                - **Mills & Laplante 1951**, Cornell Ext. Bull. 711 — tabla publicada por UC IPM,
-                  *Apple scab*, Table 1. Regla de las 6 h secas: UC IPM.
-                - **MacHardy & Gadoury 1989**, *Phytopathology* 79:304-310.
+                - **MacHardy & Gadoury 1989**, *Phytopathology* 79:304-310 — revisión de la tabla de Mills,
+                  regla de la noche y periodos desde la lluvia.
+                - **UMass**, *New England Tree Fruit Management Guide*, «Apple scab infection periods» —
+                  columna «NEWA Infection Hours» (la tabla que usa la app).
+                - **Mills & Laplante 1951**, Cornell Ext. Bull. 711 — tabla original (UC IPM, *Apple scab*,
+                  Table 1). Regla de las 6 h secas: UC IPM.
                 - **Stensvand et al. 1997**, *Phytopathology* 87:1046-1053.
                 - **Wilcox**, *Apple scab*, Cornell / NYS IPM.
-                - **UMass**, *Apple scab infection periods*.
                 - **Xu & Robinson 2000**, *Plant Pathology* 49:201-206.
                 - **Xu, Guerin & Robinson 2001**, *Plant Pathology* 50:561-568.
                 - **Xu, Robinson, Berrie & Harris 2001**, *Plant Pathology* 50:569-578.
                 - **Holb & Scherm 2008**, *Phytopathology* 98:79-86.
                 - **Gell et al. 2008**, *European Journal of Plant Pathology* 121:487-498.
                 - **NIAB**, *Blossom wilt*.
-                - **Cornell**, *Powdery mildew*; **Illinois Extension**, *Powdery mildew of apple*
-                  (RPD 803).
+                - **Cornell**, *Tree Fruit Diseases: Powdery mildew*; **Illinois Extension**, *Powdery
+                  mildew of apple* (RPD 803).
+                - **Xu 1999**, *Plant Pathology* 48:462-471 — modelo de oídio (no aplicado: no está en
+                  abierto).
                 """)
 
 
@@ -1431,8 +1504,8 @@ def explain_sanitary_concepts_box():
             favorable a la infección, para decidir si observar, vigilar o tratar.
 
             **Enfermedades que vigila:**
-            - 🍄 **Moteado** (*Venturia inaequalis*) — tabla de Mills (horas de hoja mojada según
-            la temperatura).
+            - 🍄 **Moteado** (*Venturia inaequalis*) — tabla revisada de Mills (horas de hoja mojada
+            desde la lluvia, según la temperatura).
             - 🟤 **Monilia** (*Monilinia* spp.) — podredumbre de flor y fruto; en manzano entra por
             heridas.
             - ⚪ **Oídio** (*Podosphaera*) — no necesita agua: humedad alta en el aire, sin lluvia.
@@ -1445,7 +1518,7 @@ def explain_sanitary_concepts_box():
             Es un periodo continuado en el que la hoja permanece mojada. La app agrupa las horas húmedas seguidas y calcula su duración, temperatura media y lluvia asociada.
 
             **Ratio de moteado o monilia**  
-            No es un porcentaje directo. Es la relación entre las horas mojadas del evento y las horas que hacen falta para infectar a esa temperatura (en moteado, la tabla de Mills).
+            No es un porcentaje directo. Es la relación entre las horas mojadas del evento y las horas que hacen falta para infectar a esa temperatura (en moteado, la tabla revisada de Mills).
 
             **Cómo leer el ratio**  
             - **0,67**: el evento alcanzó aproximadamente el 67 % del umbral estimado.  
@@ -1457,7 +1530,7 @@ def explain_sanitary_concepts_box():
             """
         )
         st.caption(
-            "Base técnica: tabla de Mills & Laplante para moteado (temperatura y horas de hoja mojada); la explicación completa, con fuentes, está en «📖 Por qué hay infección»; "
+            "Base técnica: tabla revisada de Mills (MacHardy & Gadoury 1989, la de NEWA) para moteado; la explicación completa, con fuentes, está en «📖 Por qué hay infección»; "
             "y recomendaciones de manejo integrado que priorizan protección preventiva y revisión post-infección según cobertura, lluvia y fase sensible."
         )
 
@@ -1494,12 +1567,27 @@ def add_event_interpretation_columns(events_df, phases=None):
     return out
 
 
-@st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
 def detect_leaf_wetness_events(df,
                                min_minutes=LEAF_WETNESS["min_minutes_to_start_event"],
                                dry_hours_to_close=LEAF_WETNESS["dry_hours_to_close_event"],
                                max_unknown_hours=LEAF_WETNESS["max_unknown_hours_in_event"]):
+    """Episodios de hoja mojada con su valor de moteado y monilia. Envoltorio sin caché:
+    lee de Fenología cuándo acaba la temporada de ascosporas (regla de la noche) y se lo
+    pasa al cálculo cacheado, para que al editar la fenología se recalcule."""
+    return _detect_leaf_wetness_events_cached(
+        df, min_minutes, dry_hours_to_close, max_unknown_hours,
+        tuple(sorted(fin_temporada_ascosporas_por_año().items())))
+
+
+@st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
+def _detect_leaf_wetness_events_cached(df, min_minutes, dry_hours_to_close, max_unknown_hours,
+                                       fines_ascosporas=()):
     """Detecta eventos continuos de hoja mojada acumulando minutos por hora.
+
+    MOTEADO (método revisado de Mills, MacHardy & Gadoury 1989 / NEWA): dentro de cada
+    episodio, las horas se cuentan desde la primera hora CON LLUVIA (un episodio solo de
+    rocío no es periodo de infección) y, en la temporada de ascosporas, si esa lluvia empieza
+    de noche, desde las MOTEADO_NOCHE_HASTA_H. La MONILIA sigue usando el episodio entero.
 
     CACHEADA: es una función PURA (mismo histórico → mismos eventos) y la más cara de
     la app. Al cambiar el histórico, su hash cambia y se recalcula sola; mientras tanto,
@@ -1521,8 +1609,37 @@ def detect_leaf_wetness_events(df,
     data = data.dropna(subset=["fecha_hora"])
     # NaN = sin dato (se conserva: NO es lo mismo que 0 minutos mojada).
     data["wet_minutes"] = pd.to_numeric(data["humectacion_hoja"], errors="coerce").clip(lower=0, upper=60)
+    # Para buscar deprisa la primera lluvia de cada episodio.
+    _t_all = data["fecha_hora"].to_numpy()
+    _ll_all = (pd.to_numeric(data["lluvia_mm"], errors="coerce").fillna(0).to_numpy()
+               if "lluvia_mm" in data.columns else np.zeros(len(data)))
+    _fines = dict(fines_ascosporas or ())
 
     events = []
+
+    def moteado_del_episodio(wet_ev, start, end):
+        """(desde, horas, temperatura, nota) del periodo de moteado dentro del episodio."""
+        # La lluvia puede caer justo la hora antes de que el sensor llegue a 20 min.
+        i0 = np.searchsorted(_t_all, np.datetime64(start - pd.Timedelta(hours=1)), side="left")
+        i1 = np.searchsorted(_t_all, np.datetime64(end), side="right")
+        _idx = np.nonzero(_ll_all[i0:i1] > 0)[0]
+        if len(_idx) == 0:
+            return pd.NaT, 0.0, np.nan, "solo rocío, sin lluvia: no es periodo de infección"
+        lluvia_ini = pd.Timestamp(_t_all[i0 + _idx[0]])
+        desde, nota = lluvia_ini, ""
+        if lluvia_ini.normalize() <= fin_temporada_ascosporas(lluvia_ini.year, _fines):
+            _h = lluvia_ini.hour
+            if _h >= MOTEADO_NOCHE_DESDE_H or _h < MOTEADO_NOCHE_HASTA_H:
+                desde = lluvia_ini.normalize() + pd.Timedelta(hours=MOTEADO_NOCHE_HASTA_H)
+                if _h >= MOTEADO_NOCHE_DESDE_H:
+                    desde += pd.Timedelta(days=1)
+                nota = (f"lluvia de noche ({lluvia_ini:%d/%m %H}h): se cuenta desde las "
+                        f"{MOTEADO_NOCHE_HASTA_H}:00")
+        w = wet_ev[wet_ev["fecha_hora"] >= desde]
+        if w.empty:
+            return desde, 0.0, np.nan, (nota + "; la hoja se secó antes").lstrip("; ")
+        return (desde, float(w["wet_minutes"].sum()) / 60.0,
+                pd.to_numeric(w["temp_media"], errors="coerce").mean(), nota)
 
     def close_event(rows, unknown_hours=0):
         # `rows` puede ser un DataFrame (agrupación vectorizada) o una lista de dicts:
@@ -1546,8 +1663,12 @@ def detect_leaf_wetness_events(df,
         rain_total = pd.to_numeric(wet_ev["lluvia_mm"], errors="coerce").fillna(0).sum()
         max_wet_min = pd.to_numeric(wet_ev["wet_minutes"], errors="coerce").max()
 
-        scab_th = scab_mills_threshold_hours(temp_mean)
-        scab_ratio = wet_hours_eq / scab_th if scab_th and not pd.isna(scab_th) else np.nan
+        mot_desde, mot_horas, mot_temp, mot_nota = moteado_del_episodio(wet_ev, start, end)
+        if pd.isna(mot_desde) or mot_horas <= 0:
+            scab_th, scab_ratio = np.nan, 0.0
+        else:
+            scab_th = scab_mills_threshold_hours(mot_temp)
+            scab_ratio = mot_horas / scab_th if scab_th and not pd.isna(scab_th) else np.nan
         monilia_th = monilia_threshold_hours(temp_mean)
         monilia_ratio = wet_hours_eq / monilia_th if monilia_th and not pd.isna(monilia_th) else np.nan
 
@@ -1562,6 +1683,10 @@ def detect_leaf_wetness_events(df,
             "Lluvia evento mm": round(rain_total, 1),
             "Máx minutos mojados en una hora": round(max_wet_min, 0) if not pd.isna(max_wet_min) else np.nan,
             "Horas sin dato": unknown_hours,
+            "Moteado cuenta desde": mot_desde,
+            "Horas moteado": round(mot_horas, 2),
+            "Temperatura moteado ºC": round(mot_temp, 2) if not pd.isna(mot_temp) else np.nan,
+            "Nota moteado": mot_nota,
             "Umbral moteado h": round(scab_th, 1) if not pd.isna(scab_th) else np.nan,
             "Ratio moteado": round(scab_ratio, 2) if not pd.isna(scab_ratio) else np.nan,
             "Riesgo moteado evento": risk_from_ratio(scab_ratio),
@@ -8839,17 +8964,21 @@ def instructions_tab():
             f"""
             ### 🦠 Por qué hay infección
 
-            - **Moteado:** tabla de **Mills & Laplante**, tal cual. Hay infección cuando las horas
-              seguidas de hoja mojada llegan a lo que pide Mills para la temperatura media de esas
-              horas (por ejemplo, 9 h entre 16 y 24 ºC, 14 h a 10 ºC). **100 = se cumple Mills**;
-              25 y 50 son avisos de la app.
+            - **Moteado:** tabla de Mills **revisada por MacHardy & Gadoury** (la de NEWA y UMass), tal
+              cual. Hay infección cuando las horas de hoja mojada **desde que empieza a llover**
+              llegan a lo que pide la tabla para su temperatura media (por ejemplo, 6 h entre 16 y
+              24 ºC, 11 h a 10 ºC). Un episodio solo de rocío no cuenta. En la temporada de
+              ascosporas (hasta 14 días tras la floración más temprana), si la lluvia empieza de
+              noche (de 21:00 a 9:59) se cuenta desde las 10:00. **100 = se cumple la tabla**; 25 y 50
+              son avisos de la app.
             - **Hoja mojada:** una hora cuenta si el sensor marca **20 min o más**. El episodio se
               cierra con **6 h secas** seguidas. Las horas **sin dato** no mojan ni secan, y **24 h**
               seguidas sin dato lo cortan.
             - **Monilia:** en manzano **entra por heridas**, sobre todo de carpocapsa. La curva mide
               tiempo favorable con horas de la app, sin tabla publicada para manzano.
-            - **Oídio:** no necesita agua. Se calcula con la media del día (17–25 ºC, humedad del 50
-              al 80 %, sin lluvia) con una fórmula de la app.
+            - **Oídio:** no necesita agua. Con la media del día y las cifras de Cornell e Illinois:
+              humedad por encima del 70 %, 100 entre 20 y 22 ºC, 0 por debajo de 10 ºC o por encima
+              de 25 ºC. La lluvia lo frena.
             """
         )
         render_explicacion_infecciones("instrucciones")
@@ -12353,7 +12482,7 @@ def sanitary_event_thresholds_text(temp_mean):
         high = 1.25 * th
         return (
             f"- {name}: con {t:.1f} ºC hacen falta {th:.1f} h de hoja mojada en el mismo episodio "
-            f"({'tabla de Mills' if name == 'Moteado' else 'tabla de la app, sin fuente publicada en manzano'}). "
+            f"({'tabla revisada de Mills, contando desde la lluvia' if name == 'Moteado' else 'tabla de la app, sin fuente publicada en manzano'}). "
             f"Riesgo medio desde aprox. {medium:.1f} h (ratio ≥0,75), "
             f"medio-alto desde {medium_high:.1f} h (ratio ≥1,00) y alto desde {high:.1f} h (ratio ≥1,25)."
         )
@@ -22234,8 +22363,8 @@ def resultado_sanitario_tab():
                         if _val_dates else
                         " (Aún no has anotado la *Fecha valoración* en la tabla → sin línea verde.)")
             st.caption(
-                "Líneas horizontales de referencia: **100** = en moteado se cumplen las horas de "
-                "Mills; en monilia, tiempo muy favorable; en oídio, día muy favorable. 50 y 25 son "
+                "Líneas horizontales de referencia: **100** = en moteado se cumplen las horas de la "
+                "tabla revisada de Mills; en monilia, tiempo muy favorable; en oídio, día muy favorable. 50 y 25 son "
                 "avisos de la app. Líneas moradas verticales = tratamientos de ese campo/variedad. "
                 "El valor se pinta en **todos los días** que la hoja estuvo mojada en ese "
                 "episodio." + _val_txt
@@ -24817,21 +24946,35 @@ def gallinal_tab(history):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+# Oídio (Podosphaera leucotricha), cifras de la literatura (decisión del usuario, 14/09/2026):
+#   · Cornell (Tree Fruit Diseases, Powdery mildew): óptimo para germinar e infectar
+#     68-72 ºF (20-22 ºC); infecta con facilidad entre 50 y 77 ºF (10-25 ºC); germina con
+#     HR > 70 %; en agua germina mal y la lluvia reduce la enfermedad.
+#   · Illinois Extension (RPD 803): germina con HR > 70 %.
+# Lo que NO dan las fuentes y es de la app: pasar eso a un 0-100 (rampa lineal de 10 a
+# 20 ºC y de 22 a 25 ºC) y cuánto frena la lluvia (0 con más de 8 mm, como antes).
+# Hasta el 14/09/2026: óptimo 17-25 ºC, HR óptima 50-80 %, 0 a más de 35 ºC (sin fuente).
+OIDIO_T_MIN, OIDIO_T_OPT_DESDE, OIDIO_T_OPT_HASTA, OIDIO_T_MAX = 10.0, 20.0, 22.0, 25.0
+OIDIO_HR_MIN = 70.0
+
+
 def _dec_oidio_value(temp_c, hr, lluvia_mm):
-    """Valor numérico 0-100 para oídio (condiciones favorables secas y cálidas)."""
+    """Valor 0-100 de oídio con la media del día (cifras de Cornell e Illinois)."""
     if pd.isna(temp_c):
         return 0.0
     t = float(temp_c)
     h = float(hr) if pd.notna(hr) else 0.0
     ll = float(lluvia_mm) if pd.notna(lluvia_mm) else 0.0
-    if t < 10 or t > 35 or ll > 8:
+    if t < OIDIO_T_MIN or t > OIDIO_T_MAX or ll > 8 or h <= OIDIO_HR_MIN:
         return 0.0
-    t_factor = (1.0 if 17 <= t <= 25
-                else ((t-10)/7 if t < 17 else max(0.0,(35-t)/10)))
-    h_factor = (1.0 if 50 <= h <= 80
-                else (max(0.0,(h-30)/20) if h < 50 else max(0.0,1.0-(h-80)/20)))
-    rain_penalty = max(0.0, 1.0 - ll/8)
-    return min(t_factor * h_factor * rain_penalty * 100.0, 100.0)
+    if OIDIO_T_OPT_DESDE <= t <= OIDIO_T_OPT_HASTA:
+        t_factor = 1.0
+    elif t < OIDIO_T_OPT_DESDE:
+        t_factor = (t - OIDIO_T_MIN) / (OIDIO_T_OPT_DESDE - OIDIO_T_MIN)
+    else:
+        t_factor = (OIDIO_T_MAX - t) / (OIDIO_T_MAX - OIDIO_T_OPT_HASTA)
+    rain_penalty = max(0.0, 1.0 - ll / 8)
+    return min(t_factor * rain_penalty * 100.0, 100.0)
 
 
 def _dec_bar_color(value):
@@ -25368,7 +25511,7 @@ def build_treatment_narrative(days_since, rain_since, mills_events_since,
         reasons.append(
             f"Evento Mills previsto (índice {int(fc_mills_max)}): "
             f"temperatura + mojadura foliar superan umbral de infección de Venturia inaequalis "
-            f"(Mills & Laplante 1951). Aplicar ANTES de la lluvia para acción preventiva."
+            f"(tabla revisada de Mills, MacHardy & Gadoury 1989). Aplicar ANTES de la lluvia para acción preventiva."
         )
         tipo = "Preventivo urgente"
 
@@ -26957,6 +27100,17 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
             _multi = len(_dias) > 1
             _temp_ev = pd.to_numeric(ev.get("Temperatura media evento ºC"), errors="coerce")
             _sd_ev = pd.to_numeric(ev.get("Horas sin dato", 0), errors="coerce")
+            # Moteado: su propio periodo (desde la lluvia; regla de la noche).
+            _m_desde = pd.to_datetime(ev.get("Moteado cuenta desde"), errors="coerce")
+            _m_nota = str(ev.get("Nota moteado") or "")
+            if pd.notna(_m_desde) and float(pd.to_numeric(ev.get("Horas moteado"), errors="coerce") or 0) > 0:
+                _txt_m = _evt_txt(_m_desde, fin, pd.to_numeric(ev.get("Horas moteado"), errors="coerce"),
+                                  pd.to_numeric(ev.get("Temperatura moteado ºC"), errors="coerce"), _sd_ev)
+                _txt_m = _txt_m.replace("Episodio de hoja mojada:", "Periodo de moteado:")
+            else:
+                _txt_m = ""
+            if _m_nota:
+                _txt_m += f"<br>ℹ️ Moteado: {_m_nota}"
             for d in _dias:
                 _txt = _evt_txt(ini, fin, wet_eq, _temp_ev, _sd_ev)
                 if _multi and _txt:
@@ -26965,7 +27119,7 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
                     _v = float(rm) * 100.0
                     if _v >= mills_by_day.get(d, -1.0):   # quedarse con el evento del valor máx.
                         mills_by_day[d] = _v
-                        mills_evt_by_day[d] = _txt
+                        mills_evt_by_day[d] = _txt_m + (" (episodio de varios días)" if _multi and _txt_m else "")
                 if pd.notna(ro):
                     _v = float(ro) * 100.0
                     if _v >= monilia_by_day.get(d, -1.0):
@@ -32365,10 +32519,10 @@ def render_decisiones_panel():
                 f"tocan — ahí la mojadura la mide el sensor. Factor revisable en "
                 f"{NOMBRE_ITEM_PREVISION} → *🎯 Fiabilidad y hoja mojada* → *¿Y si corregimos el número...?*")
         st.caption(
-            "ℹ️ **Valor = horas de hoja mojada del episodio ÷ horas que pide la tabla de Mills para "
-            "esa temperatura × 100.** Pasa el ratón por un pico para ver el episodio (inicio → fin, "
-            "horas mojadas y temperatura). La tabla, las reglas y las fuentes están en "
-            "**📖 Por qué hay infección**, encima de las gráficas.")
+            "ℹ️ **Valor = horas de hoja mojada desde que empieza a llover ÷ horas que pide la tabla "
+            "revisada de Mills para esa temperatura × 100.** El rocío solo no cuenta. Pasa el ratón "
+            "por un pico para ver el periodo (desde → hasta, horas y temperatura). La tabla, las "
+            "reglas y las fuentes están en **📖 Por qué hay infección**, encima de las gráficas.")
         fig_m = _dec_disease_chart(risk_enf, "Mills_valor", "Moteado", today, treats_fungi, chart_h)
         st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
@@ -32389,9 +32543,9 @@ def render_decisiones_panel():
     # ═══════════════════════════════════════════════════════════════════════════
     if _ver_oidio:
         st.markdown("#### 🌫️ Oídio · *Podosphaera leucotricha*")
-        st.caption("No necesita agua: con la media del día, 100 = 17–25 ºC, humedad del 50 al 80 % y sin "
-                   "lluvia; más de 8 mm de lluvia lo anulan. Fórmula de la app, en la línea de la "
-                   "literatura (📖 Por qué hay infección).")
+        st.caption("No necesita agua. Con la media del día (Cornell e Illinois): humedad por encima del "
+                   "70 %, 100 entre 20 y 22 ºC, 0 por debajo de 10 ºC o por encima de 25 ºC; más de "
+                   "8 mm de lluvia lo anulan (📖 Por qué hay infección).")
         fig_o = _dec_disease_chart(risk_enf, "Oidio_valor", "Oídio", today, treats_fungi, chart_h, scale_max=105)
         st.plotly_chart(fig_o, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 
@@ -32421,7 +32575,7 @@ def render_decisiones_panel():
 | 🟢 Verde | 0–25 | Sin riesgo. Condiciones no favorables para la infección | Nada, estás cubierto |
 | 🟡 Amarillo | 25–50 | Riesgo ligero. Condiciones en el límite *(aviso de la app)* | Vigilar, evaluar si hay tratamiento vigente |
 | 🟠 Naranja | 50–100 | Riesgo moderado. Umbral de infección próximo *(aviso de la app)* | Considerar tratamiento preventivo |
-| 🔴 Rojo | >100 | **Período de infección.** En moteado, se cumplen las horas de la tabla de Mills | **Tratar antes de que llegue (preventivo) o cuanto antes (curativo)** |
+| 🔴 Rojo | >100 | **Período de infección.** En moteado, se cumplen las horas de la tabla revisada de Mills | **Tratar antes de que llegue (preventivo) o cuanto antes (curativo)** |
 
 *En monilia, el rojo significa tiempo muy favorable: en manzano hace falta además una herida.*
 
