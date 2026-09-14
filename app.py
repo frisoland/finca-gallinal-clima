@@ -16102,7 +16102,9 @@ def render_top_banner():
     """Cabecera elegante tipo banner con el logo de la finca. En la vista móvil no se pinta:
     ocupaba la primera pantalla entera del teléfono sin aportar nada allí."""
     if IS_MOBILE:
-        _render_frescura_datos(compacto=True)
+        # Al día: la línea va junto al botón PC, en la navegación. Atrasados: aviso completo.
+        if texto_frescura_compacto() is None:
+            _render_frescura_datos()
         return
     logo_path = find_finca_logo_path()
     logo_html = ""
@@ -16211,6 +16213,27 @@ def render_top_banner():
     )
 
     _render_frescura_datos()
+
+
+def texto_frescura_compacto():
+    """«🌦️ Datos hasta dd/mm hh:mm · 🌊 Río dd/mm hh:mm» si los datos están al día (≤36 h);
+    None si están atrasados o no hay datos (entonces se enseña el aviso completo)."""
+    try:
+        _hist = st.session_state.get("history_df", pd.DataFrame())
+        if _hist is None or _hist.empty or "fecha_hora" not in _hist.columns:
+            return None
+        _last = pd.to_datetime(_hist["fecha_hora"], errors="coerce").max()
+        if pd.isna(_last) or (pd.Timestamp.now() - _last).total_seconds() / 3600.0 > 36:
+            return None
+        _txt = f"🌦️ Datos **{_last:%d/%m %H:%M}**"
+        _rio_f = st.session_state.get("history_rio_df", pd.DataFrame())
+        if isinstance(_rio_f, pd.DataFrame) and not _rio_f.empty and "fecha_hora" in _rio_f.columns:
+            _last_rio = pd.to_datetime(_rio_f["fecha_hora"], errors="coerce").max()
+            if pd.notna(_last_rio):
+                _txt += f" · 🌊 Río **{_last_rio:%d/%m %H:%M}**"
+        return _txt
+    except Exception:
+        return None
 
 
 def _render_frescura_datos(compacto=False):
@@ -32880,6 +32903,18 @@ if not _HEADLESS:
     .st-key-fg_mob_nav button p{font-size:0.72rem!important;line-height:1.15!important;
         white-space:normal!important;word-break:break-word;}
     .st-key-fg_mob_nav .fg-mob-title{font-weight:700;font-size:1rem;margin:6px 0 0 0;}
+    .st-key-fg_mob_nav [data-testid="stCaptionContainer"]{margin-top:10px;}
+    .st-key-fg_mob_nav .st-key-mob_to_full button{min-height:36px!important;}
+    /* Menos hueco arriba del todo (solo en la vista móvil):
+       · la barra superior de Streamlit (60 px en blanco);
+       · el margen superior del contenido;
+       · los elementos invisibles (hojas de estilo y scripts de alto 0), que ocupaban cada
+         uno el hueco entre elementos (16 px). Se sacan del flujo sin desactivarlos. */
+    header[data-testid="stHeader"]{display:none!important;}
+    [data-testid="stMainBlockContainer"], .block-container{padding-top:0.5rem!important;}
+    div[data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] > style:only-child),
+    div[data-testid="stElementContainer"]:has(iframe[height="0"]){
+        position:absolute!important;width:0!important;height:0!important;overflow:hidden!important;}
     </style>
     """
 
@@ -32895,11 +32930,15 @@ if not _HEADLESS:
     def _render_mobile_nav_botones() -> None:
         cur = st.session_state.get("nav_page", "hoy")
         # Cabecera compacta + botón para saltar a la versión completa de PC.
-        h1, h2 = st.columns([3, 1])
+        h1, h2 = st.columns([5, 1])
         with h1:
-            st.markdown("<p class='fg-mob-title'>🌿 Finca Gallinal</p>", unsafe_allow_html=True)
+            _fresco = texto_frescura_compacto()
+            if _fresco:
+                st.caption(_fresco)
+            else:
+                st.markdown("<p class='fg-mob-title'>🌿 Finca Gallinal</p>", unsafe_allow_html=True)
         with h2:
-            if st.button("💻 PC", key="mob_to_full", use_container_width=True,
+            if st.button("💻", key="mob_to_full", use_container_width=True,
                          help="Ver la versión completa de escritorio"):
                 st.session_state["force_mobile"] = False
                 _set_query_param("movil", "0")  # 0 = escritorio explícito (evita el rebote del auto-redirect)
