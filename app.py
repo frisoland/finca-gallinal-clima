@@ -32905,6 +32905,10 @@ if not _HEADLESS:
     .st-key-fg_mob_nav .fg-mob-title{font-weight:700;font-size:1rem;margin:6px 0 0 0;}
     .st-key-fg_mob_nav [data-testid="stCaptionContainer"]{margin-top:10px;}
     .st-key-fg_mob_nav .st-key-mob_to_full button{min-height:36px!important;}
+    /* Primera fila (datos + 💻): la línea de datos se lleva casi todo el ancho. */
+    .st-key-fg_mob_nav [data-testid="stHorizontalBlock"]:first-of-type > [data-testid="stColumn"]:first-child,
+    .st-key-fg_mob_nav [data-testid="stHorizontalBlock"]:first-of-type > [data-testid="column"]:first-child{
+        flex:6 1 0!important;}
     /* Menos hueco arriba del todo (solo en la vista móvil):
        · la barra superior de Streamlit (60 px en blanco);
        · el margen superior del contenido;
