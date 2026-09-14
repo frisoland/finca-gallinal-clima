@@ -52,6 +52,11 @@ def _set_query_param(name: str, value):
     except Exception:
         pass
 
+# Claves de todas las pantallas (las del router del final). Sirven para aceptar ?p=… .
+PAGINAS_APP = ("hoy", "dashboard", "sencrop", "analisis", "comparador", "frio", "fenologia",
+               "sanidad", "decisiones", "carpocapsa", "resultado", "riego", "campos",
+               "agroptima", "produccion", "gallinal", "informe", "instrucciones", "configuracion")
+
 # Toggle manual: si el usuario pulsó "versión completa/móvil", manda sobre el ancho.
 if "force_mobile" in st.session_state:
     IS_MOBILE = bool(st.session_state["force_mobile"])
@@ -8930,10 +8935,12 @@ def instructions_tab():
 
             ### Otros
 
-            - **⚙️ Configuración** — tipo de suelo, ajustes avanzados de hoja mojada, copia de
+            - **⚙️ Configuración** — tipo de suelo, la regla de hora de hoja mojada, copia de
               seguridad completa en ZIP y catálogo de productos fitosanitarios.
             - **📱 Vista móvil** — botón al final de la barra lateral (o `?movil=1` en la
-              dirección): accesos rápidos a Hoy, Carpocapsa, Decisiones, Clima y Producción.
+              dirección): accesos rápidos a Decisiones, Carpocapsa, Producción, Análisis
+              Gallinal y Sanidad; el resto en «Más secciones». La pantalla queda apuntada en la
+              dirección (`?p=…`): si el móvil corta la conexión, al volver sigues en la misma.
 
             ### Superficies
 
@@ -32624,8 +32631,13 @@ Aparece en todos los gráficos como referencia. La lluvia genera hoja mojada (ri
 # ── Render de la interfaz: solo cuando NO estamos en modo headless ───────────
 if not _HEADLESS:
     # ── Navegación lateral ────────────────────────────────────────────────────────
+    # La pantalla va TAMBIÉN en la dirección (?p=…). En el móvil la conexión con Streamlit
+    # se corta al cambiar de app o bloquear la pantalla; al volver se abre una sesión nueva
+    # y antes se caía siempre en el Panel de hoy («me expulsa»). Ahora la sesión nueva lee
+    # la pantalla de la dirección y vuelve a donde estabas.
     if "nav_page" not in st.session_state:
-        st.session_state.nav_page = "hoy"
+        _p_url = str(_query_param("p") or "").strip()
+        st.session_state.nav_page = _p_url if _p_url in PAGINAS_APP else "hoy"
 
     # CSS: estilo del sidebar
     st.markdown("""
@@ -32819,22 +32831,23 @@ if not _HEADLESS:
             )
 
     # ── Navegación de la VISTA MÓVIL (simplificada, botones reales) ───────────
-    # 5 accesos principales pensados para el campo + un desplegable "Más" con el
-    # resto. Usa el mismo st.session_state.nav_page y el mismo router que la
-    # versión de escritorio: no se duplica lógica, solo cambia la navegación.
+    # 5 accesos principales + un desplegable "Más" con el resto. Son las pantallas que el
+    # usuario mira en el campo (14/09/2026). Usa el mismo st.session_state.nav_page y el
+    # mismo router que la versión de escritorio: no se duplica lógica.
     _MOBILE_PRIMARY = [
-        ("🏠", "Hoy",        "hoy"),
-        ("🐛", "Carpo",      "carpocapsa"),
         ("🎯", "Decis.",     "decisiones"),
-        ("🌦️", "Clima",      "dashboard"),
+        ("🐛", "Carpo",      "carpocapsa"),
         ("🍎", "Prod.",      "produccion"),
+        ("🍏", "Gallinal",   "gallinal"),
+        ("🍄", "Sanidad",    "sanidad"),
     ]
     _MOBILE_MORE = [
-        ("🍄 Sanidad", "sanidad"), ("🩺 Resultado sanitario", "resultado"),
+        ("🏠 Panel de hoy", "hoy"), ("🌦️ Clima (Dashboard)", "dashboard"),
+        ("🩺 Resultado sanitario", "resultado"),
         ("❄️ Frío", "frio"), ("🌱 Fenología", "fenologia"),
         ("🔎 Análisis", "analisis"), ("📈 Comparador", "comparador"), ("💧 Riego", "riego"),
         ("🌳 Campos", "campos"), ("🧾 Agroptima", "agroptima"),
-        ("🍏 Análisis Gallinal", "gallinal"), ("📝 Informe semanal", "informe"),
+        ("📝 Informe semanal", "informe"), (NOMBRE_ITEM_PREVISION, "sencrop"),
         ("📘 Instrucciones", "instrucciones"), ("⚙️ Configuración", "configuracion"),
     ]
 
@@ -32959,6 +32972,9 @@ if not _HEADLESS:
 
     # ── Contenido principal según página seleccionada ─────────────────────────────
     _page = st.session_state.get("nav_page", "hoy")
+    # Apuntar la pantalla en la dirección (solo si cambió, para no reescribirla en cada toque).
+    if str(_query_param("p") or "") != _page:
+        _set_query_param("p", _page)
     _render_page_header(_page)
 
     # ── Aviso de datos "viejos": si el sensor lleva sin datos nuevos más de lo normal
