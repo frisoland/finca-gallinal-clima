@@ -795,9 +795,15 @@ POLLINATION = {
 #     hora binaria mojada/seca que asume el modelo de Mills.
 #   - dry_hours_to_close_event: horas SECAS seguidas para dar por cerrado el evento.
 #     6 h de sequedad continua = criterio estándar de MacHardy & Gadoury (1989)/NEWA.
+#   - max_unknown_hours_in_event: horas SEGUIDAS sin dato del sensor que cortan el evento.
+#     Una hora sin dato no cuenta ni como mojada ni como seca (antes contaba como SECA y
+#     partía episodios reales: primavera de 2025, noches de lluvia sin dato). Un día
+#     entero sin sensor sí lo corta, para no juntar lluvias de días distintos (decisión del
+#     usuario, 14/09/2026).
 LEAF_WETNESS = {
     "min_minutes_to_start_event": 20,
     "dry_hours_to_close_event": 6,
+    "max_unknown_hours_in_event": 24,
 }
 
 def parse_datetime_column(df):
@@ -1116,30 +1122,39 @@ def wet_periods_hours(series, threshold=30):
     return periods
 
 
+# Tabla de Mills & Laplante (Cornell Ext. Bull. 711, rev. 1951), tal como la publica UC IPM
+# (Apple scab, Table 1): horas de hoja mojada seguidas para que las ascosporas infecten, por
+# temperatura media en ºF ENTEROS, que es como está publicada. Decisión del usuario
+# (14/09/2026): la app calcula como Mills, sin retocarla. Se usa la MISMA tabla toda la
+# campaña: la regla de Mills de «2/3 del tiempo para conidias» la refutaron MacHardy &
+# Gadoury (1989) y Stensvand et al. (1997), que recomiendan un único criterio.
+# Hasta el 14/09/2026 la app usaba una tabla propia más exigente en frío (p. ej. 20 h a
+# 8-10 ºC en vez de 14,5-17 h); copia en app_backup_20260914_pre_mills.py.
+MILLS_HORAS_POR_F = {
+    78: 13.0, 77: 11.0, 76: 9.5, **{f: 9.0 for f in range(61, 76)}, 60: 9.5,
+    59: 10.0, 58: 10.0, 57: 10.0, 56: 11.0, 55: 11.0, 54: 11.5, 53: 12.0, 52: 12.0,
+    51: 13.0, 50: 14.0, 49: 14.5, 48: 15.0, 47: 17.0, 46: 19.0, 45: 20.0, 44: 22.0,
+    43: 25.0, 42: 30.0,
+}
+# Por debajo de 42 ºF (5,6 ºC) Mills no da horas: dice que hacen falta «más de 2 días».
+MILLS_HORAS_FRIO = 48.0
+
+
 def scab_mills_threshold_hours(temp_c):
-    """Umbral orientativo de horas húmedas equivalentes para moteado tipo Mills/LaPlante."""
+    """Horas de hoja mojada que pide Mills para infección de moteado a esa temperatura media.
+
+    - Por debajo de 5,6 ºC: 48 h («más de 2 días», Mills).
+    - Por encima de 25,6 ºC (78 ºF) la tabla no sigue: se usa su última fila (13 h). En el
+      histórico 2022-2026 no ha habido ningún episodio de hoja mojada tan cálido."""
     if pd.isna(temp_c):
         return np.nan
-    t = float(temp_c)
-    if t < 6:
-        return 48.0
-    if t < 8:
-        return 30.0
-    if t < 10:
-        return 20.0
-    if t < 11:
-        return 18.0
-    if t < 13:
-        return 14.0
-    if t < 14:
-        return 12.0
-    if t < 16:
-        return 11.0
-    if t <= 24:
-        return 9.0
-    if t <= 26:
-        return 12.0
-    return 24.0
+    # Redondeo al ºF entero más cercano (x,5 hacia arriba; round() de Python iría al par).
+    f = int(np.floor(float(temp_c) * 9.0 / 5.0 + 32.0 + 0.5))
+    if f in MILLS_HORAS_POR_F:
+        return MILLS_HORAS_POR_F[f]
+    if f < min(MILLS_HORAS_POR_F):
+        return MILLS_HORAS_FRIO
+    return MILLS_HORAS_POR_F[max(MILLS_HORAS_POR_F)]
 
 
 def monilia_threshold_hours(temp_c):
@@ -1299,7 +1314,8 @@ def add_event_interpretation_columns(events_df, phases=None):
 @st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
 def detect_leaf_wetness_events(df,
                                min_minutes=LEAF_WETNESS["min_minutes_to_start_event"],
-                               dry_hours_to_close=LEAF_WETNESS["dry_hours_to_close_event"]):
+                               dry_hours_to_close=LEAF_WETNESS["dry_hours_to_close_event"],
+                               max_unknown_hours=LEAF_WETNESS["max_unknown_hours_in_event"]):
     """Detecta eventos continuos de hoja mojada acumulando minutos por hora.
 
     CACHEADA: es una función PURA (mismo histórico → mismos eventos) y la más cara de
@@ -1309,16 +1325,23 @@ def detect_leaf_wetness_events(df,
     Una hora cuenta como MOJADA si tiene `min_minutes` (por defecto 20, "opción B") de
     humectación; por debajo se considera SECA. El evento se cierra tras
     `dry_hours_to_close` horas secas seguidas (6 = criterio MacHardy & Gadoury/NEWA de
-    6 h de sequedad continua). Umbrales centralizados en el dict LEAF_WETNESS."""
+    6 h de sequedad continua). Umbrales centralizados en el dict LEAF_WETNESS.
+
+    Horas SIN DATO del sensor (vacías, o que ni siquiera tienen fila): no mojan ni secan;
+    `max_unknown_hours` seguidas cortan el evento. «Fin» es la última hora MOJADA, y
+    «Horas sin dato» cuenta las que faltaron entre el inicio y ese fin."""
     if df.empty or "humectacion_hoja" not in df.columns:
         return pd.DataFrame()
 
     data = df.copy().sort_values("fecha_hora")
-    data["wet_minutes"] = pd.to_numeric(data["humectacion_hoja"], errors="coerce").fillna(0).clip(lower=0, upper=60)
+    data["fecha_hora"] = pd.to_datetime(data["fecha_hora"], errors="coerce")
+    data = data.dropna(subset=["fecha_hora"])
+    # NaN = sin dato (se conserva: NO es lo mismo que 0 minutos mojada).
+    data["wet_minutes"] = pd.to_numeric(data["humectacion_hoja"], errors="coerce").clip(lower=0, upper=60)
 
     events = []
 
-    def close_event(rows):
+    def close_event(rows, unknown_hours=0):
         # `rows` puede ser un DataFrame (agrupación vectorizada) o una lista de dicts:
         # se comprueba con len() porque `not df` es ambiguo en pandas.
         if rows is None or len(rows) == 0:
@@ -1328,8 +1351,10 @@ def detect_leaf_wetness_events(df,
         if wet_ev.empty:
             return None
 
-        start = ev["fecha_hora"].min()
-        end = ev["fecha_hora"].max()
+        start = wet_ev["fecha_hora"].min()
+        # Fin = última hora MOJADA. Las horas secas (o sin dato) que se esperan antes de
+        # cerrar no son mojadura: antes el fin salía hasta 5 h después de secarse la hoja.
+        end = wet_ev["fecha_hora"].max()
         wet_minutes_total = float(wet_ev["wet_minutes"].sum())
         wet_hours_eq = wet_minutes_total / 60.0
         clock_hours = int(((end - start).total_seconds() / 3600) + 1) if pd.notna(start) and pd.notna(end) else len(ev)
@@ -1353,6 +1378,7 @@ def detect_leaf_wetness_events(df,
             "HR media evento %": round(hr_mean, 1) if not pd.isna(hr_mean) else np.nan,
             "Lluvia evento mm": round(rain_total, 1),
             "Máx minutos mojados en una hora": round(max_wet_min, 0) if not pd.isna(max_wet_min) else np.nan,
+            "Horas sin dato": unknown_hours,
             "Umbral moteado h": round(scab_th, 1) if not pd.isna(scab_th) else np.nan,
             "Ratio moteado": round(scab_ratio, 2) if not pd.isna(scab_ratio) else np.nan,
             "Riesgo moteado evento": risk_from_ratio(scab_ratio),
@@ -1361,35 +1387,68 @@ def detect_leaf_wetness_events(df,
             "Riesgo monilia evento": risk_from_ratio(monilia_ratio),
         }
 
-    # ── Agrupación de filas en eventos (VECTORIZADA) ──────────────────────────
-    # Sustituye al antiguo bucle `for _, row in data.iterrows()` (que costaba ~5 s
-    # sobre el histórico completo) por operaciones de numpy: ~500x más rápido y con
-    # resultado IDÉNTICO (validado en 930 casos, incluidos los límites de 5/6/7 h
-    # secas). La lógica es la misma:
-    #   · una hora MOJADA (≥ min_minutes) siempre pertenece al evento y reinicia el
-    #     contador de secas;
+    # ── Agrupación de filas en eventos ────────────────────────────────────────
+    # Un bucle sobre listas (no iterrows): ~50 ms con el histórico entero. Reglas:
+    #   · una hora MOJADA (≥ min_minutes) siempre pertenece al evento (lo abre si no lo
+    #     había) y reinicia los contadores;
     #   · una hora SECA pertenece al evento solo si hay evento abierto y aún no se
     #     acumulan `dry_hours_to_close` secas seguidas (al llegar a ese nº, el evento
     #     se cierra SIN incluir esa hora);
-    #   · las secas posteriores, con el evento ya cerrado, se ignoran.
-    _wet = (data["wet_minutes"].to_numpy() >= min_minutes)
-    _n = len(_wet)
+    #   · una hora SIN DATO (vacía o sin fila) no suma secas: el evento sigue abierto
+    #     salvo que se acumulen `max_unknown_hours` seguidas sin dato;
+    #   · con el evento cerrado, lo que no sea hora mojada se ignora.
+    # Con datos completos da exactamente lo mismo que la versión vectorizada anterior.
+    _n = len(data)
     if _n == 0:
         return pd.DataFrame()
-    _idx = np.arange(_n)
-    # Índice de la última hora mojada hasta cada posición (-1 = aún ninguna).
-    _last_wet = np.maximum.accumulate(np.where(_wet, _idx, -1))
-    _dry_run = _idx - _last_wet          # nº de horas secas seguidas desde la última mojada
-    _in_event = _wet | ((_last_wet >= 0) & (_dry_run < dry_hours_to_close))
-    # Numerar eventos: cada transición fuera→dentro abre uno nuevo.
-    _starts = _in_event & ~np.concatenate(([False], _in_event[:-1]))
-    _ev_id = np.where(_in_event, np.cumsum(_starts), 0)
+    _wm = data["wet_minutes"].tolist()
+    # Horas que ni siquiera tienen fila entre cada fila y la anterior = sin dato.
+    _huecos = np.concatenate(([0], np.rint(np.diff(data["fecha_hora"].to_numpy()).astype("timedelta64[s]").astype(np.int64) / 3600.0) - 1)).astype(int).tolist()
+    _ev_id = [0] * _n
+    # Horas sin dato de cada evento, contadas solo hasta su última hora mojada: las del
+    # final (tras secarse) no son parte del periodo mojado.
+    _sin_dato_evento = {}
+    _abierto, _secas, _sin_dato, _pendientes, _id = False, 0, 0, 0, 0
+    for i in range(_n):
+        if _abierto:
+            _hueco = _huecos[i]
+            if _hueco > 0:
+                _sin_dato += _hueco
+                _pendientes += _hueco
+                if _sin_dato >= max_unknown_hours:
+                    _abierto = False
+        v = _wm[i]
+        if v != v:                      # NaN: hora sin dato
+            if _abierto:
+                _sin_dato += 1
+                _pendientes += 1
+                if _sin_dato >= max_unknown_hours:
+                    _abierto = False
+                else:
+                    _ev_id[i] = _id
+        elif v >= min_minutes:          # hora mojada
+            if not _abierto:
+                _id += 1
+                _abierto = True
+                _pendientes = 0
+                _sin_dato_evento[_id] = 0
+            _sin_dato_evento[_id] += _pendientes
+            _secas, _sin_dato, _pendientes = 0, 0, 0
+            _ev_id[i] = _id
+        else:                           # hora seca medida
+            _sin_dato = 0
+            if _abierto:
+                _secas += 1
+                if _secas >= dry_hours_to_close:
+                    _abierto = False
+                else:
+                    _ev_id[i] = _id
 
-    if _ev_id.max() > 0:
-        # close_event() se mantiene INTACTA: hace pd.DataFrame(rows), que acepta
-        # igual un DataFrame que la antigua lista de dicts.
+    _ev_id = np.asarray(_ev_id)
+    _in_event = _ev_id > 0
+    if _in_event.any():
         for _gid, _sub in data[_in_event].groupby(_ev_id[_in_event], sort=True):
-            event = close_event(_sub)
+            event = close_event(_sub, _sin_dato_evento.get(int(_gid), 0))
             if event is not None:
                 events.append(event)
 
@@ -25669,7 +25728,10 @@ def current_open_wet_event(history_df, lookback_days=5, gap_hours=6):
         last = ev.sort_values("Fin").iloc[-1]
         if pd.isna(last.get("Fin")):
             return 0.0, 0.0, False
-        if (_last_ts - pd.Timestamp(last["Fin"])) <= pd.Timedelta(hours=gap_hours):
+        # «Fin» es la última hora mojada; antes incluía las horas secas de espera
+        # (hasta dry_hours_to_close − 1). Se suman al margen para que avise igual que antes.
+        _margen = gap_hours + LEAF_WETNESS["dry_hours_to_close_event"] - 1
+        if (_last_ts - pd.Timestamp(last["Fin"])) <= pd.Timedelta(hours=_margen):
             _m = min(float(pd.to_numeric(last.get("Ratio moteado"), errors="coerce") or 0) * 100, 150.0)
             _o = min(float(pd.to_numeric(last.get("Ratio monilia"), errors="coerce") or 0) * 100, 100.0)
             return round(_m), round(_o), True
