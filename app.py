@@ -16099,7 +16099,11 @@ def find_finca_logo_path():
 
 
 def render_top_banner():
-    """Cabecera elegante tipo banner con el logo de la finca."""
+    """Cabecera elegante tipo banner con el logo de la finca. En la vista móvil no se pinta:
+    ocupaba la primera pantalla entera del teléfono sin aportar nada allí."""
+    if IS_MOBILE:
+        _render_frescura_datos(compacto=True)
+        return
     logo_path = find_finca_logo_path()
     logo_html = ""
     if logo_path is not None:
@@ -16206,7 +16210,12 @@ def render_top_banner():
         unsafe_allow_html=True,
     )
 
-    # ── Indicador de frescura de los datos climáticos ─────────────────────────
+    _render_frescura_datos()
+
+
+def _render_frescura_datos(compacto=False):
+    """Indicador de frescura de los datos climáticos. `compacto` (móvil): si están al día,
+    una línea pequeña en vez del recuadro verde; los avisos de datos viejos no cambian."""
     try:
         _hist = st.session_state.get("history_df", pd.DataFrame())
         if _hist is not None and not _hist.empty and "fecha_hora" in _hist.columns:
@@ -16222,7 +16231,10 @@ def render_top_banner():
                     _last_rio = pd.to_datetime(_rio_f["fecha_hora"], errors="coerce").max()
                     if pd.notna(_last_rio):
                         _rio_sufijo = f" · 🌊 {ZONA_RIO} hasta **{_last_rio:%d/%m/%Y · %H:%M}**"
-                if _horas <= 36:
+                if _horas <= 36 and compacto:
+                    st.caption(f"🌦️ Datos hasta **{_last:%d/%m %H:%M}**"
+                               + (f" · 🌊 Río **{_last_rio:%d/%m %H:%M}**" if _rio_sufijo else ""))
+                elif _horas <= 36:
                     st.success(f"🌦️ Datos climáticos actualizados hasta **{_fecha_txt}**{_rio_sufijo}.")
                 elif _horas <= 24 * 7:
                     _dias = int(_horas // 24)
@@ -32856,16 +32868,36 @@ if not _HEADLESS:
         st.session_state.pop("mob_more_open", None)
         st.rerun()
 
+    # Streamlit apila las columnas en pantallas estrechas: los 5 accesos salían uno debajo
+    # de otro, cada uno a todo lo ancho. Este CSS, limitado al contenedor de la navegación
+    # (clase st-key-fg_mob_nav), los mantiene en una fila compacta.
+    _MOBILE_NAV_CSS = """
+    <style>
+    .st-key-fg_mob_nav [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:4px!important;}
+    .st-key-fg_mob_nav [data-testid="stColumn"], .st-key-fg_mob_nav [data-testid="column"]{
+        min-width:0!important;width:auto!important;flex:1 1 0!important;}
+    .st-key-fg_mob_nav button{padding:4px 2px!important;min-height:46px!important;}
+    .st-key-fg_mob_nav button p{font-size:0.72rem!important;line-height:1.15!important;
+        white-space:normal!important;word-break:break-word;}
+    .st-key-fg_mob_nav .fg-mob-title{font-weight:700;font-size:1rem;margin:6px 0 0 0;}
+    </style>
+    """
+
     def _render_mobile_nav() -> None:
+        st.markdown(_MOBILE_NAV_CSS, unsafe_allow_html=True)
+        try:
+            _box = st.container(key="fg_mob_nav")
+        except TypeError:            # Streamlit sin `key` en container: sin CSS, pero funciona
+            _box = st.container()
+        with _box:
+            _render_mobile_nav_botones()
+
+    def _render_mobile_nav_botones() -> None:
         cur = st.session_state.get("nav_page", "hoy")
         # Cabecera compacta + botón para saltar a la versión completa de PC.
         h1, h2 = st.columns([3, 1])
         with h1:
-            st.markdown(
-                "<p style='font-weight:700;font-size:1.05rem;margin:4px 0 6px 0;'>"
-                "🌿 Finca Gallinal</p>",
-                unsafe_allow_html=True,
-            )
+            st.markdown("<p class='fg-mob-title'>🌿 Finca Gallinal</p>", unsafe_allow_html=True)
         with h2:
             if st.button("💻 PC", key="mob_to_full", use_container_width=True,
                          help="Ver la versión completa de escritorio"):
@@ -32876,7 +32908,7 @@ if not _HEADLESS:
         cols = st.columns(len(_MOBILE_PRIMARY))
         for col, (ic, lb, key) in zip(cols, _MOBILE_PRIMARY):
             with col:
-                if st.button(f"{ic}\n{lb}", key=f"mnav_{key}", use_container_width=True,
+                if st.button(f"{ic}  \n{lb}", key=f"mnav_{key}", use_container_width=True,
                              type=("primary" if cur == key else "secondary")):
                     _mobile_go(key)
         # Desplegable "Más" con el resto de secciones.
