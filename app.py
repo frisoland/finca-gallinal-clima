@@ -1218,33 +1218,39 @@ def monilia_threshold_hours(temp_c):
     return 10.0
 
 
+# Escala del valor de moteado y monilia, LA MISMA en toda la app (decisión del usuario,
+# 14/09/2026): valor = horas ÷ horas que hacen falta × 100. 100 = se cumplen las horas
+# (infección); 50 = moderado; 25 = ligero. 25 y 50 son avisos de la app: la tabla solo
+# dice «infección» o «no». Antes Sanidad, Análisis y el informe usaban 75/100/125.
+ESCALA_LIGERO, ESCALA_MODERADO, ESCALA_INFECCION = 0.25, 0.50, 1.00
+
+
 def risk_from_ratio(ratio):
     if pd.isna(ratio):
         return "Sin dato"
-    if ratio >= 1.25:
-        return "Alto"
-    if ratio >= 1.0:
-        return "Medio-alto"
-    if ratio >= 0.75:
-        return "Medio"
+    if ratio >= ESCALA_INFECCION:
+        return "Infección"
+    if ratio >= ESCALA_MODERADO:
+        return "Moderado"
+    if ratio >= ESCALA_LIGERO:
+        return "Ligero"
     return "Bajo"
 
 
 def ratio_interpretation_text(ratio):
-    """Explica un ratio técnico de infección en lenguaje sencillo."""
+    """Explica el valor de un episodio en lenguaje sencillo (escala 25/50/100)."""
     if pd.isna(ratio):
         return "No calculable por falta de temperatura, humectación o umbral."
     ratio = float(ratio)
     pct = ratio * 100
-    if ratio < 0.75:
-        return f"Alcanzó aprox. el {pct:.0f} % del umbral estimado; no llega al umbral de infección."
-    if ratio < 1.0:
-        return f"Alcanzó aprox. el {pct:.0f} % del umbral estimado; evento cercano al umbral, conviene vigilar."
-    if ratio < 1.25:
-        return f"Superó ligeramente el umbral estimado ({pct:.0f} % del umbral); infección compatible si había tejido sensible."
-    if ratio < 1.75:
-        return f"Superó claramente el umbral estimado ({pct:.0f} % del umbral); riesgo alto si no había cobertura preventiva suficiente."
-    return f"Superó ampliamente el umbral estimado ({pct:.0f} % del umbral); riesgo muy alto en fase sensible."
+    if ratio < ESCALA_LIGERO:
+        return f"Valor {pct:.0f}: lejos de las horas que hacen falta para infectar."
+    if ratio < ESCALA_MODERADO:
+        return f"Valor {pct:.0f} (ligero): no llega a infección."
+    if ratio < ESCALA_INFECCION:
+        return f"Valor {pct:.0f} (moderado): cerca de las horas que hacen falta, conviene vigilar."
+    return (f"Valor {pct:.0f}: se cumplen las horas (infección). Hay infección si además había "
+            f"esporas y tejido sensible.")
 
 
 def action_from_event_ratio(ratio, phases=None, rain_mm=0.0):
@@ -1261,27 +1267,17 @@ def action_from_event_ratio(ratio, phases=None, rain_mm=0.0):
 
     ratio = float(ratio)
 
-    if ratio < 0.75:
+    if ratio < ESCALA_MODERADO:
         if rain_mm >= 5:
-            return "Observar y vigilar la previsión: aunque no se alcanza el umbral, hubo lluvia."
-        return "Observar: no se alcanza el umbral estimado de infección."
+            return "Observar y vigilar la previsión: no llega a moderado, aunque hubo lluvia."
+        return "Observar: no llega a moderado."
 
-    if ratio < 1.0:
-        return "Vigilar previsión meteorológica y revisar finca: el evento queda cerca del umbral."
-
-    if ratio < 1.25:
-        if sensitive:
-            return "Revisar cobertura y valorar intervención técnica en las próximas 24–36 h si no había protección suficiente."
-        return "Revisar finca y cobertura; valorar actuación si hay nuevas lluvias o tejido sensible."
-
-    if ratio < 1.75:
-        if sensitive:
-            return "Riesgo alto: valorar intervención técnica en las próximas 24 h si no había cobertura preventiva suficiente."
-        return "Riesgo alto: revisar finca, cobertura y previsión antes de decidir intervención."
+    if ratio < ESCALA_INFECCION:
+        return "Vigilar previsión meteorológica y revisar finca: moderado, cerca de las horas de infección."
 
     if sensitive:
-        return "Riesgo muy alto: priorizar revisión e intervención técnica cuanto antes si no había cobertura previa."
-    return "Riesgo muy alto: revisar finca y cobertura; decidir actuación según estado fenológico y previsión."
+        return "Infección: revisar cobertura y valorar intervención técnica en las próximas 24–36 h si no había protección suficiente."
+    return "Infección: revisar finca y cobertura; valorar actuación si hay nuevas lluvias o tejido sensible."
 
 
 def mills_tabla_celsius():
@@ -1402,6 +1398,8 @@ def render_explicacion_infecciones(key=""):
                 - **100 o más** = se cumplen las horas de la tabla para infectar.
                 - **25 y 50** (franjas amarilla y naranja) son **avisos de la app** de que el episodio se
                   acerca. La tabla solo distingue «hay infección» o «no la hay».
+                - **Es la misma escala en toda la app:** Decisiones, Resultado sanitario, Sanidad,
+                  Análisis y el informe semanal.
                 - La **misma tabla** sirve toda la campaña. Mills (1944) decía que las esporas de verano
                   (conidias) necesitan 2/3 del tiempo, pero estudios posteriores lo desmintieron
                   (MacHardy & Gadoury 1989; Stensvand et al. 1997).
@@ -1461,6 +1459,9 @@ def render_explicacion_infecciones(key=""):
 
                 - **humedad por encima del 70 %**; si no, 0;
                 - **100 entre 20 y 22 ºC**; **0 por debajo de 10 ºC o por encima de 25 ºC**.
+
+                En **Sanidad** y **Análisis** se cuentan **horas favorables** con esas mismas cifras: entre
+                10 y 25 ºC, humedad por encima del 70 % y hoja seca.
 
                 Lo que **no dan las fuentes y es de la app**:
 
@@ -1770,39 +1771,47 @@ def leaf_event_metrics(df):
             "Eventos hoja mojada": 0,
             "Horas húmedas equivalentes": 0.0,
             "Máx horas húmedas evento": 0.0,
-            "Eventos moteado medio/alto": 0,
-            "Eventos moteado alto": 0,
-            "Eventos monilia medio/alto": 0,
-            "Eventos monilia alto": 0,
+            "Infecciones moteado": 0,
+            "Episodios moteado ≥50": 0,
+            "Horas moteado (desde la lluvia)": 0.0,
+            "Episodios monilia ≥100": 0,
+            "Episodios monilia ≥50": 0,
             "Evento más crítico moteado": "Sin eventos",
             "Evento más crítico monilia": "Sin eventos",
         }
 
-    moteado_medium = events["Riesgo moteado evento"].isin(["Medio", "Medio-alto", "Alto"])
-    moteado_high = events["Riesgo moteado evento"].eq("Alto")
-    monilia_medium = events["Riesgo monilia evento"].isin(["Medio", "Medio-alto", "Alto"])
-    monilia_high = events["Riesgo monilia evento"].eq("Alto")
+    _rm = pd.to_numeric(events["Ratio moteado"], errors="coerce").fillna(0)
+    _ro = pd.to_numeric(events["Ratio monilia"], errors="coerce").fillna(0)
 
     idx_scab = events["Ratio moteado"].fillna(0).idxmax()
     idx_mon = events["Ratio monilia"].fillna(0).idxmax()
 
     def event_label(row, disease):
-        risk_col = "Riesgo moteado evento" if disease == "moteado" else "Riesgo monilia evento"
-        ratio_col = "Ratio moteado" if disease == "moteado" else "Ratio monilia"
+        if disease == "moteado":
+            _desde = pd.to_datetime(row.get("Moteado cuenta desde"), errors="coerce")
+            if pd.isna(_desde) or float(row.get("Horas moteado") or 0) <= 0:
+                return (f"{row['Inicio'].strftime('%d/%m/%Y %H:%M')} → {row['Fin'].strftime('%d/%m/%Y %H:%M')} "
+                        f"(valor 0: {row.get('Nota moteado') or 'sin periodo de moteado'})")
+            return (
+                f"{_desde.strftime('%d/%m/%Y %H:%M')} → {row['Fin'].strftime('%d/%m/%Y %H:%M')} "
+                f"({row['Horas moteado']} h desde la lluvia, Tª {row['Temperatura moteado ºC']} ºC, "
+                f"valor {float(row['Ratio moteado']) * 100:.0f})"
+            )
         return (
             f"{row['Inicio'].strftime('%d/%m/%Y %H:%M')} → {row['Fin'].strftime('%d/%m/%Y %H:%M')} "
-            f"({row['Horas húmedas equivalentes']} h eq., Tª {row['Temperatura media evento ºC']} ºC, "
-            f"riesgo {row[risk_col]}, ratio {row[ratio_col]})"
+            f"({row['Horas húmedas equivalentes']} h, Tª {row['Temperatura media evento ºC']} ºC, "
+            f"valor {float(row['Ratio monilia']) * 100:.0f})"
         )
 
     return {
         "Eventos hoja mojada": int(len(events)),
         "Horas húmedas equivalentes": round(float(events["Horas húmedas equivalentes"].sum()), 2),
         "Máx horas húmedas evento": round(float(events["Horas húmedas equivalentes"].max()), 2),
-        "Eventos moteado medio/alto": int(moteado_medium.sum()),
-        "Eventos moteado alto": int(moteado_high.sum()),
-        "Eventos monilia medio/alto": int(monilia_medium.sum()),
-        "Eventos monilia alto": int(monilia_high.sum()),
+        "Infecciones moteado": int((_rm >= ESCALA_INFECCION).sum()),
+        "Episodios moteado ≥50": int((_rm >= ESCALA_MODERADO).sum()),
+        "Horas moteado (desde la lluvia)": round(float(pd.to_numeric(events.get("Horas moteado", 0), errors="coerce").fillna(0).sum()), 2),
+        "Episodios monilia ≥100": int((_ro >= ESCALA_INFECCION).sum()),
+        "Episodios monilia ≥50": int((_ro >= ESCALA_MODERADO).sum()),
         "Evento más crítico moteado": event_label(events.loc[idx_scab], "moteado"),
         "Evento más crítico monilia": event_label(events.loc[idx_mon], "monilia"),
     }
@@ -2143,7 +2152,7 @@ def pollination_quality_from_score(mean_score, fav_hours, total_hours):
     return "Limitada"
 
 @st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
-def add_risk_columns(df, hoja_humeda_threshold=30):
+def add_risk_columns(df, hoja_humeda_threshold=LEAF_WETNESS["min_minutes_to_start_event"]):
     """CACHEADA: función PURA (mismo df + umbral → mismas columnas de riesgo). Se llama
     desde muchos items sobre el mismo histórico; cachearla evita repetir el cálculo."""
     out = df.copy()
@@ -2161,15 +2170,9 @@ def add_risk_columns(df, hoja_humeda_threshold=30):
 
     out["hoja_humeda"] = (out["humectacion_hoja"].fillna(0) >= hoja_humeda_threshold).astype(int)
 
-    if has_sensor(out, "Humectación de hoja"):
-        out["moteado_hora_favorable"] = (
-            (out["hoja_humeda"] == 1) &
-            (out["temp_media"] >= 6) &
-            (out["temp_media"] <= 24)
-        ).astype(int)
-    else:
-        out["moteado_hora_favorable"] = 0
-
+    # (Retiradas el 14/09/2026 las «horas favorables» de moteado —hoja húmeda a 6-24 ºC— y de
+    #  monilia —lluvia, hoja o HR ≥90 % a 10-25 ºC—: eran criterios simplificados sin fuente
+    #  que contradecían a los episodios. Moteado y monilia se valoran por episodios.)
     # Hora favorable a oídio (Cornell/Illinois): 10-25 ºC, HR por encima del 70 % y sin
     # agua sobre la hoja (en agua germina mal). Mismas cifras que _dec_oidio_value.
     out["oidio_hora_favorable"] = (
@@ -2178,19 +2181,6 @@ def add_risk_columns(df, hoja_humeda_threshold=30):
         (out["hr_media"] > 70) &
         (out["hoja_humeda"] == 0)
     ).astype(int)
-
-    if has_sensor(out, "Humectación de hoja"):
-        out["monilia_hora_favorable"] = (
-            ((out["lluvia_hora"] == 1) | (out["hoja_humeda"] == 1) | (out["hr_media"] >= 90)) &
-            (out["temp_media"] >= 10) &
-            (out["temp_media"] <= 25)
-        ).astype(int)
-    else:
-        out["monilia_hora_favorable"] = (
-            ((out["lluvia_hora"] == 1) | (out["hr_media"] >= 90)) &
-            (out["temp_media"] >= 10) &
-            (out["temp_media"] <= 25)
-        ).astype(int)
 
     out["sector_viento"] = out["viento_direccion"].apply(direction_to_sector)
 
@@ -2350,9 +2340,7 @@ def weekly_summary(df, soil_type):
             "Horas hoja húmeda": int(g["hoja_humeda"].sum()) if has_leaf else np.nan,
             "Periodo húmedo máximo h": int(max(wet_lengths) if wet_lengths else 0) if has_leaf else np.nan,
             **leaf_metrics,
-            "Horas favorables moteado": int(g["moteado_hora_favorable"].sum()) if has_leaf else np.nan,
             "Horas favorables oídio": int(g["oidio_hora_favorable"].sum()),
-            "Horas favorables monilia": int(g["monilia_hora_favorable"].sum()),
             "Viento medio": round(g["viento_velocidad"].mean(), 2) if has_wind else np.nan,
             "Viento máximo medio horario": round(g["viento_velocidad"].max(), 2) if has_wind else np.nan,
             "Ráfaga máxima": round(g["viento_rafaga"].max(), 2) if has_wind else np.nan,
@@ -2470,9 +2458,7 @@ def period_summary(df, soil_type, start_ts, end_ts):
         "Horas hoja húmeda": int(data["hoja_humeda"].sum()) if has_leaf else np.nan,
         "Periodo húmedo máximo h": int(max(wet_lengths) if wet_lengths else 0) if has_leaf else np.nan,
         **leaf_metrics,
-        "Horas favorables moteado": int(data["moteado_hora_favorable"].sum()) if has_leaf else np.nan,
         "Horas favorables oídio": int(data["oidio_hora_favorable"].sum()),
-        "Horas favorables monilia": int(data["monilia_hora_favorable"].sum()),
         "Viento medio": round(data["viento_velocidad"].mean(), 2) if has_wind else np.nan,
         "Viento máximo medio horario": round(data["viento_velocidad"].max(), 2) if has_wind else np.nan,
         "Ráfaga máxima": round(data["viento_rafaga"].max(), 2) if has_wind else np.nan,
@@ -2867,43 +2853,38 @@ def render_interpreted_report(summary, availability, soil_type):
                 f"Análisis por eventos de humectación: **{row['Eventos hoja mojada']} eventos** detectados, "
                 f"con **{row['Horas húmedas equivalentes']} h equivalentes** de hoja mojada."
             )
+            # Moteado: periodos de la tabla revisada de Mills (desde la lluvia), escala 25/50/100.
+            _inf, _mod = int(row.get("Infecciones moteado", 0)), int(row.get("Episodios moteado ≥50", 0))
             st.write(
-                f"Eventos con riesgo medio/alto para moteado: **{row['Eventos moteado medio/alto']}** "
-                f"(**{row['Eventos moteado alto']}** altos). "
-                f"Evento más crítico: {row['Evento más crítico moteado']}."
-            )
-            st.write(
-                f"Eventos con riesgo medio/alto para monilia: **{row['Eventos monilia medio/alto']}** "
-                f"(**{row['Eventos monilia alto']}** altos). "
-                f"Evento más crítico: {row['Evento más crítico monilia']}."
-            )
-
-        if pd.isna(row.get("Horas favorables moteado", np.nan)):
-            st.warning("No se puede valorar correctamente el moteado ligado a hoja húmeda porque no hay datos de humectación de hoja.")
-        else:
-            st.write(f"**Moteado:** {row['Horas favorables moteado']} horas favorables.")
-            if row["Horas favorables moteado"] >= 40:
-                st.warning("Riesgo potencial de moteado alto por acumulación relevante de hoja húmeda con temperatura favorable.")
-            elif row["Horas favorables moteado"] >= 15:
-                st.info("Riesgo potencial de moteado medio. Conviene revisar protección, fenología y antecedentes de inóculo.")
+                f"**Moteado** (tabla revisada de Mills, horas desde que empieza a llover): "
+                f"**{_inf} infección(es)** (valor ≥100) y **{_mod}** episodio(s) de 50 o más. "
+                f"Peor episodio: {row['Evento más crítico moteado']}.")
+            if _inf > 0:
+                st.warning("Hubo periodo(s) de infección de moteado: revisa si había cobertura y si coincidió "
+                           "con tejido sensible (hoja joven, fruto recién cuajado).")
+            elif _mod > 0:
+                st.info("Hubo episodios moderados (50 o más), cerca de las horas de infección.")
             else:
-                st.success("Riesgo potencial de moteado bajo según los umbrales simplificados.")
+                st.success("Ningún episodio llegó a moderado para moteado.")
 
-        st.write(f"**Oídio:** {row['Horas favorables oídio']} horas favorables.")
-        if row["Horas favorables oídio"] >= 100:
-            st.warning("Ventana favorable para oídio elevada por muchas horas con temperatura templada y humedad alta.")
-        elif row["Horas favorables oídio"] >= 40:
-            st.info("Ventana favorable para oídio moderada.")
+            # Monilia: misma escala; en manzano entra por heridas.
+            _mi, _mm = int(row.get("Episodios monilia ≥100", 0)), int(row.get("Episodios monilia ≥50", 0))
+            st.write(
+                f"**Monilia:** **{_mi}** episodio(s) de tiempo muy favorable (≥100) y **{_mm}** de 50 o más. "
+                f"Peor episodio: {row['Evento más crítico monilia']}. En manzano entra por **heridas** "
+                f"(carpocapsa, pájaros, rajado): mira también el daño de carpocapsa.")
         else:
-            st.success("Ventana favorable para oídio reducida.")
+            st.warning("Sin datos de hoja mojada en este periodo: no se pueden valorar moteado ni monilia.")
 
-        st.write(f"**Monilia:** {row['Horas favorables monilia']} horas favorables.")
-        if row["Horas favorables monilia"] >= 80:
-            st.warning("Condiciones húmedas compatibles con vigilancia de monilia si coincide con floración, heridas o fruto sensible.")
-        elif row["Horas favorables monilia"] >= 30:
-            st.info("Condiciones moderadas para vigilancia de monilia.")
+        # Oídio: horas con las cifras de Cornell/Illinois; cortes 8/24/48 h del semáforo de Sanidad.
+        _oh = int(row.get("Horas favorables oídio", 0))
+        st.write(f"**Oídio:** **{_oh} h** favorables (entre 10 y 25 ºC, humedad por encima del 70 % y hoja seca).")
+        if _oh >= 48:
+            st.warning("Muchas horas favorables para oídio: vigila brotes tiernos y variedades sensibles.")
+        elif _oh >= 8:
+            st.info("Algunas horas favorables para oídio.")
         else:
-            st.success("Condiciones de monilia poco destacables en el periodo.")
+            st.success("Pocas horas favorables para oídio.")
 
     # 8. Calidad de datos
     if missing_msgs or incomplete_msgs:
@@ -3110,11 +3091,10 @@ def render_week_comparison_explanation(cmp_df):
         ("Índice evaporativo ajustado suelo", "índice evaporativo ajustado al suelo", "/100"),
         ("Horas favorables polinización", "horas favorables para polinización", " h"),
         ("% horas favorables polinización", "porcentaje favorable para polinización", " %"),
-        ("Horas favorables moteado", "horas favorables para moteado", " h"),
-        ("Eventos moteado medio/alto", "eventos de moteado medio/alto", ""),
-        ("Eventos monilia medio/alto", "eventos de monilia medio/alto", ""),
+        ("Infecciones moteado", "infecciones de moteado (valor ≥100)", ""),
+        ("Episodios moteado ≥50", "episodios de moteado de 50 o más", ""),
+        ("Episodios monilia ≥50", "episodios de monilia de 50 o más", ""),
         ("Horas favorables oídio", "horas favorables para oídio", " h"),
-        ("Horas favorables monilia", "horas favorables para monilia", " h"),
     ]
 
     for col, name, suffix in variables:
@@ -6718,21 +6698,20 @@ def forecast_build_risk_table(forecast_df, history_df, base_temp=10.0, upper_tem
 
 
 def _mills_level_from_value(v):
-    """Valor numérico de Mills (build_risk_timeline) → nivel mostrado, con los MISMOS
-    cortes que las zonas de la gráfica de Decisiones (25 ligero · 50 moderado · 100 grave)."""
+    """Valor de moteado → nivel mostrado, con la escala de toda la app (25 · 50 · 100)."""
     m = float(v) if pd.notna(v) else 0.0
-    if m >= 100: return "🔴 Infección grave"
-    if m >= 50:  return "🟠 Infección moderada"
-    if m >= 25:  return "🟡 Riesgo ligero"
+    if m >= 100: return "🔴 Infección"
+    if m >= 50:  return "🟠 Moderado"
+    if m >= 25:  return "🟡 Ligero"
     return "🟢 Sin riesgo"
 
 
 def _monilia_level_from_value(v):
-    """Valor numérico de Monilia → nivel mostrado (umbral 50 moderado · 100 alto)."""
+    """Valor de monilia → nivel mostrado (misma escala; en manzano manda la herida)."""
     m = float(v) if pd.notna(v) else 0.0
-    if m >= 100: return "🔴 Riesgo alto"
-    if m >= 50:  return "🟠 Riesgo moderado"
-    if m >= 25:  return "🟡 Riesgo ligero"
+    if m >= 100: return "🔴 Muy favorable"
+    if m >= 50:  return "🟠 Moderado"
+    if m >= 25:  return "🟡 Ligero"
     return "🟢 Sin riesgo"
 
 
@@ -7913,13 +7892,18 @@ def _render_tabla_riesgo_previsto(forecast_df):
                f"{risk_df['DD carpocapsa previstos'].sum():.1f} DD")
 
     # Alerta proactiva
-    high_risk_days = risk_df[risk_df["Riesgo moteado"].str.contains("🔴|🟠")]
+    # Misma escala que el resto de la app: 🔴 = valor ≥100 (infección), 🟠 = moderado (≥50).
+    high_risk_days = risk_df[risk_df["Riesgo moteado"].str.contains("🔴")]
+    mod_risk_days = risk_df[risk_df["Riesgo moteado"].str.contains("🟠")]
     if not high_risk_days.empty:
         dias_alerta = ", ".join(str(d) for d in high_risk_days["Fecha"].head(3))
         st.error(
-            f"⚠️ **Período de infección probable:** {dias_alerta}. "
-            "Considera tratar antes del primer día de riesgo alto."
+            f"⚠️ **Período de infección de moteado previsto:** {dias_alerta}. "
+            "Considera tratar antes del primer día con infección prevista."
         )
+    elif not mod_risk_days.empty:
+        dias_alerta = ", ".join(str(d) for d in mod_risk_days["Fecha"].head(3))
+        st.warning(f"🟠 **Moteado moderado previsto (50 o más):** {dias_alerta}. Vigila la previsión.")
 
     # Tabla HTML con primera columna sticky (funciona en móvil al hacer scroll horizontal)
     def _risk_bg(val):
@@ -8002,8 +7986,7 @@ def _render_tabla_riesgo_previsto(forecast_df):
 
 def _max_risk_level(risk_list):
     """Devuelve el nivel de riesgo más alto de una lista."""
-    for level in ["🔴 Infección grave", "🔴 Riesgo alto", "🟠 Infección moderada",
-                  "🟠 Riesgo moderado", "🟡 Riesgo ligero", "🟡 Riesgo ligero"]:
+    for level in ["🔴 Infección", "🔴 Muy favorable", "🟠 Moderado", "🟡 Ligero"]:
         if any(level in r for r in risk_list):
             return level
     return "🟢 Sin riesgo"
@@ -8920,7 +8903,7 @@ def instructions_tab():
             |---|---|---|
             | **📊 Dashboard** | Estado del histórico: desde/hasta, huecos, calidad del dato, resumen de 30 días y descarga en CSV. | Si sospechas que faltan datos |
             | **🌦️ Sencrop y MeteoGalicia** | *Previsión* (de dónde sale y riesgo previsto) · *Fiabilidad y hoja mojada* (cuánto acierta la previsión y cómo se estima la hoja mojada que no trae) · *Actualizar datos* (descarga manual de la Nave y del Río) · *Conexión* (sensores y diagnóstico). | Para revisar la previsión, o si falló la descarga automática |
-            | **🔎 Análisis** | Informe interpretado de un periodo: temperatura, humedad y hoja, lluvia, viento, radiación, polinización e infecciones. | Para revisar una semana o un mes |
+            | **🔎 Análisis** | Informe interpretado de un periodo: temperatura, humedad y hoja, lluvia, viento, radiación, polinización e infecciones (moteado con la tabla revisada de Mills, monilia y oídio con los mismos criterios que Decisiones). | Para revisar una semana o un mes |
             | **📈 Comparador** | Nave frente a Río, campañas de frío, el mismo mes, semana o quincena en varios años, y climatología mensual con anomalías. | Para comparar años |
             | **❄️ Frío** | Horas frío, unidades Utah y Chill Portions de la campaña (1 nov – 31 mar), cumplimiento por variedad y floración prevista. | En invierno |
 
@@ -8932,7 +8915,7 @@ def instructions_tab():
             | **🍄 Sanidad** | Semáforo del periodo, recomendación por campo, eventos de hoja mojada con auditoría y simulador de umbral, histórico de infecciones por año y fase, rotación FRAC y seguimiento de fitosanitarios. | Para entender el porqué de un riesgo |
             | **🎯 Decisiones** | Qué hacer hoy: panel diario de fungicidas por campo (🔴🟠🟡🟢, producto recomendado, pases de campaña, combinación con carpocapsa) y gráficas de riesgo. Arriba, una línea con la previsión y un aviso si algún día es *frágil*. | Cada mañana en campaña |
             | **🐛 Carpocapsa** | Capturas, biofix, grados-día, ventanas de tratamiento por campo, vista por grupos (en pruebas), tratamientos, DD al tratar, cobertura real de la eclosión y muestreo de daños. | Cada semana durante el vuelo |
-            | **🩺 Resultado sanitario** | Fungicidas del año por campo y variedad frente a tu valoración visual, con la gráfica de infecciones y tratamientos. | Antes de cosechar |
+            | **🩺 Resultado sanitario** | Fungicidas del año por campo y variedad frente a tu valoración visual, con la gráfica de infecciones y tratamientos, el daño de carpocapsa del campo debajo de la monilia y la explicación **📖 Por qué hay infección**. | Antes de cosechar |
             | **💧 Riego** | Balance hídrico por campo (modelo clásico y de goteo), reserva del suelo, riego real (VEGGA, Excel o motobomba), perfiles de suelo y configuración de goteo. | En verano, 1-2 veces por semana |
 
             ### 📋 Gestión
@@ -8965,6 +8948,8 @@ def instructions_tab():
         st.markdown(
             f"""
             ### 🦠 Por qué hay infección
+
+            - **Escala, igual en toda la app:** 25 ligero · 50 moderado · **100 infección**.
 
             - **Moteado:** tabla de Mills **revisada por MacHardy & Gadoury** (la de NEWA y UMass), tal
               cual. Hay infección cuando las horas de hoja mojada **desde que empieza a llover**
@@ -9063,6 +9048,17 @@ def instructions_tab():
             recuperarlo a mano: **🌦️ Sencrop y MeteoGalicia → ⬇️ Actualizar datos** → descargar los 4 sensores
             → en *🌊 Zona Río*, **🔄 Traer solo lo nuevo** → guardar en Supabase y **actualizar el
             snapshot**.
+
+            **Hubo muchas horas de hoja mojada y el moteado sale 0 o muy bajo**  
+            El moteado solo cuenta **desde que empieza a llover**: un episodio de rocío no es periodo
+            de infección. Y en la temporada de ascosporas, si la lluvia empezó de noche (de 21:00 a
+            9:59), se cuenta desde las 10:00: si la hoja se secó antes, el valor es 0. Pasa el ratón
+            por la gráfica: el recuadro dice desde cuándo contó y por qué.
+
+            **El recuadro de una gráfica dice «⚠️ X h sin dato del sensor»**  
+            El sensor de hoja de Sencrop no dio dato esas horas (pasa sobre todo de noche). No se
+            cuentan ni como mojadas ni como secas, así que el valor puede quedarse corto. Si se
+            repite, limpia el sensor de hoja o avisa a Sencrop.
 
             **Sale en rojo «Al abrir la app no se pudieron cargar…»**  
             Alguna carga de Supabase falló al arrancar (actuaciones, carpocapsa, fenología o riego).
@@ -10129,8 +10125,8 @@ def compact_comparison_report_table(cmp_df):
         "HR media %": "HR media %",
         "Hoja húmeda h": "Horas hoja húmeda",
         "Eventos hoja": "Eventos hoja mojada",
-        "Moteado medio/alto": "Eventos moteado medio/alto",
-        "Monilia medio/alto": "Eventos monilia medio/alto",
+        "Infecciones moteado": "Infecciones moteado",
+        "Monilia ≥50": "Episodios monilia ≥50",
         "Viento medio": "Viento medio",
         "Ráfaga máx": "Ráfaga máxima",
         "Radiación MJ/m²": "Radiación acumulada estimada MJ/m²",
@@ -11201,15 +11197,15 @@ def render_health_recommendation(period_df, soil_type, hoja_threshold, start_ts=
         st.markdown(sanitary_event_thresholds_text(temp_mean))
         st.markdown(
             """
-            Lectura del ratio:
+            Lectura del valor (la misma escala en toda la app):
 
-            - **Bajo:** ratio < 0,75.
-            - **Medio:** ratio ≥ 0,75.
-            - **Medio-alto:** ratio ≥ 1,00.
-            - **Alto:** ratio ≥ 1,25.
+            - **Ligero:** 25 o más.
+            - **Moderado:** 50 o más.
+            - **Infección:** 100 o más (se cumplen las horas).
 
             Por eso puede haber muchos milímetros de lluvia o muchas horas de humedad acumuladas en una semana,
-            pero seguir sin evento medio/alto si esa humedad no se concentró en un episodio continuo con temperatura compatible.
+            pero ningún episodio moderado si esa humedad no se concentró en un episodio continuo con temperatura compatible
+            (y, en moteado, con lluvia).
             """
         )
 
@@ -12479,14 +12475,11 @@ def sanitary_event_thresholds_text(temp_mean):
     def fmt_threshold(name, th):
         if pd.isna(th) or not th:
             return f"- {name}: umbral no calculable con esta temperatura."
-        medium = 0.75 * th
-        medium_high = 1.00 * th
-        high = 1.25 * th
         return (
             f"- {name}: con {t:.1f} ºC hacen falta {th:.1f} h de hoja mojada en el mismo episodio "
             f"({'tabla revisada de Mills, contando desde la lluvia' if name == 'Moteado' else 'tabla de la app, sin fuente publicada en manzano'}). "
-            f"Riesgo medio desde aprox. {medium:.1f} h (ratio ≥0,75), "
-            f"medio-alto desde {medium_high:.1f} h (ratio ≥1,00) y alto desde {high:.1f} h (ratio ≥1,25)."
+            f"Ligero desde {ESCALA_LIGERO * th:.1f} h (valor 25), moderado desde {ESCALA_MODERADO * th:.1f} h "
+            f"(valor 50) e infección desde {th:.1f} h (valor 100)."
         )
 
     return "\n".join([
@@ -12512,23 +12505,21 @@ def explain_disease_climate_reason(disease, level, rain, wet_hours, hr90, temp_m
     if "moteado" in disease_low:
         if level in ["Alto", "Medio"]:
             lines = [
-                f"- Por qué: riesgo climático {level.lower()} para moteado por {events_count} evento(s) medio/alto, {high_events} alto(s).",
-                f"- {wet_hours:.0f} h de hoja húmeda acumulada en el periodo.",
+                f"- Por qué: riesgo climático {level.lower()} para moteado por {high_events} infección(es) (≥100) y {events_count} episodio(s) de 50 o más.",
+                f"- {wet_hours:.0f} h de hoja mojada desde que empezó a llover (las que cuenta la tabla revisada).",
                 f"- {rain:.1f} mm de lluvia y temperatura media de {temp_txt()}.",
                 f"- Fase: {phase_txt}.",
-                "- Para que moteado pase a riesgo medio debe detectarse al menos un evento continuo que alcance alrededor del 75 % del umbral de moteado para la temperatura del episodio.",
-                "- Para medio-alto o alto, el evento debe alcanzar o superar el 100–125 % del umbral.",
+                "- Hay infección cuando un episodio llega a valor 100: las horas desde la lluvia alcanzan las de la tabla revisada de Mills para su temperatura. 50 es moderado y 25 ligero.",
                 thresholds,
             ]
         else:
             lines = [
-                f"- Por qué: no se justifica tratamiento directo frente a moteado porque no se detectaron eventos continuos suficientes.",
-                f"- Eventos detectados: {events_count} medio/alto y {high_events} alto(s).",
-                f"- {wet_hours:.0f} h de hoja húmeda acumulada en el periodo.",
+                f"- Por qué: no se justifica tratamiento directo frente a moteado porque ningún episodio llegó a las horas de infección.",
+                f"- Episodios: {high_events} infección(es) (≥100) y {events_count} de 50 o más.",
+                f"- {wet_hours:.0f} h de hoja mojada desde que empezó a llover (las que cuenta la tabla revisada).",
                 f"- {rain:.1f} mm de lluvia y temperatura media de {temp_txt()}.",
                 f"- Fase: {phase_txt}.",
-                "- Para que moteado pase a riesgo medio debe detectarse al menos un evento continuo que alcance alrededor del 75 % del umbral de moteado para la temperatura del episodio.",
-                "- Para medio-alto o alto, el evento debe alcanzar o superar el 100–125 % del umbral.",
+                "- Hay infección cuando un episodio llega a valor 100: las horas desde la lluvia alcanzan las de la tabla revisada de Mills para su temperatura. 50 es moderado y 25 ligero.",
                 thresholds,
             ]
         return "\n".join(lines)
@@ -12536,25 +12527,21 @@ def explain_disease_climate_reason(disease, level, rain, wet_hours, hr90, temp_m
     if "monilia" in disease_low:
         if level in ["Alto", "Medio"]:
             lines = [
-                f"- Por qué: riesgo climático {level.lower()} para monilia por {events_count} evento(s) medio/alto, {high_events} alto(s).",
-                f"- {wet_hours:.0f} h de humectación acumulada en el periodo.",
-                f"- {hr90:.0f} h con HR ≥90 %.",
+                f"- Por qué: riesgo climático {level.lower()} para monilia por {high_events} episodio(s) muy favorable(s) (≥100) y {events_count} de 50 o más.",
+                f"- {wet_hours:.0f} h de hoja mojada en episodios.",
                 f"- {rain:.1f} mm de lluvia y temperatura media de {temp_txt()}.",
                 f"- Fase: {phase_txt}.",
-                "- Para que monilia pase a riesgo medio no basta con que la semana sea húmeda en total: debe aparecer un episodio continuo de humectación que alcance alrededor del 75 % del umbral calculado para la temperatura del evento.",
-                "- Para medio-alto o alto, el evento debe alcanzar o superar el 100–125 % del umbral, con floración/fruto sensible y humedad/lluvia coincidiendo en el tiempo.",
+                "- En manzano la monilia entra por heridas (carpocapsa, pájaros, rajado): el clima solo dice si el tiempo fue favorable. Mira también el daño de carpocapsa del campo.",
                 thresholds,
             ]
         else:
             lines = [
-                f"- Por qué: riesgo bajo para monilia porque no se detectaron eventos continuos suficientes.",
-                f"- Eventos detectados: {events_count} medio/alto y {high_events} alto(s).",
-                f"- {wet_hours:.0f} h de humectación acumulada en el periodo.",
-                f"- {hr90:.0f} h con HR ≥90 %.",
+                f"- Por qué: riesgo bajo para monilia: ningún episodio de tiempo muy favorable.",
+                f"- Episodios: {high_events} muy favorable(s) (≥100) y {events_count} de 50 o más.",
+                f"- {wet_hours:.0f} h de hoja mojada en episodios.",
                 f"- {rain:.1f} mm de lluvia y temperatura media de {temp_txt()}.",
                 f"- Fase: {phase_txt}.",
-                "- Para que monilia pase a riesgo medio no basta con que la semana sea húmeda en total: debe aparecer un episodio continuo de humectación que alcance alrededor del 75 % del umbral calculado para la temperatura del evento.",
-                "- Para medio-alto o alto, el evento debe alcanzar o superar el 100–125 % del umbral, con floración/fruto sensible y humedad/lluvia coincidiendo en el tiempo.",
+                "- En manzano la monilia entra por heridas (carpocapsa, pájaros, rajado): el clima solo dice si el tiempo fue favorable. Mira también el daño de carpocapsa del campo.",
                 thresholds,
             ]
         return "\n".join(lines)
@@ -12563,19 +12550,17 @@ def explain_disease_climate_reason(disease, level, rain, wet_hours, hr90, temp_m
         if level in ["Alto", "Medio"]:
             lines = [
                 f"- Por qué: riesgo climático {level.lower()} para oídio por {oidium_hours:.0f} h favorables.",
-                f"- {hr90:.0f} h con HR ≥90 % y temperatura media de {temp_txt()}.",
+                f"- Hora favorable (Cornell, Illinois): entre 10 y 25 ºC, humedad por encima del 70 % y hoja seca. Temperatura media del periodo: {temp_txt()}.",
                 f"- Fase: {phase_txt}.",
-                "- Para pasar a riesgo medio deben acumularse suficientes horas favorables para oídio, normalmente con temperaturas suaves y tejido activo.",
-                "- Para riesgo alto, esas horas favorables deben ser persistentes.",
+                "- El oídio no necesita agua: la lluvia y la hoja mojada lo frenan. Solo ataca brotes y hojas en crecimiento.",
             ]
         else:
             lines = [
                 f"- Por qué: no se justifica tratamiento directo frente a oídio.",
-                f"- Se estiman {oidium_hours:.0f} h favorables.",
-                f"- {hr90:.0f} h con HR ≥90 % y temperatura media de {temp_txt()}.",
+                f"- Se cuentan {oidium_hours:.0f} h favorables.",
+                f"- Hora favorable (Cornell, Illinois): entre 10 y 25 ºC, humedad por encima del 70 % y hoja seca. Temperatura media del periodo: {temp_txt()}.",
                 f"- Fase: {phase_txt}.",
-                "- Para pasar a riesgo medio deben acumularse suficientes horas favorables para oídio, normalmente con temperaturas suaves y tejido activo.",
-                "- Para riesgo alto, esas horas favorables deben ser persistentes.",
+                "- El oídio no necesita agua: la lluvia y la hoja mojada lo frenan. Solo ataca brotes y hojas en crecimiento.",
             ]
         return "\n".join(lines)
 
@@ -12634,18 +12619,18 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
     temp = get_numeric_series(df, [cols["temp"]], default=np.nan) if cols["temp"] else pd.Series(np.nan, index=df.index)
     temp_mean = float(temp.mean()) if temp.notna().any() else np.nan
 
-    # Eventos por enfermedad.
-    scab_events = 0
-    scab_high = 0
-    monilia_events = 0
-    monilia_high = 0
+    # Episodios por enfermedad, con la escala de toda la app: «infección» = valor ≥100,
+    # «moderado» = ≥50 (incluye las infecciones). Horas: las del propio cálculo (moteado,
+    # desde la lluvia; monilia, el episodio entero).
+    scab_events = scab_high = monilia_events = monilia_high = 0
+    mot_hours = mon_hours = 0.0
     if not events_exp.empty:
-        if "Riesgo moteado evento" in events_exp.columns:
-            scab_events = int(events_exp["Riesgo moteado evento"].astype(str).str.contains("Medio|Alto", case=False, na=False).sum())
-            scab_high = int(events_exp["Riesgo moteado evento"].astype(str).str.contains("Alto", case=False, na=False).sum())
-        if "Riesgo monilia evento" in events_exp.columns:
-            monilia_events = int(events_exp["Riesgo monilia evento"].astype(str).str.contains("Medio|Alto", case=False, na=False).sum())
-            monilia_high = int(events_exp["Riesgo monilia evento"].astype(str).str.contains("Alto", case=False, na=False).sum())
+        _rm = pd.to_numeric(events_exp.get("Ratio moteado", 0), errors="coerce").fillna(0)
+        _ro = pd.to_numeric(events_exp.get("Ratio monilia", 0), errors="coerce").fillna(0)
+        scab_events, scab_high = int((_rm >= ESCALA_MODERADO).sum()), int((_rm >= ESCALA_INFECCION).sum())
+        monilia_events, monilia_high = int((_ro >= ESCALA_MODERADO).sum()), int((_ro >= ESCALA_INFECCION).sum())
+        mot_hours = float(pd.to_numeric(events_exp.get("Horas moteado", 0), errors="coerce").fillna(0).sum())
+        mon_hours = float(pd.to_numeric(events_exp.get("Horas húmedas equivalentes", 0), errors="coerce").fillna(0).sum())
 
     # Antes leía una columna «riesgo_oidio» que no se calculaba en ningún sitio: el oídio
     # salía siempre con 0 h favorables y en «Bajo» (corregido el 14/09/2026).
@@ -12663,8 +12648,8 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
         _r = pd.to_numeric(events_exp[col], errors="coerce").dropna()
         if _r.empty:
             return "—"
-        _m = float(_r.max()) * 100
-        return f"{_m:.0f} % del umbral" + ("  ⚠️ infección" if _m >= 100 else "")
+        _m = min(float(_r.max()) * 100, 150.0)
+        return f"valor {_m:.0f}" + ("  ⚠️ infección" if _m >= 100 else "")
     _peor_scab = _peor("Ratio moteado")
     _peor_mon  = _peor("Ratio monilia")
 
@@ -12675,16 +12660,16 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
     reasons = []
     if scab_high >= 1:
         score += 45
-        reasons.append(f"{scab_high} evento(s) alto(s)")
+        reasons.append(f"{scab_high} infección(es) (≥100)")
     if scab_events >= 1:
         score += min(30, scab_events * 12)
-        reasons.append(f"{scab_events} evento(s) medio/alto")
-    if wet_hours >= 24:
+        reasons.append(f"{scab_events} episodio(s) de 50 o más")
+    if mot_hours >= 24:
         score += 15
-        reasons.append(f"{wet_hours:.0f} h de hoja húmeda")
-    elif wet_hours >= 8:
+        reasons.append(f"{mot_hours:.0f} h de hoja mojada desde la lluvia")
+    elif mot_hours >= 8:
         score += 8
-        reasons.append(f"{wet_hours:.0f} h de hoja húmeda")
+        reasons.append(f"{mot_hours:.0f} h de hoja mojada desde la lluvia")
     if rain >= 20:
         score += 10
         reasons.append(f"{rain:.1f} mm de lluvia")
@@ -12702,7 +12687,7 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
         "Nivel": level,
         "Puntuación": round(min(score, 100), 1),
         "Indicadores": "; ".join(reasons) if reasons else "sin señales relevantes",
-        "Explicación climática": explain_disease_climate_reason("Moteado", level, rain, wet_hours, hr90, temp_mean, scab_events, scab_high, oidium_hours, phases),
+        "Explicación climática": explain_disease_climate_reason("Moteado", level, rain, mot_hours, hr90, temp_mean, scab_events, scab_high, oidium_hours, phases),
         "Peor evento del periodo": _peor_scab,
         "Acción orientativa": "Priorizar revisión de hoja joven y cobertura preventiva." if level in ["Alto", "Medio"] else "Seguimiento normal salvo nuevas lluvias.",
         "Prioridad": action,
@@ -12713,16 +12698,13 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
     reasons = []
     if monilia_high >= 1:
         score += 40
-        reasons.append(f"{monilia_high} evento(s) alto(s)")
+        reasons.append(f"{monilia_high} episodio(s) muy favorable(s) (≥100)")
     if monilia_events >= 1:
         score += min(28, monilia_events * 12)
-        reasons.append(f"{monilia_events} evento(s) medio/alto")
-    if wet_hours >= 18:
+        reasons.append(f"{monilia_events} episodio(s) de 50 o más")
+    if mon_hours >= 18:
         score += 14
-        reasons.append(f"{wet_hours:.0f} h de humectación")
-    if hr90 >= 24:
-        score += 8
-        reasons.append(f"{hr90:.0f} h con HR ≥90 %")
+        reasons.append(f"{mon_hours:.0f} h de hoja mojada")
     if rain >= 10:
         score += 8
         reasons.append(f"{rain:.1f} mm de lluvia")
@@ -12737,7 +12719,7 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
         "Nivel": level,
         "Puntuación": round(min(score, 100), 1),
         "Indicadores": "; ".join(reasons) if reasons else "sin señales relevantes",
-        "Explicación climática": explain_disease_climate_reason("Monilia", level, rain, wet_hours, hr90, temp_mean, monilia_events, monilia_high, oidium_hours, phases),
+        "Explicación climática": explain_disease_climate_reason("Monilia", level, rain, mon_hours, hr90, temp_mean, monilia_events, monilia_high, oidium_hours, phases),
         "Peor evento del periodo": _peor_mon,
         "Acción orientativa": "Revisar flor/fruto y zonas húmedas si coincide con fase sensible." if level in ["Alto", "Medio"] else "Seguimiento normal.",
         "Prioridad": action,
@@ -12755,12 +12737,10 @@ def build_sanitary_semaphore_table(period_df, soil_type, hoja_threshold, start_t
     elif oidium_hours >= 8:
         score += 15
         reasons.append(f"{oidium_hours:.0f} h favorables")
-    if pd.notna(temp_mean) and 15 <= temp_mean <= 25:
+    # (Quitado el 14/09/2026 el punto por HR ≥90 %: el agua sobre la hoja frena el oídio.)
+    if pd.notna(temp_mean) and OIDIO_T_MIN <= temp_mean <= OIDIO_T_MAX:
         score += 10
-        reasons.append(f"temperatura media favorable ({temp_mean:.1f} ºC)")
-    if hr90 >= 12:
-        score += 8
-        reasons.append(f"{hr90:.0f} h con HR ≥90 %")
+        reasons.append(f"temperatura media en su rango de infección ({temp_mean:.1f} ºC)")
     if sensitive_general:
         score += 8
         reasons.append("tejido activo/sensible")
@@ -14525,9 +14505,8 @@ def health_tab(history, soil_type, hoja_threshold):
     st.dataframe(global_summary[[
         c for c in global_summary.columns
         if c in [
-            "Horas favorables moteado", "Eventos moteado medio/alto", "Eventos moteado alto",
-            "Horas favorables oídio", "Horas favorables monilia",
-            "Eventos monilia medio/alto", "Eventos monilia alto",
+            "Infecciones moteado", "Episodios moteado ≥50", "Horas moteado (desde la lluvia)",
+            "Episodios monilia ≥100", "Episodios monilia ≥50", "Horas favorables oídio",
             "Horas húmedas equivalentes", "Eventos hoja mojada"
         ]
     ]], use_container_width=True)
@@ -15058,8 +15037,8 @@ def render_phenology_interpretation(phase_df):
 
             if any(word in str(fase).lower() for word in ["brot", "flor", "cuaj", "fruto", "madur", "cosecha"]):
                 lines.append(
-                    f"Riesgo sanitario orientativo: moteado **{row.get('Eventos moteado medio/alto', 0)} eventos medio/alto**, "
-                    f"monilia **{row.get('Eventos monilia medio/alto', 0)} eventos medio/alto**, "
+                    f"Riesgo sanitario orientativo: moteado **{row.get('Infecciones moteado', 0)} infección(es)**, "
+                    f"monilia **{row.get('Episodios monilia ≥100', 0)} episodio(s) muy favorables**, "
                     f"oídio **{row.get('Horas favorables oídio', 0)} h favorables**."
                 )
 
@@ -15743,14 +15722,15 @@ def build_weekly_priority_table_all_fields(hist, activities_df, period_df, start
     scab_ge1 = int((pd.to_numeric(events.get("Ratio moteado", 0), errors="coerce").fillna(0) >= 1.0).sum()) if not events.empty else 0
     monilia_ge1 = int((pd.to_numeric(events.get("Ratio monilia", 0), errors="coerce").fillna(0) >= 1.0).sum()) if not events.empty else 0
     rain_total = float(pd.to_numeric(period_df.get("lluvia_mm", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
-    wet_hours = float((pd.to_numeric(period_df.get("humectacion_hoja", pd.Series(dtype=float)), errors="coerce").fillna(0) > 0).sum())
+    wet_hours = float((pd.to_numeric(period_df.get("humectacion_hoja", pd.Series(dtype=float)), errors="coerce")
+                       >= LEAF_WETNESS["min_minutes_to_start_event"]).sum())
 
     if scab_ge1 > 0 or monilia_ge1 > 0 or max(max_scab, max_monilia) >= 1.0:
         climate_pressure = "Alta"
         climate_msg = "Periodo con evento(s) compatibles con infección. Priorizar campos sin cobertura registrada."
-    elif max(max_scab, max_monilia) >= 0.75 or rain_total >= 10 or wet_hours >= 24:
+    elif max(max_scab, max_monilia) >= ESCALA_MODERADO or rain_total >= 10 or wet_hours >= 24:
         climate_pressure = "Media-alta"
-        climate_msg = "Periodo húmedo o cercano a umbral. Revisar especialmente campos sin tratamiento registrado."
+        climate_msg = "Periodo húmedo o con episodios moderados (50 o más). Revisar especialmente campos sin tratamiento registrado."
     elif rain_total >= 5 or wet_hours >= 8:
         climate_pressure = "Media"
         climate_msg = "Periodo con humedad/lluvia moderada. Mantener vigilancia."
@@ -20815,17 +20795,10 @@ def settings_tab():
         help="Por defecto Franco-arenoso, el más predominante en la finca.",
     )
 
-    with st.expander("Configuración avanzada de hoja mojada", expanded=False):
-        hoja_threshold = st.number_input(
-            "Umbral heredado para hora húmeda simple",
-            min_value=1,
-            max_value=100,
-            value=30,
-            step=1,
-            key="hoja_threshold_v60",
-            help="Se mantiene por compatibilidad. El módulo sanitario usa minutos reales y eventos continuos.",
-        )
-        st.caption("El módulo nuevo trabaja con minutos de hoja mojada por hora y eventos continuos.")
+    st.caption(
+        f"🍃 **Hora de hoja mojada:** la que el sensor marca mojada **{LEAF_WETNESS['min_minutes_to_start_event']} "
+        f"minutos o más**. Es la misma regla en toda la app (episodios de infección, horas de hoja "
+        f"húmeda, oídio). Detalle en 📖 Por qué hay infección.")
 
     with st.expander("💾 Copia de seguridad completa", expanded=False):
         st.caption(
@@ -22554,7 +22527,8 @@ if not _HEADLESS:
 # Default settings.
 # No escribimos manualmente en claves usadas por widgets, porque Streamlit lo bloquea.
 soil_type = st.session_state.get("soil_type_v60", "Franco-arenoso")
-hoja_threshold = st.session_state.get("hoja_threshold_v60", 30)
+# Una sola regla de hora mojada en toda la app (14/09/2026): la de los episodios.
+hoja_threshold = LEAF_WETNESS["min_minutes_to_start_event"]
 
 history = st.session_state.history_df.copy()
 if not history.empty:
@@ -30158,7 +30132,7 @@ def interpretacion_sanitaria_semana(scab_ev, monilia_ev, max_scab, max_monilia, 
     """Valoración del riesgo sanitario de la semana (la misma regla para las dos zonas)."""
     if scab_ev > 0 or monilia_ev > 0:
         return "🔴 Semana con evento(s) de infección — revisar cobertura fungicida."
-    if max_scab >= 0.75 or max_monilia >= 0.75 or oidio_max >= 60:
+    if max_scab >= ESCALA_MODERADO or max_monilia >= ESCALA_MODERADO or oidio_max >= 50:
         return "🟡 Riesgo sanitario moderado — conviene vigilar la evolución."
     return "🟢 Semana de bajo riesgo sanitario."
 
