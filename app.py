@@ -28432,7 +28432,7 @@ def forecast_reliability(history_df, archive_df=None):
             # tal cual medía el modelo más generoso de lo que es: un previsto crudo de 120
             # contaba como aviso (≥100) cuando corregido son 73. Se pasan a la misma
             # escala, con el factor de la fuente con que se archivó cada uno.
-            _src_r = r.get("pred_src") or "sencrop"
+            _src_r = _fuente_prevision(r.get("pred_src"))
             _mp = float(pred_en_escala_real(r.get("pred_mills", 0), "mills", _src_r) or 0)
             _mr = float(a.loc[td, "Mills_valor"])
             _op = float(pred_en_escala_real(r.get("pred_monilia", 0), "monilia", _src_r) or 0)
@@ -28486,21 +28486,18 @@ def forecast_reliability(history_df, archive_df=None):
         # fuente que ya no existe. Leer «Moteado 60 %» y creer que es lo que hace tu
         # previsión de hoy era el resultado natural, y estaba mal. La lluvia ya venía
         # desglosada (WRF9 y MeteoGalicia en columnas propias); esto lo iguala.
+        # Solo la previsión ACTIVA (decisión del usuario, 14/09/2026): las filas de Sencrop
+        # (29/06-20/08) ya no aportaban nada y ocupaban sitio. Siguen en el archivo.
         _SRC_LBL = {"meteogalicia": "MeteoGalicia", "sencrop": "Sencrop (ya no activa)"}
-        _srcs_all = set(comp["src"].astype(str))
-        _srcs_pres = [s for s in ["meteogalicia", "sencrop"] if s in _srcs_all]
-        _srcs_pres += sorted(_srcs_all - {"meteogalicia", "sencrop"})
+        _srcs_pres = [FUENTE_PREVISION_ACTIVA]
 
         _specs = []
         for _lbl, _pv, _rv in [("🍄 Moteado", "moteado_pv", "moteado_rv"),
                                ("🟤 Monilia", "monilia_pv", "monilia_rv"),
                                ("⚪ Oídio",   "oidio_pv",   "oidio_rv")]:
-            if len(_srcs_pres) <= 1:
-                _specs.append((_lbl, _pv, _rv, THR, THR, NEAR, 1, None))
-            else:
-                for _s in _srcs_pres:
-                    _specs.append((f"{_lbl} · {_SRC_LBL.get(_s, _s)}",
-                                   _pv, _rv, THR, THR, NEAR, 1, _s))
+            for _s in _srcs_pres:
+                _specs.append((f"{_lbl} · {_SRC_LBL.get(_s, _s)}",
+                               _pv, _rv, THR, THR, NEAR, 1, _s))
         _specs += [
             ("🌧️ Lluvia", "lluvia_pv",  "lluvia_rv",  RAIN, RAIN_PRED, 1.0, 0, None),
             ("🌧️ Lluvia WRF9", "lluvia_wrf_pv", "lluvia_rv", RAIN, RAIN_PRED, 1.0, 0, None),
@@ -28603,6 +28600,22 @@ def forecast_reliability(history_df, archive_df=None):
         return None, {"n": 0}
 
 
+# Previsión de la que salen hoy los avisos (Sencrop dejó de servirla el 19/08/2026).
+FUENTE_PREVISION_ACTIVA = "meteogalicia"
+
+
+def _fuente_prevision(v):
+    """Fuente de un registro del archivo de previsiones. Los de antes de que se guardara la
+    fuente (época de Sencrop) vienen vacíos o NaN: son de Sencrop. Sin esto salían como «nan»
+    y se ponían en escala con el factor equivocado."""
+    try:
+        if v is None or pd.isna(v) or str(v).strip() in ("", "nan", "None"):
+            return "sencrop"
+    except Exception:
+        pass
+    return str(v).strip()
+
+
 def forecast_bias_correction(history_df, archive_df=None, min_real=20.0):
     """¿Y si en vez de subir el umbral, corregimos el número previsto?
 
@@ -28643,6 +28656,8 @@ def forecast_bias_correction(history_df, archive_df=None, min_real=20.0):
         ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce")
         ad = ad.dropna(subset=["_d", "_h"])
         ad = ad[ad["_h"] >= 1]
+        if "pred_src" in ad.columns:
+            ad["pred_src"] = ad["pred_src"].map(_fuente_prevision)
 
         fac_rows, cmp_rows = [], []
         # UN FACTOR POR FUENTE. Antes se calculaba uno solo sobre todo el archivo,
@@ -29023,7 +29038,7 @@ def forecast_reliability_daily(history_df, archive_df=None, forecast_df=None, da
                 # Aquí va al lado del real, así que hay que ponerla en su misma escala:
                 # si no, un previsto de 229 junto a un real de 150 parece mayor cuando en
                 # realidad son 139 corregidos. Ver pred_en_escala_real().
-                _src_pr = (pr.get("pred_src") if pr is not None else None) or "sencrop"
+                _src_pr = _fuente_prevision(pr.get("pred_src") if pr is not None else None)
 
                 def _pp(col, campo):
                     if pr is None:
@@ -31393,7 +31408,13 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                 "**reales** se recalculan con el criterio nuevo, pero las previsiones "
                 "**archivadas antes** de esa fecha se guardaron con el viejo: durante unas "
                 "semanas la comparación mezcla los dos y **aparecerán más escapes de los que "
-                "realmente hubo**. Se corrige solo según entren días nuevos.")
+                "realmente hubo**. Se corrige solo según entren días nuevos.\n\n"
+                "ℹ️ **Criterio cambiado el 14/09/2026:** el moteado usa la tabla revisada de Mills "
+                "y solo cuenta **desde que empieza a llover** (el rocío solo ya no es infección). "
+                "Las previsiones de moteado archivadas antes de esa fecha contaban también el "
+                "rocío: en días sin lluvia saldrán **falsas alarmas** que con el criterio de hoy "
+                "no habría. Para comparar con el modelo de hoy, mira «Los mismos días, rehechos "
+                "con el modelo de HOY».")
 
             # Resaltar lo que IMPORTA: "Eventos avisados" (verde si pilla todos, rojo si
             # se escapa alguno) y "Se le escapó" en rojo cuando es >0.
@@ -31440,11 +31461,10 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                 "lo tendría alto). Míralo **después** de «Eventos avisados».\n"
                 "- **Falsas alarmas (avisó, no pasó)** — anunció riesgo pero **no ocurrió** (molesto "
                 "pero seguro: tratas de más).\n"
-                "- **Una fila por enfermedad Y POR FUENTE de previsión.** Sencrop dejó de "
-                "servir previsión el **19/08/2026** y MeteoGalicia entró el **25/08**: sus "
-                "filas cubren periodos distintos (mira la columna **Periodo**) y no se deben "
-                "comparar entre sí ni sumar. La de Sencrop es un post-mortem; la que dice qué "
-                "hace tu avisador **hoy** es la de MeteoGalicia, que todavía tiene pocos días.\n"
+                "- **Las enfermedades se miden solo con la previsión de MeteoGalicia**, la que "
+                "da los avisos desde el **25/08/2026**. Las de Sencrop (hasta el 19/08) ya no se "
+                "enseñan, aunque siguen guardadas en el archivo. La lluvia va en dos filas: "
+                "WRF9 (Windguru) y MeteoGalicia.\n"
                 "- **Se le escapó (no avisó, sí pasó)** — **no** avisó y **sí** ocurrió (🔴 lo "
                 "peligroso: te pilla sin proteger).\n\n"
                 "ℹ️ **Casi‑avisos:** en un día de evento real, una previsión que llega al **≥90 % del "
