@@ -16782,6 +16782,15 @@ def carpocapsa_prepare_damage_df(df):
         (_suma > 0) & (_suma != out["Frutos dañados"]),
         "⚠️ el desglose suma " + _suma.astype(int).astype(str) + " y dañados dice "
         + out["Frutos dañados"].astype(int).astype(str), "")
+    # Error típico: meter los dudosos dentro de «Frutos dañados». Si la diferencia es
+    # justo esa, se dice qué número poner (14/09/2026, Sector 9: 30 + 4 dudosos = 34).
+    _dud = out["Dudoso / otra plaga"].fillna(0)
+    _con_dudosos = (_suma > 0) & (_dud > 0) & (_suma + _dud == out["Frutos dañados"])
+    out["Descuadre"] = np.where(
+        _con_dudosos,
+        "⚠️ parece que sumaste los " + _dud.astype(int).astype(str) + " dudosos en «Frutos "
+        "dañados»: pon " + _suma.astype(int).astype(str),
+        out["Descuadre"])
     return out
 
 
@@ -20624,7 +20633,14 @@ def carpocapsa_tab(history):
                 "**El desglose no cuadra en "
                 f"{len(_desc)} fila(s):** " + " · ".join(
                     f"{r['Campo/Zona']} {pd.to_datetime(r['Fecha']):%d/%m}" for _, r in _desc.iterrows())
-                + ". Con larva + galería + picadura tiene que sumar «Frutos dañados».")
+                + ". Con larva + galería + picadura tiene que sumar «Frutos dañados»."
+                + "".join(
+                    f"\n\n- **{r['Campo/Zona']} {pd.to_datetime(r['Fecha']):%d/%m}:** "
+                    + str(r["Descuadre"]).replace("⚠️ ", "") + "."
+                    for _, r in _desc.iterrows())
+                + ("\n\nLos **dudosos van aparte**: no se cuentan como frutos dañados, porque "
+                   "pueden ser de otra plaga."
+                   if _desc["Descuadre"].astype(str).str.contains("dudosos").any() else ""))
         _suelo = damage_show[damage_show["Origen"].astype(str).str.lower().str.startswith("suelo")]
         if not _suelo.empty:
             st.info(
