@@ -32906,8 +32906,10 @@ if not _HEADLESS:
     .st-key-fg_mob_nav [data-testid="stCaptionContainer"]{margin-top:10px;}
     .st-key-fg_mob_nav .st-key-mob_to_full button{min-height:36px!important;}
     /* Primera fila (datos + 💻): la línea de datos se lleva casi todo el ancho. */
-    .st-key-fg_mob_nav [data-testid="stHorizontalBlock"]:first-of-type > [data-testid="stColumn"]:first-child,
-    .st-key-fg_mob_nav [data-testid="stHorizontalBlock"]:first-of-type > [data-testid="column"]:first-child{
+    .st-key-fg_mob_nav [data-testid="stColumn"]:has([data-testid="stCaptionContainer"]),
+    .st-key-fg_mob_nav [data-testid="stColumn"]:has(.fg-mob-title),
+    .st-key-fg_mob_nav [data-testid="column"]:has([data-testid="stCaptionContainer"]),
+    .st-key-fg_mob_nav [data-testid="column"]:has(.fg-mob-title){
         flex:6 1 0!important;}
     /* Menos hueco arriba del todo (solo en la vista móvil):
        · la barra superior de Streamlit (60 px en blanco);
