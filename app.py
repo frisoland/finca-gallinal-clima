@@ -33320,6 +33320,32 @@ if not _HEADLESS:
         import cProfile as _cprof
         _PERFIL = _cprof.Profile()
         _PERFIL.enable()
+    _MUESTREO = None
+    if str(_query_param("medir") or "") == "3":
+        # TEMPORAL: cada 5 ms se anota qué líneas de app.py están en ejecución (tiempo real).
+        import collections as _colecc, sys as _sys_m, threading as _hilos_m
+        _MUESTREO = {"propio": _colecc.Counter(), "acum": _colecc.Counter(), "n": 0,
+                     "parar": _hilos_m.Event(), "hilo": _hilos_m.get_ident(), "t0": time.perf_counter()}
+
+        def _muestrear(m=_MUESTREO):
+            while not m["parar"].is_set():
+                _f = _sys_m._current_frames().get(m["hilo"])
+                _vistas, _primera = set(), None
+                while _f is not None:
+                    if _f.f_code.co_filename.endswith("app.py"):
+                        _clave = (_f.f_code.co_name, _f.f_lineno)
+                        if _primera is None:
+                            _primera = _clave
+                        _vistas.add(_clave)
+                    _f = _f.f_back
+                if _primera is not None:
+                    m["propio"][_primera] += 1
+                for _c in _vistas:
+                    m["acum"][_c] += 1
+                m["n"] += 1
+                time.sleep(0.005)
+
+        _hilos_m.Thread(target=_muestrear, daemon=True).start()
     if _page == "hoy":
         home_today_tab(history, soil_type, hoja_threshold)
     elif _page == "dashboard":
@@ -33359,6 +33385,17 @@ if not _HEADLESS:
     elif _page == "configuracion":
         settings_tab()
     _medir(f"Pantalla «{_page}»")
+    if _MUESTREO is not None:
+        _MUESTREO["parar"].set()
+        _seg = (time.perf_counter() - _MUESTREO["t0"]) / max(_MUESTREO["n"], 1)
+        st.divider()
+        st.markdown(f"#### 🔬 Muestreo (temporal): {_MUESTREO['n']} muestras")
+        st.markdown("<div id='fg-muestreo-propio'>" + "<br>".join(
+            f"{_c * _seg:.2f} s · {_fn} línea {_ln}" for (_fn, _ln), _c in _MUESTREO["propio"].most_common(40)
+        ) + "</div>", unsafe_allow_html=True)
+        st.markdown("<div id='fg-muestreo-acum'>" + "<br>".join(
+            f"{_c * _seg:.2f} s · {_fn} línea {_ln}" for (_fn, _ln), _c in _MUESTREO["acum"].most_common(80)
+        ) + "</div>", unsafe_allow_html=True)
     if _PERFIL is not None:
         _PERFIL.disable()
         try:
