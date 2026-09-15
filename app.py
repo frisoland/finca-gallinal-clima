@@ -32502,6 +32502,221 @@ def render_prevision_y_fiabilidad():
     render_fiabilidad_prevision(history_df, forecast_df)
 
 
+def _dec_recomendaciones(_dec_df, _catalog_df, traps_df, history_df, activities_df):
+    """Tabla de decisión + «1ª elección», «Alternativa», «Por qué» y la sincronización con
+    carpocapsa (_combo_ann, _combo_lvl). La usan la pantalla completa y el móvil."""
+    # ── Ventanas de carpocapsa para sincronizar tratamientos ──────────────
+    # Calcula una única vez las ventanas activas/en espera de carpocapsa
+    # para todos los campos, y luego anota cada fila del panel de fungicidas.
+    _carpo_windows  = pd.DataFrame()
+    if traps_df is not None and not traps_df.empty and history_df is not None and not history_df.empty:
+        try:
+            _carpo_windows = carpocapsa_build_multi_windows(
+                traps_df,
+                history_df,
+                activities_df=activities_df,
+                campaign_year=pd.Timestamp.now().year,
+            )
+        except Exception:
+            _carpo_windows = pd.DataFrame()
+
+    # ── Calcular recomendaciones por campo usando ranking científico ────────
+    _dec_display = _dec_df.copy()
+    _rec_primary  = []
+    _rec_alt      = []
+    _rec_motivo   = []
+    _rec_combo    = []   # anotación de sync carpocapsa
+    for _, _r in _dec_display.iterrows():
+        _campo = str(_r.get("Campo", ""))
+        _dom  = _r.get("_dominant_list", [])
+        _lp   = str(_r.get("_last_product", ""))
+        _ac   = _r.get("_app_counts", {})
+        _sdhi = int(_r.get("_sdhi_total", 0))
+        _p, _a, _m = get_smart_recommendation(
+            _dom, _catalog_df, last_product=_lp,
+            app_counts=_ac, sdhi_total=_sdhi,
+            curative_needed=bool(_r.get("_curativa_moment", False)),
+        )
+        _rec_primary.append(_p)
+        _rec_alt.append(_a)
+        _rec_motivo.append(_m)
+        # Sync carpocapsa
+        _rec_combo.append(carpocapsa_sync_annotation(_campo, _carpo_windows))
+
+    _dec_display["1ª elección"]  = _rec_primary
+    _dec_display["Alternativa"]  = _rec_alt
+    _dec_display["Por qué"]      = _rec_motivo
+    _dec_display["_combo_ann"]   = [t for t, _ in _rec_combo]
+    _dec_display["_combo_lvl"]   = [l for _, l in _rec_combo]
+    return _dec_display
+
+
+def _dec_tratamientos_periodo(activities_df, desde):
+    """(todos, carpocapsa, fungicidas) desde `desde`, para pintar en las gráficas de riesgo."""
+    treats_all   = pd.DataFrame()
+    treats_carpo = pd.DataFrame()
+    treats_fungi = pd.DataFrame()
+    if activities_df is not None and not activities_df.empty and "Fecha" in activities_df.columns:
+        acts = activities_df.copy()
+        acts["Fecha_dt"] = pd.to_datetime(acts["Fecha"], errors="coerce")
+        acts = acts.dropna(subset=["Fecha_dt"])
+        t_mask = acts["Fecha_dt"] >= desde
+        if t_mask.any():
+            treats_all = acts[t_mask].copy()
+            # Texto combinado de TODAS las columnas de producto/descr. (no parar en la
+            # primera): así una mezcla en cuba se clasifica por todo lo que lleva.
+            _tcols = [c for c in ["Productos", "Producto", "Descripcion",
+                                  "Comentarios", "Trabajo"] if c in treats_all.columns]
+            if _tcols:
+                _txt = (treats_all[_tcols].fillna("").astype(str)
+                        .agg(" ".join, axis=1))
+                # Carpocapsa: pases con ≥1 producto de carpocapsa (para su gráfica).
+                # Un mixto fungicida+Bactur SÍ entra; un fungicida solo NO.
+                carpo_mask = _txt.str.lower().apply(
+                    lambda x: any(kw in x for kw in CARPOCAPSA_TREATMENT_KEYWORDS))
+                if carpo_mask.any():
+                    treats_carpo = treats_all[carpo_mask]
+                # Fungicidas: pases con ≥1 fungicida (para moteado/monilia/oídio). Un
+                # mixto fungicida+Bactur SÍ entra (lleva keyword fungicida); un Bactur
+                # solo NO (keyword de insecticida y ninguna de fungicida).
+                fungi_mask = _txt.apply(lambda x: is_fungicide_activity(x))
+                if fungi_mask.any():
+                    treats_fungi = treats_all[fungi_mask]
+    return treats_all, treats_carpo, treats_fungi
+
+
+def render_decisiones_movil():
+    """Decisiones en el MÓVIL: lo esencial en tarjetas, botones para las gráficas de moteado y
+    monilia y, con un interruptor, la pantalla completa. Mismo motor que la pantalla completa
+    (decision_por_zonas con 60 días y la persistencia de respaldo por defecto, 16 días)."""
+    import html as _h
+    try:
+        import plotly.graph_objects as _go_test  # noqa: F401
+    except ImportError:
+        st.error("📦 **Plotly no está instalado.** Manage app → Reboot app.")
+        return
+    history_df = st.session_state.get("history_df", pd.DataFrame())
+    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
+    activities_df = st.session_state.get("activities_df", pd.DataFrame())
+    traps_df = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
+
+    if history_df.empty and forecast_df.empty:
+        st.warning(f"⚠️ Sin datos climáticos. Carga el histórico y la previsión desde **{NOMBRE_ITEM_PREVISION}**.")
+    else:
+        # ── Previsión en una línea ──────────────────────────────────────────────
+        if forecast_df is not None and not forecast_df.empty:
+            _mh = pd.to_datetime(forecast_df["fecha_hora"], errors="coerce").max()
+            _fuente_fc = ("MeteoGalicia" if st.session_state.get("_forecast_src") == "meteogalicia"
+                          else (st.session_state.get("forecast_model") or "cargada"))
+            st.caption(f"**Lo esencial** · 🌍 previsión {_fuente_fc}"
+                       + (f", hasta el {_mh:%d/%m %H:%M}" if pd.notna(_mh) else ""))
+            _frag_fc = dias_prevision_fragiles(forecast_df)
+            if _frag_fc:
+                st.warning("🔴 **Aviso frágil** el **" + ", ".join(_frag_fc) + "**: la hoja mojada la "
+                           "sostiene casi solo la lluvia prevista. Antes de tratar por esos días, "
+                           "espera a ver si llueve.")
+        else:
+            st.warning("🔮 **No hay previsión cargada:** el riesgo que ves es todo pasado.")
+
+        # Igual que la pantalla completa: se archiva antes de mezclar la lluvia de MeteoGalicia.
+        archive_today_forecast(history_df, forecast_df)
+        forecast_df = preparar_prevision_para_riesgo(forecast_df)
+
+        _dec_df, _dec_info = decision_por_zonas(
+            history_df, activities_df, forecast_df,
+            persistence_days=int(st.session_state.get("dec_persist_days", 16)), days_back=60)
+        if _dec_df.empty:
+            st.info("Carga el histórico y las actuaciones de Agroptima para generar el panel de decisión.")
+        else:
+            _catalog_df = st.session_state.get("fungicide_catalog_df", pd.DataFrame(DEFAULT_FUNGICIDE_CATALOG))
+            _dd = _dec_recomendaciones(_dec_df, _catalog_df, traps_df, history_df, activities_df)
+            st.markdown(_movil_cifras_html([
+                ("🔴 Tratar hoy", int((_dd["_priority"] == 1).sum())),
+                ("🟠 Sin cobertura", int((_dd["_priority"] == 2).sum())),
+                ("🟡 Revisar", int((_dd["_priority"] == 3).sum())),
+                ("🟢 OK", int((_dd["_priority"] == 4).sum())),
+            ]), unsafe_allow_html=True)
+
+            _colores = {1: "#c62828", 2: "#ef6c00", 3: "#f9a825", 4: "#2e7d32"}
+            _tarjetas, _ok = [], []
+            _grupos = {}
+            for _, r in _dd.iterrows():
+                _pri = int(r.get("_priority", 4))
+                _campo = str(r.get("Campo", ""))
+                _campo_txt = _campo + (" 🌊" if zona_de_campo(_campo) == ZONA_RIO else "")
+                if _pri == 4:
+                    _ok.append(_campo_txt)
+                    continue
+                _grupos.setdefault((_pri, str(r.get("🎯 Acción", "")), str(r.get("Momento", ""))), []).append(r)
+            for (_pri, _accion, _momento), _filas in sorted(_grupos.items(), key=lambda kv: kv[0][0]):
+                _filas = sorted(_filas, key=lambda r: (-(pd.to_numeric(r.get("Ev. sin cobertura"), errors="coerce")
+                                                        if pd.notna(pd.to_numeric(r.get("Ev. sin cobertura"), errors="coerce")) else 0),
+                                                       str(r.get("Campo", ""))))
+                _riesgos = {str(r.get("Riesgo principal", "") or "") for r in _filas}
+                _cab = [f"<span style='color:#444'>{_h.escape(_momento)}</span>"] if _momento else []
+                if len(_riesgos) == 1 and next(iter(_riesgos)):
+                    _cab.append(f"Riesgo: <b>{_h.escape(next(iter(_riesgos)))}</b>")
+                _lin = [" · ".join(_cab)] if _cab else []
+                for r in _filas:
+                    _campo = str(r.get("Campo", ""))
+                    _campo_txt = _campo + (" 🌊" if zona_de_campo(_campo) == ZONA_RIO else "")
+                    _ult = str(r.get("Último fungicida", "") or "—")
+                    _dias = r.get("Días sin trat.", "—")
+                    _sc = r.get("Ev. sin cobertura", "")
+                    _l1 = (f"<b>{_h.escape(_campo_txt)}</b> · último {_h.escape(_ult)}"
+                           + (f" ({_dias} d)" if str(_dias) not in ("", "—") else "")
+                           + (f" · <b>{_sc}</b> sin cobertura" if str(_sc) not in ("", "—") else ""))
+                    _p1, _p2 = str(r.get("1ª elección", "") or "—"), str(r.get("Alternativa", "") or "—")
+                    _l2 = f"1ª <b>{_h.escape(_p1)}</b> · alt. {_h.escape(_p2)}"
+                    if len(_riesgos) > 1 and str(r.get("Riesgo principal", "") or ""):
+                        _l2 += f" · {_h.escape(str(r.get('Riesgo principal')))}"
+                    if str(r.get("_combo_lvl", "")) in ("now", "soon"):
+                        _l2 += (f" · <span style='color:#e65100;font-weight:700'>"
+                                f"{_h.escape(str(r.get('_combo_ann', '')))}</span>")
+                    _lin.append(f"<div style='border-top:1px solid #eee;margin-top:5px;padding-top:4px'>"
+                                f"{_l1}<br><span style='color:#555'>{_l2}</span></div>")
+                _titulo = f"{_accion} · {len(_filas)} campo{'s' if len(_filas) != 1 else ''}"
+                _tarjetas.append(_carpo_movil_tarjeta(_titulo, _lin, _colores.get(_pri, "#9e9e9e")))
+            if _tarjetas:
+                st.markdown("".join(_tarjetas), unsafe_allow_html=True)
+            if _ok:
+                st.markdown(f"🟢 **OK ({len(_ok)}):** " + ", ".join(_h.escape(c) for c in _ok))
+
+            # ── Gráficas de moteado y monilia, a demanda ─────────────────────────────
+            st.markdown("#### 📈 Gráficas")
+            _b1, _b2 = st.columns(2)
+            _ver_mot = _b1.toggle("🍄 Moteado", key="dec_movil_ver_moteado")
+            _ver_mon = _b2.toggle("🍑 Monilia", key="dec_movil_ver_monilia")
+            if _ver_mot or _ver_mon:
+                _zona_g = st.radio("Zona", [ZONA_NAVE, ZONA_RIO], horizontal=True, key="dec_movil_zona_graficas")
+                _risk = _dec_info["risk_nave"]
+                if _zona_g == ZONA_RIO:
+                    _rr, _nota = risk_zona_rio_para_ver(history_df, forecast_df, days_back=60)
+                    if _rr is None or _rr.empty:
+                        st.info(_nota)
+                    else:
+                        _risk = _rr
+                if _risk is not None and not _risk.empty:
+                    _hoy = pd.Timestamp.now().normalize()
+                    _, _, _fungi = _dec_tratamientos_periodo(activities_df, _risk["Fecha"].min())
+                    _cfg = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False}
+                    if _ver_mot:
+                        st.caption("🍄 **Moteado (Mills):** 25 ligero · 50 moderado · **100 infección**. "
+                                   "Zona azul = previsión. Líneas moradas = fungicidas.")
+                        st.plotly_chart(_dec_disease_chart(_risk, "Mills_valor", "Moteado", _hoy, _fungi, 290),
+                                        use_container_width=True, config=_cfg, key="dec_movil_graf_moteado")
+                    if _ver_mon:
+                        st.caption("🍑 **Monilia:** 50 moderado · **100 tiempo muy favorable**. En manzano entra "
+                                   "por heridas: léela como tiempo favorable, no como infección.")
+                        st.plotly_chart(_dec_disease_chart(_risk, "Monilia_valor", "Monilia", _hoy, _fungi, 290),
+                                        use_container_width=True, config=_cfg, key="dec_movil_graf_monilia")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="dec_movil_completa",
+                 help="Tabla completa, análisis detallado por campo, catálogo de fungicidas y todas las gráficas."):
+        render_decisiones_panel()
+
+
 def render_decisiones_panel():
     """Panel de decisiones agronómicas con 4 gráficas estilo RIMpro."""
     try:
@@ -32777,52 +32992,8 @@ def render_decisiones_panel():
         _s3.metric("🟡 Revisar",             _n_yellow)
         _s4.metric("🟢 OK",                  _n_green)
 
-        # ── Ventanas de carpocapsa para sincronizar tratamientos ──────────────
-        # Calcula una única vez las ventanas activas/en espera de carpocapsa
-        # para todos los campos, y luego anota cada fila del panel de fungicidas.
-        _carpo_sync_map = {}   # campo → (texto, nivel)
-        _carpo_windows  = pd.DataFrame()
-        if not traps_df.empty and not history_df.empty:
-            try:
-                _carpo_windows = carpocapsa_build_multi_windows(
-                    traps_df,
-                    history_df,
-                    activities_df=activities_df,
-                    campaign_year=pd.Timestamp.now().year,
-                )
-            except Exception:
-                _carpo_windows = pd.DataFrame()
-
-        # ── Calcular recomendaciones por campo usando ranking científico ────────
-        _dec_display = _dec_df.copy()
-        _rec_primary  = []
-        _rec_alt      = []
-        _rec_motivo   = []
-        _rec_combo    = []   # anotación de sync carpocapsa
-        for _, _r in _dec_display.iterrows():
-            _campo = str(_r.get("Campo", ""))
-            _dom  = _r.get("_dominant_list", [])
-            _lp   = str(_r.get("_last_product", ""))
-            _ac   = _r.get("_app_counts", {})
-            _sdhi = int(_r.get("_sdhi_total", 0))
-            _p, _a, _m = get_smart_recommendation(
-                _dom, _catalog_df, last_product=_lp,
-                app_counts=_ac, sdhi_total=_sdhi,
-                curative_needed=bool(_r.get("_curativa_moment", False)),
-            )
-            _rec_primary.append(_p)
-            _rec_alt.append(_a)
-            _rec_motivo.append(_m)
-            # Sync carpocapsa
-            _ann, _lvl = carpocapsa_sync_annotation(_campo, _carpo_windows)
-            _carpo_sync_map[_campo] = (_ann, _lvl)
-            _rec_combo.append((_ann, _lvl))
-
-        _dec_display["1ª elección"]  = _rec_primary
-        _dec_display["Alternativa"]  = _rec_alt
-        _dec_display["Por qué"]      = _rec_motivo
-        _dec_display["_combo_ann"]   = [t for t, _ in _rec_combo]
-        _dec_display["_combo_lvl"]   = [l for _, l in _rec_combo]
+        # ── Recomendación por campo y sincronización con carpocapsa ─────────────
+        _dec_display = _dec_recomendaciones(_dec_df, _catalog_df, traps_df, history_df, activities_df)
 
         # ── Tabla HTML: scroll vertical + horizontal, columna Campo fija ─────
         # Orden: columnas de acción inmediata primero (visible sin scroll),
@@ -33078,35 +33249,7 @@ def render_decisiones_panel():
             st.caption(_nota_rio_g)
 
     # ── Tratamientos del período ──────────────────────────────────────────────
-    treats_all   = pd.DataFrame()
-    treats_carpo = pd.DataFrame()
-    treats_fungi = pd.DataFrame()
-    if not activities_df.empty and "Fecha" in activities_df.columns:
-        acts = activities_df.copy()
-        acts["Fecha_dt"] = pd.to_datetime(acts["Fecha"], errors="coerce")
-        acts = acts.dropna(subset=["Fecha_dt"])
-        t_mask = acts["Fecha_dt"] >= risk_df["Fecha"].min()
-        if t_mask.any():
-            treats_all = acts[t_mask].copy()
-            # Texto combinado de TODAS las columnas de producto/descr. (no parar en la
-            # primera): así una mezcla en cuba se clasifica por todo lo que lleva.
-            _tcols = [c for c in ["Productos", "Producto", "Descripcion",
-                                  "Comentarios", "Trabajo"] if c in treats_all.columns]
-            if _tcols:
-                _txt = (treats_all[_tcols].fillna("").astype(str)
-                        .agg(" ".join, axis=1))
-                # Carpocapsa: pases con ≥1 producto de carpocapsa (para su gráfica).
-                # Un mixto fungicida+Bactur SÍ entra; un fungicida solo NO.
-                carpo_mask = _txt.str.lower().apply(
-                    lambda x: any(kw in x for kw in CARPOCAPSA_TREATMENT_KEYWORDS))
-                if carpo_mask.any():
-                    treats_carpo = treats_all[carpo_mask]
-                # Fungicidas: pases con ≥1 fungicida (para moteado/monilia/oídio). Un
-                # mixto fungicida+Bactur SÍ entra (lleva keyword fungicida); un Bactur
-                # solo NO (keyword de insecticida y ninguna de fungicida).
-                fungi_mask = _txt.apply(lambda x: is_fungicide_activity(x))
-                if fungi_mask.any():
-                    treats_fungi = treats_all[fungi_mask]
+    treats_all, treats_carpo, treats_fungi = _dec_tratamientos_periodo(activities_df, risk_df["Fecha"].min())
 
     chart_h = 290
 
@@ -33712,7 +33855,10 @@ if not _HEADLESS:
     elif _page == "sanidad":
         health_tab(history, soil_type, hoja_threshold)
     elif _page == "decisiones":
-        render_decisiones_panel()
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_decisiones_movil()
+        else:
+            render_decisiones_panel()
     elif _page == "carpocapsa":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 15/09/2026)
             render_carpocapsa_movil(history)
