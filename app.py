@@ -16886,6 +16886,105 @@ def weekly_report_tab(history, soil_type, hoja_threshold):
             )
 
 
+def _movil_cifras_html(pares):
+    """Cuadrícula de 2 columnas con cifras (etiqueta, valor) para el móvil."""
+    import html as _h
+    _celdas = "".join(
+        f"<div style='background:#fff;border-radius:10px;padding:8px 10px;"
+        f"box-shadow:0 1px 2px rgba(0,0,0,.08)'>"
+        f"<div style='font-size:0.78rem;color:#666;line-height:1.2'>{_h.escape(str(e))}</div>"
+        f"<div style='font-size:1.25rem;font-weight:700;line-height:1.3'>{_h.escape(str(v))}</div></div>"
+        for e, v in pares)
+    return (f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:4px 0 12px 0'>"
+            f"{_celdas}</div>")
+
+
+def render_informe_movil(history, soil_type, hoja_threshold):
+    """Informe semanal en el MÓVIL: últimos 7 días con las mismas cuentas que la pantalla
+    completa (build_weekly_executive_report), en cifras y tarjetas; debajo, con un
+    interruptor, la pantalla completa de siempre."""
+    import html as _h
+    if history is None or history.empty:
+        st.info("Carga primero el histórico climático.")
+    else:
+        _hist = history.copy()
+        _hist["fecha_hora"] = pd.to_datetime(_hist["fecha_hora"], errors="coerce")
+        _hist = _hist.dropna(subset=["fecha_hora"])
+        _min_d = _hist["fecha_hora"].min().date()
+        _fin = _hist["fecha_hora"].max().date()
+        _ini = max(_min_d, _fin - pd.Timedelta(days=6))       # igual que la pantalla completa
+        st.caption(f"**Lo esencial** · del {_ini:%d/%m} al {_fin:%d/%m} (últimos 7 días) · "
+                   f"para otras fechas, la pantalla completa.")
+
+        _acts = st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS))
+        metrics, report_md, acts_period, priority_table = build_weekly_executive_report(
+            history, _acts, _ini, _fin, rio_df=st.session_state.get("history_rio_df", pd.DataFrame()))
+        if not metrics:
+            st.warning(report_md)
+        else:
+            _na = lambda v, fmt: "Sin datos" if pd.isna(v) else fmt.format(v)
+            st.markdown(_movil_cifras_html([
+                ("Lluvia", _na(metrics["rain_total"], "{:.1f} mm")),
+                ("Temp. media", _na(metrics["temp_mean"], "{:.1f} ºC")),
+                ("Eventos hoja mojada", metrics["leaf_events"]),
+                ("Actuaciones", metrics["activities_count"]),
+                ("Máx ratio moteado", f"{metrics['max_scab_ratio']:.2f}"),
+                ("Máx ratio monilia", f"{metrics['max_monilia_ratio']:.2f}"),
+                ("Campos con aviso", metrics["priority_review_count"]),
+                ("Prioridad alta", metrics["priority_high_count"]),
+            ]), unsafe_allow_html=True)
+
+            # ── Campos con aviso (mismo criterio que «Campos con aviso»: Alta/Media-alta/Media) ──
+            _colores = {"Alta": "#c62828", "Media-alta": "#ef6c00", "Media": "#f9a825"}
+            _con_aviso = (priority_table[priority_table["Prioridad"].isin(list(_colores))]
+                          if not priority_table.empty and "Prioridad" in priority_table.columns
+                          else pd.DataFrame())
+            st.markdown(f"#### ⚠️ Campos con aviso ({len(_con_aviso)})")
+            if _con_aviso.empty:
+                st.success("Ningún campo con aviso en estos días.")
+            else:
+                _tarjetas = []
+                for _, r in _con_aviso.iterrows():      # ya viene ordenada por prioridad
+                    _campo = str(r.get("Campo", ""))
+                    _pri = str(r.get("Prioridad", ""))
+                    _ult = str(r.get("Último tratamiento", "") or "")
+                    _prod = str(r.get("Producto", "") or "")
+                    if r.get("Tratado registrado", "") == "Sí":
+                        _trat = f"Último tratamiento: {_h.escape(_ult)}" + (f" · {_h.escape(_prod)}" if _prod else "")
+                    else:
+                        _trat = "Sin tratamiento registrado"
+                    _ll = pd.to_numeric(r.get("Lluvia posterior mm"), errors="coerce")
+                    _mo = pd.to_numeric(r.get("Máx ratio moteado posterior"), errors="coerce")
+                    _mn = pd.to_numeric(r.get("Máx ratio monilia posterior"), errors="coerce")
+                    _lin = [f"<b style='color:{_colores[_pri]}'>Prioridad {_h.escape(_pri)}</b>",
+                            _trat,
+                            "Después: " + " · ".join([
+                                f"lluvia {'—' if pd.isna(_ll) else f'{_ll:.1f} mm'}",
+                                f"moteado {'—' if pd.isna(_mo) else f'{_mo:.2f}'}",
+                                f"monilia {'—' if pd.isna(_mn) else f'{_mn:.2f}'}"]),
+                            f"<span style='color:#555'>{_h.escape(str(r.get('Aviso orientativo', '') or ''))}</span>"]
+                    _titulo = _campo + (" 🌊" if zona_de_campo(_campo) == ZONA_RIO else "")
+                    _tarjetas.append(_carpo_movil_tarjeta(_titulo, _lin, _colores[_pri]))
+                st.markdown("".join(_tarjetas), unsafe_allow_html=True)
+            _sin = len(priority_table) - len(_con_aviso) if not priority_table.empty else 0
+            if _sin:
+                st.caption(f"Sin aviso (prioridad baja): {_sin} campo{'s' if _sin != 1 else ''}.")
+
+            try:
+                st.download_button(
+                    "📄 Descargar informe en PDF",
+                    data=build_weekly_pdf_report(metrics, report_md, acts_period, priority_table),
+                    file_name=f"informe_semanal_finca_gallinal_{metrics['period_start']}_{metrics['period_end']}.pdf",
+                    mime="application/pdf", key="download_weekly_report_pdf_movil", use_container_width=True)
+            except Exception as exc:
+                st.warning(f"No se pudo generar el PDF: {exc}")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="informe_movil_completa",
+                 help="Elegir fechas, vista previa del informe entero, actuaciones y la tabla de todos los campos."):
+        weekly_report_tab(history, soil_type, hoja_threshold)
+
+
 CARPOCAPSA_DEFAULT_TRAP_COLUMNS = [
     "Fecha",
     "Campo/Zona",
@@ -33536,7 +33635,10 @@ if not _HEADLESS:
     elif _page == "gallinal":
         gallinal_tab(history)
     elif _page == "informe":
-        weekly_report_tab(history, soil_type, hoja_threshold)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_informe_movil(history, soil_type, hoja_threshold)
+        else:
+            weekly_report_tab(history, soil_type, hoja_threshold)
     elif _page == "instrucciones":
         instructions_tab()
     elif _page == "configuracion":
