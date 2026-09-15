@@ -33177,8 +33177,10 @@ if not _HEADLESS:
             del _hist_med[:-15]
             st.divider()
             st.markdown(f"#### ⏱️ Medición (temporal) · esta ejecución: **{_total} s**")
-            st.dataframe(pd.DataFrame(_filas), hide_index=True, use_container_width=True)
+            st.markdown("\n".join(f"- {f['Parte']}: **{f['Segundos']} s**" for f in _filas))
             st.caption("Últimas ejecuciones de esta sesión (partes de 0,3 s o más):")
-            st.dataframe(pd.DataFrame(_hist_med[::-1]), hide_index=True, use_container_width=True)
+            st.markdown("<div id='fg-medidas'>" + "<br>".join(
+                " · ".join(f"{k}: {v}" for k, v in r.items()) for r in _hist_med[::-1]) + "</div>",
+                unsafe_allow_html=True)
     except Exception as _e_med:
         st.caption(f"(cronómetro: {_e_med})")
