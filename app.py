@@ -24878,7 +24878,7 @@ def render_gallinal_movil(history):
                                   f"<span style='color:{_cA};text-align:right'>🔵 {_f0(_ka)}</span>"
                                   f"<span style='color:{_cB};text-align:right'>🔴 {_f0(_kb)}</span></div>")
                 st.markdown(_carpo_movil_tarjeta("Kg/ha año a año", _lin_a, "#5e35b1"), unsafe_allow_html=True)
-                _graf = pd.DataFrame({"🔵 A": _ga["kg_ha"], "🔴 B": _gb["kg_ha"]})
+                _graf = pd.DataFrame({"A": _ga["kg_ha"], "B": _gb["kg_ha"]})   # el color ya lo da la leyenda
                 _movil_grafica_lineas(_graf, ["#1565c0", "#c62828"], "g_movil_graf_cmp", "Kg/ha")
 
         # ── 3. Excelencia y vecería de un campo ────────────────────────────────────
