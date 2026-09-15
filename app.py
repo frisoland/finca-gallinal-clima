@@ -19412,6 +19412,68 @@ def carpocapsa_cobertura_eclosion(traps_df, treatments_df, daily_dd, campaign_ye
     return res, hue, pas
 
 
+def render_carpocapsa_grafica_capturas(traps_campaign, campaign_year, clave_campos="carp_campos_grafica",
+                                       con_tabla=True, clave_graficas=None):
+    """Evolución de capturas: pestañas «Total finca» y «Por campo». La usan la pantalla
+    completa y el móvil (con `con_tabla=False` y otras claves: en el móvil, con la pantalla
+    completa abierta, salen las dos a la vez y Streamlit no admite dos gráficas idénticas)."""
+    _kg = (lambda suf: {"key": f"{clave_graficas}_{suf}"}) if clave_graficas else (lambda suf: {})
+    if traps_campaign is None or traps_campaign.empty:
+        st.info("Sube el Excel de carpocapsa para ver la evolución de capturas.")
+        return
+
+    traps_campaign["Fecha"] = pd.to_datetime(traps_campaign.get("Fecha", traps_campaign.get("fecha", pd.Series())), errors="coerce")
+    traps_campaign["Capturas machos"] = pd.to_numeric(traps_campaign.get("Capturas machos", traps_campaign.get("capturas_machos", pd.Series())), errors="coerce").fillna(0)
+    traps_campaign = traps_campaign.dropna(subset=["Fecha"])
+
+    # Suma total de capturas por fecha
+    capturas_total = traps_campaign.groupby("Fecha", as_index=False)["Capturas machos"].sum()
+    capturas_total = capturas_total.sort_values("Fecha")
+    capturas_total["Fecha_str"] = capturas_total["Fecha"].dt.strftime("%d/%m")
+
+    # Capturas por campo (para gráfica desglosada)
+    capturas_campo = traps_campaign.groupby(["Fecha", "Campo/Zona"], as_index=False)["Capturas machos"].sum() if "Campo/Zona" in traps_campaign.columns else pd.DataFrame()
+
+    tab_total, tab_campo = st.tabs(["Total finca", "Por campo"])
+
+    with tab_total:
+        import altair as alt
+        thresh_val = int(st.session_state.get("carp_capture_threshold", 3))
+        n_campos = len(traps_campaign["Campo/Zona"].unique()) if "Campo/Zona" in traps_campaign.columns else 1
+        capturas_total["Fecha_dt"] = pd.to_datetime(capturas_total["Fecha"])
+        linea_cap = alt.Chart(capturas_total).mark_line(point=True, color="#e05c5c").encode(
+            x=alt.X("Fecha_dt:T", title="Fecha lectura", axis=alt.Axis(format="%d/%m", labelAngle=-45)),
+            y=alt.Y("Capturas machos:Q", title="Capturas totales"),
+            tooltip=[alt.Tooltip("Fecha_dt:T", title="Fecha", format="%d/%m/%Y"),
+                     alt.Tooltip("Capturas machos:Q", title="Total capturas")],
+        )
+        umbral_df = pd.DataFrame({"y": [thresh_val * n_campos]})
+        umbral_line = alt.Chart(umbral_df).mark_rule(color="orange", strokeDash=[6,3]).encode(y="y:Q")
+        st.altair_chart((linea_cap + umbral_line).properties(height=350, title=f"Capturas totales campaña {campaign_year}"), use_container_width=True, **_kg("total"))
+        if con_tabla:
+            st.dataframe(capturas_total[["Fecha_str", "Capturas machos"]].rename(columns={"Fecha_str": "Fecha", "Capturas machos": "Total capturas"}), use_container_width=True, hide_index=True)
+
+    with tab_campo:
+        if capturas_campo.empty:
+            st.info("No hay datos por campo.")
+        else:
+            campos_list = sorted(capturas_campo["Campo/Zona"].unique())
+            campos_sel = st.multiselect("Campos a mostrar", campos_list, default=campos_list[:min(5, len(campos_list))], key=clave_campos)
+            if campos_sel:
+                import altair as alt
+                df_plot = capturas_campo[capturas_campo["Campo/Zona"].isin(campos_sel)].copy()
+                df_plot["Fecha_dt"] = pd.to_datetime(df_plot["Fecha"])
+                chart2 = alt.Chart(df_plot).mark_line(point=True).encode(
+                    x=alt.X("Fecha_dt:T", title="Fecha", axis=alt.Axis(format="%d/%m", labelAngle=-45)),
+                    y=alt.Y("Capturas machos:Q", title="Capturas"),
+                    color=alt.Color("Campo/Zona:N", title="Campo"),
+                    tooltip=[alt.Tooltip("Fecha_dt:T", title="Fecha", format="%d/%m/%Y"),
+                             alt.Tooltip("Campo/Zona:N", title="Campo"),
+                             alt.Tooltip("Capturas machos:Q", title="Capturas")],
+                ).properties(height=400, title=f"Capturas por campo — campaña {campaign_year}")
+                st.altair_chart(chart2, use_container_width=True, **_kg("campo"))
+
+
 def _carpo_movil_tarjeta(titulo, lineas, color):
     """Tarjeta HTML para el móvil: título en negrita y líneas cortas debajo."""
     import html as _h
@@ -19465,8 +19527,11 @@ def render_carpocapsa_movil(history):
                 _r = _g.iloc[0]
                 _dc = _r["_cierre"]
                 _urg = pd.notna(_dc) and _dc <= 3
+                _fcierre = str(_r.get(f"Fecha estimada {_fin} DD", "—") or "—")
                 _cab = (f"cierra en {int(_dc)} día{'s' if int(_dc) != 1 else ''}" if pd.notna(_dc)
                         else "ventana abierta")
+                if _fcierre not in ("—", "", "nan"):
+                    _cab += f" (≈ {_fcierre[:5]})"
                 _lin = [f"<b style='color:{'#c62828' if _urg else '#e65100'}'>{'⚠️ ' if _urg else ''}{_cab}</b>"
                         f" · {int(_r['DD actual'])} DD (ventana {_ini}–{_fin})",
                         f"Lectura {_h.escape(str(_r['Fecha lectura']))} · {int(_r['Capturas'])} capturas"]
@@ -19475,11 +19540,31 @@ def render_carpocapsa_movil(history):
                 _tarjetas.append(_carpo_movil_tarjeta(_campo, _lin, "#c62828" if _urg else "#fb8c00"))
             st.markdown("".join(_tarjetas), unsafe_allow_html=True)
 
-        if not _esp.empty:
-            with st.expander(f"⏳ En espera ({len(_esp)}): aún no llegan a {_ini} DD"):
-                st.markdown("\n".join(
-                    f"- **{_h.escape(str(r['Campo/Zona']))}** · {int(r['DD actual'])} DD · "
-                    f"{_h.escape(str(r['Info']))}" for _, r in _esp.iterrows()))
+        st.markdown(f"#### ⏳ En espera ({len(_esp)})")
+        if _esp.empty:
+            st.caption(f"Ninguna ventana esperando a llegar a {_ini} DD.")
+        else:
+            _tarjetas = []
+            for _campo, _g in sorted(_esp.groupby("Campo/Zona"), key=lambda kv: (-kv[1]["DD actual"].max(), kv[0])):
+                _r = _g.sort_values("DD actual", ascending=False).iloc[0]
+                _fabre = str(_r.get(f"Fecha estimada {_ini} DD", "—") or "—")
+                _m_d = re.match(r"\s*(\d+)d", str(_r["Info"]))
+                _abre = (f"abre en {int(_m_d.group(1))} día{'s' if int(_m_d.group(1)) != 1 else ''}" if _m_d
+                         else _h.escape(str(_r["Info"])))
+                _lin = [f"<b>{_abre}</b>"
+                        + (f" (≈ {_fabre[:5]})" if _fabre not in ("—", "", "nan") else "")
+                        + f" · {int(_r['DD actual'])} de {_ini} DD",
+                        f"Lectura {_h.escape(str(_r['Fecha lectura']))} · {int(_r['Capturas'])} capturas"]
+                if len(_g) > 1:
+                    _lin.append(f"y {len(_g) - 1} ventana{'s' if len(_g) > 2 else ''} más en espera en este campo")
+                _tarjetas.append(_carpo_movil_tarjeta(_campo, _lin, "#9e9e9e"))
+            st.markdown("".join(_tarjetas), unsafe_allow_html=True)
+
+        # ── Gráfica de capturas (la misma de la pantalla completa, sin la tabla) ────────
+        st.markdown("#### 📈 Capturas")
+        render_carpocapsa_grafica_capturas(carpocapsa_filter_campaign(_traps, _anio).copy(), _anio,
+                                           clave_campos="carp_campos_grafica_movil", con_tabla=False,
+                                           clave_graficas="carp_graf_capturas_movil")
 
         # ── Último tratamiento ──────────────────────────────────────────────────────
         _trt = carpocapsa_treatments_from_activities(_acts, _anio, _hc, rain_days_limit=3)
@@ -20180,59 +20265,7 @@ def carpocapsa_tab(history):
     st.caption("Suma de capturas de todas las trampas por fecha de lectura. Permite identificar picos de vuelo y generaciones.")
 
     traps_campaign = carpocapsa_filter_campaign(traps_edit, campaign_year).copy() if traps_edit is not None and not traps_edit.empty else pd.DataFrame()
-
-    if traps_campaign.empty:
-        st.info("Sube el Excel de carpocapsa para ver la evolución de capturas.")
-    else:
-        traps_campaign["Fecha"] = pd.to_datetime(traps_campaign.get("Fecha", traps_campaign.get("fecha", pd.Series())), errors="coerce")
-        traps_campaign["Capturas machos"] = pd.to_numeric(traps_campaign.get("Capturas machos", traps_campaign.get("capturas_machos", pd.Series())), errors="coerce").fillna(0)
-        traps_campaign = traps_campaign.dropna(subset=["Fecha"])
-
-        # Suma total de capturas por fecha
-        capturas_total = traps_campaign.groupby("Fecha", as_index=False)["Capturas machos"].sum()
-        capturas_total = capturas_total.sort_values("Fecha")
-        capturas_total["Fecha_str"] = capturas_total["Fecha"].dt.strftime("%d/%m")
-
-        # Capturas por campo (para gráfica desglosada)
-        capturas_campo = traps_campaign.groupby(["Fecha", "Campo/Zona"], as_index=False)["Capturas machos"].sum() if "Campo/Zona" in traps_campaign.columns else pd.DataFrame()
-
-        tab_total, tab_campo = st.tabs(["Total finca", "Por campo"])
-
-        with tab_total:
-            import altair as alt
-            thresh_val = int(st.session_state.get("carp_capture_threshold", 3))
-            n_campos = len(traps_campaign["Campo/Zona"].unique()) if "Campo/Zona" in traps_campaign.columns else 1
-            capturas_total["Fecha_dt"] = pd.to_datetime(capturas_total["Fecha"])
-            linea_cap = alt.Chart(capturas_total).mark_line(point=True, color="#e05c5c").encode(
-                x=alt.X("Fecha_dt:T", title="Fecha lectura", axis=alt.Axis(format="%d/%m", labelAngle=-45)),
-                y=alt.Y("Capturas machos:Q", title="Capturas totales"),
-                tooltip=[alt.Tooltip("Fecha_dt:T", title="Fecha", format="%d/%m/%Y"),
-                         alt.Tooltip("Capturas machos:Q", title="Total capturas")],
-            )
-            umbral_df = pd.DataFrame({"y": [thresh_val * n_campos]})
-            umbral_line = alt.Chart(umbral_df).mark_rule(color="orange", strokeDash=[6,3]).encode(y="y:Q")
-            st.altair_chart((linea_cap + umbral_line).properties(height=350, title=f"Capturas totales campaña {campaign_year}"), use_container_width=True)
-            st.dataframe(capturas_total[["Fecha_str", "Capturas machos"]].rename(columns={"Fecha_str": "Fecha", "Capturas machos": "Total capturas"}), use_container_width=True, hide_index=True)
-
-        with tab_campo:
-            if capturas_campo.empty:
-                st.info("No hay datos por campo.")
-            else:
-                campos_list = sorted(capturas_campo["Campo/Zona"].unique())
-                campos_sel = st.multiselect("Campos a mostrar", campos_list, default=campos_list[:min(5, len(campos_list))], key="carp_campos_grafica")
-                if campos_sel:
-                    import altair as alt
-                    df_plot = capturas_campo[capturas_campo["Campo/Zona"].isin(campos_sel)].copy()
-                    df_plot["Fecha_dt"] = pd.to_datetime(df_plot["Fecha"])
-                    chart2 = alt.Chart(df_plot).mark_line(point=True).encode(
-                        x=alt.X("Fecha_dt:T", title="Fecha", axis=alt.Axis(format="%d/%m", labelAngle=-45)),
-                        y=alt.Y("Capturas machos:Q", title="Capturas"),
-                        color=alt.Color("Campo/Zona:N", title="Campo"),
-                        tooltip=[alt.Tooltip("Fecha_dt:T", title="Fecha", format="%d/%m/%Y"),
-                                 alt.Tooltip("Campo/Zona:N", title="Campo"),
-                                 alt.Tooltip("Capturas machos:Q", title="Capturas")],
-                    ).properties(height=400, title=f"Capturas por campo — campaña {campaign_year}")
-                    st.altair_chart(chart2, use_container_width=True)
+    render_carpocapsa_grafica_capturas(traps_campaign, campaign_year)
 
     render_carpocapsa_grupos(campaign_year)
 
