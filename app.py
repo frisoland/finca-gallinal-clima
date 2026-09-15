@@ -16943,29 +16943,43 @@ def render_informe_movil(history, soil_type, hoja_threshold):
             if _con_aviso.empty:
                 st.success("Ningún campo con aviso en estos días.")
             else:
+                # Una tarjeta por AVISO (prioridad + texto), con una línea corta por campo:
+                # es habitual que muchos campos compartan el mismo aviso y 25 tarjetas
+                # iguales no se leen en el móvil.
+                def _fecha_corta(v):
+                    _t = pd.to_datetime(v, errors="coerce")
+                    return _t.strftime("%d/%m/%y") if pd.notna(_t) else str(v)
+
                 _tarjetas = []
+                _grupos = {}
                 for _, r in _con_aviso.iterrows():      # ya viene ordenada por prioridad
-                    _campo = str(r.get("Campo", ""))
-                    _pri = str(r.get("Prioridad", ""))
-                    _ult = str(r.get("Último tratamiento", "") or "")
-                    _prod = str(r.get("Producto", "") or "")
-                    if r.get("Tratado registrado", "") == "Sí":
-                        _trat = f"Último tratamiento: {_h.escape(_ult)}" + (f" · {_h.escape(_prod)}" if _prod else "")
-                    else:
-                        _trat = "Sin tratamiento registrado"
-                    _ll = pd.to_numeric(r.get("Lluvia posterior mm"), errors="coerce")
-                    _mo = pd.to_numeric(r.get("Máx ratio moteado posterior"), errors="coerce")
-                    _mn = pd.to_numeric(r.get("Máx ratio monilia posterior"), errors="coerce")
-                    _lin = [f"<b style='color:{_colores[_pri]}'>Prioridad {_h.escape(_pri)}</b>",
-                            _trat,
-                            "Después: " + " · ".join([
-                                f"lluvia {'—' if pd.isna(_ll) else f'{_ll:.1f} mm'}",
-                                f"moteado {'—' if pd.isna(_mo) else f'{_mo:.2f}'}",
-                                f"monilia {'—' if pd.isna(_mn) else f'{_mn:.2f}'}"]),
-                            f"<span style='color:#555'>{_h.escape(str(r.get('Aviso orientativo', '') or ''))}</span>"]
-                    _titulo = _campo + (" 🌊" if zona_de_campo(_campo) == ZONA_RIO else "")
-                    _tarjetas.append(_carpo_movil_tarjeta(_titulo, _lin, _colores[_pri]))
+                    _clave = (str(r.get("Prioridad", "")), str(r.get("Aviso orientativo", "") or ""))
+                    _grupos.setdefault(_clave, []).append(r)
+                for (_pri, _aviso), _filas in _grupos.items():
+                    _lin = [f"<span style='color:#555'>{_h.escape(_aviso)}</span>"]
+                    for r in _filas:
+                        _campo = str(r.get("Campo", ""))
+                        _campo += " 🌊" if zona_de_campo(_campo) == ZONA_RIO else ""
+                        if r.get("Tratado registrado", "") == "Sí":
+                            _prod = re.sub(r"\s*\(\d+\)", "", str(r.get("Producto", "") or "")).strip()
+                            _trat = f"{_fecha_corta(r.get('Último tratamiento', ''))} {_h.escape(_prod)}".strip()
+                        else:
+                            _trat = "sin tratamiento registrado"
+                        _ll = pd.to_numeric(r.get("Lluvia posterior mm"), errors="coerce")
+                        _mo = pd.to_numeric(r.get("Máx ratio moteado posterior"), errors="coerce")
+                        _mn = pd.to_numeric(r.get("Máx ratio monilia posterior"), errors="coerce")
+                        _desp = " · ".join([
+                            f"{'—' if pd.isna(_ll) else f'{_ll:.0f} mm'}",
+                            f"mot. {'—' if pd.isna(_mo) else f'{_mo:.2f}'}",
+                            f"mon. {'—' if pd.isna(_mn) else f'{_mn:.2f}'}"])
+                        _lin.append(f"<div style='border-top:1px solid #eee;margin-top:5px;padding-top:4px'>"
+                                    f"<b>{_h.escape(_campo)}</b> · {_trat}<br>"
+                                    f"<span style='color:#666'>después: {_desp}</span></div>")
+                    _titulo = f"Prioridad {_pri} · {len(_filas)} campo{'s' if len(_filas) != 1 else ''}"
+                    _tarjetas.append(_carpo_movil_tarjeta(_titulo, _lin, _colores.get(_pri, "#9e9e9e")))
                 st.markdown("".join(_tarjetas), unsafe_allow_html=True)
+                st.caption("«después» = desde el último tratamiento: lluvia, máximo ratio de moteado y de monilia "
+                           "(escala de la app: 0,25 ligero · 0,5 moderado · 1 infección).")
             _sin = len(priority_table) - len(_con_aviso) if not priority_table.empty else 0
             if _sin:
                 st.caption(f"Sin aviso (prioridad baja): {_sin} campo{'s' if _sin != 1 else ''}.")
