@@ -19506,6 +19506,7 @@ def carpocapsa_tab(history):
         "número máximo de aplicaciones y normativa vigente."
     )
 
+    _medir("Carpo: guías")  # TEMPORAL
     if "carpocapsa_traps_df" not in st.session_state:  # Ensure traps dataframe is present before processing data
         st.session_state.carpocapsa_traps_df = carpocapsa_default_traps_df()
     if "carpocapsa_biofix_df" not in st.session_state:
@@ -19557,6 +19558,7 @@ def carpocapsa_tab(history):
                    f"({'calculado de capturas' if _src == 'calculado' else 'cargado de Supabase' if _src == 'cargado' else 'sin datos'}).")
         st.rerun()
 
+    _medir("Carpo: preparar tablas y biofix")  # TEMPORAL
     st.markdown("### 0. Importar / exportar datos de carpocapsa")
     with st.expander("Importar Excel de carpocapsa", expanded=True):
         st.caption(
@@ -19714,6 +19716,7 @@ def carpocapsa_tab(history):
             """
         )
 
+    _medir("Carpo: 0 importar/Supabase")  # TEMPORAL
     st.markdown("### 1. Configuración de campaña")
     available_campaigns = carpocapsa_available_campaigns(
         st.session_state.carpocapsa_traps_df,
@@ -19749,6 +19752,7 @@ def carpocapsa_tab(history):
     history_campaign = carpocapsa_filter_history_campaign(history, campaign_year) if filter_climate else history
 
     # ── Comparador de campañas (año vs año) ───────────────────────────────────
+    _medir("Carpo: 1 configuración")  # TEMPORAL
     with st.expander("📊 Comparar campañas (año vs año)", expanded=False):
         _years_all = carpocapsa_available_campaigns(
             st.session_state.carpocapsa_traps_df,
@@ -19957,6 +19961,7 @@ def carpocapsa_tab(history):
                     "ese campo; sin filtro, los de toda la finca."
                 )
 
+    _medir("Carpo: comparar campañas")  # TEMPORAL
     st.markdown("### 2. Capturas de trampas")
     st.caption(f"Introduce o revisa las lecturas de la campaña {campaign_year}. El campo/zona debe coincidir con el biofix si quieres cálculo por zona.")
     traps_base = carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, campaign_year).copy()
@@ -20001,6 +20006,7 @@ def carpocapsa_tab(history):
     # Biofix ya no se usa manualmente — queda en session_state para compatibilidad
     biofix_edit = st.session_state.carpocapsa_biofix_df.copy()
 
+    _medir("Carpo: 2 capturas")  # TEMPORAL
     st.markdown("### 3. Evolución de capturas totales")
     st.caption("Suma de capturas de todas las trampas por fecha de lectura. Permite identificar picos de vuelo y generaciones.")
 
@@ -20059,8 +20065,10 @@ def carpocapsa_tab(history):
                     ).properties(height=400, title=f"Capturas por campo — campaña {campaign_year}")
                     st.altair_chart(chart2, use_container_width=True)
 
+    _medir("Carpo: 3 evolución capturas")  # TEMPORAL
     render_carpocapsa_grupos(campaign_year)
 
+    _medir("Carpo: grupos")  # TEMPORAL
     st.markdown("### 4. Ventanas de tratamiento por campo")
     st.caption(
         "Cada lectura de trampa que supere el umbral configurable abre una ventana de 90 DD. "
@@ -20220,6 +20228,7 @@ def carpocapsa_tab(history):
                     mime="text/csv",
                 )
 
+    _medir("Carpo: 4 ventanas por campo")  # TEMPORAL
     st.markdown("### 5. Tratamientos de carpocapsa desde Agroptima")
     st.caption(
         "La app toma estos tratamientos del histórico importado en la pestaña Actuaciones. "
@@ -20271,6 +20280,7 @@ def carpocapsa_tab(history):
             "Revisa siempre que el tratamiento esté correctamente clasificado."
         )
 
+    _medir("Carpo: 5 tratamientos Agroptima")  # TEMPORAL
     st.markdown("### 6. DD acumulados en el momento del tratamiento")
     st.caption(
         "Compara **tu método** vs. la **literatura**, campo a campo. El **biofix** se fija por campo "
@@ -20468,6 +20478,7 @@ def carpocapsa_tab(history):
             )
 
     # ── 7. COBERTURA REAL DE LA ECLOSIÓN ────────────────────────────────────────
+    _medir("Carpo: 6 DD en tratamiento")  # TEMPORAL
     st.markdown("### 7. Cobertura real de la eclosión (¿estuvo la manzana protegida?)")
     st.caption(
         "⚠️ **No confundir con la «Cobertura %» del resumen por grupos** (punto 2). "
@@ -20644,6 +20655,7 @@ def carpocapsa_tab(history):
                     "es el producto y no la programación.")
 
     # ── 📈 Gráfica DD POR CAMPO (biofix propio + tratamientos de ESE campo) ──────
+    _medir("Carpo: 7 cobertura eclosión")  # TEMPORAL
     st.markdown("### 📈 Gráfica de grados-día POR CAMPO")
     st.caption(
         "Como la gráfica de Decisiones, pero **de un solo campo**: usa el **biofix de ESE campo** "
@@ -20830,6 +20842,7 @@ def carpocapsa_tab(history):
                             "(sin huecos largos) que el punto exacto donde cae cada uno — eso lo mide el "
                             "punto 7.")
 
+    _medir("Carpo: gráfica DD por campo")  # TEMPORAL
     st.caption(
         "**Criterio de muestreo:** solo fruto cogido del **ÁRBOL**, mínimo **100 frutos por "
         "variedad y parcela**. El fruto del suelo sobreestima el daño (la manzana picada cae "
@@ -20969,9 +20982,11 @@ def carpocapsa_tab(history):
             mime="text/csv",
         )
 
+    _medir("Carpo: daños")  # TEMPORAL
     st.divider()
     render_frutos_marcados(campaign_year)
 
+    _medir("Carpo: frutos marcados")  # TEMPORAL
     with st.expander("Siguiente evolución prevista del módulo", expanded=False):
         st.markdown(
             """
