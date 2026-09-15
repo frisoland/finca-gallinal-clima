@@ -4410,6 +4410,14 @@ def carpocapsa_treatments_from_activities(activities_df, campaign_year, history=
     else:
         last_climate_date = None
 
+    # El día de cada hora como número entero y la lluvia como números, UNA vez. Antes se
+    # comparaban las fechas del histórico entero (objetos fecha) en cada tratamiento: con el
+    # histórico completo eran ~2 s por pantalla. Se suman las mismas horas en el mismo orden.
+    _dia_num = _lluvia_num = None
+    if last_climate_date and "lluvia_mm" in hist.columns:
+        _dia_num = np.fromiter((d.toordinal() for d in hist["fecha_dia"]), dtype=np.int64, count=len(hist))
+        _lluvia_num = pd.to_numeric(hist["lluvia_mm"], errors="coerce").fillna(0).to_numpy(dtype=float)
+
     import datetime as _dt
     rows = []
     for _, r in df.iterrows():
@@ -4423,8 +4431,8 @@ def carpocapsa_treatments_from_activities(activities_df, campaign_year, history=
                     treatment_date + _dt.timedelta(days=rain_days_limit),
                     last_climate_date
                 )
-                rain_mask = (hist["fecha_dia"] >= treatment_date) & (hist["fecha_dia"] <= rain_end_date)
-                rain_since = pd.to_numeric(hist.loc[rain_mask, "lluvia_mm"], errors="coerce").fillna(0).sum()
+                rain_mask = (_dia_num >= treatment_date.toordinal()) & (_dia_num <= rain_end_date.toordinal())
+                rain_since = pd.Series(_lluvia_num[rain_mask], dtype=float).sum()
 
         producto_raw = str(r.get(productos_col, "") or "")
 
@@ -17437,7 +17445,11 @@ def render_frutos_marcados(campaign_year):
         "vale**: en sidra hay caída natural, y solo comparando con frutos sanos se sabe qué "
         "parte de la caída es por la marca.")
     if "frutos_marcados_df" not in st.session_state:
-        _df, _m = load_frutos_marcados_from_supabase()
+        # Guardado 5 min entre sesiones, como las demás descargas. Al guardar se vacía.
+        # (upload_frutos_marcados_to_supabase sigue leyendo SIEMPRE de Supabase antes de fusionar.)
+        _df, _m = _descarga_guardada(
+            "frutos_marcados", load_frutos_marcados_from_supabase,
+            lambda r: r[0] is not None and not r[0].empty)
         st.session_state["frutos_marcados_df"] = normalizar_frutos_marcados(_df)
     _todo = normalizar_frutos_marcados(st.session_state["frutos_marcados_df"])
     _anio = _todo[_todo["Campaña"] == int(campaign_year)] if not _todo.empty else _todo
@@ -18340,9 +18352,22 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             texto += " " + str(row.get(_comt_col, "") or "")
         return text_contains_any_keyword(texto, CARPOCAPSA_TREATMENT_KEYWORDS)
 
+    # Rendimiento (15/09/2026): lo que no cambia de un campo a otro se calcula UNA vez antes
+    # del bucle (nombre de zona limpio, «¿es de carpocapsa?» por fila, fechas y DD como
+    # números). Mismos resultados: se suman los mismos días en el mismo orden.
+    _zona_limpia = traps["Campo/Zona"].astype(str).str.strip()
+    _es_carpo_fila = None
+    _campo_match_memo = {}
+    _dd_fechas_np = _fechas_dd_norm.to_numpy()
+    _dd_vals_np = daily_dd["DD día"].to_numpy()
+    _dd_dtype = daily_dd["DD día"].dtype
+
+    def _suma_dd(_mask):
+        return pd.Series(_dd_vals_np[_mask], dtype=_dd_dtype).sum()
+
     for zona in traps["Campo/Zona"].unique():
         zona_str   = str(zona).strip()
-        zona_traps = traps[traps["Campo/Zona"].astype(str).str.strip() == zona_str].sort_values("Fecha")
+        zona_traps = traps[_zona_limpia == zona_str].sort_values("Fecha")
 
         # Lecturas que superan el umbral, ordenadas de MÁS ANTIGUA a MÁS NUEVA
         # (imprescindible para que la lógica de consumo funcione bien)
@@ -18352,12 +18377,19 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
         campo_treats_carp = pd.DataFrame()
         if not treatments.empty and _campos_col:
             campo_base = zona_str.split(" - ")[0].strip() if " - " in zona_str else zona_str
-            _campo_all = treatments[
-                treatments[_campos_col].apply(lambda x: _campo_match_carpo(x, campo_base))
-            ]
-            if not _campo_all.empty:
+
+            def _match_memo(x, _cb=campo_base):
+                _k = (str(x), _cb)
+                if _k not in _campo_match_memo:
+                    _campo_match_memo[_k] = _campo_match_carpo(x, _cb)
+                return _campo_match_memo[_k]
+
+            _m_campo = treatments[_campos_col].apply(_match_memo).to_numpy(dtype=bool)
+            if _m_campo.any():
+                if _es_carpo_fila is None:     # misma prueba fila a fila, una sola vez
+                    _es_carpo_fila = treatments.apply(_has_carpocapsa, axis=1).to_numpy(dtype=bool)
                 campo_treats_carp = (
-                    _campo_all[_campo_all.apply(_has_carpocapsa, axis=1)]
+                    treatments[_m_campo & _es_carpo_fila]
                     .sort_values("fecha_dt")
                     .copy()
                 )
@@ -18370,8 +18402,8 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             trigger_norm = pd.Timestamp(trigger_date).normalize()
             if trigger_norm.tzinfo is not None:
                 trigger_norm = trigger_norm.tz_localize(None)
-            dd_future  = daily_dd[_fechas_dd_norm >= trigger_norm]
-            dd_current = float(dd_future["DD día"].sum()) if not dd_future.empty else 0.0
+            _desde_trigger = _dd_fechas_np >= trigger_norm.to_datetime64()
+            dd_current = float(_suma_dd(_desde_trigger)) if _desde_trigger.any() else 0.0
 
             date_ini, _ = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_start)
             date_end, _ = carpocapsa_estimated_date_for_dd(daily_dd, trigger_date, dd_active_end)
@@ -18391,8 +18423,7 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                     if t_norm.tzinfo is not None:
                         t_norm = t_norm.tz_localize(None)
                     dd_at = round(float(
-                        daily_dd[(_fechas_dd_norm >= trigger_norm)
-                                 & (_fechas_dd_norm <= t_norm)]["DD día"].sum()
+                        _suma_dd(_desde_trigger & (_dd_fechas_np <= t_norm.to_datetime64()))
                     ), 1)
                     if dd_active_start <= dd_at <= dd_active_end:
                         trat_fecha    = t_row["fecha_dt"].strftime("%d/%m/%Y")
@@ -18933,10 +18964,14 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
     # ≥ umbral, calculado de las lecturas reales (ver _carpocapsa_sustained_biofix).
 
     # ── DD acumulados entre dos fechas (inicio inclusive, fin inclusive) ───────
+    _fechas_dd6 = {}
+
     def dd_entre_fechas(start_date, end_date):
         if daily_dd is None or daily_dd.empty or pd.isna(start_date) or pd.isna(end_date):
             return np.nan
-        fechas = pd.to_datetime(daily_dd["Fecha"])
+        if "f" not in _fechas_dd6:          # se convertían en cada llamada (~150 por pantalla)
+            _fechas_dd6["f"] = pd.to_datetime(daily_dd["Fecha"])
+        fechas = _fechas_dd6["f"]
         mask = (fechas >= pd.Timestamp(start_date)) & (fechas <= pd.Timestamp(end_date))
         sub = daily_dd[mask]
         if sub.empty:
@@ -18995,6 +19030,10 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
                 treat["Campos"].fillna("").str.contains(campo_base, case=False, na=False)
             ].sort_values("Fecha_dt").reset_index(drop=True)
         # Si no hay columna Campos o no hubo match, campo_treats queda vacío → "Sin tratamiento"
+        # Día de cada tratamiento como número, UNA vez por campo (antes, en cada lectura).
+        _dia_trat_num = (np.fromiter((d.toordinal() for d in campo_treats["Fecha_dt"].dt.date),
+                                     dtype=np.int64, count=len(campo_treats))
+                         if not campo_treats.empty else None)
 
         for _, high_row in high.iterrows():
             high_date  = high_row["Fecha_dt"].date()
@@ -19011,7 +19050,7 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
                 # (tratamientos dentro de ese gap se consideran pre-planificados, no respuesta a la captura)
                 import datetime as _dt
                 min_date = high_date + _dt.timedelta(days=min_days_gap)
-                posterior = campo_treats[campo_treats["Fecha_dt"].dt.date >= min_date]
+                posterior = campo_treats[_dia_trat_num >= min_date.toordinal()]
                 if not posterior.empty:
                     t_row = posterior.iloc[0]
                     next_treatment_date = t_row["Fecha_dt"].date()
@@ -19072,10 +19111,14 @@ def carpocapsa_treatment_timing_by_field(traps_df, treatments_df, daily_dd, camp
     if t.empty:
         return empty
 
+    _fechas_ddb = {}
+
     def dd_between(a, b):
         if daily_dd is None or daily_dd.empty or pd.isna(a) or pd.isna(b):
             return np.nan
-        f = pd.to_datetime(daily_dd["Fecha"])
+        if "f" not in _fechas_ddb:          # se convertían en cada llamada
+            _fechas_ddb["f"] = pd.to_datetime(daily_dd["Fecha"])
+        f = _fechas_ddb["f"]
         s = daily_dd[(f >= pd.Timestamp(a)) & (f <= pd.Timestamp(b))]
         return round(float(pd.to_numeric(s["DD día"], errors="coerce").fillna(0).sum()), 1) if not s.empty else np.nan
 
@@ -33396,6 +33439,60 @@ if not _HEADLESS:
         st.markdown("<div id='fg-muestreo-acum'>" + "<br>".join(
             f"{_c * _seg:.2f} s · {_fn} línea {_ln}" for (_fn, _ln), _c in _MUESTREO["acum"].most_common(80)
         ) + "</div>", unsafe_allow_html=True)
+    if str(_query_param("medir") or "") == "4":
+        # TEMPORAL: versión anterior vs rápida de Carpocapsa con los datos reales de la sesión.
+        _lineas_cmp = []
+        try:
+            _g_ant = dict(globals())
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "_carpo_anterior_temporal.py"),
+                      encoding="utf-8") as _fh:
+                exec(_fh.read(), _g_ant)
+
+            def _cmp(_nombre, _llamar):
+                _t0 = time.perf_counter()
+                _ra = _llamar(_g_ant)
+                _t1 = time.perf_counter()
+                _rn = _llamar(globals())
+                _t2 = time.perf_counter()
+                try:
+                    pd.testing.assert_frame_equal(_ra, _rn, check_exact=True)
+                    _ok = "IGUAL"
+                except AssertionError as _e:
+                    _ok = "DISTINTO: " + str(_e)[:300].replace("\n", " ")
+                _lineas_cmp.append(f"{_ok} · {_nombre} · filas {getattr(_rn, 'shape', '?')} · "
+                                   f"antes {_t1 - _t0:.2f} s · ahora {_t2 - _t1:.2f} s")
+
+            _acts_r = st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS))
+            _traps_r = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
+            _lineas_cmp.append(f"datos: actuaciones {_acts_r.shape} · capturas {_traps_r.shape} · histórico {history.shape} · "
+                               f"tipos fecha actuaciones {[str(_acts_r[c].dtype) for c in ('Fecha', 'fecha') if c in _acts_r.columns]}")
+            for _Y in (2025, 2026):
+                _hc = carpocapsa_filter_history_campaign(history, _Y)
+                for _hn, _h in (("histórico completo", history), ("campaña", _hc)):
+                    for _lim in (3, 7):
+                        _cmp(f"{_Y} tratamientos {_hn} lluvia {_lim}d",
+                             lambda g: g["carpocapsa_treatments_from_activities"](_acts_r, _Y, history=_h, rain_days_limit=_lim))
+                _trt = carpocapsa_treatments_from_activities(_acts_r, _Y, _hc)
+                for _thr, _ini, _fin in ((3, 80, 130), (1, 50, 200), (8, 90, 140)):
+                    _cmp(f"{_Y} ventanas umbral {_thr} {_ini}-{_fin}",
+                         lambda g: g["carpocapsa_build_multi_windows"](
+                             _traps_r, _hc, base_temp=10.0, upper_temp=31.1, capture_threshold=_thr,
+                             dd_active_start=_ini, dd_active_end=_fin, activities_df=_acts_r, campaign_year=_Y))
+                _trc = carpocapsa_filter_campaign(_traps_r, _Y)
+                _ddr = carpocapsa_daily_degree_days(_hc, base_temp=10.0, upper_temp=31.1, method="horario")
+                _bfr = carpocapsa_filter_campaign(st.session_state.get("carpocapsa_biofix_df", pd.DataFrame()), _Y)
+                for _thr, _gap in ((5, 5), (3, 0), (1, 10)):
+                    _cmp(f"{_Y} DD en tratamiento umbral {_thr} hueco {_gap}",
+                         lambda g: g["carpocapsa_dd_at_treatment"](_trc, _trt if not _trt.empty else None, _bfr, _ddr, _Y,
+                                                                  threshold=_thr, min_days_gap=_gap))
+                    _cmp(f"{_Y} puntería umbral {_thr}",
+                         lambda g: g["carpocapsa_treatment_timing_by_field"](_trc, _trt if not _trt.empty else None, _ddr, _Y,
+                                                                            threshold=_thr, ideal_lo=120.0, ideal_hi=140.0))
+        except Exception as _e_cmp:
+            _lineas_cmp.append(f"ERROR en la comprobación: {_e_cmp!r}")
+        st.divider()
+        st.markdown("#### 🔬 Comprobación (temporal): versión anterior vs rápida")
+        st.markdown("<div id='fg-comprobacion'>" + "<br>".join(_lineas_cmp) + "</div>", unsafe_allow_html=True)
     if _PERFIL is not None:
         _PERFIL.disable()
         try:
