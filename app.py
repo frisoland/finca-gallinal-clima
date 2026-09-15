@@ -16899,6 +16899,70 @@ def _movil_cifras_html(pares):
             f"{_celdas}</div>")
 
 
+def _informe_movil_clima_html(metrics):
+    """Tarjeta «Resumen climático» del informe semanal para el móvil: las MISMAS cifras que la
+    tabla del informe (Nave | Río | Diferencia = Río − Nave), en filas con icono."""
+    import html as _h
+    rio = (metrics or {}).get("rio") or {}
+
+    def _v(x, suf="", nd=1):
+        try:
+            if x is None or pd.isna(x):
+                return "—"
+            return f"{float(x):.{nd}f}{suf}"
+        except Exception:
+            return "—"
+
+    def _dif(a, b, suf, nd=1, temp=True):
+        try:
+            if a is None or b is None or pd.isna(a) or pd.isna(b):
+                return ""
+            d = float(a) - float(b)
+        except Exception:
+            return ""
+        # Temperatura: azul si el Río está más frío, rojo si más cálido. Humedad y lluvia, en gris.
+        _c = ("#1565c0" if d < 0 else ("#c62828" if d > 0 else "#555")) if temp else "#555"
+        return (f"<span style='display:inline-block;margin-left:4px;padding:0 6px;border-radius:9px;"
+                f"font-size:0.72rem;font-weight:600;color:{_c};background:{_c}14'>{d:+.{nd}f}{suf}</span>")
+
+    filas = [
+        ("🌡️", "Media", "temp_mean", " ºC", " ºC", "#333"),
+        ("🔹", "Mínima", "temp_min", " ºC", " ºC", "#1565c0"),
+        ("🔺", "Máxima", "temp_max", " ºC", " ºC", "#c62828"),
+        ("💧", "Humedad", "hr_mean", " %", " pts", "#1b5e20"),
+        ("🌧️", "Lluvia", "rain_total", " mm", " mm", "#0d47a1"),
+    ]
+    _cols = "1.15fr 1fr 1.25fr" if rio else "1.15fr 1fr"
+    _cab = (f"<div style='display:grid;grid-template-columns:{_cols};gap:4px;font-size:0.78rem;"
+            f"color:#666;font-weight:600;padding:0 0 4px 0;border-bottom:1px solid #eee'>"
+            f"<div></div><div>🏠 {_h.escape(ZONA_NAVE.replace('Zona ', ''))}</div>"
+            + (f"<div>🌊 {_h.escape(ZONA_RIO.replace('Zona ', ''))}</div>" if rio else "") + "</div>")
+    _cuerpo = ""
+    for ico, et, k, suf, suf_dif, color in filas:
+        _nave = metrics.get(k)
+        _cuerpo += (f"<div style='display:grid;grid-template-columns:{_cols};gap:4px;align-items:center;"
+                    f"padding:6px 0;border-bottom:1px solid #f2f2f2'>"
+                    f"<div style='font-size:0.9rem;color:#444'>{ico} {et}</div>"
+                    f"<div style='font-size:1.1rem;font-weight:700;color:{color}'>{_v(_nave, suf)}</div>")
+        if rio:
+            _cuerpo += (f"<div style='font-size:1.1rem;font-weight:700;color:{color}'>{_v(rio.get(k), suf)}"
+                        f"{_dif(rio.get(k), _nave, suf_dif, temp=(k.startswith('temp')))}</div>")
+        _cuerpo += "</div>"
+    _extra = " · ".join([
+        f"💨 viento medio <b>{_v(metrics.get('wind_mean'))}</b>",
+        f"racha máx. <b>{_v(metrics.get('gust_max'))}</b>",
+        f"☀️ radiación <b>{_v(metrics.get('radiation_sum'), ' MJ/m²')}</b>",
+    ])
+    _pie = (f"<div style='font-size:0.82rem;color:#555;margin-top:8px;line-height:1.4'>{_extra}"
+            + (" <span style='color:#888'>(solo sensor de la Nave)</span>" if rio else "")
+            + f"<br><span style='color:#888'>{int(metrics.get('records', 0))} registros horarios analizados"
+            + (" · diferencia = Río − Nave" if rio else "") + "</span></div>")
+    return (f"<div style='background:linear-gradient(135deg,#e3f2fd 0%,#ffffff 55%);border-radius:14px;"
+            f"padding:12px 14px;margin:4px 0 12px 0;box-shadow:0 1px 3px rgba(0,0,0,.10)'>"
+            f"<div style='font-weight:700;font-size:1.05rem;margin-bottom:6px'>🌦️ Resumen climático</div>"
+            f"{_cab}{_cuerpo}{_pie}</div>")
+
+
 def render_informe_movil(history, soil_type, hoja_threshold):
     """Informe semanal en el MÓVIL: últimos 7 días con las mismas cuentas que la pantalla
     completa (build_weekly_executive_report), en cifras y tarjetas; debajo, con un
@@ -16922,10 +16986,13 @@ def render_informe_movil(history, soil_type, hoja_threshold):
         if not metrics:
             st.warning(report_md)
         else:
-            _na = lambda v, fmt: "Sin datos" if pd.isna(v) else fmt.format(v)
+            st.markdown(_informe_movil_clima_html(metrics), unsafe_allow_html=True)
+            _notas_rio = notas_zona_rio_informe(metrics)
+            if _notas_rio:
+                with st.expander("🌊 Sobre la Zona Río"):
+                    st.markdown("\n\n".join(_notas_rio))
+            st.markdown("#### 🍄 Sanidad y campo")
             st.markdown(_movil_cifras_html([
-                ("Lluvia", _na(metrics["rain_total"], "{:.1f} mm")),
-                ("Temp. media", _na(metrics["temp_mean"], "{:.1f} ºC")),
                 ("Eventos hoja mojada", metrics["leaf_events"]),
                 ("Actuaciones", metrics["activities_count"]),
                 ("Máx ratio moteado", f"{metrics['max_scab_ratio']:.2f}"),
