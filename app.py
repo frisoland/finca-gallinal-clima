@@ -33519,7 +33519,7 @@ if not _HEADLESS:
     elif _page == "decisiones":
         render_decisiones_panel()
     elif _page == "carpocapsa":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 15/09/2026)
             render_carpocapsa_movil(history)
         else:
             carpocapsa_tab(history)
