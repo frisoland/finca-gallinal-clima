@@ -4417,6 +4417,9 @@ def carpocapsa_treatments_from_activities(activities_df, campaign_year, history=
     if last_climate_date and "lluvia_mm" in hist.columns:
         _dia_num = np.fromiter((d.toordinal() for d in hist["fecha_dia"]), dtype=np.int64, count=len(hist))
         _lluvia_num = pd.to_numeric(hist["lluvia_mm"], errors="coerce").fillna(0).to_numpy(dtype=float)
+    # Histórico en orden de fecha (lo normal): las horas de un tratamiento son un tramo seguido
+    # y se localiza con búsqueda binaria. Son las mismas horas, en el mismo orden.
+    _dias_en_orden = bool(_dia_num is not None and (len(_dia_num) < 2 or (np.diff(_dia_num) >= 0).all()))
 
     import datetime as _dt
     rows = []
@@ -4431,8 +4434,14 @@ def carpocapsa_treatments_from_activities(activities_df, campaign_year, history=
                     treatment_date + _dt.timedelta(days=rain_days_limit),
                     last_climate_date
                 )
-                rain_mask = (_dia_num >= treatment_date.toordinal()) & (_dia_num <= rain_end_date.toordinal())
-                rain_since = pd.Series(_lluvia_num[rain_mask], dtype=float).sum()
+                if _dias_en_orden:
+                    _i0 = int(np.searchsorted(_dia_num, treatment_date.toordinal(), side="left"))
+                    _i1 = int(np.searchsorted(_dia_num, rain_end_date.toordinal(), side="right"))
+                    _tramo = _lluvia_num[_i0:max(_i0, _i1)]
+                else:
+                    _tramo = _lluvia_num[(_dia_num >= treatment_date.toordinal())
+                                         & (_dia_num <= rain_end_date.toordinal())]
+                rain_since = pd.Series(_tramo, dtype=float).sum()
 
         producto_raw = str(r.get(productos_col, "") or "")
 
@@ -18388,8 +18397,12 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
             if _m_campo.any():
                 if _es_carpo_fila is None:     # misma prueba fila a fila, una sola vez
                     _es_carpo_fila = treatments.apply(_has_carpocapsa, axis=1).to_numpy(dtype=bool)
+                # Solo las columnas que se leen abajo (fecha y producto): filtrar y
+                # ordenar la tabla entera de Agroptima en cada lectura era ~1 s.
+                _cols_post = [c for c in dict.fromkeys(["fecha_dt", _prod_col, "producto"])
+                              if c and c in treatments.columns]
                 campo_treats_carp = (
-                    treatments[_m_campo & _es_carpo_fila]
+                    treatments.loc[_m_campo & _es_carpo_fila, _cols_post]
                     .sort_values("fecha_dt")
                     .copy()
                 )
@@ -19050,9 +19063,9 @@ def carpocapsa_dd_at_treatment(traps_df, treatments_df, biofix_df, daily_dd, cam
                 # (tratamientos dentro de ese gap se consideran pre-planificados, no respuesta a la captura)
                 import datetime as _dt
                 min_date = high_date + _dt.timedelta(days=min_days_gap)
-                posterior = campo_treats[_dia_trat_num >= min_date.toordinal()]
-                if not posterior.empty:
-                    t_row = posterior.iloc[0]
+                _pos_post = np.flatnonzero(_dia_trat_num >= min_date.toordinal())
+                if len(_pos_post):
+                    t_row = campo_treats.iloc[int(_pos_post[0])]
                     next_treatment_date = t_row["Fecha_dt"].date()
                     next_treatment_product = ""
                     for pc in ["Producto carpocapsa", "Productos", "Producto"]:
@@ -19130,8 +19143,9 @@ def carpocapsa_treatment_timing_by_field(traps_df, treatments_df, daily_dd, camp
         return empty
 
     rows = []
-    for campo in sorted(t["Campo/Zona"].astype(str).unique()):
-        ct = t[t["Campo/Zona"].astype(str) == campo]
+    _campo_txt = t["Campo/Zona"].astype(str)
+    for campo in sorted(_campo_txt.unique()):
+        ct = t[_campo_txt == campo]
         bios = carpocapsa_generation_biofixes(ct, threshold, daily_dd,
                                               biofix_threshold=biofix_threshold)
         if not bios:
@@ -19366,10 +19380,10 @@ def carpocapsa_cobertura_eclosion(traps_df, treatments_df, daily_dd, campaign_ye
                     _dd_ecl += _v
                     _det.append(f"{_v:.0f} DD de {_g}ª")
             if _dd_ecl > 0:
-                _en_hueco = ct[(ct["Fecha_dt"] >= _d0) & (ct["Fecha_dt"] <= _d1)]
+                _en_hueco = ((ct["Fecha_dt"] >= _d0) & (ct["Fecha_dt"] <= _d1)).to_numpy()
                 _cmax = 0
-                if not _en_hueco.empty:
-                    _v = pd.to_numeric(_en_hueco["_capturas"], errors="coerce").max()
+                if _en_hueco.any():
+                    _v = pd.to_numeric(ct["_capturas"][_en_hueco], errors="coerce").max()
                     _cmax = int(_v) if pd.notna(_v) else 0
                 _fila_h = {
                     "Campo/Zona": campo,
@@ -33488,6 +33502,13 @@ if not _HEADLESS:
                     _cmp(f"{_Y} puntería umbral {_thr}",
                          lambda g: g["carpocapsa_treatment_timing_by_field"](_trc, _trt if not _trt.empty else None, _ddr, _Y,
                                                                             threshold=_thr, ideal_lo=120.0, ideal_hi=140.0))
+                for _pf in (None, 10.0):
+                    for _lav in (True, False):
+                        for _k in range(3):
+                            _cmp(f"{_Y} cobertura persistencia {_pf} lavado {_lav} tabla {_k + 1}",
+                                 lambda g: g["carpocapsa_cobertura_eclosion"](
+                                     _trc, _trt if not _trt.empty else None, _ddr, _Y, history=_hc,
+                                     persistencia_fija=_pf, aplicar_lavado=_lav)[_k])
         except Exception as _e_cmp:
             _lineas_cmp.append(f"ERROR en la comprobación: {_e_cmp!r}")
         st.divider()

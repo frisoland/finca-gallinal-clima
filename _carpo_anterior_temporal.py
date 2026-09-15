@@ -573,3 +573,231 @@ def carpocapsa_treatment_timing_by_field(traps_df, treatments_df, daily_dd, camp
     if not rows:
         return empty
     return pd.DataFrame(rows).sort_values("Campo/Zona").reset_index(drop=True)
+
+
+def carpocapsa_cobertura_eclosion(traps_df, treatments_df, daily_dd, campaign_year,
+                                  history=None, biofix_threshold=CARPOCAPSA_BIOFIX_THRESHOLD,
+                                  persistencia_fija=None, lavado_mm=CARPOCAPSA_LAVADO_MM,
+                                  aplicar_lavado=True):
+    """Cuantos dias de ECLOSION tuvo el fruto realmente protegido, campo a campo.
+
+    Esto NO es lo mismo que la «Cobertura %» del resumen por grupos, y la diferencia
+    importa. Aquella mide **cumplimiento del umbral**: de las lecturas que pidieron
+    tratamiento, cuantas lo recibieron. Un campo puede sacar 100 % ahi y aun asi tener
+    la fruta desprotegida medio verano, porque las semanas de 0-3 capturas no piden
+    nada y la eclosion no se para por eso: los huevos puestos semanas antes siguen
+    naciendo aunque las trampas den cero.
+
+    Esta funcion mide lo otro, que es lo que decide el dano: **dias con producto
+    activo / dias de eclosion**. La eclosion son las bandas de `CARPOCAPSA_HATCH_BANDS`
+    (1-99 % de huevos eclosionados) recorridas con los DD del campo desde SU biofix.
+
+    Aritmetica de fondo, que es el resultado que de verdad se busca: cada banda dura
+    ~50 dias y el Bt aguanta 7. Cubrir una generacion entera pide 7 pases seguidos. Si
+    se dieron 2 o 3, la cobertura no puede pasar del 30-40 % por mucho que el umbral se
+    respetara a rajatabla.
+
+    · `persistencia_fija` — fuerza los mismos dias para todos los productos (para el
+      deslizador de sensibilidad). Si es None, manda el catalogo por producto.
+    · `aplicar_lavado` — corta la proteccion cuando se acumulan `lavado_mm` desde la
+      aplicacion. El Bt esta en la piel del fruto, no dentro.
+
+    Devuelve (resumen por campo, huecos, pases). Un «hueco» es una racha de dias
+    seguidos sin producto activo; solo se listan los que pisan eclosion, y se ordenan
+    por DD de eclosion perdidos — no por dias, porque 20 dias en pleno agosto valen
+    mucho mas que 20 en abril.
+    """
+    vacio = (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    if traps_df is None or traps_df.empty or "Campo/Zona" not in traps_df.columns:
+        return vacio
+    if daily_dd is None or daily_dd.empty:
+        return vacio
+
+    t = traps_df.copy()
+    t["Fecha_dt"] = pd.to_datetime(t["Fecha"], errors="coerce")
+    cap_col = next((c for c in ["Capturas machos", "Capturas/trampa/día", "Capturas"]
+                    if c in t.columns), None)
+    if cap_col is None:
+        return vacio
+    t["_capturas"] = pd.to_numeric(t[cap_col], errors="coerce")
+    if "Campaña" in t.columns:
+        t = t[pd.to_numeric(t["Campaña"], errors="coerce") == int(campaign_year)]
+    t = t.dropna(subset=["Fecha_dt", "_capturas", "Campo/Zona"])
+    if t.empty:
+        return vacio
+
+    dd = daily_dd.copy()
+    dd["Fecha"] = pd.to_datetime(dd["Fecha"], errors="coerce")
+    dd = dd.dropna(subset=["Fecha"]).sort_values("Fecha").reset_index(drop=True)
+    dd["DD día"] = pd.to_numeric(dd["DD día"], errors="coerce").fillna(0.0)
+    if dd.empty:
+        return vacio
+    hoy = pd.Timestamp(dd["Fecha"].max()).normalize()
+
+    # Lluvia diaria, para el lavado.
+    lluvia = pd.Series(dtype=float)
+    if (aplicar_lavado and history is not None and not history.empty
+            and "lluvia_mm" in history.columns and "fecha_hora" in history.columns):
+        h = history[["fecha_hora", "lluvia_mm"]].copy()
+        h["fecha_hora"] = pd.to_datetime(h["fecha_hora"], errors="coerce")
+        h = h.dropna(subset=["fecha_hora"])
+        if not h.empty:
+            lluvia = (pd.to_numeric(h["lluvia_mm"], errors="coerce").fillna(0.0)
+                      .groupby(h["fecha_hora"].dt.normalize()).sum())
+
+    treat = pd.DataFrame()
+    if treatments_df is not None and not treatments_df.empty and "Campos" in treatments_df.columns:
+        treat = treatments_df.copy()
+        treat["Fecha_dt"] = pd.to_datetime(treat["Fecha"], errors="coerce")
+        treat = treat.dropna(subset=["Fecha_dt"]).sort_values("Fecha_dt")
+
+    bandas = [(float(_i), float(_f), str(_l)) for _i, _f, _l, *_r in CARPOCAPSA_HATCH_BANDS]
+
+    filas, huecos, pases_out = [], [], []
+    for campo in sorted(t["Campo/Zona"].astype(str).unique()):
+        ct = t[t["Campo/Zona"].astype(str) == campo].sort_values("Fecha_dt")
+        bf, bf_sost = _carpocapsa_sustained_biofix(ct, biofix_threshold)
+        if bf is None:
+            continue                      # sin biofix no hay reloj: no se puede medir
+        bf = pd.Timestamp(bf).normalize()
+
+        serie = dd[(dd["Fecha"] >= bf) & (dd["Fecha"] <= hoy)].copy()
+        if serie.empty:
+            continue
+        serie["DDacum"] = serie["DD día"].cumsum()
+        serie = serie.set_index("Fecha")
+        dias = serie.index
+
+        # ── Dias con producto activo ──────────────────────────────────────────
+        prot = pd.Series(False, index=dias)
+        n_pases = 0
+        if not treat.empty:
+            _mine = treat[treat["Campos"].apply(
+                lambda s: carpocapsa_campo_en_tratamiento(s, campo))]
+            # Agrupar por FECHA: Agroptima parte una misma aplicación en varias filas
+            # (una por producto, o repetida por cuaderno) y contarlas por separado
+            # inflaba los pases sin añadir un solo día de protección. Dos productos el
+            # mismo día son UN pase con caldo mixto → manda el de más persistencia.
+            _por_fecha = {}
+            for _, r in _mine.iterrows():
+                f0 = pd.Timestamp(r["Fecha_dt"]).normalize()
+                prod = ""
+                for pc in ["Producto carpocapsa", "Productos", "Producto"]:
+                    v = str(r.get(pc, "") or "").strip()
+                    if v and v.lower() not in ("nan", "none"):
+                        prod = v
+                        break
+                _prev = _por_fecha.setdefault(f0, [])
+                if prod and prod not in _prev:
+                    _prev.append(prod)
+            for f0 in sorted(_por_fecha):
+                prod = " + ".join(_por_fecha[f0])
+                pdias = (float(persistencia_fija) if persistencia_fija
+                         else carpocapsa_persistencia_producto(prod))
+                fin_nom = f0 + pd.Timedelta(days=pdias - 1)
+                fin_ef, mm_acum, lavado = fin_nom, 0.0, False
+                if aplicar_lavado and not lluvia.empty:
+                    _d = f0
+                    while _d <= fin_nom:
+                        mm_acum += float(lluvia.get(_d, 0.0))
+                        if mm_acum >= float(lavado_mm):
+                            fin_ef, lavado = _d, True
+                            break
+                        _d += pd.Timedelta(days=1)
+                prot.loc[(dias >= f0) & (dias <= fin_ef)] = True
+                n_pases += 1
+                _ddp = float(serie.loc[(dias >= bf) & (dias <= f0), "DD día"].sum())
+                pases_out.append({
+                    "Campo/Zona": campo,
+                    "Fecha": f0.date(),
+                    "Producto": prod or "—",
+                    "Persistencia (días)": pdias,
+                    "Protege hasta": fin_ef.date(),
+                    "Días reales": int((fin_ef - f0).days) + 1,
+                    "Lavado por lluvia": "🌧️ sí" if lavado else "",
+                    "DD desde biofix": round(_ddp, 1),
+                    "Fase al aplicar": carpocapsa_fase(_ddp)["nombre"],
+                })
+
+        # ── Cobertura por banda de eclosion ───────────────────────────────────
+        fila = {"Campo/Zona": campo,
+                "Biofix": bf.date(),
+                "Pases carpocapsa": n_pases,
+                "DD hoy": round(float(serie["DDacum"].iloc[-1]), 0)}
+        for _g, (_ini, _fin, _lbl) in enumerate(bandas, start=1):
+            _m = (serie["DDacum"] >= _ini) & (serie["DDacum"] <= _fin)
+            _db = dias[_m]
+            if len(_db) == 0:
+                fila[f"% eclosión {_g}ª cubierta"] = np.nan
+                fila[f"Días eclosión {_g}ª"] = 0
+                fila[f"_abierta{_g}"] = False
+                continue
+            _cub = int(prot.reindex(_db).fillna(False).sum())
+            fila[f"% eclosión {_g}ª cubierta"] = round(100.0 * _cub / len(_db), 0)
+            fila[f"Días eclosión {_g}ª"] = int(len(_db))
+            # La banda termino o sigue abierta: un 20 % sobre una banda a medias no es
+            # comparable con un 20 % sobre una banda ya cerrada.
+            fila[f"_abierta{_g}"] = bool(float(serie["DDacum"].iloc[-1]) < _fin)
+
+        # ── Huecos: rachas de dias seguidos sin producto ──────────────────────
+        _libre = (~prot.values)
+        _mejor_dd, _mejor = -1.0, None
+        _i = 0
+        while _i < len(_libre):
+            if not _libre[_i]:
+                _i += 1
+                continue
+            _j = _i
+            while _j + 1 < len(_libre) and _libre[_j + 1]:
+                _j += 1
+            _d0, _d1 = dias[_i], dias[_j]
+            _sub = serie.iloc[_i:_j + 1]
+            _dd_ecl, _det = 0.0, []
+            for _g, (_ini, _fin, _lbl) in enumerate(bandas, start=1):
+                _mm = (_sub["DDacum"] >= _ini) & (_sub["DDacum"] <= _fin)
+                _v = float(_sub.loc[_mm, "DD día"].sum())
+                if _v > 0:
+                    _dd_ecl += _v
+                    _det.append(f"{_v:.0f} DD de {_g}ª")
+            if _dd_ecl > 0:
+                _en_hueco = ct[(ct["Fecha_dt"] >= _d0) & (ct["Fecha_dt"] <= _d1)]
+                _cmax = 0
+                if not _en_hueco.empty:
+                    _v = pd.to_numeric(_en_hueco["_capturas"], errors="coerce").max()
+                    _cmax = int(_v) if pd.notna(_v) else 0
+                _fila_h = {
+                    "Campo/Zona": campo,
+                    "Desde": _d0.date(),
+                    "Hasta": _d1.date(),
+                    "Días sin producto": int(_j - _i) + 1,
+                    "DD de eclosión sin cubrir": round(_dd_ecl, 0),
+                    "Reparto": " + ".join(_det),
+                    "Máx capturas en el hueco": _cmax,
+                }
+                huecos.append(_fila_h)
+                if _dd_ecl > _mejor_dd:
+                    _mejor_dd, _mejor = _dd_ecl, _fila_h
+            _i = _j + 1
+
+        if _mejor:
+            fila["Hueco mayor"] = f"{_mejor['Desde']:%d/%m}→{_mejor['Hasta']:%d/%m}"
+            fila["Días del hueco"] = _mejor["Días sin producto"]
+            fila["DD eclosión perdidos"] = _mejor["DD de eclosión sin cubrir"]
+            fila["Capturas máx en el hueco"] = _mejor["Máx capturas en el hueco"]
+        else:
+            fila["Hueco mayor"] = "—"
+            fila["Días del hueco"] = 0
+            fila["DD eclosión perdidos"] = 0
+            fila["Capturas máx en el hueco"] = 0
+        filas.append(fila)
+
+    res = pd.DataFrame(filas)
+    if not res.empty:
+        res = res.sort_values("DD eclosión perdidos", ascending=False).reset_index(drop=True)
+    hue = pd.DataFrame(huecos)
+    if not hue.empty:
+        hue = hue.sort_values("DD de eclosión sin cubrir", ascending=False).reset_index(drop=True)
+    pas = pd.DataFrame(pases_out)
+    if not pas.empty:
+        pas = pas.sort_values(["Campo/Zona", "Fecha"]).reset_index(drop=True)
+    return res, hue, pas
