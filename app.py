@@ -33228,6 +33228,14 @@ if not _HEADLESS:
                 if _fich.endswith("app.py") and _ct >= 0.2:
                     _filas_p.append((_ct, _tt, _nc, f"{_fn} (línea {_lin})"))
             _filas_p.sort(reverse=True)
+            # También lo que NO es app.py (Streamlit, pandas, plotly…), por tiempo propio.
+            _otros = sorted(((_tt, _ct, _nc, f"{_fn} · {_fich.replace(chr(92), '/').split('/')[-1]}:{_lin}")
+                             for (_fich, _lin, _fn), (_cc, _nc, _tt, _ct, _callers) in _stats.stats.items()
+                             if not _fich.endswith("app.py") and _tt >= 0.05), reverse=True)[:25]
+            st.markdown("<div id='fg-perfil-otros'>" + "<br>".join(
+                f"{_tt:.2f} s propio · {_ct:.2f} s acumulado · {_nc} llamadas · {_n}"
+                for _tt, _ct, _nc, _n in _otros) + "</div>", unsafe_allow_html=True)
+            st.markdown(f"Total perfilado: **{_stats.total_tt:.2f} s**")
             st.divider()
             st.markdown("#### 🔬 Perfil (temporal): funciones de app.py que más tardan")
             st.markdown("<div id='fg-perfil'>" + "<br>".join(
