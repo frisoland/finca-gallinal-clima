@@ -29793,8 +29793,12 @@ def _dec_treatment_lines_trace(go, treats_df, x_min, x_max, ymax, color="rgba(15
     )
 
 
-def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, height=300, scale_max=160):
+def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, height=300, scale_max=160,
+                       movil=False):
     """
+    `movil=True` (pantalla estrecha): sin títulos de ejes ni números de la escala de lluvia,
+    etiquetas de umbral dentro a la izquierda, fechas horizontales espaciadas desde el
+    último día y márgenes mínimos. Los datos y colores son los mismos.
     Crea gráfico Plotly estilo RIMpro para una enfermedad.
     Barras coloreadas por nivel de riesgo + lluvia como fondo + zona predicción.
     `scale_max` = tope del eje Y (160 por defecto: moteado/monilia llegan a 150). El
@@ -29865,13 +29869,15 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         ),
     ))
 
-    # Etiquetas de umbral a la derecha
+    # Etiquetas de umbral a la derecha (en el móvil, dentro y a la izquierda: fuera no caben)
+    _pos_u = "top left" if movil else "right"
+    _ann_u = {"annotation_font": dict(size=9, color="rgba(90,90,90,0.9)")} if movil else {}
     fig.add_hline(y=100, line_dash="dash", line_color="rgba(214,39,40,0.5)", line_width=1,
-                  annotation_text="Grave", annotation_position="right")
+                  annotation_text="Grave", annotation_position=_pos_u, **_ann_u)
     fig.add_hline(y=50,  line_dash="dash", line_color="rgba(255,127,14,0.5)", line_width=1,
-                  annotation_text="Moderado", annotation_position="right")
+                  annotation_text="Moderado", annotation_position=_pos_u, **_ann_u)
     fig.add_hline(y=25,  line_dash="dot",  line_color="rgba(204,187,0,0.5)", line_width=1,
-                  annotation_text="Ligero", annotation_position="right")
+                  annotation_text="Ligero", annotation_position=_pos_u, **_ann_u)
 
     # Zona predicción
     pred_dates = risk_df[risk_df["Es_prediccion"]]["Fecha"]
@@ -29884,9 +29890,9 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         )
         fig.add_annotation(
             x=x0_pred, y=1, yref="paper",
-            text="◀ real │ predicción ▶",
+            text="previsión ▶" if movil else "◀ real │ predicción ▶",
             showarrow=False, xanchor="left",
-            font=dict(size=10, color="rgba(80,80,180,0.8)"),
+            font=dict(size=9 if movil else 10, color="rgba(80,80,180,0.8)"),
             bgcolor="rgba(255,255,255,0.6)",
         )
 
@@ -29931,6 +29937,17 @@ def _dec_disease_chart(risk_df, value_col, disease_name, today, treats_df, heigh
         paper_bgcolor="rgba(0,0,0,0)",
         bargap=0.1,
     )
+    if movil:
+        # Marcas cada 7 días CONTANDO HACIA ATRÁS desde el último: el último día (hasta dónde
+        # llega la previsión) siempre sale y ninguna marca se pisa con la anterior.
+        _ticks = sorted(pd.date_range(end=dates[-1], periods=max(1, (len(dates) + 6) // 7), freq="7D")) if dates else []
+        fig.update_layout(
+            margin=dict(l=4, r=4, t=26, b=4),
+            legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0, font_size=10),
+            yaxis=dict(title=None, tickfont_size=10),
+            yaxis2=dict(title=None, showticklabels=False),
+            xaxis=dict(tickmode="array", tickvals=_ticks, tickformat="%d/%m", tickangle=0, tickfont_size=10),
+        )
     return fig
 
 
@@ -32698,17 +32715,20 @@ def render_decisiones_movil():
                         _risk = _rr
                 if _risk is not None and not _risk.empty:
                     _hoy = pd.Timestamp.now().normalize()
+                    # 30 días de histórico (más la previsión): con 60 la curva no se lee en el móvil.
+                    _risk = _risk[pd.to_datetime(_risk["Fecha"]) >= _hoy - pd.Timedelta(days=30)].reset_index(drop=True)
                     _, _, _fungi = _dec_tratamientos_periodo(activities_df, _risk["Fecha"].min())
                     _cfg = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False}
                     if _ver_mot:
-                        st.caption("🍄 **Moteado (Mills):** 25 ligero · 50 moderado · **100 infección**. "
-                                   "Zona azul = previsión. Líneas moradas = fungicidas.")
-                        st.plotly_chart(_dec_disease_chart(_risk, "Mills_valor", "Moteado", _hoy, _fungi, 290),
+                        st.caption("🍄 **Moteado (Mills)**, últimos 30 días y previsión: 25 ligero · 50 moderado · "
+                                   "**100 infección**. Barras azules = lluvia (toca para ver los mm). "
+                                   "Líneas moradas = fungicidas. Línea naranja = hoy.")
+                        st.plotly_chart(_dec_disease_chart(_risk, "Mills_valor", "Moteado", _hoy, _fungi, 300, movil=True),
                                         use_container_width=True, config=_cfg, key="dec_movil_graf_moteado")
                     if _ver_mon:
                         st.caption("🍑 **Monilia:** 50 moderado · **100 tiempo muy favorable**. En manzano entra "
                                    "por heridas: léela como tiempo favorable, no como infección.")
-                        st.plotly_chart(_dec_disease_chart(_risk, "Monilia_valor", "Monilia", _hoy, _fungi, 290),
+                        st.plotly_chart(_dec_disease_chart(_risk, "Monilia_valor", "Monilia", _hoy, _fungi, 300, movil=True),
                                         use_container_width=True, config=_cfg, key="dec_movil_graf_monilia")
 
     st.divider()
