@@ -17,17 +17,6 @@ import os
 # Solo se reutilizan las funciones de cálculo y el autocargado de datos.
 _HEADLESS = os.environ.get("FINCA_GALLINAL_HEADLESS") == "1"
 
-# ── CRONÓMETRO TEMPORAL (15/09/2026) ─────────────────────────────────────────
-# Mide cuánto tarda cada parte de una ejecución de la app, en el servidor real. Solo se
-# enseña con ?medir=1 en la dirección. No cambia nada del cálculo. RETIRAR tras medir.
-_T0_EJECUCION = time.perf_counter()
-_MEDIDAS = []
-
-
-def _medir(etiqueta):
-    _MEDIDAS.append((etiqueta, time.perf_counter()))
-
-
 # ── DESCARGAS DE SUPABASE: A LA VEZ Y GUARDADAS UNOS MINUTOS (15/09/2026) ────────
 # Al abrir la app se bajaban ~12 ficheros UNO DETRÁS DE OTRO (6-11 s), y en el móvil eso
 # se repetía cada vez que se perdía la conexión. Ahora se bajan a la vez y lo bajado se
@@ -19563,7 +19552,6 @@ def carpocapsa_tab(history):
         "número máximo de aplicaciones y normativa vigente."
     )
 
-    _medir("Carpo: guías")  # TEMPORAL
     if "carpocapsa_traps_df" not in st.session_state:  # Ensure traps dataframe is present before processing data
         st.session_state.carpocapsa_traps_df = carpocapsa_default_traps_df()
     if "carpocapsa_biofix_df" not in st.session_state:
@@ -19615,7 +19603,6 @@ def carpocapsa_tab(history):
                    f"({'calculado de capturas' if _src == 'calculado' else 'cargado de Supabase' if _src == 'cargado' else 'sin datos'}).")
         st.rerun()
 
-    _medir("Carpo: preparar tablas y biofix")  # TEMPORAL
     st.markdown("### 0. Importar / exportar datos de carpocapsa")
     with st.expander("Importar Excel de carpocapsa", expanded=True):
         st.caption(
@@ -19773,7 +19760,6 @@ def carpocapsa_tab(history):
             """
         )
 
-    _medir("Carpo: 0 importar/Supabase")  # TEMPORAL
     st.markdown("### 1. Configuración de campaña")
     available_campaigns = carpocapsa_available_campaigns(
         st.session_state.carpocapsa_traps_df,
@@ -19809,7 +19795,6 @@ def carpocapsa_tab(history):
     history_campaign = carpocapsa_filter_history_campaign(history, campaign_year) if filter_climate else history
 
     # ── Comparador de campañas (año vs año) ───────────────────────────────────
-    _medir("Carpo: 1 configuración")  # TEMPORAL
     with st.expander("📊 Comparar campañas (año vs año)", expanded=False):
         _years_all = carpocapsa_available_campaigns(
             st.session_state.carpocapsa_traps_df,
@@ -20018,7 +20003,6 @@ def carpocapsa_tab(history):
                     "ese campo; sin filtro, los de toda la finca."
                 )
 
-    _medir("Carpo: comparar campañas")  # TEMPORAL
     st.markdown("### 2. Capturas de trampas")
     st.caption(f"Introduce o revisa las lecturas de la campaña {campaign_year}. El campo/zona debe coincidir con el biofix si quieres cálculo por zona.")
     traps_base = carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, campaign_year).copy()
@@ -20063,7 +20047,6 @@ def carpocapsa_tab(history):
     # Biofix ya no se usa manualmente — queda en session_state para compatibilidad
     biofix_edit = st.session_state.carpocapsa_biofix_df.copy()
 
-    _medir("Carpo: 2 capturas")  # TEMPORAL
     st.markdown("### 3. Evolución de capturas totales")
     st.caption("Suma de capturas de todas las trampas por fecha de lectura. Permite identificar picos de vuelo y generaciones.")
 
@@ -20122,10 +20105,8 @@ def carpocapsa_tab(history):
                     ).properties(height=400, title=f"Capturas por campo — campaña {campaign_year}")
                     st.altair_chart(chart2, use_container_width=True)
 
-    _medir("Carpo: 3 evolución capturas")  # TEMPORAL
     render_carpocapsa_grupos(campaign_year)
 
-    _medir("Carpo: grupos")  # TEMPORAL
     st.markdown("### 4. Ventanas de tratamiento por campo")
     st.caption(
         "Cada lectura de trampa que supere el umbral configurable abre una ventana de 90 DD. "
@@ -20285,7 +20266,6 @@ def carpocapsa_tab(history):
                     mime="text/csv",
                 )
 
-    _medir("Carpo: 4 ventanas por campo")  # TEMPORAL
     st.markdown("### 5. Tratamientos de carpocapsa desde Agroptima")
     st.caption(
         "La app toma estos tratamientos del histórico importado en la pestaña Actuaciones. "
@@ -20337,7 +20317,6 @@ def carpocapsa_tab(history):
             "Revisa siempre que el tratamiento esté correctamente clasificado."
         )
 
-    _medir("Carpo: 5 tratamientos Agroptima")  # TEMPORAL
     st.markdown("### 6. DD acumulados en el momento del tratamiento")
     st.caption(
         "Compara **tu método** vs. la **literatura**, campo a campo. El **biofix** se fija por campo "
@@ -20535,7 +20514,6 @@ def carpocapsa_tab(history):
             )
 
     # ── 7. COBERTURA REAL DE LA ECLOSIÓN ────────────────────────────────────────
-    _medir("Carpo: 6 DD en tratamiento")  # TEMPORAL
     st.markdown("### 7. Cobertura real de la eclosión (¿estuvo la manzana protegida?)")
     st.caption(
         "⚠️ **No confundir con la «Cobertura %» del resumen por grupos** (punto 2). "
@@ -20712,7 +20690,6 @@ def carpocapsa_tab(history):
                     "es el producto y no la programación.")
 
     # ── 📈 Gráfica DD POR CAMPO (biofix propio + tratamientos de ESE campo) ──────
-    _medir("Carpo: 7 cobertura eclosión")  # TEMPORAL
     st.markdown("### 📈 Gráfica de grados-día POR CAMPO")
     st.caption(
         "Como la gráfica de Decisiones, pero **de un solo campo**: usa el **biofix de ESE campo** "
@@ -20899,7 +20876,6 @@ def carpocapsa_tab(history):
                             "(sin huecos largos) que el punto exacto donde cae cada uno — eso lo mide el "
                             "punto 7.")
 
-    _medir("Carpo: gráfica DD por campo")  # TEMPORAL
     st.caption(
         "**Criterio de muestreo:** solo fruto cogido del **ÁRBOL**, mínimo **100 frutos por "
         "variedad y parcela**. El fruto del suelo sobreestima el daño (la manzana picada cae "
@@ -21039,11 +21015,9 @@ def carpocapsa_tab(history):
             mime="text/csv",
         )
 
-    _medir("Carpo: daños")  # TEMPORAL
     st.divider()
     render_frutos_marcados(campaign_year)
 
-    _medir("Carpo: frutos marcados")  # TEMPORAL
     with st.expander("Siguiente evolución prevista del módulo", expanded=False):
         st.markdown(
             """
@@ -22637,8 +22611,6 @@ def resultado_sanitario_tab():
                 st.error(f"No se pudo importar: {_e}")
 
 
-_medir("Definiciones de la app (leer el código)")
-_SESION_NUEVA = False
 # ── Auto-carga Supabase al arrancar (una sola vez por sesión) ─────────────────
 # Carga Agroptima, Producción y Carpocapsa automáticamente si Supabase está
 # configurado y los datos de sesión están vacíos.
@@ -22652,7 +22624,6 @@ if "autoload_supabase_done" not in st.session_state:
 if not st.session_state.autoload_supabase_done and supabase_is_configured():
     st.session_state.autoload_supabase_done = True
     st.session_state["_cargas_fallidas"] = {}
-    _SESION_NUEVA = True
 
     # Qué hay que bajar (solo lo que la sesión aún no tiene). Todo a la vez; luego se aplica
     # a la sesión exactamente como antes, en el mismo orden.
@@ -22685,7 +22656,6 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         _tareas["mg_nave"] = (load_mg_hourly_archive, lambda r: False)
         _tareas["mg_rio"] = (lambda: load_mg_hourly_archive(SUPABASE_MG_HOURLY_RIO_PATH), lambda r: False)
     _res = descargar_a_la_vez(_tareas)
-    _medir("Supabase: todas las descargas (a la vez)")
 
     def _r(nombre):
         return _res.get(nombre, (None, None))
@@ -22785,7 +22755,6 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         if st.session_state.carpocapsa_traps_df.empty:
             st.session_state["_cargas_fallidas"]["carpocapsa"] = _carpo_msg
 
-_medir("Aplicar las cargas a la sesión" if _SESION_NUEVA else "(sesión ya cargada)")
 # ── Auto-carga predicción Sencrop al arrancar (una sola vez por sesión) ────────
 # Descarga la Previsión Sencrop automáticamente si el token está disponible
 # y todavía no hay datos de predicción en sesión.
@@ -22838,7 +22807,6 @@ if not st.session_state.autoload_forecast_done:
     except Exception:
         st.session_state["forecast_rio_df"] = pd.DataFrame()
 
-_medir("Previsión MeteoGalicia (Nave y Río)")
 # Main layout
 if not _HEADLESS:
     render_top_banner()
@@ -22852,7 +22820,6 @@ hoja_threshold = LEAF_WETNESS["min_minutes_to_start_event"]
 history = st.session_state.history_df.copy()
 if not history.empty:
     history = history.sort_values("fecha_hora").reset_index(drop=True)
-_medir("Cabecera y copia del histórico")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PRODUCCIÓN · Datos, Supabase y pestaña
@@ -33371,38 +33338,6 @@ if not _HEADLESS:
     except Exception:
         pass
 
-    _medir("Navegación y avisos")
-    _PERFIL = None
-    if str(_query_param("medir") or "") == "2":
-        import cProfile as _cprof
-        _PERFIL = _cprof.Profile()
-        _PERFIL.enable()
-    _MUESTREO = None
-    if str(_query_param("medir") or "") == "3":
-        # TEMPORAL: cada 5 ms se anota qué líneas de app.py están en ejecución (tiempo real).
-        import collections as _colecc, sys as _sys_m, threading as _hilos_m
-        _MUESTREO = {"propio": _colecc.Counter(), "acum": _colecc.Counter(), "n": 0,
-                     "parar": _hilos_m.Event(), "hilo": _hilos_m.get_ident(), "t0": time.perf_counter()}
-
-        def _muestrear(m=_MUESTREO):
-            while not m["parar"].is_set():
-                _f = _sys_m._current_frames().get(m["hilo"])
-                _vistas, _primera = set(), None
-                while _f is not None:
-                    if _f.f_code.co_filename.endswith("app.py"):
-                        _clave = (_f.f_code.co_name, _f.f_lineno)
-                        if _primera is None:
-                            _primera = _clave
-                        _vistas.add(_clave)
-                    _f = _f.f_back
-                if _primera is not None:
-                    m["propio"][_primera] += 1
-                for _c in _vistas:
-                    m["acum"][_c] += 1
-                m["n"] += 1
-                time.sleep(0.005)
-
-        _hilos_m.Thread(target=_muestrear, daemon=True).start()
     if _page == "hoy":
         home_today_tab(history, soil_type, hoja_threshold)
     elif _page == "dashboard":
@@ -33441,124 +33376,3 @@ if not _HEADLESS:
         instructions_tab()
     elif _page == "configuracion":
         settings_tab()
-    _medir(f"Pantalla «{_page}»")
-    if _MUESTREO is not None:
-        _MUESTREO["parar"].set()
-        _seg = (time.perf_counter() - _MUESTREO["t0"]) / max(_MUESTREO["n"], 1)
-        st.divider()
-        st.markdown(f"#### 🔬 Muestreo (temporal): {_MUESTREO['n']} muestras")
-        st.markdown("<div id='fg-muestreo-propio'>" + "<br>".join(
-            f"{_c * _seg:.2f} s · {_fn} línea {_ln}" for (_fn, _ln), _c in _MUESTREO["propio"].most_common(40)
-        ) + "</div>", unsafe_allow_html=True)
-        st.markdown("<div id='fg-muestreo-acum'>" + "<br>".join(
-            f"{_c * _seg:.2f} s · {_fn} línea {_ln}" for (_fn, _ln), _c in _MUESTREO["acum"].most_common(80)
-        ) + "</div>", unsafe_allow_html=True)
-    if str(_query_param("medir") or "") == "4":
-        # TEMPORAL: versión anterior vs rápida de Carpocapsa con los datos reales de la sesión.
-        _lineas_cmp = []
-        try:
-            _g_ant = dict(globals())
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "_carpo_anterior_temporal.py"),
-                      encoding="utf-8") as _fh:
-                exec(_fh.read(), _g_ant)
-
-            def _cmp(_nombre, _llamar):
-                _t0 = time.perf_counter()
-                _ra = _llamar(_g_ant)
-                _t1 = time.perf_counter()
-                _rn = _llamar(globals())
-                _t2 = time.perf_counter()
-                try:
-                    pd.testing.assert_frame_equal(_ra, _rn, check_exact=True)
-                    _ok = "IGUAL"
-                except AssertionError as _e:
-                    _ok = "DISTINTO: " + str(_e)[:300].replace("\n", " ")
-                _lineas_cmp.append(f"{_ok} · {_nombre} · filas {getattr(_rn, 'shape', '?')} · "
-                                   f"antes {_t1 - _t0:.2f} s · ahora {_t2 - _t1:.2f} s")
-
-            _acts_r = st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS))
-            _traps_r = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
-            _lineas_cmp.append(f"datos: actuaciones {_acts_r.shape} · capturas {_traps_r.shape} · histórico {history.shape} · "
-                               f"tipos fecha actuaciones {[str(_acts_r[c].dtype) for c in ('Fecha', 'fecha') if c in _acts_r.columns]}")
-            for _Y in (2025, 2026):
-                _hc = carpocapsa_filter_history_campaign(history, _Y)
-                for _hn, _h in (("histórico completo", history), ("campaña", _hc)):
-                    for _lim in (3, 7):
-                        _cmp(f"{_Y} tratamientos {_hn} lluvia {_lim}d",
-                             lambda g: g["carpocapsa_treatments_from_activities"](_acts_r, _Y, history=_h, rain_days_limit=_lim))
-                _trt = carpocapsa_treatments_from_activities(_acts_r, _Y, _hc)
-                for _thr, _ini, _fin in ((3, 80, 130), (1, 50, 200), (8, 90, 140)):
-                    _cmp(f"{_Y} ventanas umbral {_thr} {_ini}-{_fin}",
-                         lambda g: g["carpocapsa_build_multi_windows"](
-                             _traps_r, _hc, base_temp=10.0, upper_temp=31.1, capture_threshold=_thr,
-                             dd_active_start=_ini, dd_active_end=_fin, activities_df=_acts_r, campaign_year=_Y))
-                _trc = carpocapsa_filter_campaign(_traps_r, _Y)
-                _ddr = carpocapsa_daily_degree_days(_hc, base_temp=10.0, upper_temp=31.1, method="horario")
-                _bfr = carpocapsa_filter_campaign(st.session_state.get("carpocapsa_biofix_df", pd.DataFrame()), _Y)
-                for _thr, _gap in ((5, 5), (3, 0), (1, 10)):
-                    _cmp(f"{_Y} DD en tratamiento umbral {_thr} hueco {_gap}",
-                         lambda g: g["carpocapsa_dd_at_treatment"](_trc, _trt if not _trt.empty else None, _bfr, _ddr, _Y,
-                                                                  threshold=_thr, min_days_gap=_gap))
-                    _cmp(f"{_Y} puntería umbral {_thr}",
-                         lambda g: g["carpocapsa_treatment_timing_by_field"](_trc, _trt if not _trt.empty else None, _ddr, _Y,
-                                                                            threshold=_thr, ideal_lo=120.0, ideal_hi=140.0))
-                for _pf in (None, 10.0):
-                    for _lav in (True, False):
-                        for _k in range(3):
-                            _cmp(f"{_Y} cobertura persistencia {_pf} lavado {_lav} tabla {_k + 1}",
-                                 lambda g: g["carpocapsa_cobertura_eclosion"](
-                                     _trc, _trt if not _trt.empty else None, _ddr, _Y, history=_hc,
-                                     persistencia_fija=_pf, aplicar_lavado=_lav)[_k])
-        except Exception as _e_cmp:
-            _lineas_cmp.append(f"ERROR en la comprobación: {_e_cmp!r}")
-        st.divider()
-        st.markdown("#### 🔬 Comprobación (temporal): versión anterior vs rápida")
-        st.markdown("<div id='fg-comprobacion'>" + "<br>".join(_lineas_cmp) + "</div>", unsafe_allow_html=True)
-    if _PERFIL is not None:
-        _PERFIL.disable()
-        try:
-            import pstats as _pstats
-            _stats = _pstats.Stats(_PERFIL)
-            _filas_p = []
-            for (_fich, _lin, _fn), (_cc, _nc, _tt, _ct, _callers) in _stats.stats.items():
-                if _fich.endswith("app.py") and _ct >= 0.2:
-                    _filas_p.append((_ct, _tt, _nc, f"{_fn} (línea {_lin})"))
-            _filas_p.sort(reverse=True)
-            # También lo que NO es app.py (Streamlit, pandas, plotly…), por tiempo propio.
-            _otros = sorted(((_tt, _ct, _nc, f"{_fn} · {_fich.replace(chr(92), '/').split('/')[-1]}:{_lin}")
-                             for (_fich, _lin, _fn), (_cc, _nc, _tt, _ct, _callers) in _stats.stats.items()
-                             if not _fich.endswith("app.py") and _tt >= 0.05), reverse=True)[:25]
-            st.markdown("<div id='fg-perfil-otros'>" + "<br>".join(
-                f"{_tt:.2f} s propio · {_ct:.2f} s acumulado · {_nc} llamadas · {_n}"
-                for _tt, _ct, _nc, _n in _otros) + "</div>", unsafe_allow_html=True)
-            st.markdown(f"Total perfilado: **{_stats.total_tt:.2f} s**")
-            st.divider()
-            st.markdown("#### 🔬 Perfil (temporal): funciones de app.py que más tardan")
-            st.markdown("<div id='fg-perfil'>" + "<br>".join(
-                f"{_ct:.2f} s acumulado · {_tt:.2f} s propio · {_nc} llamadas · {_n}"
-                for _ct, _tt, _nc, _n in _filas_p[:40]) + "</div>", unsafe_allow_html=True)
-        except Exception as _e_pf:
-            st.caption(f"(perfil: {_e_pf})")
-
-    # ── Panel del cronómetro (solo con ?medir=1) ─────────────────────────────
-    try:
-        if str(_query_param("medir") or "") == "1":
-            _filas, _prev = [], _T0_EJECUCION
-            for _et, _t in _MEDIDAS:
-                _filas.append({"Parte": _et, "Segundos": round(_t - _prev, 2)})
-                _prev = _t
-            _total = round(_prev - _T0_EJECUCION, 2)
-            _hist_med = st.session_state.setdefault("_medidas_hist", [])
-            _hist_med.append({"Hora": pd.Timestamp.now().strftime("%H:%M:%S"), "Pantalla": _page,
-                              "Sesión nueva": "sí" if _SESION_NUEVA else "no", "Total s": _total,
-                              **{f["Parte"]: f["Segundos"] for f in _filas if f["Segundos"] >= 0.3}})
-            del _hist_med[:-15]
-            st.divider()
-            st.markdown(f"#### ⏱️ Medición (temporal) · esta ejecución: **{_total} s**")
-            st.markdown("\n".join(f"- {f['Parte']}: **{f['Segundos']} s**" for f in _filas))
-            st.caption("Últimas ejecuciones de esta sesión (partes de 0,3 s o más):")
-            st.markdown("<div id='fg-medidas'>" + "<br>".join(
-                " · ".join(f"{k}: {v}" for k, v in r.items()) for r in _hist_med[::-1]) + "</div>",
-                unsafe_allow_html=True)
-    except Exception as _e_med:
-        st.caption(f"(cronómetro: {_e_med})")
