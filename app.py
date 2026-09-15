@@ -8939,7 +8939,8 @@ def instructions_tab():
               seguridad completa en ZIP y catálogo de productos fitosanitarios.
             - **📱 Vista móvil** — botón al final de la barra lateral (o `?movil=1` en la
               dirección): accesos rápidos a Decisiones, Carpocapsa, Producción, Análisis
-              Gallinal y Sanidad; el resto en «Más secciones». La pantalla queda apuntada en la
+              Gallinal e Informe semanal; el resto en «Más secciones». En el móvil la app abre
+              en el Informe semanal. La pantalla queda apuntada en la
               dirección (`?p=…`): si el móvil corta la conexión, al volver sigues en la misma.
 
             ### Superficies
@@ -32672,7 +32673,10 @@ if not _HEADLESS:
     # la pantalla de la dirección y vuelve a donde estabas.
     if "nav_page" not in st.session_state:
         _p_url = str(_query_param("p") or "").strip()
-        st.session_state.nav_page = _p_url if _p_url in PAGINAS_APP else "hoy"
+        # Sin pantalla en la dirección: en el móvil abre el Informe semanal (lo que el
+        # usuario consulta fuera de temporada de tratamientos, 15/09/2026); en el PC, Hoy.
+        st.session_state.nav_page = (_p_url if _p_url in PAGINAS_APP
+                                     else ("informe" if IS_MOBILE else "hoy"))
 
     # CSS: estilo del sidebar
     st.markdown("""
@@ -32874,15 +32878,15 @@ if not _HEADLESS:
         ("🐛", "Carpo",      "carpocapsa"),
         ("🍎", "Prod.",      "produccion"),
         ("🍏", "Gallinal",   "gallinal"),
-        ("🍄", "Sanidad",    "sanidad"),
+        ("📝", "Informe",    "informe"),
     ]
     _MOBILE_MORE = [
-        ("🏠 Panel de hoy", "hoy"), ("🌦️ Clima (Dashboard)", "dashboard"),
+        ("🏠 Panel de hoy", "hoy"), ("🍄 Sanidad", "sanidad"), ("🌦️ Clima (Dashboard)", "dashboard"),
         ("🩺 Resultado sanitario", "resultado"),
         ("❄️ Frío", "frio"), ("🌱 Fenología", "fenologia"),
         ("🔎 Análisis", "analisis"), ("📈 Comparador", "comparador"), ("💧 Riego", "riego"),
         ("🌳 Campos", "campos"), ("🧾 Agroptima", "agroptima"),
-        ("📝 Informe semanal", "informe"), (NOMBRE_ITEM_PREVISION, "sencrop"),
+        (NOMBRE_ITEM_PREVISION, "sencrop"),
         ("📘 Instrucciones", "instrucciones"), ("⚙️ Configuración", "configuracion"),
     ]
 
@@ -33050,7 +33054,11 @@ if not _HEADLESS:
     # ── Contenido principal según página seleccionada ─────────────────────────────
     _page = st.session_state.get("nav_page", "hoy")
     # Apuntar la pantalla en la dirección (solo si cambió, para no reescribirla en cada toque).
-    if str(_query_param("p") or "") != _page:
+    # La pantalla de inicio por defecto del PC (Hoy) no se apunta si la dirección no traía
+    # ninguna: la primera carga en un móvil empieza como PC y el paso a la vista móvil
+    # conserva la dirección; con «p=hoy» ya no abriría en el Informe semanal.
+    _p_actual = str(_query_param("p") or "")
+    if _p_actual != _page and not (_page == "hoy" and not _p_actual and not IS_MOBILE):
         _set_query_param("p", _page)
     _render_page_header(_page)
 
