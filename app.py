@@ -14894,6 +14894,37 @@ def _phenology_default_window_str(year, campo, variedad, pid):
     return None
 
 
+_INDICE_FENOLOGIA = {"obj": None, "n": -1, "idx": None}
+
+
+def _indice_fenologia(pheno):
+    """Fenología registrada ya normalizada e indexada por (año, fase, campo, variedad) →
+    (inicio, fin) en texto, quedándose con la PRIMERA fila de cada clave, igual que hacían las
+    consultas con máscara. Se calcula una vez por tabla: se recalcula si la tabla de la sesión
+    es otro objeto o cambia de tamaño (la app siempre asigna una tabla nueva al editar).
+
+    Antes cada consulta normalizaba las 3.888 filas: Decisiones hacía más de 1.000 por
+    pantalla (23 s en el servidor, 15/09/2026)."""
+    if _INDICE_FENOLOGIA["obj"] is pheno and _INDICE_FENOLOGIA["n"] == len(pheno):
+        return _INDICE_FENOLOGIA["idx"]
+    p = normalize_phenology_df(pheno).dropna(subset=["Inicio", "Fin"])
+    por_lower, por_casefold = {}, {}
+    if not p.empty:
+        _anio = p["Año"]
+        _fase = p["Fase"].astype(str).str.strip()
+        _campo = p["Campo"].astype(str).str.strip().str.casefold()
+        _var = p["Variedad"].astype(str).str.strip().str.casefold()
+        for a, f, c, v, ini, fin in zip(_anio, _fase, _campo, _var, p["Inicio"], p["Fin"]):
+            if pd.isna(a):
+                continue
+            par = (str(ini), str(fin))
+            por_lower.setdefault((int(a), f.lower(), c, v), par)
+            por_casefold.setdefault((int(a), f.casefold(), c, v), par)
+    idx = {"lower": por_lower, "casefold": por_casefold}
+    _INDICE_FENOLOGIA.update(obj=pheno, n=len(pheno), idx=idx)
+    return idx
+
+
 def registered_phenology_window(year, campo, variedad, pid):
     """Ventana (inicio_ts, fin_ts) de una fase REGISTRADA Y PERSONALIZADA por el
     usuario (item Fenología → phenology_df). Devuelve None si no hay fila o si las
@@ -14908,18 +14939,11 @@ def registered_phenology_window(year, campo, variedad, pid):
     if pheno is None or getattr(pheno, "empty", True):
         return None
     try:
-        p = normalize_phenology_df(pheno).dropna(subset=["Inicio", "Fin"])
-        if p.empty:
+        _hit = _indice_fenologia(pheno)["lower"].get(
+            (int(year), name, str(campo).strip().casefold(), str(variedad).strip().casefold()))
+        if _hit is None:
             return None
-        mask = ((p["Año"] == int(year))
-                & (p["Fase"].str.strip().str.lower() == name)
-                & (p["Campo"].str.strip().str.casefold() == str(campo).strip().casefold())
-                & (p["Variedad"].str.strip().str.casefold() == str(variedad).strip().casefold()))
-        hit = p[mask]
-        if hit.empty:
-            return None
-        ini_str = str(hit["Inicio"].iloc[0])
-        fin_str = str(hit["Fin"].iloc[0])
+        ini_str, fin_str = _hit
         # Sin tocar (igual que la plantilla por defecto) → no cuenta como propia.
         _def = _phenology_default_window_str(year, campo, variedad, pid)
         if _def is not None and (ini_str, fin_str) == _def:
@@ -26059,16 +26083,11 @@ def _fenologia_cosecha_registrada(campo, variedad, year):
     if pheno is None or getattr(pheno, "empty", True):
         return None
     try:
-        p = normalize_phenology_df(pheno).dropna(subset=["Inicio", "Fin"])
-        if p.empty:
+        _hit = _indice_fenologia(pheno)["casefold"].get(
+            (int(year), "cosecha", str(campo).strip().casefold(), str(variedad).strip().casefold()))
+        if _hit is None:
             return None
-        hit = p[(p["Año"] == int(year))
-                & (p["Fase"].str.strip().str.casefold() == "cosecha")
-                & (p["Campo"].str.strip().str.casefold() == str(campo).strip().casefold())
-                & (p["Variedad"].str.strip().str.casefold() == str(variedad).strip().casefold())]
-        if hit.empty:
-            return None
-        _ini, _fin = str(hit["Inicio"].iloc[0]), str(hit["Fin"].iloc[0])
+        _ini, _fin = _hit
         for r in default_phenology_rows_for_campo_variedad_year(campo, variedad, int(year)):
             if str(r.get("Fase", "")).strip().casefold() == "cosecha" and (_ini, _fin) == (str(r.get("Inicio")), str(r.get("Fin"))):
                 return None            # sin tocar (plantilla) → no cuenta
