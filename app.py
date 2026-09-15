@@ -4590,8 +4590,13 @@ def coverage_advice_from_post_treatment(rain_mm, max_scab_ratio, max_monilia_rat
 @st.cache_data(ttl=1800, max_entries=4, show_spinner=False)
 def build_treatment_sanitary_cross(history_df, activities_df, soil_type=None, hoja_threshold=None):
     """
-    Cruza último tratamiento reconocido por campo con lluvia y eventos sanitarios posteriores.
-    Usa el histórico climático general como referencia para todos los campos.
+    Cruza el último tratamiento FUNGICIDA de cada campo con la lluvia y los eventos de moteado
+    y monilia posteriores. Usa el histórico climático general como referencia para todos los campos.
+
+    Solo cuentan las actuaciones que `is_fungicide_activity` reconoce como fungicida, igual
+    que en Decisiones y Sanidad. Hasta el 15/09/2026 cogía la última actuación de CUALQUIER
+    tipo (Bactur, abonos, bioestimulantes…) y medía la protección contra moteado y monilia
+    desde una actuación que no protege de ellos.
 
     CACHEADA: es una función PURA y la más cara del item Agroptima — recorre los últimos
     tratamientos y por CADA uno llama a `detect_leaf_wetness_events` sobre un tramo
@@ -4606,6 +4611,11 @@ def build_treatment_sanitary_cross(history_df, activities_df, soil_type=None, ho
 
     acts = normalize_activities_df(activities_df)
     acts_visible = acts.drop(columns=[c for c in ["_clave_fallback", "_clave_importacion"] if c in acts.columns]).copy()
+    if not acts_visible.empty:
+        acts_visible = acts_visible[acts_visible.apply(
+            lambda r: is_fungicide_activity(r.get("Producto", ""), r.get("Trabajo", "")), axis=1).astype(bool)]
+    if acts_visible.empty:
+        return pd.DataFrame()
     hist = history_df.copy()
     hist["fecha_hora"] = pd.to_datetime(hist["fecha_hora"], errors="coerce")
     hist = hist.dropna(subset=["fecha_hora"]).sort_values("fecha_hora")
@@ -4719,6 +4729,8 @@ def build_treatment_sanitary_cross(history_df, activities_df, soil_type=None, ho
 
 def render_treatment_sanitary_cross():
     st.markdown("#### Cruce tratamientos + riesgo sanitario")
+    st.caption("Para cada campo, su último **fungicida** registrado y la lluvia y los eventos de moteado y "
+               "monilia desde entonces. Insecticidas, abonos y herbicidas no cuentan.")
 
     history_df = st.session_state.get("history_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
     activities_df = st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS))
@@ -4808,10 +4820,10 @@ def render_field_sanitary_report():
             for f in missing_fields:
                 extra_rows.append({
                     "Campo": f,
-                    "Último tratamiento": "Sin tratamiento registrado",
+                    "Último tratamiento": "Sin fungicida registrado",
                     "Días hasta último dato climático": np.nan,
-                    "Producto": "Sin tratamiento registrado",
-                    "Variedades tratadas": "Sin tratamiento registrado",
+                    "Producto": "Sin fungicida registrado",
+                    "Variedades tratadas": "Sin fungicida registrado",
                     "Superficie tratada ha": np.nan,
                     "Dosis": np.nan,
                     "Unidad dosis": "",
@@ -4823,7 +4835,7 @@ def render_field_sanitary_report():
                     "Máx ratio monilia posterior": 0.0,
                     "Primer evento posterior": "",
                     "Evento más crítico posterior": "",
-                    "Aviso orientativo": "Priorizar revisión si el periodo climático ha sido desfavorable: campo sin tratamiento registrado en Agroptima.",
+                    "Aviso orientativo": "Priorizar revisión si el periodo climático ha sido desfavorable: campo sin fungicida registrado en Agroptima.",
                     "ID Agroptima": "",
                 })
             cross = pd.concat([cross, pd.DataFrame(extra_rows)], ignore_index=True)
@@ -15870,7 +15882,7 @@ def build_weekly_priority_table_all_fields(hist, activities_df, period_df, start
         climate_msg = "Periodo con evento(s) compatibles con infección. Priorizar campos sin cobertura registrada."
     elif max(max_scab, max_monilia) >= ESCALA_MODERADO or rain_total >= 10 or wet_hours >= 24:
         climate_pressure = "Media-alta"
-        climate_msg = "Periodo húmedo o con episodios moderados (50 o más). Revisar especialmente campos sin tratamiento registrado."
+        climate_msg = "Periodo húmedo o con episodios moderados (50 o más). Revisar especialmente campos sin fungicida registrado."
     elif rain_total >= 5 or wet_hours >= 8:
         climate_pressure = "Media"
         climate_msg = "Periodo con humedad/lluvia moderada. Mantener vigilancia."
@@ -15917,15 +15929,15 @@ def build_weekly_priority_table_all_fields(hist, activities_df, period_df, start
                 ).strip()
         else:
             treated = False
-            last_treatment = "Sin tratamiento registrado"
-            product = "Sin tratamiento registrado"
-            varieties_treated = "Sin tratamiento registrado"
+            last_treatment = "Sin fungicida registrado"
+            product = "Sin fungicida registrado"
+            varieties_treated = "Sin fungicida registrado"
             if climate_pressure in ["Alta", "Media-alta"]:
-                aviso = f"{climate_msg} Este campo no tiene tratamiento registrado en Agroptima."
+                aviso = f"{climate_msg} Este campo no tiene ningún fungicida registrado en Agroptima."
             elif climate_pressure == "Media":
-                aviso = f"{climate_msg} Campo sin tratamiento registrado; revisar si hay síntomas o variedades sensibles."
+                aviso = f"{climate_msg} Campo sin fungicida registrado; revisar si hay síntomas o variedades sensibles."
             else:
-                aviso = "Campo sin tratamiento registrado. Seguimiento normal salvo cambio de previsión o síntomas."
+                aviso = "Campo sin fungicida registrado. Seguimiento normal salvo cambio de previsión o síntomas."
 
             base = {
                 "Campo": campo,
@@ -16198,7 +16210,7 @@ El informe incluye todos los campos de la finca, aunque no tengan actuaciones re
 
 ## 5. Lectura orientativa
 
-Este informe cruza el histórico climático, los tratamientos importados de Agroptima y los eventos de humectación foliar. El clima se usa como referencia general de finca para todos los campos. Se incluyen también campos sin tratamiento registrado, que pueden quedar por delante si hay presión sanitaria. Si Agroptima no especifica variedad, no se debe asumir que todo el campo quedó cubierto.
+Este informe cruza el histórico climático, los tratamientos importados de Agroptima y los eventos de humectación foliar. El clima se usa como referencia general de finca para todos los campos. El «último tratamiento» de cada campo es su último **fungicida** registrado: insecticidas (Bactur…), abonos, bioestimulantes y herbicidas no cuentan, porque no protegen de moteado ni de monilia. Se incluyen también campos sin fungicida registrado, que pueden quedar por delante si hay presión sanitaria. Si Agroptima no especifica variedad, no se debe asumir que todo el campo quedó cubierto.
 """
 
     return metrics, report_md, acts_period, priority_table
@@ -16869,7 +16881,9 @@ def weekly_report_tab(history, soil_type, hoja_threshold):
         if priority_table.empty:
             st.info("No hay campos definidos para generar prioridades.")
         else:
-            st.caption(f"Se muestran todos los campos incluidos en la prioridad semanal: {len(priority_table)}.")
+            st.caption(f"Se muestran todos los campos incluidos en la prioridad semanal: {len(priority_table)}. "
+                       "«Último tratamiento» y «Producto» son el último **fungicida** de cada campo: "
+                       "insecticidas, abonos y herbicidas no cuentan para moteado ni monilia.")
             cols = [
                 "Campo", "Prioridad", "Tratado registrado", "Último tratamiento", "Producto",
                 "Variedades tratadas", "Variedades actuales", "Presión climática semanal",
@@ -17031,7 +17045,7 @@ def render_informe_movil(history, soil_type, hoja_threshold):
                             _prod = re.sub(r"\s*\(\d+\)", "", str(r.get("Producto", "") or "")).strip()
                             _trat = f"{_fecha_corta(r.get('Último tratamiento', ''))} {_h.escape(_prod)}".strip()
                         else:
-                            _trat = "sin tratamiento registrado"
+                            _trat = "sin fungicida registrado"
                         _ll = pd.to_numeric(r.get("Lluvia posterior mm"), errors="coerce")
                         _mo = pd.to_numeric(r.get("Máx ratio moteado posterior"), errors="coerce")
                         _mn = pd.to_numeric(r.get("Máx ratio monilia posterior"), errors="coerce")
@@ -17045,8 +17059,9 @@ def render_informe_movil(history, soil_type, hoja_threshold):
                     _titulo = f"Prioridad {_pri} · {len(_filas)} campo{'s' if len(_filas) != 1 else ''}"
                     _tarjetas.append(_carpo_movil_tarjeta(_titulo, _lin, _colores.get(_pri, "#9e9e9e")))
                 st.markdown("".join(_tarjetas), unsafe_allow_html=True)
-                st.caption("«después» = desde el último tratamiento: lluvia, máximo ratio de moteado y de monilia "
-                           "(escala de la app: 0,25 ligero · 0,5 moderado · 1 infección).")
+                st.caption("La fecha y el producto son el **último fungicida** de cada campo (insecticidas, "
+                           "abonos y herbicidas no cuentan). «después» = desde ese fungicida: lluvia y máximo "
+                           "ratio de moteado y de monilia (escala de la app: 0,25 ligero · 0,5 moderado · 1 infección).")
             _sin = len(priority_table) - len(_con_aviso) if not priority_table.empty else 0
             if _sin:
                 st.caption(f"Sin aviso (prioridad baja): {_sin} campo{'s' if _sin != 1 else ''}.")
