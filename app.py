@@ -23354,6 +23354,155 @@ def render_year_table(df, index_label="Año", max_height=430):
     )
 
 
+def _prod_movil_agregar(d):
+    """Kg, Ha, árboles y ratios de un trozo de la tabla de producción, con las MISMAS cuentas
+    que el «Resumen anual» de la pantalla completa (sumas; Kg/Ha = Kg ÷ Ha; Kg/árbol =
+    Kg ÷ árboles productores; % productores = productores ÷ árboles)."""
+    kg = float(pd.to_numeric(d["Kg"], errors="coerce").sum())
+    ha = float(pd.to_numeric(d["Ha"], errors="coerce").sum())
+    na = float(pd.to_numeric(d["Num_arboles"], errors="coerce").sum())
+    ap = float(pd.to_numeric(d["Arboles_prod"], errors="coerce").sum())
+    return {"kg": kg, "ha": ha,
+            "kg_ha": round(kg / ha, 0) if ha else np.nan,
+            "kg_arbol": round(kg / ap, 1) if ap else np.nan,
+            "pct_prod": round(ap / na * 100, 1) if na else np.nan}
+
+
+def _prod_movil_cambio(nuevo, viejo, puntos=False):
+    """«▲ 12 %» / «▼ 8 %» en color, o "" si no hay con qué comparar. Con `puntos=True` (para
+    cifras que ya son un %) da la diferencia en puntos: «▲ 9,5 pts»."""
+    try:
+        if pd.isna(nuevo) or pd.isna(viejo) or (not puntos and float(viejo) == 0):
+            return ""
+        c = (float(nuevo) - float(viejo)) if puntos else (float(nuevo) - float(viejo)) / abs(float(viejo)) * 100
+    except Exception:
+        return ""
+    if abs(c) < (0.05 if puntos else 0.5):
+        return "<span style='color:#777;font-size:0.8rem'> = </span>"
+    _col, _fl = ("#2e7d32", "▲") if c > 0 else ("#c62828", "▼")
+    _txt = f"{_fmt_es_number(abs(c), 1)} pts" if puntos else f"{abs(c):.0f} %"
+    return f"<span style='color:{_col};font-size:0.8rem;font-weight:600'> {_fl} {_txt}</span>"
+
+
+def _prod_movil_por_anios_html(df_sel, titulo, color, extra_col=None):
+    """Tarjeta con una línea por año (del más reciente al más antiguo): kilos, kg/ha y el
+    cambio de kg/ha frente al año anterior con datos."""
+    import html as _h
+    _anios = sorted(df_sel["Año"].dropna().unique())
+    _prev = None
+    _lineas = []
+    for _a in _anios:
+        _g = _prod_movil_agregar(df_sel[df_sel["Año"] == _a])
+        _extra = ""
+        if extra_col is not None:
+            _extra = f" · {extra_col(df_sel[df_sel['Año'] == _a])}"
+        _lineas.append(
+            f"<div style='display:flex;justify-content:space-between;gap:6px;border-top:1px solid #eee;"
+            f"padding:4px 0'><b>{int(_a)}</b>"
+            f"<span style='text-align:right'>{_fmt_es_number(_g['kg'], 0)} kg · "
+            f"<b>{_fmt_es_number(_g['kg_ha'], 0)}</b> kg/ha"
+            f"{_prod_movil_cambio(_g['kg_ha'], _prev['kg_ha']) if _prev else ''}"
+            f"<span style='color:#777'>{_extra}</span></span></div>")
+        _prev = _g
+    return _carpo_movil_tarjeta(titulo, _lineas[::-1], color)
+
+
+def render_produccion_movil(history):
+    """Producción en el MÓVIL: cifras de la campaña elegida, gráfica por año, consulta por
+    campo (con cada variedad por separado) y por variedad, y los campos ordenados por kg/ha;
+    debajo, con un interruptor, la pantalla completa (importar, portainjertos, clima…)."""
+    import html as _h
+    df = st.session_state.get("produccion_df", pd.DataFrame())
+    if df is None or df.empty:
+        st.info("Todavía no hay producción cargada. Abre la pantalla completa para importar el Excel.")
+    else:
+        _anios = sorted(df["Año"].dropna().unique())
+        _anio = st.selectbox("Campaña", _anios[::-1], index=0, key="prod_movil_anio",
+                             format_func=lambda a: str(int(a)))
+        st.caption(f"**Lo esencial** · campaña {int(_anio)} (elige otra arriba).")
+
+        # ── Cifras de la campaña, con el cambio frente a la anterior con datos ──────
+        _g = _prod_movil_agregar(df[df["Año"] == _anio])
+        _ant = [a for a in _anios if a < _anio]
+        _gp = _prod_movil_agregar(df[df["Año"] == _ant[-1]]) if _ant else None
+        _cmp = lambda k: _prod_movil_cambio(_g[k], _gp[k], puntos=(k == "pct_prod")) if _gp else ""
+        _celda = lambda et, v, k: (
+            f"<div style='background:#fff;border-radius:10px;padding:8px 10px;box-shadow:0 1px 2px rgba(0,0,0,.08)'>"
+            f"<div style='font-size:0.78rem;color:#666'>{et}</div>"
+            f"<div style='font-size:1.2rem;font-weight:700'>{v}{_cmp(k)}</div></div>")
+        st.markdown(
+            "<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:4px 0 6px 0'>"
+            + _celda("Kilos totales", _fmt_es_number(_g["kg"], 0), "kg")
+            + _celda("Kg/ha", _fmt_es_number(_g["kg_ha"], 0), "kg_ha")
+            + _celda("Kg/árbol productor", _fmt_es_number(_g["kg_arbol"], 1), "kg_arbol")
+            + _celda("% árboles productores", f"{_fmt_es_number(_g['pct_prod'], 1)} %", "pct_prod")
+            + "</div>", unsafe_allow_html=True)
+        if _gp:
+            st.caption(f"▲▼ = cambio frente a {int(_ant[-1])}.")
+
+        # ── Gráfica por año ─────────────────────────────────────────────────────────
+        st.markdown("#### 📊 Todas las campañas")
+        _res = df.groupby("Año").agg(Kg=("Kg", "sum"), Ha=("Ha", "sum")).reset_index()
+        _res["Kg/Ha"] = (_res["Kg"] / _res["Ha"]).round(0)
+        _met = st.radio("Ver", ["Kg totales", "Kg/ha"], horizontal=True, key="prod_movil_metrica",
+                        label_visibility="collapsed")
+        if _met == "Kg totales":
+            st.bar_chart(_res.set_index("Año")["Kg"].rename(index=lambda a: str(int(a))), color="#4caf7d", height=220)
+        else:
+            st.bar_chart(_res.set_index("Año")["Kg/Ha"].rename(index=lambda a: str(int(a))), color="#2196f3", height=220)
+
+        # ── Consulta por campo (y variedad a variedad) ──────────────────────────────
+        st.markdown("#### 🌳 Por campo")
+        _campos = sorted(df["Campo"].dropna().astype(str).unique())
+        _campo = st.selectbox("Campo", _campos, key="prod_movil_campo", format_func=marca_zona)
+        _dc = df[df["Campo"].astype(str) == _campo]
+        _vars_c = sorted(_dc["Variedad_nombre"].dropna().astype(str).unique())
+        _var_c = "Todas"
+        if len(_vars_c) > 1:
+            _var_c = st.radio("Variedad", ["Todas"] + _vars_c, horizontal=True, key="prod_movil_campo_var")
+        if _var_c != "Todas":
+            _dc = _dc[_dc["Variedad_nombre"].astype(str) == _var_c]
+        _titulo_c = marca_zona(_campo) + (f" · {_var_c}" if _var_c != "Todas" else
+                                          (f" · {len(_vars_c)} variedades" if len(_vars_c) > 1 else
+                                           (f" · {_vars_c[0]}" if _vars_c else "")))
+        st.markdown(_prod_movil_por_anios_html(_dc, _titulo_c, "#2e7d32"), unsafe_allow_html=True)
+
+        # ── Consulta por variedad (toda la finca) ───────────────────────────────────
+        st.markdown("#### 🍏 Por variedad (toda la finca)")
+        _vars = sorted(df["Variedad_nombre"].dropna().astype(str).unique())
+        _var = st.selectbox("Variedad", _vars, key="prod_movil_variedad")
+        _dv = df[df["Variedad_nombre"].astype(str) == _var]
+        st.markdown(_prod_movil_por_anios_html(
+            _dv, _var, "#6a1b9a",
+            extra_col=lambda d: f"{d['Campo'].nunique()} campo{'s' if d['Campo'].nunique() != 1 else ''}"),
+            unsafe_allow_html=True)
+
+        # ── Campos de la campaña por kg/ha ──────────────────────────────────────────
+        st.markdown(f"#### 🏅 Campos por kg/ha · {int(_anio)}")
+        _pc = df[df["Año"] == _anio].groupby("Campo").agg(Kg=("Kg", "sum"), Ha=("Ha", "sum")).reset_index()
+        _pc = _pc[_pc["Ha"] > 0]
+        if _pc.empty:
+            st.caption("Sin datos de superficie esta campaña.")
+        else:
+            _pc["Kg/Ha"] = (_pc["Kg"] / _pc["Ha"]).round(0)
+            _pc = _pc.sort_values("Kg/Ha", ascending=False).reset_index(drop=True)
+            _n = min(5, len(_pc))
+            _fila = lambda i, r: (f"<div style='display:flex;justify-content:space-between;border-top:1px solid #eee;"
+                                  f"padding:3px 0'><span>{i}. {_h.escape(marca_zona(str(r['Campo'])))}</span>"
+                                  f"<b>{_fmt_es_number(r['Kg/Ha'], 0)} kg/ha</b></div>")
+            _mej = [_fila(i + 1, r) for i, r in _pc.head(_n).iterrows()]
+            st.markdown(_carpo_movil_tarjeta(f"Mejores {_n}", _mej, "#2e7d32"), unsafe_allow_html=True)
+            if len(_pc) > _n:
+                _peo = [_fila(i + 1, r) for i, r in _pc.tail(min(5, len(_pc) - _n)).iterrows()]
+                st.markdown(_carpo_movil_tarjeta(f"Últimos {len(_peo)} (de {len(_pc)} campos)", _peo, "#c62828"),
+                            unsafe_allow_html=True)
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="prod_movil_completa",
+                 help="Importar el Excel, tablas por campo, variedad y portainjerto, y la correlación con el clima."):
+        produccion_tab(history)
+
+
 def produccion_tab(history):
     st.subheader("🍎 Producción · Histórico y análisis")
 
@@ -33893,7 +34042,10 @@ if not _HEADLESS:
     elif _page == "agroptima":
         activities_tab()
     elif _page == "produccion":
-        produccion_tab(history)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_produccion_movil(history)
+        else:
+            produccion_tab(history)
     elif _page == "gallinal":
         gallinal_tab(history)
     elif _page == "informe":
