@@ -17,6 +17,16 @@ import os
 # Solo se reutilizan las funciones de cálculo y el autocargado de datos.
 _HEADLESS = os.environ.get("FINCA_GALLINAL_HEADLESS") == "1"
 
+# ── CRONÓMETRO TEMPORAL (15/09/2026) ─────────────────────────────────────────
+# Mide cuánto tarda cada parte de una ejecución de la app, en el servidor real. Solo se
+# enseña con ?medir=1 en la dirección. No cambia nada del cálculo. RETIRAR tras medir.
+_T0_EJECUCION = time.perf_counter()
+_MEDIDAS = []
+
+
+def _medir(etiqueta):
+    _MEDIDAS.append((etiqueta, time.perf_counter()))
+
 
 st.set_page_config(
     page_title="Finca Gallinal · Plataforma agroclimática",
@@ -22406,6 +22416,8 @@ def resultado_sanitario_tab():
                 st.error(f"No se pudo importar: {_e}")
 
 
+_medir("Definiciones de la app (leer el código)")
+_SESION_NUEVA = False
 # ── Auto-carga Supabase al arrancar (una sola vez por sesión) ─────────────────
 # Carga Agroptima, Producción y Carpocapsa automáticamente si Supabase está
 # configurado y los datos de sesión están vacíos.
@@ -22419,6 +22431,7 @@ if "autoload_supabase_done" not in st.session_state:
 if not st.session_state.autoload_supabase_done and supabase_is_configured():
     st.session_state.autoload_supabase_done = True
     st.session_state["_cargas_fallidas"] = {}
+    _SESION_NUEVA = True
 
     # Histórico climático (snapshot). use_cache=False: al abrir una sesión nueva
     # forzamos la descarga del snapshot MÁS RECIENTE de Supabase (sin caché), para
@@ -22428,6 +22441,7 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         if _hist_df is not None and not _hist_df.empty:
             st.session_state.history_df = _hist_df
 
+    _medir("Supabase: histórico Nave")
     # Zona Río (sensor «Gallinal Los Pinos»), de su propio fichero. Si aún no existe se
     # queda vacío sin avisar: no afecta a nada de lo demás.
     if st.session_state.get("history_rio_df", pd.DataFrame()).empty:
@@ -22438,6 +22452,7 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         except Exception:
             pass
 
+    _medir("Supabase: histórico Río")
     # Agroptima
     if st.session_state.activities_df.empty:
         try:
@@ -22449,12 +22464,14 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         else:
             st.session_state["_cargas_fallidas"]["actuaciones"] = _act_msg
 
+    _medir("Supabase: Agroptima")
     # Producción
     if "produccion_df" not in st.session_state or st.session_state.get("produccion_df", pd.DataFrame()).empty:
         _prod_df, _ = load_produccion_from_supabase()
         if _prod_df is not None and not _prod_df.empty:
             st.session_state.produccion_df = _prod_df
 
+    _medir("Supabase: producción")
     # Fenología (calendario fenológico por campo × variedad × año)
     if st.session_state.get("phenology_df", pd.DataFrame()).empty:
         try:
@@ -22467,6 +22484,7 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
             # Solo si es un ERROR: no tener fenología guardada todavía es normal.
             st.session_state["_cargas_fallidas"]["fenologia"] = _phen_msg
 
+    _medir("Supabase: fenología")
     # Perfiles de suelo por parcela (para el balance de riego)
     if st.session_state.get("soil_profiles_df", pd.DataFrame()).empty:
         _sp_df, _ = load_soil_profiles_from_supabase()
@@ -22495,6 +22513,7 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
     if "irrigation_synced_at" not in st.session_state:
         st.session_state["irrigation_synced_at"] = load_irrigation_sync_at()
 
+    _medir("Supabase: riego, suelos y goteo")
     # Carpocapsa (capturas, biofix y daños)
     if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
         try:
@@ -22511,6 +22530,7 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         if st.session_state.carpocapsa_traps_df.empty:
             st.session_state["_cargas_fallidas"]["carpocapsa"] = _carpo_msg
 
+_medir("Supabase: carpocapsa" if _SESION_NUEVA else "(sesión ya cargada)")
 # ── Auto-carga predicción Sencrop al arrancar (una sola vez por sesión) ────────
 # Descarga la Previsión Sencrop automáticamente si el token está disponible
 # y todavía no hay datos de predicción en sesión.
@@ -22563,6 +22583,7 @@ if not st.session_state.autoload_forecast_done:
     except Exception:
         st.session_state["forecast_rio_df"] = pd.DataFrame()
 
+_medir("Previsión MeteoGalicia (Nave y Río)")
 # Main layout
 if not _HEADLESS:
     render_top_banner()
@@ -22576,6 +22597,7 @@ hoja_threshold = LEAF_WETNESS["min_minutes_to_start_event"]
 history = st.session_state.history_df.copy()
 if not history.empty:
     history = history.sort_values("fecha_hora").reset_index(drop=True)
+_medir("Cabecera y copia del histórico")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PRODUCCIÓN · Datos, Supabase y pestaña
@@ -33099,6 +33121,7 @@ if not _HEADLESS:
     except Exception:
         pass
 
+    _medir("Navegación y avisos")
     if _page == "hoy":
         home_today_tab(history, soil_type, hoja_threshold)
     elif _page == "dashboard":
@@ -33137,3 +33160,25 @@ if not _HEADLESS:
         instructions_tab()
     elif _page == "configuracion":
         settings_tab()
+    _medir(f"Pantalla «{_page}»")
+
+    # ── Panel del cronómetro (solo con ?medir=1) ─────────────────────────────
+    try:
+        if str(_query_param("medir") or "") == "1":
+            _filas, _prev = [], _T0_EJECUCION
+            for _et, _t in _MEDIDAS:
+                _filas.append({"Parte": _et, "Segundos": round(_t - _prev, 2)})
+                _prev = _t
+            _total = round(_prev - _T0_EJECUCION, 2)
+            _hist_med = st.session_state.setdefault("_medidas_hist", [])
+            _hist_med.append({"Hora": pd.Timestamp.now().strftime("%H:%M:%S"), "Pantalla": _page,
+                              "Sesión nueva": "sí" if _SESION_NUEVA else "no", "Total s": _total,
+                              **{f["Parte"]: f["Segundos"] for f in _filas if f["Segundos"] >= 0.3}})
+            del _hist_med[:-15]
+            st.divider()
+            st.markdown(f"#### ⏱️ Medición (temporal) · esta ejecución: **{_total} s**")
+            st.dataframe(pd.DataFrame(_filas), hide_index=True, use_container_width=True)
+            st.caption("Últimas ejecuciones de esta sesión (partes de 0,3 s o más):")
+            st.dataframe(pd.DataFrame(_hist_med[::-1]), hide_index=True, use_container_width=True)
+    except Exception as _e_med:
+        st.caption(f"(cronómetro: {_e_med})")
