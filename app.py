@@ -33716,7 +33716,7 @@ if not _HEADLESS:
     elif _page == "gallinal":
         gallinal_tab(history)
     elif _page == "informe":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 15/09/2026)
             render_informe_movil(history, soil_type, hoja_threshold)
         else:
             weekly_report_tab(history, soil_type, hoja_threshold)
