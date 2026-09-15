@@ -28,6 +28,98 @@ def _medir(etiqueta):
     _MEDIDAS.append((etiqueta, time.perf_counter()))
 
 
+# ── DESCARGAS DE SUPABASE: A LA VEZ Y GUARDADAS UNOS MINUTOS (15/09/2026) ────────
+# Al abrir la app se bajaban ~12 ficheros UNO DETRÁS DE OTRO (6-11 s), y en el móvil eso
+# se repetía cada vez que se perdía la conexión. Ahora se bajan a la vez y lo bajado se
+# guarda DESCARGAS_TTL_S segundos en el servidor, compartido por todas las sesiones. Toda
+# escritura de la app en Supabase vacía el almacén (ver _escribir_http), así que después
+# de guardar algo nunca se sirve la copia vieja. Lo que escribe el informe de la mañana
+# desde fuera se ve, como mucho, DESCARGAS_TTL_S segundos más tarde.
+DESCARGAS_TTL_S = 300
+
+
+@st.cache_resource(show_spinner=False)
+def _almacen_descargas():
+    import threading as _th
+    return {"datos": {}, "lock": _th.Lock()}
+
+
+def invalidar_descargas_supabase():
+    """Vacía lo guardado: la próxima sesión vuelve a descargar de Supabase."""
+    try:
+        _a = _almacen_descargas()
+        with _a["lock"]:
+            _a["datos"].clear()
+    except Exception:
+        pass
+
+
+def _copia_descarga(v):
+    """Copia de lo guardado, para que ninguna sesión modifique lo que usan las demás."""
+    if isinstance(v, pd.DataFrame):
+        return v.copy()
+    if isinstance(v, tuple):
+        return tuple(_copia_descarga(x) for x in v)
+    return v
+
+
+def _descarga_guardada(nombre, cargar, correcta):
+    """Resultado de `cargar()` guardado DESCARGAS_TTL_S s. Solo se guarda si `correcta(res)`:
+    un fallo o un fichero vacío se vuelve a intentar en la siguiente sesión."""
+    _a = _almacen_descargas()
+    with _a["lock"]:
+        _hit = _a["datos"].get(nombre)
+    if _hit is not None and time.time() - _hit[0] < DESCARGAS_TTL_S:
+        return _copia_descarga(_hit[1])
+    _res = cargar()
+    try:
+        if correcta(_res):
+            with _a["lock"]:
+                _a["datos"][nombre] = (time.time(), _copia_descarga(_res))
+    except Exception:
+        pass
+    return _res
+
+
+def descargar_a_la_vez(tareas):
+    """{nombre: (cargar, correcta)} → {nombre: (resultado, excepción)}, todas a la vez."""
+    if not tareas:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+    import threading as _th
+    try:
+        from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+        _ctx = get_script_run_ctx()
+    except Exception:
+        add_script_run_ctx, _ctx = None, None
+
+    def _una(item):
+        _nombre, (_cargar, _correcta) = item
+        if _ctx is not None and add_script_run_ctx is not None:
+            try:
+                add_script_run_ctx(_th.current_thread(), _ctx)
+            except Exception:
+                pass
+        try:
+            return _nombre, _descarga_guardada(_nombre, _cargar, _correcta), None
+        except Exception as _e:
+            return _nombre, None, _e
+
+    with ThreadPoolExecutor(max_workers=min(8, len(tareas))) as _ex:
+        return {n: (r, e) for n, r, e in _ex.map(_una, list(tareas.items()))}
+
+
+def _escribir_http(metodo, *args, **kwargs):
+    """requests.post / requests.delete; si escribe en Supabase, vacía las descargas guardadas."""
+    _r = getattr(requests, metodo)(*args, **kwargs)
+    try:
+        if "supabase" in str(args[0] if args else kwargs.get("url", "")).lower():
+            invalidar_descargas_supabase()
+    except Exception:
+        pass
+    return _r
+
+
 st.set_page_config(
     page_title="Finca Gallinal · Plataforma agroclimática",
     page_icon="🌿",
@@ -4989,7 +5081,7 @@ def upsert_activities_to_supabase(df, chunk_size=500):
     for dataset, conflict_col in [(with_id, "id_agroptima")]:
         for i in range(0, len(dataset), chunk_size):
             chunk = dataset[i:i + chunk_size]
-            response = requests.post(
+            response = _escribir_http("post", 
                 endpoint,
                 headers=headers,
                 params={"on_conflict": conflict_col},
@@ -5004,7 +5096,7 @@ def upsert_activities_to_supabase(df, chunk_size=500):
     if without_id:
         for i in range(0, len(without_id), chunk_size):
             chunk = without_id[i:i + chunk_size]
-            response = requests.post(
+            response = _escribir_http("post", 
                 endpoint,
                 headers=headers,
                 json=chunk,
@@ -5250,7 +5342,7 @@ def agroptima_download_excel(headers, products, start_date, end_date, pre_season
 
     # Paso 1: Solicitar generacion del Excel
     try:
-        r = requests.post(
+        r = _escribir_http("post", 
             f"{AGROPTIMA_BASE}/es/agroreports/notifications/xls/",
             headers=headers,
             data=data,
@@ -5747,7 +5839,7 @@ def upsert_climate_to_supabase(df, chunk_size=500):
     total = 0
     for i in range(0, len(records), chunk_size):
         chunk = records[i:i + chunk_size]
-        response = requests.post(
+        response = _escribir_http("post", 
             endpoint,
             headers=headers,
             params={"on_conflict": "fecha_hora"},
@@ -5957,7 +6049,7 @@ def upload_climate_snapshot_to_supabase(df, status_box=None, path=SUPABASE_FULL_
     headers["x-upsert"] = "true"
 
     try:
-        response = requests.post(endpoint, headers=headers, data=content, timeout=120)
+        response = _escribir_http("post", endpoint, headers=headers, data=content, timeout=120)
     except Exception as exc:
         return False, f"No se pudo subir el snapshot a Supabase Storage: {exc}"
 
@@ -6768,7 +6860,7 @@ def sencrop_get_token_from_secrets():
                 st.session_state["_sencrop_auth_via"] = "oauth"
                 return cached
             try:
-                r = requests.post(
+                r = _escribir_http("post", 
                     "https://api.sencrop.com/v1/oauth2/token",
                     auth=(app_id, app_secret),
                     json={"grant_type": "client_credentials", "scope": "user"},
@@ -13132,7 +13224,7 @@ def save_treatment_catalog_to_supabase(df):
     # Reemplazo completo para que si se borra un producto en el editor, también desaparezca en Supabase.
     delete_headers = headers.copy()
     delete_headers["Prefer"] = "return=minimal"
-    delete_response = requests.delete(
+    delete_response = _escribir_http("delete", 
         endpoint,
         headers=delete_headers,
         params={"product": "not.is.null"},
@@ -13143,7 +13235,7 @@ def save_treatment_catalog_to_supabase(df):
 
     post_headers = headers.copy()
     post_headers["Prefer"] = "return=minimal"
-    response = requests.post(
+    response = _escribir_http("post", 
         endpoint,
         headers=post_headers,
         json=records,
@@ -17322,7 +17414,7 @@ def upload_frutos_marcados_to_supabase(df):
     headers["Content-Type"] = "application/octet-stream"
     headers["x-upsert"] = "true"
     try:
-        r = requests.post(_carpocapsa_storage_url(SUPABASE_CARPOCAPSA_MARCADOS_FILE),
+        r = _escribir_http("post", _carpocapsa_storage_url(SUPABASE_CARPOCAPSA_MARCADOS_FILE),
                           headers=headers, data=content, timeout=60)
     except Exception as exc:
         return False, f"Error subiendo: {exc}"
@@ -17473,7 +17565,7 @@ def upload_carpocapsa_snapshot_to_supabase(traps_df, biofix_df, damage_df):
             continue
         endpoint = _carpocapsa_storage_url(filename)
         try:
-            r = requests.post(endpoint, headers=headers, data=content, timeout=60)
+            r = _escribir_http("post", endpoint, headers=headers, data=content, timeout=60)
         except Exception as exc:
             return False, f"Error subiendo {label}: {exc}"
         if r.status_code not in (200, 201):
@@ -21054,7 +21146,7 @@ def upload_phenology_to_supabase(df):
     headers["Content-Type"] = "application/octet-stream"
     headers["x-upsert"] = "true"
     try:
-        r = requests.post(phenology_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", phenology_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
     except Exception as e:
         return False, f"Error de conexión: {e}"
     if r.status_code not in (200, 201):
@@ -21136,7 +21228,7 @@ def upload_resultado_sanitario_to_supabase(df):
     headers["Content-Type"] = "application/octet-stream"
     headers["x-upsert"] = "true"
     try:
-        r = requests.post(resultado_sanitario_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", resultado_sanitario_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
     except Exception as e:
         return False, f"Error de conexión: {e}"
     if r.status_code not in (200, 201):
@@ -21403,7 +21495,7 @@ def upload_soil_profiles_to_supabase(df):
     headers["Content-Type"] = "application/octet-stream"
     headers["x-upsert"] = "true"
     try:
-        r = requests.post(soil_profiles_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", soil_profiles_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
     except Exception as e:
         return False, f"Error de conexión: {e}"
     if r.status_code not in (200, 201):
@@ -21729,7 +21821,7 @@ def upload_irrigation_config_to_supabase(df):
     headers["Content-Type"] = "application/octet-stream"
     headers["x-upsert"] = "true"
     try:
-        r = requests.post(irrigation_config_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", irrigation_config_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
     except Exception as e:
         return False, f"Error de conexión: {e}"
     if r.status_code not in (200, 201):
@@ -21916,7 +22008,7 @@ def vegga_get_token(username, password):
         "response_type": "token id_token",
     }
     try:
-        r = requests.post(VEGGA_B2C_TOKEN_URL, data=data, timeout=30)
+        r = _escribir_http("post", VEGGA_B2C_TOKEN_URL, data=data, timeout=30)
     except Exception as e:
         return None, f"Error de conexión con el login de VEGGA: {e}"
     if r.status_code != 200:
@@ -21997,7 +22089,7 @@ def upload_irrigation_log_to_supabase(df):
     headers["Content-Type"] = "application/octet-stream"
     headers["x-upsert"] = "true"
     try:
-        r = requests.post(irrigation_log_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", irrigation_log_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
     except Exception as e:
         return False, f"Error de conexión: {e}"
     if r.status_code not in (200, 201):
@@ -22046,7 +22138,7 @@ def save_irrigation_sync_at(source="manual"):
         headers = supabase_headers()
         headers["Content-Type"] = "text/plain"
         headers["x-upsert"] = "true"
-        requests.post(irrigation_sync_storage_url(), headers=headers,
+        _escribir_http("post", irrigation_sync_storage_url(), headers=headers,
                       data=stamp.encode("utf-8"), timeout=30)
     except Exception:
         pass
@@ -22490,70 +22582,103 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
     st.session_state["_cargas_fallidas"] = {}
     _SESION_NUEVA = True
 
-    # Histórico climático (snapshot). use_cache=False: al abrir una sesión nueva
-    # forzamos la descarga del snapshot MÁS RECIENTE de Supabase (sin caché), para
-    # que "abrir la app = ver lo último que guardó el informe de la mañana".
+    # Qué hay que bajar (solo lo que la sesión aún no tiene). Todo a la vez; luego se aplica
+    # a la sesión exactamente como antes, en el mismo orden.
+    _no_vacio = lambda r: r is not None and not (getattr(r[0], "empty", True) if isinstance(r, tuple) else False)
+    _tareas = {}
     if st.session_state.history_df.empty:
-        _hist_df, _ = load_climate_snapshot_from_supabase(use_cache=False)
+        # use_cache=False: la copia de Streamlit no; la del almacén dura DESCARGAS_TTL_S.
+        _tareas["historico"] = (lambda: load_climate_snapshot_from_supabase(use_cache=False), _no_vacio)
+    if st.session_state.get("history_rio_df", pd.DataFrame()).empty:
+        _tareas["historico_rio"] = (lambda: load_climate_rio_from_supabase(use_cache=False), _no_vacio)
+    if st.session_state.activities_df.empty:
+        _tareas["actuaciones"] = (load_activities_from_supabase, _no_vacio)
+    if "produccion_df" not in st.session_state or st.session_state.get("produccion_df", pd.DataFrame()).empty:
+        _tareas["produccion"] = (load_produccion_from_supabase, _no_vacio)
+    if st.session_state.get("phenology_df", pd.DataFrame()).empty:
+        _tareas["fenologia"] = (load_phenology_from_supabase, _no_vacio)
+    if st.session_state.get("soil_profiles_df", pd.DataFrame()).empty:
+        _tareas["suelos"] = (load_soil_profiles_from_supabase, _no_vacio)
+    if st.session_state.get("irrigation_log_df", pd.DataFrame()).empty:
+        _tareas["riego"] = (load_irrigation_log_from_supabase, _no_vacio)
+    if st.session_state.get("irrigation_config_df", pd.DataFrame()).empty:
+        _tareas["goteo"] = (load_irrigation_config_from_supabase, _no_vacio)
+    if "irrigation_synced_at" not in st.session_state:
+        _tareas["riego_sync"] = (load_irrigation_sync_at, lambda r: r is not None)
+    if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
+        _tareas["carpocapsa"] = (load_carpocapsa_snapshot_from_supabase, _no_vacio)
+    if not st.session_state.get("autoload_forecast_done", False):
+        # La previsión se carga más abajo; aquí solo se adelanta la descarga de sus archivos
+        # (quedan en la caché de _descargar_mg_hourly).
+        _tareas["mg_nave"] = (load_mg_hourly_archive, lambda r: False)
+        _tareas["mg_rio"] = (lambda: load_mg_hourly_archive(SUPABASE_MG_HOURLY_RIO_PATH), lambda r: False)
+    _res = descargar_a_la_vez(_tareas)
+    _medir("Supabase: todas las descargas (a la vez)")
+
+    def _r(nombre):
+        return _res.get(nombre, (None, None))
+
+    # Histórico climático (snapshot).
+    if "historico" in _res:
+        _v, _e = _r("historico")
+        _hist_df = _v[0] if _v else None
         if _hist_df is not None and not _hist_df.empty:
             st.session_state.history_df = _hist_df
 
-    _medir("Supabase: histórico Nave")
     # Zona Río (sensor «Gallinal Los Pinos»), de su propio fichero. Si aún no existe se
     # queda vacío sin avisar: no afecta a nada de lo demás.
-    if st.session_state.get("history_rio_df", pd.DataFrame()).empty:
-        try:
-            _rio_df, _ = load_climate_rio_from_supabase(use_cache=False)
-            if _rio_df is not None and not _rio_df.empty:
-                st.session_state.history_rio_df = _rio_df
-        except Exception:
-            pass
+    if "historico_rio" in _res:
+        _v, _e = _r("historico_rio")
+        _rio_df = _v[0] if _v else None
+        if _rio_df is not None and not _rio_df.empty:
+            st.session_state.history_rio_df = _rio_df
 
-    _medir("Supabase: histórico Río")
     # Agroptima
-    if st.session_state.activities_df.empty:
-        try:
-            _act_df, _act_msg = load_activities_from_supabase()
-        except Exception as _e:
+    if "actuaciones" in _res:
+        _v, _e = _r("actuaciones")
+        if _e is not None:
             _act_df, _act_msg = pd.DataFrame(), f"{type(_e).__name__}: {_e}"
+        else:
+            _act_df, _act_msg = _v
         if not _act_df.empty:
             st.session_state.activities_df = _act_df
         else:
             st.session_state["_cargas_fallidas"]["actuaciones"] = _act_msg
 
-    _medir("Supabase: Agroptima")
     # Producción
-    if "produccion_df" not in st.session_state or st.session_state.get("produccion_df", pd.DataFrame()).empty:
-        _prod_df, _ = load_produccion_from_supabase()
+    if "produccion" in _res:
+        _v, _e = _r("produccion")
+        _prod_df = _v[0] if _v else None
         if _prod_df is not None and not _prod_df.empty:
             st.session_state.produccion_df = _prod_df
 
-    _medir("Supabase: producción")
     # Fenología (calendario fenológico por campo × variedad × año)
-    if st.session_state.get("phenology_df", pd.DataFrame()).empty:
-        try:
-            _phen_df, _phen_msg = load_phenology_from_supabase()
-        except Exception as _e:
+    if "fenologia" in _res:
+        _v, _e = _r("fenologia")
+        if _e is not None:
             _phen_df, _phen_msg = None, f"Error: {type(_e).__name__}: {_e}"
+        else:
+            _phen_df, _phen_msg = _v
         if _phen_df is not None and not _phen_df.empty:
             st.session_state.phenology_df = normalize_phenology_df(_phen_df)
         elif str(_phen_msg).startswith("Error"):
             # Solo si es un ERROR: no tener fenología guardada todavía es normal.
             st.session_state["_cargas_fallidas"]["fenologia"] = _phen_msg
 
-    _medir("Supabase: fenología")
     # Perfiles de suelo por parcela (para el balance de riego)
-    if st.session_state.get("soil_profiles_df", pd.DataFrame()).empty:
-        _sp_df, _ = load_soil_profiles_from_supabase()
+    if "suelos" in _res:
+        _v, _e = _r("suelos")
+        _sp_df = _v[0] if _v else None
         if _sp_df is not None and not _sp_df.empty:
             st.session_state.soil_profiles_df = normalize_soil_profiles_df(_sp_df)
 
     # Historial de riego real (Agronic/Vegga) para el balance
-    if st.session_state.get("irrigation_log_df", pd.DataFrame()).empty:
-        try:
-            _il_df, _il_msg = load_irrigation_log_from_supabase()
-        except Exception as _e:
+    if "riego" in _res:
+        _v, _e = _r("riego")
+        if _e is not None:
             _il_df, _il_msg = None, f"{type(_e).__name__}: {_e}"
+        else:
+            _il_df, _il_msg = _v
         if _il_df is not None and not _il_df.empty:
             st.session_state.irrigation_log_df = normalize_irrigation_log_df(_il_df)
         else:
@@ -22561,23 +22686,24 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
             st.session_state["_cargas_fallidas"]["riego"] = _il_msg
 
     # Overrides de config de goteo (edición de emergencia del usuario)
-    if st.session_state.get("irrigation_config_df", pd.DataFrame()).empty:
-        _ic_df, _ = load_irrigation_config_from_supabase()
+    if "goteo" in _res:
+        _v, _e = _r("goteo")
+        _ic_df = _v[0] if _v else None
         if _ic_df is not None and not _ic_df.empty:
             st.session_state.irrigation_config_df = normalize_irrigation_config_df(_ic_df)
 
     # Fecha de última actualización del riego (para mostrar "cuán actualizado está")
-    if "irrigation_synced_at" not in st.session_state:
-        st.session_state["irrigation_synced_at"] = load_irrigation_sync_at()
+    if "riego_sync" in _res:
+        st.session_state["irrigation_synced_at"] = _r("riego_sync")[0]
 
-    _medir("Supabase: riego, suelos y goteo")
     # Carpocapsa (capturas, biofix y daños)
-    if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
-        try:
-            _t, _b, _d, _carpo_msg = load_carpocapsa_snapshot_from_supabase()
-        except Exception as _e:
+    if "carpocapsa" in _res:
+        _v, _e = _r("carpocapsa")
+        if _e is not None or _v is None:
             _t = _b = _d = None
-            _carpo_msg = f"{type(_e).__name__}: {_e}"
+            _carpo_msg = f"{type(_e).__name__}: {_e}" if _e is not None else "sin respuesta"
+        else:
+            _t, _b, _d, _carpo_msg = _v
         if _t is not None and not _t.empty:
             st.session_state.carpocapsa_traps_df = _t
         if _b is not None and not _b.empty:
@@ -22587,7 +22713,7 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         if st.session_state.carpocapsa_traps_df.empty:
             st.session_state["_cargas_fallidas"]["carpocapsa"] = _carpo_msg
 
-_medir("Supabase: carpocapsa" if _SESION_NUEVA else "(sesión ya cargada)")
+_medir("Aplicar las cargas a la sesión" if _SESION_NUEVA else "(sesión ya cargada)")
 # ── Auto-carga predicción Sencrop al arrancar (una sola vez por sesión) ────────
 # Descarga la Previsión Sencrop automáticamente si el token está disponible
 # y todavía no hay datos de predicción en sesión.
@@ -22735,7 +22861,7 @@ def upload_produccion_to_supabase(df):
     headers["Content-Type"] = "application/octet-stream"
     headers["x-upsert"] = "true"
     try:
-        r = requests.post(produccion_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", produccion_storage_url(), headers=headers, data=buf.getvalue(), timeout=60)
     except Exception as e:
         return False, f"Error de conexión: {e}"
     if r.status_code not in (200, 201):
@@ -27599,7 +27725,7 @@ def purge_mg_hourly_archive():
         headers = supabase_headers()
         headers["Content-Type"] = "application/octet-stream"
         headers["x-upsert"] = "true"
-        r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", endpoint, headers=headers, data=buf.getvalue(), timeout=60)
         try:
             _descargar_mg_hourly.clear()
         except Exception:
@@ -27669,7 +27795,7 @@ def archive_mg_hourly_forecast(coords=METEOSIX_COORDS, path=SUPABASE_MG_HOURLY_P
         headers = supabase_headers()
         headers["Content-Type"] = "application/octet-stream"
         headers["x-upsert"] = "true"
-        r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", endpoint, headers=headers, data=buf.getvalue(), timeout=60)
         try:                       # que el panel no siga viendo el archivo viejo
             _descargar_mg_hourly.clear()
         except Exception:
@@ -27696,7 +27822,7 @@ def upload_forecast_archive(df):
         headers = supabase_headers()
         headers["Content-Type"] = "application/octet-stream"
         headers["x-upsert"] = "true"
-        r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", endpoint, headers=headers, data=buf.getvalue(), timeout=60)
         return r.status_code in (200, 201)
     except Exception:
         return False
@@ -27746,7 +27872,7 @@ def purge_forecast_archive():
         headers = supabase_headers()
         headers["Content-Type"] = "application/octet-stream"
         headers["x-upsert"] = "true"
-        r = requests.post(endpoint, headers=headers, data=buf.getvalue(), timeout=60)
+        r = _escribir_http("post", endpoint, headers=headers, data=buf.getvalue(), timeout=60)
         ok = r.status_code in (200, 201)
         try:
             _download_forecast_archive.clear()
@@ -30159,7 +30285,7 @@ def telegram_send_message(text, parse_mode="HTML"):
     if not token or not chat:
         return False, "Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID en Secrets."
     try:
-        r = requests.post(
+        r = _escribir_http("post", 
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={
                 "chat_id": chat,
