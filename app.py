@@ -742,6 +742,22 @@ else:
           try {
             var win = window.parent, doc = win.document;
 
+            /* Restos de la vista de ORDENADOR. Al pulsar «📱 Vista móvil» en el menú lateral la
+               app cambia sin recargar la página, y lo que el JS de escritorio metió en ella se
+               quedaba: la barra inferior antigua (Menú · Análisis · Clima…), su estilo, su
+               temporizador y los manejadores de ratón/táctil del menú lateral (15/09/2026). */
+            ['fg-mobile-nav', 'fg-mobile-nav-style', 'fg-mobile-menu-btn'].forEach(function (id) {
+              var e = doc.getElementById(id); if (e) e.remove();
+            });
+            if (doc._fgMobileNavTimer) { clearInterval(doc._fgMobileNavTimer); doc._fgMobileNavTimer = null; }
+            if (doc._fgHoverTimer) { clearTimeout(doc._fgHoverTimer); doc._fgHoverTimer = null; }
+            if (doc._fgCloseTimer) { clearTimeout(doc._fgCloseTimer); doc._fgCloseTimer = null; }
+            if (doc._fgMouseMoveHandler) { win.removeEventListener('mousemove', doc._fgMouseMoveHandler); doc._fgMouseMoveHandler = null; }
+            if (doc._fgClickHandler) { doc.removeEventListener('click', doc._fgClickHandler); doc._fgClickHandler = null; }
+            if (doc._fgTouchStartHandler) { win.removeEventListener('touchstart', doc._fgTouchStartHandler); doc._fgTouchStartHandler = null; }
+            if (doc._fgTouchMoveHandler)  { win.removeEventListener('touchmove',  doc._fgTouchMoveHandler);  doc._fgTouchMoveHandler  = null; }
+            if (doc._fgTouchEndHandler)   { win.removeEventListener('touchend',   doc._fgTouchEndHandler);   doc._fgTouchEndHandler   = null; }
+
             /* Botón flotante "volver arriba" */
             var old = doc.getElementById('fg-scroll-fab');
             if (old) old.remove();
