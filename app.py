@@ -24734,6 +24734,17 @@ def render_gallinal_movil(history):
         objetivo = 20000
         st.caption("**Lo esencial** · con los ajustes por defecto de la pantalla completa "
                    "(objetivo 20.000 kg/ha).")
+        # Campañas: todas por defecto; quitar años sirve p. ej. para no penalizar las
+        # plantaciones jóvenes con sus primeros años. Todo lo de abajo usa solo estas.
+        _todas = sorted(int(a) for a in prod["Año"].dropna().unique())
+        _elegidas = st.multiselect("Campañas (quita las que no quieras contar)", _todas, default=_todas,
+                                   key="g_movil_anios")
+        if not _elegidas:
+            st.warning("No has dejado ninguna campaña: se usan todas.")
+            _elegidas = _todas
+        elif len(_elegidas) < len(_todas):
+            st.caption("Sin contar: " + ", ".join(str(a) for a in _todas if a not in _elegidas) + ".")
+        prod = prod[prod["Año"].isin(_elegidas)]
         _f0 = lambda x: _fmt_es_number(round(x), 0) if pd.notna(x) else "—"
         _f1 = lambda x: _fmt_es_number(round(x, 1), 1) if pd.notna(x) else "—"
         _f2 = lambda x: _fmt_es_number(round(x, 2), 2) if pd.notna(x) else "—"
@@ -24752,7 +24763,7 @@ def render_gallinal_movil(history):
                         f"({_veceria_level(_bbi_c[_mreg])[0].lower()})")
             _lin.append(f"📊 Más vecero: <b>{_h.escape(marca_zona(_mvec))}</b> · BBI {_f2(_bbi_c[_mvec])} "
                         f"({_veceria_level(_bbi_c[_mvec])[0].lower()})")
-        st.markdown(_carpo_movil_tarjeta("🏆 Resumen histórico (kg/ha medio de todos los años)", _lin, "#f9a825"),
+        st.markdown(_carpo_movil_tarjeta("🏆 Resumen (kg/ha medio de las campañas elegidas)", _lin, "#f9a825"),
                     unsafe_allow_html=True)
 
         # ── 2. Comparador campo·variedad contra campo·variedad ─────────────────────
@@ -24912,7 +24923,7 @@ def render_gallinal_movil(history):
                 f"<span><b style='color:{'#2e7d32' if pd.notna(r['kg_ha']) and r['kg_ha'] >= objetivo else '#333'}'>"
                 f"{_f0(r['kg_ha'])}</b> kg/ha · {_f1(r['pct'])} %</span></div>"
                 for i, (vn, r) in enumerate(_rv.iterrows())]
-        st.markdown(_carpo_movil_tarjeta("Kg/ha medio · % productores (todos los años)", _lin, "#6a1b9a"),
+        st.markdown(_carpo_movil_tarjeta("Kg/ha medio · % productores (campañas elegidas)", _lin, "#6a1b9a"),
                     unsafe_allow_html=True)
 
     st.divider()
