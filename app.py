@@ -33122,6 +33122,11 @@ if not _HEADLESS:
         pass
 
     _medir("Navegación y avisos")
+    _PERFIL = None
+    if str(_query_param("medir") or "") == "2":
+        import cProfile as _cprof
+        _PERFIL = _cprof.Profile()
+        _PERFIL.enable()
     if _page == "hoy":
         home_today_tab(history, soil_type, hoja_threshold)
     elif _page == "dashboard":
@@ -33161,6 +33166,23 @@ if not _HEADLESS:
     elif _page == "configuracion":
         settings_tab()
     _medir(f"Pantalla «{_page}»")
+    if _PERFIL is not None:
+        _PERFIL.disable()
+        try:
+            import pstats as _pstats
+            _stats = _pstats.Stats(_PERFIL)
+            _filas_p = []
+            for (_fich, _lin, _fn), (_cc, _nc, _tt, _ct, _callers) in _stats.stats.items():
+                if _fich.endswith("app.py") and _ct >= 0.2:
+                    _filas_p.append((_ct, _tt, _nc, f"{_fn} (línea {_lin})"))
+            _filas_p.sort(reverse=True)
+            st.divider()
+            st.markdown("#### 🔬 Perfil (temporal): funciones de app.py que más tardan")
+            st.markdown("<div id='fg-perfil'>" + "<br>".join(
+                f"{_ct:.2f} s acumulado · {_tt:.2f} s propio · {_nc} llamadas · {_n}"
+                for _ct, _tt, _nc, _n in _filas_p[:40]) + "</div>", unsafe_allow_html=True)
+        except Exception as _e_pf:
+            st.caption(f"(perfil: {_e_pf})")
 
     # ── Panel del cronómetro (solo con ?medir=1) ─────────────────────────────
     try:
