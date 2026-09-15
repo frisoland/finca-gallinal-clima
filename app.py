@@ -19412,6 +19412,127 @@ def carpocapsa_cobertura_eclosion(traps_df, treatments_df, daily_dd, campaign_ye
     return res, hue, pas
 
 
+def _carpo_movil_tarjeta(titulo, lineas, color):
+    """Tarjeta HTML para el móvil: título en negrita y líneas cortas debajo."""
+    import html as _h
+    _cuerpo = "".join(f"<div style='font-size:0.92rem;line-height:1.35;color:#333'>{l}</div>" for l in lineas)
+    return (f"<div style='border-left:6px solid {color};background:#fff;border-radius:10px;"
+            f"padding:10px 12px;margin:0 0 8px 0;box-shadow:0 1px 2px rgba(0,0,0,.08)'>"
+            f"<div style='font-weight:700;font-size:1.02rem;margin-bottom:2px'>{_h.escape(str(titulo))}</div>"
+            f"{_cuerpo}</div>")
+
+
+def render_carpocapsa_movil(history):
+    """Carpocapsa en el MÓVIL: lo esencial en tarjetas y, con un interruptor, la pantalla
+    completa de siempre. Usa las MISMAS funciones y los MISMOS valores por defecto que la
+    pantalla completa (umbral 3 capturas, ventana 80–130 DD, base 10 °C, techo 31,1 °C,
+    lluvia 3 días, persistencia por producto y lavado por lluvia), así que las cifras
+    coinciden con las de la pantalla completa sin tocar sus ajustes."""
+    import html as _h
+    st.subheader("🐛 Carpocapsa · lo esencial")
+
+    _traps = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
+    _campanas = carpocapsa_available_campaigns(
+        _traps, st.session_state.get("carpocapsa_biofix_df", pd.DataFrame()),
+        st.session_state.get("carpocapsa_damage_df", pd.DataFrame()))
+    _hoy_anio = int(pd.Timestamp.today().year)
+    _anio = _hoy_anio if _hoy_anio in _campanas else (_campanas[-1] if _campanas else _hoy_anio)
+    st.caption(f"Campaña {_anio} · con los ajustes por defecto de la pantalla completa.")
+
+    if history is None or history.empty or _traps is None or _traps.empty:
+        st.info("Faltan capturas o histórico climático para calcularlo. Abre la pantalla completa.")
+    else:
+        _hc = carpocapsa_filter_history_campaign(history, _anio)
+        _acts = st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS))
+        _ini, _fin = 80, 130
+        _v = carpocapsa_build_multi_windows(
+            _traps, _hc, base_temp=10.0, upper_temp=31.1, capture_threshold=3,
+            dd_active_start=_ini, dd_active_end=_fin, activities_df=_acts, campaign_year=_anio)
+
+        # ── Ventanas pendientes de tratar (mismo criterio que «🔴 Pendientes de tratar») ──
+        _pend = (_v[_v["Estado"].astype(str).str.contains("Activa|reentrada|pase", na=False)]
+                 if not _v.empty else _v)
+        _esp = _v[_v["Estado"].astype(str).str.contains("espera", na=False)] if not _v.empty else _v
+        st.markdown(f"#### 🔴 Tratar ({len(_pend)})")
+        if _pend.empty:
+            st.success("Ninguna ventana pendiente de tratar.")
+        else:
+            _p = _pend.copy()
+            _p["_cierre"] = pd.to_numeric(_p["_dias_cierre"], errors="coerce")
+            _tarjetas = []
+            for _campo, _g in sorted(_p.groupby("Campo/Zona"),
+                                     key=lambda kv: (kv[1]["_cierre"].min() if kv[1]["_cierre"].notna().any() else 999, kv[0])):
+                _g = _g.sort_values("_cierre", na_position="last")
+                _r = _g.iloc[0]
+                _dc = _r["_cierre"]
+                _urg = pd.notna(_dc) and _dc <= 3
+                _cab = (f"cierra en {int(_dc)} día{'s' if int(_dc) != 1 else ''}" if pd.notna(_dc)
+                        else "ventana abierta")
+                _lin = [f"<b style='color:{'#c62828' if _urg else '#e65100'}'>{'⚠️ ' if _urg else ''}{_cab}</b>"
+                        f" · {int(_r['DD actual'])} DD (ventana {_ini}–{_fin})",
+                        f"Lectura {_h.escape(str(_r['Fecha lectura']))} · {int(_r['Capturas'])} capturas"]
+                if len(_g) > 1:
+                    _lin.append(f"y {len(_g) - 1} ventana{'s' if len(_g) > 2 else ''} más abierta{'s' if len(_g) > 2 else ''} en este campo")
+                _tarjetas.append(_carpo_movil_tarjeta(_campo, _lin, "#c62828" if _urg else "#fb8c00"))
+            st.markdown("".join(_tarjetas), unsafe_allow_html=True)
+
+        if not _esp.empty:
+            with st.expander(f"⏳ En espera ({len(_esp)}): aún no llegan a {_ini} DD"):
+                st.markdown("\n".join(
+                    f"- **{_h.escape(str(r['Campo/Zona']))}** · {int(r['DD actual'])} DD · "
+                    f"{_h.escape(str(r['Info']))}" for _, r in _esp.iterrows()))
+
+        # ── Último tratamiento ──────────────────────────────────────────────────────
+        _trt = carpocapsa_treatments_from_activities(_acts, _anio, _hc, rain_days_limit=3)
+        st.markdown("#### 💧 Último tratamiento")
+        if _trt.empty:
+            st.info("No hay tratamientos de carpocapsa registrados en Agroptima esta campaña.")
+        else:
+            _u = _trt.iloc[0]
+            _f = pd.Timestamp(_u["Fecha"])
+            _dias = (pd.Timestamp.today().normalize() - _f.normalize()).days
+            _ll = _u.get("Lluvia 3d post-tratamiento mm", np.nan)
+            _campos = str(_u.get("Campos", "") or "")
+            _mismo_dia = _trt[pd.to_datetime(_trt["Fecha"]) == _f]
+            _lin = [f"{_h.escape(str(_u.get('Producto carpocapsa', '') or '—'))} · hace {_dias} días",
+                    f"Lluvia 3 días después: {'—' if pd.isna(_ll) else f'{float(_ll):.1f} mm'}"]
+            if _campos:
+                _lin.append("Campos: " + _h.escape(_campos if len(_campos) <= 90 else _campos[:87] + "…"))
+            if len(_mismo_dia) > 1:
+                _lin.append(f"{len(_mismo_dia)} registros ese día en Agroptima")
+            st.markdown(_carpo_movil_tarjeta(_f.strftime("%d/%m/%Y"), _lin, "#1565c0"), unsafe_allow_html=True)
+            st.caption(f"{len(_trt)} tratamientos de carpocapsa registrados en {_anio}.")
+
+        # ── Cobertura de la eclosión ────────────────────────────────────────────────
+        _dd = carpocapsa_daily_degree_days(_hc, base_temp=10.0, upper_temp=31.1, method="horario")
+        _res, _hue, _pas = carpocapsa_cobertura_eclosion(
+            carpocapsa_filter_campaign(_traps, _anio), _trt if not _trt.empty else None,
+            _dd, _anio, history=_hc, persistencia_fija=None, aplicar_lavado=True)
+        st.markdown("#### 🛡️ Fruto protegido durante la eclosión")
+        if _res.empty:
+            st.info("Todavía no se puede calcular (hace falta el biofix de algún campo).")
+        else:
+            for _g, _et in ((1, "1ª generación"), (2, "2ª generación")):
+                _col = f"% eclosión {_g}ª cubierta"
+                _m = _res[_col].mean(skipna=True) if _col in _res.columns else np.nan
+                if pd.isna(_m):
+                    st.markdown(f"**{_et}:** —")
+                    continue
+                _abiertas = int(_res[f"_abierta{_g}"].sum()) if f"_abierta{_g}" in _res.columns else 0
+                st.markdown(f"**{_et}: {_m:.0f} %** de los días de eclosión con producto activo"
+                            + (f" · banda aún abierta en {_abiertas} campo(s)" if _abiertas else ""))
+                st.progress(min(max(float(_m) / 100.0, 0.0), 1.0))
+            _peor = _res.dropna(subset=["% eclosión 2ª cubierta"]).sort_values("% eclosión 2ª cubierta").head(3)
+            if not _peor.empty:
+                st.caption("Menos cubiertos en 2ª: " + " · ".join(
+                    f"{r['Campo/Zona']} {r['% eclosión 2ª cubierta']:.0f} %" for _, r in _peor.iterrows()))
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="carpo_movil_completa",
+                 help="Capturas, grupos, tablas, gráficas, daños y frutos marcados. Tarda más en cargar."):
+        carpocapsa_tab(history)
+
+
 def carpocapsa_tab(history):
     st.subheader("Carpocapsa · Cydia pomonella")
 
@@ -33357,7 +33478,10 @@ if not _HEADLESS:
     elif _page == "decisiones":
         render_decisiones_panel()
     elif _page == "carpocapsa":
-        carpocapsa_tab(history)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_carpocapsa_movil(history)
+        else:
+            carpocapsa_tab(history)
     elif _page == "resultado":
         resultado_sanitario_tab()
     elif _page == "riego":
