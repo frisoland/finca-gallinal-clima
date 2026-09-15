@@ -23354,6 +23354,36 @@ def render_year_table(df, index_label="Año", max_height=430):
     )
 
 
+def _movil_grafica_barras(serie, color, clave, etiqueta="", height=220):
+    """Barras por año para el MÓVIL, FIJAS: sin zoom ni arrastre. Las de st.bar_chart y
+    st.line_chart los traen de serie y, al hacer scroll con el dedo encima, la gráfica se
+    desplaza y se pierde (aviso del usuario, 15/09/2026). Al tocar una barra se ve el valor."""
+    import altair as alt
+    _d = pd.DataFrame({"Año": [str(int(a)) for a in serie.index], "v": pd.to_numeric(serie, errors="coerce").values})
+    _ch = alt.Chart(_d).mark_bar(color=color).encode(
+        x=alt.X("Año:N", title=None, sort=None, axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("v:Q", title=None, axis=alt.Axis(format="~s")),
+        tooltip=[alt.Tooltip("Año:N"), alt.Tooltip("v:Q", title=etiqueta, format=",.0f")],
+    ).properties(height=height)
+    st.altair_chart(_ch, use_container_width=True, key=clave)
+
+
+def _movil_grafica_lineas(df, colores, clave, etiqueta="", height=220):
+    """Líneas por año (una por columna de `df`) para el MÓVIL, FIJAS: sin zoom ni arrastre."""
+    import altair as alt
+    _d = df.copy()
+    _d.index = [str(int(a)) for a in _d.index]
+    _d = _d.reset_index(names="Año").melt("Año", var_name="Serie", value_name="v")
+    _ch = alt.Chart(_d).mark_line(point=True).encode(
+        x=alt.X("Año:N", title=None, sort=None, axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("v:Q", title=None, axis=alt.Axis(format="~s")),
+        color=alt.Color("Serie:N", title=None, scale=alt.Scale(domain=list(df.columns), range=list(colores)),
+                        legend=alt.Legend(orient="top")),
+        tooltip=[alt.Tooltip("Año:N"), alt.Tooltip("Serie:N", title=""), alt.Tooltip("v:Q", title=etiqueta, format=",.0f")],
+    ).properties(height=height)
+    st.altair_chart(_ch, use_container_width=True, key=clave)
+
+
 def _prod_movil_agregar(d):
     """Kg, Ha, árboles y ratios de un trozo de la tabla de producción, con las MISMAS cuentas
     que el «Resumen anual» de la pantalla completa (sumas; Kg/Ha = Kg ÷ Ha; Kg/árbol =
@@ -23447,9 +23477,9 @@ def render_produccion_movil(history):
         _met = st.radio("Ver", ["Kg totales", "Kg/ha"], horizontal=True, key="prod_movil_metrica",
                         label_visibility="collapsed")
         if _met == "Kg totales":
-            st.bar_chart(_res.set_index("Año")["Kg"].rename(index=lambda a: str(int(a))), color="#4caf7d", height=220)
+            _movil_grafica_barras(_res.set_index("Año")["Kg"], "#4caf7d", "prod_movil_graf_kg", "Kg")
         else:
-            st.bar_chart(_res.set_index("Año")["Kg/Ha"].rename(index=lambda a: str(int(a))), color="#2196f3", height=220)
+            _movil_grafica_barras(_res.set_index("Año")["Kg/Ha"], "#2196f3", "prod_movil_graf_kgha", "Kg/ha")
 
         # ── Consulta por campo (y variedad a variedad) ──────────────────────────────
         st.markdown("#### 🌳 Por campo")
@@ -24849,8 +24879,7 @@ def render_gallinal_movil(history):
                                   f"<span style='color:{_cB};text-align:right'>🔴 {_f0(_kb)}</span></div>")
                 st.markdown(_carpo_movil_tarjeta("Kg/ha año a año", _lin_a, "#5e35b1"), unsafe_allow_html=True)
                 _graf = pd.DataFrame({"🔵 A": _ga["kg_ha"], "🔴 B": _gb["kg_ha"]})
-                _graf.index = _graf.index.astype(int).astype(str)
-                st.line_chart(_graf, color=["#1565c0", "#c62828"], height=220)
+                _movil_grafica_lineas(_graf, ["#1565c0", "#c62828"], "g_movil_graf_cmp", "Kg/ha")
 
         # ── 3. Excelencia y vecería de un campo ────────────────────────────────────
         st.markdown("#### 📈 Excelencia y vecería")
@@ -34311,7 +34340,7 @@ if not _HEADLESS:
         else:
             produccion_tab(history)
     elif _page == "gallinal":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + comparador + «Ver pantalla completa» (aprobado 15/09/2026)
             render_gallinal_movil(history)
         else:
             gallinal_tab(history)
