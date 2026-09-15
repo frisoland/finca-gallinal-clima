@@ -24563,6 +24563,365 @@ def _gallinal_ficha_rows(history, prod, campo, variedad, years):
     return pd.DataFrame(rows), narr
 
 
+def _gallinal_records(prod_vec, metric_vec, objetivo_kgha):
+    """(registros, excluidos): excelencia y vecería por Campo × Variedad × Portainjerto.
+    La usan la pantalla completa (Regularidad y vecería) y el móvil."""
+    gvals = _veceria_yearly_values(prod_vec, metric_vec)
+    records = []
+    excluidos = 0
+    for (g_campo, g_var, g_porta), subg in gvals.groupby(
+        ["Campo", "Variedad_nombre", "Portainjerto_nombre"]
+    ):
+        subg = subg.dropna(subset=["valor"]).sort_values("Año")
+        years = subg["Año"].astype(int).tolist()
+        vals = subg["valor"].astype(float).tolist()
+        bbi, trans = _compute_bbi(years, vals)
+        if trans < 1:
+            excluidos += 1
+            continue
+        kg_ha_medio = float(subg["kg_ha"].mean())
+        pct_serie = subg["pct_prod"].dropna()
+        pct_medio = float(pct_serie.mean()) if not pct_serie.empty else np.nan
+        pct_std = float(pct_serie.std(ddof=0)) if len(pct_serie) > 1 else np.nan
+        pct_min = float(pct_serie.min()) if not pct_serie.empty else np.nan
+        pct_max = float(pct_serie.max()) if not pct_serie.empty else np.nan
+        densidad = float((subg["Num_arboles"] / subg["Ha"].replace(0, np.nan)).mean())
+        iep = _iep_score(kg_ha_medio, pct_medio, objetivo_kgha)
+        records.append({
+            "label": f"{g_campo} · {g_var} · {g_porta}",
+            "porta": g_porta,
+            "n_years": len(years),
+            "n_trans": trans,
+            "bbi": bbi,
+            "kg_ha_medio": kg_ha_medio,
+            "pct_medio": pct_medio,
+            "pct_std": pct_std,
+            "pct_min": pct_min,
+            "pct_max": pct_max,
+            "densidad": densidad,
+            "iep": iep,
+            "pattern": _veceria_pattern_html(years, vals),
+        })
+    return records, excluidos
+
+
+def _gallinal_ic_por_anio(history, años_disp, edited_phases, weights, params, temp_col_g,
+                          frost_thr, heat_thr):
+    """(ic_rows, detail): nota 0-100 de cada fase y el Índice Climático de cada año."""
+    ic_rows = []
+    detail = {}
+    for y in años_disp:
+        pscores, pmetrics = {}, {}
+        for (pid, label, sm, sd, em, ed, w) in edited_phases:
+            _start, _end = _phase_window(sm, sd, em, ed, int(y))
+            m = _phase_metrics(history, _start, _end, temp_col_g,
+                               frost_thr=float(frost_thr), heat_thr=float(heat_thr))
+            pscores[pid] = _score_phase(pid, m, params)
+            pmetrics[pid] = (m, _start, _end)
+        _num = _den = 0.0
+        for (pid, *_r) in edited_phases:
+            s = pscores[pid]
+            if pd.notna(s):
+                _num += weights[pid] * s
+                _den += weights[pid]
+        ic = (_num / _den) if _den > 0 else np.nan
+        ic_rows.append((y, pscores, ic))
+        detail[y] = (pmetrics, pscores, ic)
+    return ic_rows, detail
+
+
+def _gallinal_ig(prod, años_disp, detail, edited_phases, weights, conf):
+    """Índice Gallinal: correlación de cada fase con los Kg/Ha de finca, pesos calibrados
+    mezclados con los manuales según `conf` (0-1) e IG de cada año."""
+    # Producción de finca (Kg/Ha) por año
+    kgha_year = {}
+    for y in años_disp:
+        _d = prod[prod["Año"] == y]
+        _ha = _d["Ha"].sum()
+        kgha_year[y] = (_d["Kg"].sum() / _ha) if _ha > 0 else np.nan
+
+    phase_ids = [pid for (pid, *_r) in edited_phases]
+    # Correlación de cada fase con Kg/Ha de finca
+    corr = {}
+    for pid in phase_ids:
+        xs, ys = [], []
+        for y in años_disp:
+            s = detail[y][1].get(pid, np.nan)
+            k = kgha_year[y]
+            if pd.notna(s) and pd.notna(k):
+                xs.append(s); ys.append(k)
+        if len(xs) >= 4 and np.std(xs) > 0 and np.std(ys) > 0:
+            corr[pid] = float(np.corrcoef(xs, ys)[0, 1])
+        else:
+            corr[pid] = np.nan
+    n_pairs = sum(1 for y in años_disp
+                  if pd.notna(kgha_year[y]) and pd.notna(detail[y][2]))
+
+    # Pesos manuales (de la Fase 3) y calibrados (∝ correlación positiva)
+    _msum = sum(weights[pid] for pid in phase_ids) or 1
+    manual_norm = {pid: weights[pid] / _msum for pid in phase_ids}
+    cal_raw = {pid: (max(0.0, corr[pid]) if pd.notna(corr[pid]) else 0.0) for pid in phase_ids}
+    _csum = sum(cal_raw.values())
+    cal_norm = ({pid: cal_raw[pid] / _csum for pid in phase_ids} if _csum > 0
+                else dict(manual_norm))
+    final_w = {pid: conf * cal_norm[pid] + (1 - conf) * manual_norm[pid] for pid in phase_ids}
+
+    ig_rows = []
+    for y in años_disp:
+        ps = detail[y][1]
+        _num = _den = 0.0
+        for pid in phase_ids:
+            s = ps.get(pid, np.nan)
+            if pd.notna(s):
+                _num += final_w[pid] * s
+                _den += final_w[pid]
+        ig = (_num / _den) if _den > 0 else np.nan
+        ig_rows.append((y, ig, kgha_year[y]))
+    return {"kgha_year": kgha_year, "phase_ids": phase_ids, "corr": corr, "n_pairs": n_pairs,
+            "manual_norm": manual_norm, "cal_norm": cal_norm, "csum": _csum,
+            "final_w": final_w, "ig_rows": ig_rows}
+
+
+def _gallinal_rank_by(prod, col):
+    """Kg, Ha, árboles, Kg/Ha y % productores por `col`, de más a menos Kg/Ha."""
+    g = prod.groupby(col).agg(Kg=("Kg", "sum"), Ha=("Ha", "sum"),
+                              Nt=("Num_arboles", "sum"), Np=("Arboles_prod", "sum"))
+    g["kg_ha"] = g["Kg"] / g["Ha"].replace(0, np.nan)
+    g["pct"] = g["Np"] / g["Nt"].replace(0, np.nan) * 100
+    return g.sort_values("kg_ha", ascending=False)
+
+
+def _gallinal_bbi_por_campo(records):
+    """BBI medio de cada campo (media de sus combinaciones, pesada por años consecutivos)."""
+    _bbi_campo = {}
+    if records:
+        _dfrec = pd.DataFrame(records)
+        _dfrec["_campo"] = _dfrec["label"].str.split(" · ").str[0]
+        for _c, _sub in _dfrec.groupby("_campo"):
+            _v = _sub.dropna(subset=["bbi"])
+            if not _v.empty:
+                _w = _v["n_trans"].astype(float)
+                _bbi_campo[_c] = float(np.average(_v["bbi"], weights=_w) if _w.sum() > 0
+                                       else _v["bbi"].mean())
+    return _bbi_campo
+
+
+def _gallinal_serie(prod, campo, variedad):
+    """Por año de un campo (y variedad, o todas): Kg, Ha, árboles, Kg/Ha y % productores,
+    con las mismas cuentas que «Campo vs Campo» de la pantalla completa."""
+    d = prod[prod["Campo"] == campo]
+    if variedad != "Todas":
+        d = d[d["Variedad_nombre"] == variedad]
+    if d.empty:
+        return None
+    g = d.groupby("Año").agg(Kg=("Kg", "sum"), Ha=("Ha", "sum"),
+                             Nt=("Num_arboles", "sum"), Np=("Arboles_prod", "sum"))
+    g["kg_ha"] = g["Kg"] / g["Ha"].replace(0, np.nan)
+    g["pct"] = g["Np"] / g["Nt"].replace(0, np.nan) * 100
+    return g
+
+
+def render_gallinal_movil(history):
+    """Análisis Gallinal en el MÓVIL: resumen histórico, comparador campo·variedad contra
+    campo·variedad, excelencia y vecería de un campo, IG por año y ranking de variedades,
+    con los valores por defecto de la pantalla completa (objetivo 20.000 Kg/Ha, vecería
+    sobre Kg/Ha, frío en horas con 900 h, helada −2 °C, calor 32 °C, confianza 70 %)."""
+    import html as _h
+    prod = st.session_state.get("produccion_df", pd.DataFrame())
+    if prod is None or prod.empty:
+        st.info("Aún no hay datos de producción cargados. Ve a **🍎 Producción** y cárgalos.")
+    else:
+        objetivo = 20000
+        st.caption("**Lo esencial** · con los ajustes por defecto de la pantalla completa "
+                   "(objetivo 20.000 kg/ha).")
+        _f0 = lambda x: _fmt_es_number(round(x), 0) if pd.notna(x) else "—"
+        _f1 = lambda x: _fmt_es_number(round(x, 1), 1) if pd.notna(x) else "—"
+        _f2 = lambda x: _fmt_es_number(round(x, 2), 2) if pd.notna(x) else "—"
+        records, _exc = _gallinal_records(prod, "Kg/Ha (cosecha)", objetivo)
+
+        # ── 1. Resumen histórico ───────────────────────────────────────────────────
+        _rc, _rv, _rp = (_gallinal_rank_by(prod, "Campo"), _gallinal_rank_by(prod, "Variedad_nombre"),
+                         _gallinal_rank_by(prod, "Portainjerto_nombre"))
+        _bbi_c = _gallinal_bbi_por_campo(records)
+        _lin = [f"🥇 Campo: <b>{_h.escape(marca_zona(str(_rc.index[0])))}</b> · {_f0(_rc['kg_ha'].iloc[0])} kg/ha",
+                f"🥇 Variedad: <b>{_h.escape(str(_rv.index[0]))}</b> · {_f0(_rv['kg_ha'].iloc[0])} kg/ha",
+                f"🥇 Portainjerto: <b>{_h.escape(str(_rp.index[0]))}</b> · {_f0(_rp['kg_ha'].iloc[0])} kg/ha"]
+        if _bbi_c:
+            _mreg, _mvec = min(_bbi_c, key=_bbi_c.get), max(_bbi_c, key=_bbi_c.get)
+            _lin.append(f"📊 Más regular: <b>{_h.escape(marca_zona(_mreg))}</b> · BBI {_f2(_bbi_c[_mreg])} "
+                        f"({_veceria_level(_bbi_c[_mreg])[0].lower()})")
+            _lin.append(f"📊 Más vecero: <b>{_h.escape(marca_zona(_mvec))}</b> · BBI {_f2(_bbi_c[_mvec])} "
+                        f"({_veceria_level(_bbi_c[_mvec])[0].lower()})")
+        st.markdown(_carpo_movil_tarjeta("🏆 Resumen histórico (kg/ha medio de todos los años)", _lin, "#f9a825"),
+                    unsafe_allow_html=True)
+
+        # ── 2. Comparador campo·variedad contra campo·variedad ─────────────────────
+        st.markdown("#### ⚔️ Comparar")
+        _campos = sorted(prod["Campo"].astype(str).unique())
+
+        def _lado(letra, icono, idx):
+            _c = st.selectbox(f"{icono} Campo {letra}", _campos, index=min(idx, len(_campos) - 1),
+                              key=f"g_movil_cmp_campo_{letra}", format_func=marca_zona)
+            _vs = sorted(prod[prod["Campo"] == _c]["Variedad_nombre"].astype(str).unique())
+            _v = st.selectbox(f"{icono} Variedad {letra}", ["Todas"] + _vs, key=f"g_movil_cmp_var_{letra}")
+            return _c, _v
+
+        _ca, _va = _lado("A", "🔵", 0)
+        _cb, _vb = _lado("B", "🔴", 1)
+        _comunes = st.toggle("Solo años que tienen los dos", value=True, key="g_movil_cmp_comunes",
+                             help="Así se comparan las mismas campañas. Apágalo para usar todos los años de cada uno.")
+        _ga, _gb = _gallinal_serie(prod, _ca, _va), _gallinal_serie(prod, _cb, _vb)
+        _na = marca_zona(_ca) + ("" if _va == "Todas" else f" · {_va}")
+        _nb = marca_zona(_cb) + ("" if _vb == "Todas" else f" · {_vb}")
+        if (_ca, _va) == (_cb, _vb):
+            st.warning("Elige dos combinaciones distintas.")
+        elif _ga is None or _gb is None:
+            st.warning("Alguna de las dos no tiene datos.")
+        else:
+            if _comunes:
+                _anios = sorted(set(_ga.index) & set(_gb.index))
+                _ga, _gb = _ga.loc[_anios], _gb.loc[_anios]
+            if _ga.empty or _gb.empty:
+                st.warning("No tienen ningún año en común.")
+            else:
+                def _stats(g):
+                    kg_ha, pct = float(g["kg_ha"].mean()), float(g["pct"].mean())
+                    bbi, trans = _compute_bbi([int(y) for y in g.index], g["kg_ha"].tolist())
+                    return {"kg_ha": kg_ha, "pct": pct, "iep": _iep_score(kg_ha, pct, objetivo),
+                            "kg": float(g["Kg"].sum()), "bbi": bbi, "trans": trans}
+
+                sa, sb = _stats(_ga), _stats(_gb)
+                _wins = {"a": 0, "b": 0}
+
+                def _fila(et, va, vb, alto_mejor, fmt, suf=""):
+                    if pd.isna(va) or pd.isna(vb) or abs(va - vb) < 1e-9:
+                        ca = cb = "#333"
+                    elif (va > vb) == alto_mejor:
+                        ca, cb = "#1565c0", "#999"; _wins["a"] += 1
+                    else:
+                        ca, cb = "#999", "#c62828"; _wins["b"] += 1
+                    return (f"<div style='display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:4px;"
+                            f"border-top:1px solid #eee;padding:4px 0'><span style='color:#555'>{et}</span>"
+                            f"<b style='color:{ca};text-align:right'>{fmt(va)}{suf}</b>"
+                            f"<b style='color:{cb};text-align:right'>{fmt(vb)}{suf}</b></div>")
+
+                _filas = [
+                    f"<div style='display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:4px;font-size:0.8rem;"
+                    f"color:#666'><span></span><span style='text-align:right'>🔵 A</span>"
+                    f"<span style='text-align:right'>🔴 B</span></div>",
+                    _fila("Kg/ha medio", sa["kg_ha"], sb["kg_ha"], True, _f0),
+                    _fila("% productores", sa["pct"], sb["pct"], True, _f1, " %"),
+                    _fila("IEP (excelencia)", sa["iep"], sb["iep"], True, _f0),
+                    _fila("Kg totales", sa["kg"], sb["kg"], True, _f0),
+                ]
+                if sa["trans"] >= 1 and sb["trans"] >= 1:
+                    _filas.append(_fila("Vecería BBI (menos = mejor)", sa["bbi"], sb["bbi"], False, _f2))
+                _ganador = ("🏆 Gana <b>🔵 A</b>" if _wins["a"] > _wins["b"] else
+                            "🏆 Gana <b>🔴 B</b>" if _wins["b"] > _wins["a"] else "🤝 Empate")
+                _filas.append(f"<div style='border-top:1px solid #eee;padding-top:5px'>{_ganador} "
+                              f"({max(_wins.values())}–{min(_wins.values())})</div>")
+                _anios_txt = ", ".join(str(int(a)) for a in _ga.index)
+                st.markdown(_carpo_movil_tarjeta(f"🔵 {_na}  vs  🔴 {_nb}", _filas, "#5e35b1"),
+                            unsafe_allow_html=True)
+                st.caption(f"Años comparados: {_anios_txt}.")
+                # Año a año
+                _aa = sorted(set(_ga.index) | set(_gb.index))
+                _lin_a = []
+                for _y in _aa[::-1]:
+                    _ka = _ga["kg_ha"].get(_y, np.nan)
+                    _kb = _gb["kg_ha"].get(_y, np.nan)
+                    _cA = "#1565c0" if (pd.notna(_ka) and (pd.isna(_kb) or _ka > _kb)) else "#555"
+                    _cB = "#c62828" if (pd.notna(_kb) and (pd.isna(_ka) or _kb > _ka)) else "#555"
+                    _lin_a.append(f"<div style='display:grid;grid-template-columns:0.8fr 1fr 1fr;gap:4px;"
+                                  f"border-top:1px solid #eee;padding:3px 0'><b>{int(_y)}</b>"
+                                  f"<span style='color:{_cA};text-align:right'>🔵 {_f0(_ka)}</span>"
+                                  f"<span style='color:{_cB};text-align:right'>🔴 {_f0(_kb)}</span></div>")
+                st.markdown(_carpo_movil_tarjeta("Kg/ha año a año", _lin_a, "#5e35b1"), unsafe_allow_html=True)
+                _graf = pd.DataFrame({"🔵 A": _ga["kg_ha"], "🔴 B": _gb["kg_ha"]})
+                _graf.index = _graf.index.astype(int).astype(str)
+                st.line_chart(_graf, color=["#1565c0", "#c62828"], height=220)
+
+        # ── 3. Excelencia y vecería de un campo ────────────────────────────────────
+        st.markdown("#### 📈 Excelencia y vecería")
+        if not records:
+            st.info("Hacen falta al menos 2 años seguidos por combinación.")
+        else:
+            _cv = st.selectbox("Campo", _campos, key="g_movil_vec_campo", format_func=marca_zona)
+            _recs = sorted([r for r in records if r["label"].split(" · ")[0] == _cv],
+                           key=lambda r: (-1e9 if pd.isna(r["iep"]) else r["iep"]), reverse=True)
+            if not _recs:
+                st.caption("Este campo no tiene años seguidos suficientes.")
+            _tarj = []
+            for r in _recs:
+                _iep_l, _iep_c = _iep_level(r["iep"])
+                _vec_l, _vec_c, _ = _veceria_level(r["bbi"])
+                _cons_l, _, _ = _constancia_label(r["pct_std"])
+                _lin = [f"IEP <b style='color:{_iep_c};font-size:1.05rem'>{_f0(r['iep'])}</b> "
+                        f"<span style='color:{_iep_c}'>{_h.escape(str(_iep_l))}</span>",
+                        f"<b style='color:{'#2e7d32' if pd.notna(r['kg_ha_medio']) and r['kg_ha_medio'] >= objetivo else '#333'}'>"
+                        f"{_f0(r['kg_ha_medio'])}</b> kg/ha medio · {_f1(r['pct_medio'])} % productores",
+                        f"BBI <b style='color:{_vec_c}'>{_f2(r['bbi'])}</b> ({_h.escape(str(_vec_l)).lower()}) · "
+                        f"constancia {_h.escape(str(_cons_l)).lower()}",
+                        f"<span style='font-size:0.85rem'>{r['pattern']}</span>"]
+                _titulo = " · ".join(r["label"].split(" · ")[1:])
+                _tarj.append(_carpo_movil_tarjeta(_titulo, _lin, _iep_c))
+            if _tarj:
+                st.markdown("".join(_tarj), unsafe_allow_html=True)
+                st.caption("IEP 0–100: ≥85 excelente · 70–85 bueno · 50–70 mejorable · <50 bajo. "
+                           "BBI: 0 regular … 1 alternancia. Patrón: 🟢 año de carga · ⚪ descarga.")
+
+        # ── 4. IG por año ──────────────────────────────────────────────────────────
+        st.markdown("#### 🏅 Índice Gallinal por año")
+        _tcol = next((c for c in ["temp_media", "temp", "temperatura", "Temperatura", "temp_avg"]
+                      if history is not None and not history.empty and c in history.columns), None)
+        if history is None or history.empty or _tcol is None or "fecha_hora" not in history.columns:
+            st.info("Hace falta el histórico climático con temperatura.")
+        else:
+            _anios_d = sorted(int(a) for a in prod["Año"].unique())
+            _cur = pd.Timestamp.now().year
+            try:
+                if _cur in set(pd.to_datetime(history["fecha_hora"], errors="coerce").dt.year.dropna().astype(int)):
+                    _anios_d = sorted(set(_anios_d) | {_cur})
+            except Exception:
+                pass
+            _fases = list(_GALLINAL_PHASES)
+            _pesos = {pid: int(w) for (pid, _l, _a, _b, _c, _d, w) in _fases}
+            _params = {"frio_metric": "horas", "frio_req": 900.0, "gdd_ref": 120.0, "rain_min_engorde": 120.0}
+            _icr, _det = _gallinal_ic_por_anio(history, _anios_d, _fases, _pesos, _params, _tcol, -2, 32)
+            _ig = _gallinal_ig(prod, _anios_d, _det, _fases, _pesos, 0.70)
+            _lin = []
+            for (y, ig, k) in _ig["ig_rows"][::-1]:
+                _diag, _dcol = _ig_diagnosis(ig, k, objetivo)
+                _lin.append(f"<div style='border-top:1px solid #eee;padding:4px 0'><b>{int(y)}</b> · IG "
+                            f"<b style='color:{_score_color(ig)}'>{_f0(ig)}</b> · "
+                            f"{_f0(k)} kg/ha<br><span style='color:{_dcol};font-weight:600'>{_h.escape(str(_diag))}</span></div>")
+            st.markdown(_carpo_movil_tarjeta("Clima del año (IG) y cosecha de la finca", _lin, "#00897b"),
+                        unsafe_allow_html=True)
+            if _ig["n_pairs"] >= 4 and _ig["csum"] > 0:
+                _top = max(_ig["phase_ids"], key=lambda p: _ig["cal_norm"][p])
+                _topl = next(l for (pid, l, *_r) in _fases if pid == _top)
+                st.caption(f"En tu finca, la fase cuyo clima más se relaciona con la cosecha es **{_topl}** "
+                           f"(r = {_f2(_ig['corr'][_top])}).")
+            if _cur in _anios_d and _cur not in set(int(a) for a in prod["Año"].unique()):
+                st.caption(f"{_cur} es el año en curso: su IG es parcial (solo las fases ya pasadas).")
+
+        # ── 5. Ranking por variedad ────────────────────────────────────────────────
+        st.markdown("#### 🍏 Ranking por variedad")
+        _lin = [f"<div style='display:flex;justify-content:space-between;border-top:1px solid #eee;padding:3px 0'>"
+                f"<span>{i + 1}. {_h.escape(str(vn))}</span>"
+                f"<span><b style='color:{'#2e7d32' if pd.notna(r['kg_ha']) and r['kg_ha'] >= objetivo else '#333'}'>"
+                f"{_f0(r['kg_ha'])}</b> kg/ha · {_f1(r['pct'])} %</span></div>"
+                for i, (vn, r) in enumerate(_rv.iterrows())]
+        st.markdown(_carpo_movil_tarjeta("Kg/ha medio · % productores (todos los años)", _lin, "#6a1b9a"),
+                    unsafe_allow_html=True)
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="g_movil_completa",
+                 help="Consulta con ficha agroclimática, índice climático por fases, ajustes del modelo, "
+                      "calibración del IG y frío por variedad."):
+        gallinal_tab(history)
+
+
 def gallinal_tab(history):
     st.subheader("🍏 Análisis Gallinal · Fenología · Clima · Producción")
     st.caption(
@@ -24887,44 +25246,10 @@ def gallinal_tab(history):
     else:
         st.caption("⚠️ No has seleccionado años: se muestran todos.")
 
-    gvals = _veceria_yearly_values(prod_vec, metric_vec)
+    gvals = _veceria_yearly_values(prod_vec, metric_vec)   # también lo usan las tablas de abajo
 
     # ── Métricas por cada Campo × Variedad × Portainjerto ─────────────────────
-    records = []
-    excluidos = 0
-    for (g_campo, g_var, g_porta), subg in gvals.groupby(
-        ["Campo", "Variedad_nombre", "Portainjerto_nombre"]
-    ):
-        subg = subg.dropna(subset=["valor"]).sort_values("Año")
-        years = subg["Año"].astype(int).tolist()
-        vals = subg["valor"].astype(float).tolist()
-        bbi, trans = _compute_bbi(years, vals)
-        if trans < 1:
-            excluidos += 1
-            continue
-        kg_ha_medio = float(subg["kg_ha"].mean())
-        pct_serie = subg["pct_prod"].dropna()
-        pct_medio = float(pct_serie.mean()) if not pct_serie.empty else np.nan
-        pct_std = float(pct_serie.std(ddof=0)) if len(pct_serie) > 1 else np.nan
-        pct_min = float(pct_serie.min()) if not pct_serie.empty else np.nan
-        pct_max = float(pct_serie.max()) if not pct_serie.empty else np.nan
-        densidad = float((subg["Num_arboles"] / subg["Ha"].replace(0, np.nan)).mean())
-        iep = _iep_score(kg_ha_medio, pct_medio, objetivo_kgha)
-        records.append({
-            "label": f"{g_campo} · {g_var} · {g_porta}",
-            "porta": g_porta,
-            "n_years": len(years),
-            "n_trans": trans,
-            "bbi": bbi,
-            "kg_ha_medio": kg_ha_medio,
-            "pct_medio": pct_medio,
-            "pct_std": pct_std,
-            "pct_min": pct_min,
-            "pct_max": pct_max,
-            "densidad": densidad,
-            "iep": iep,
-            "pattern": _veceria_pattern_html(years, vals),
-        })
+    records, excluidos = _gallinal_records(prod_vec, metric_vec, objetivo_kgha)
 
     # Orden según elección del usuario
     if orden_vec == "Excelencia (IEP)":
@@ -25397,25 +25722,8 @@ def gallinal_tab(history):
         # Cálculo por año. Incluye el año en curso (sin producción): las fases aún no
         # ocurridas (engorde, maduración) no tienen datos → puntúan NaN y se excluyen,
         # de modo que su IC es PARCIAL (solo las fases ya transcurridas).
-        ic_rows = []
-        detail = {}
-        for y in años_disp:
-            pscores, pmetrics = {}, {}
-            for (pid, label, sm, sd, em, ed, w) in edited_phases:
-                _start, _end = _phase_window(sm, sd, em, ed, int(y))
-                m = _phase_metrics(history, _start, _end, temp_col_g,
-                                   frost_thr=float(frost_thr), heat_thr=float(heat_thr))
-                pscores[pid] = _score_phase(pid, m, params)
-                pmetrics[pid] = (m, _start, _end)
-            _num = _den = 0.0
-            for (pid, *_r) in edited_phases:
-                s = pscores[pid]
-                if pd.notna(s):
-                    _num += weights[pid] * s
-                    _den += weights[pid]
-            ic = (_num / _den) if _den > 0 else np.nan
-            ic_rows.append((y, pscores, ic))
-            detail[y] = (pmetrics, pscores, ic)
+        ic_rows, detail = _gallinal_ic_por_anio(history, años_disp, edited_phases, weights, params,
+                                                temp_col_g, frost_thr, heat_thr)
 
         # Tabla año × fases + IC
         _hh = ([("Año", "left")]
@@ -25481,42 +25789,12 @@ def gallinal_tab(history):
                 "La vecería mete ruido; cuantos más años, más fiable."
             )
 
-        # Producción de finca (Kg/Ha) por año
-        kgha_year = {}
-        for y in años_disp:
-            _d = prod[prod["Año"] == y]
-            _ha = _d["Ha"].sum()
-            kgha_year[y] = (_d["Kg"].sum() / _ha) if _ha > 0 else np.nan
-
-        phase_ids = [pid for (pid, *_r) in edited_phases]
-        # Correlación de cada fase con Kg/Ha de finca
-        corr = {}
-        for pid in phase_ids:
-            xs, ys = [], []
-            for y in años_disp:
-                s = detail[y][1].get(pid, np.nan)
-                k = kgha_year[y]
-                if pd.notna(s) and pd.notna(k):
-                    xs.append(s); ys.append(k)
-            if len(xs) >= 4 and np.std(xs) > 0 and np.std(ys) > 0:
-                corr[pid] = float(np.corrcoef(xs, ys)[0, 1])
-            else:
-                corr[pid] = np.nan
-        n_pairs = sum(1 for y in años_disp
-                      if pd.notna(kgha_year[y]) and pd.notna(detail[y][2]))
-
-        # Pesos manuales (de la Fase 3) y calibrados (∝ correlación positiva)
-        _msum = sum(weights[pid] for pid in phase_ids) or 1
-        manual_norm = {pid: weights[pid] / _msum for pid in phase_ids}
-        cal_raw = {pid: (max(0.0, corr[pid]) if pd.notna(corr[pid]) else 0.0) for pid in phase_ids}
-        _csum = sum(cal_raw.values())
-        cal_norm = ({pid: cal_raw[pid] / _csum for pid in phase_ids} if _csum > 0
-                    else dict(manual_norm))
-
         conf = st.slider(
             "Confianza en la calibración (%)  ·  0 = solo pesos manuales · 100 = solo datos",
             0, 100, 70, key="g_ig_conf") / 100.0
-        final_w = {pid: conf * cal_norm[pid] + (1 - conf) * manual_norm[pid] for pid in phase_ids}
+        _ig = _gallinal_ig(prod, años_disp, detail, edited_phases, weights, conf)
+        kgha_year, phase_ids, corr, n_pairs = _ig["kgha_year"], _ig["phase_ids"], _ig["corr"], _ig["n_pairs"]
+        manual_norm, cal_norm, _csum, final_w = _ig["manual_norm"], _ig["cal_norm"], _ig["csum"], _ig["final_w"]
 
         # Tabla de calibración
         _ch = [("Fase", "left"), ("r con Kg/Ha", "right"), ("Peso calibrado", "right"),
@@ -25539,17 +25817,7 @@ def gallinal_tab(history):
                        f"Peso calibrado ∝ correlación positiva. Con pocos años, tómalo como indicio.")
 
         # IG por año + cruce clima/cosecha
-        ig_rows = []
-        for y in años_disp:
-            ps = detail[y][1]
-            _num = _den = 0.0
-            for pid in phase_ids:
-                s = ps.get(pid, np.nan)
-                if pd.notna(s):
-                    _num += final_w[pid] * s
-                    _den += final_w[pid]
-            ig = (_num / _den) if _den > 0 else np.nan
-            ig_rows.append((y, ig, kgha_year[y]))
+        ig_rows = _ig["ig_rows"]
 
         st.markdown("#### IG y producción por año")
         _ih = [("Año", "left"), ("IG clima", "right"), ("Kg/Ha finca", "right"),
@@ -25586,26 +25854,11 @@ def gallinal_tab(history):
     st.markdown("---")
     st.markdown("### 🏆 Resumen histórico e interpretación")
 
-    def _rank_by(col):
-        g = prod.groupby(col).agg(Kg=("Kg", "sum"), Ha=("Ha", "sum"),
-                                  Nt=("Num_arboles", "sum"), Np=("Arboles_prod", "sum"))
-        g["kg_ha"] = g["Kg"] / g["Ha"].replace(0, np.nan)
-        g["pct"] = g["Np"] / g["Nt"].replace(0, np.nan) * 100
-        return g.sort_values("kg_ha", ascending=False)
-
-    _rc, _rv, _rp = _rank_by("Campo"), _rank_by("Variedad_nombre"), _rank_by("Portainjerto_nombre")
+    _rc, _rv, _rp = (_gallinal_rank_by(prod, "Campo"), _gallinal_rank_by(prod, "Variedad_nombre"),
+                     _gallinal_rank_by(prod, "Portainjerto_nombre"))
 
     # Regularidad por campo: BBI medio de sus combinaciones (de la Fase 2)
-    _bbi_campo = {}
-    if records:
-        _dfrec = pd.DataFrame(records)
-        _dfrec["_campo"] = _dfrec["label"].str.split(" · ").str[0]
-        for _c, _sub in _dfrec.groupby("_campo"):
-            _v = _sub.dropna(subset=["bbi"])
-            if not _v.empty:
-                _w = _v["n_trans"].astype(float)
-                _bbi_campo[_c] = float(np.average(_v["bbi"], weights=_w) if _w.sum() > 0
-                                       else _v["bbi"].mean())
+    _bbi_campo = _gallinal_bbi_por_campo(records)
 
     _cr = st.columns(2)
     with _cr[0]:
@@ -34047,7 +34300,10 @@ if not _HEADLESS:
         else:
             produccion_tab(history)
     elif _page == "gallinal":
-        gallinal_tab(history)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_gallinal_movil(history)
+        else:
+            gallinal_tab(history)
     elif _page == "informe":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 15/09/2026)
             render_informe_movil(history, soil_type, hoja_threshold)
