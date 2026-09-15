@@ -33875,7 +33875,7 @@ if not _HEADLESS:
     elif _page == "sanidad":
         health_tab(history, soil_type, hoja_threshold)
     elif _page == "decisiones":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + gráficas a demanda + «Ver pantalla completa» (aprobado 15/09/2026)
             render_decisiones_movil()
         else:
             render_decisiones_panel()
