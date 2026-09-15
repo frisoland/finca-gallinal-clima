@@ -19429,7 +19429,6 @@ def render_carpocapsa_movil(history):
     lluvia 3 días, persistencia por producto y lavado por lluvia), así que las cifras
     coinciden con las de la pantalla completa sin tocar sus ajustes."""
     import html as _h
-    st.subheader("🐛 Carpocapsa · lo esencial")
 
     _traps = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
     _campanas = carpocapsa_available_campaigns(
@@ -19437,7 +19436,7 @@ def render_carpocapsa_movil(history):
         st.session_state.get("carpocapsa_damage_df", pd.DataFrame()))
     _hoy_anio = int(pd.Timestamp.today().year)
     _anio = _hoy_anio if _hoy_anio in _campanas else (_campanas[-1] if _campanas else _hoy_anio)
-    st.caption(f"Campaña {_anio} · con los ajustes por defecto de la pantalla completa.")
+    st.caption(f"**Lo esencial** · campaña {_anio} · con los ajustes por defecto de la pantalla completa.")
 
     if history is None or history.empty or _traps is None or _traps.empty:
         st.info("Faltan capturas o histórico climático para calcularlo. Abre la pantalla completa.")
@@ -19492,14 +19491,23 @@ def render_carpocapsa_movil(history):
             _f = pd.Timestamp(_u["Fecha"])
             _dias = (pd.Timestamp.today().normalize() - _f.normalize()).days
             _ll = _u.get("Lluvia 3d post-tratamiento mm", np.nan)
-            _campos = str(_u.get("Campos", "") or "")
             _mismo_dia = _trt[pd.to_datetime(_trt["Fecha"]) == _f]
-            _lin = [f"{_h.escape(str(_u.get('Producto carpocapsa', '') or '—'))} · hace {_dias} días",
+
+            def _unicos(col):   # todo lo de ese día, sin repetir y en orden
+                _vals = []
+                for _x in _mismo_dia.get(col, pd.Series(dtype=str)).fillna("").astype(str):
+                    for _y in _x.split(","):
+                        _y = _y.strip()
+                        if _y and _y.lower() not in ("nan", "none") and _y not in _vals:
+                            _vals.append(_y)
+                return ", ".join(_vals)
+
+            _campos = _unicos("Campos")
+            _prods = _unicos("Producto carpocapsa") or "—"
+            _lin = [f"{_h.escape(_prods)} · hace {_dias} días",
                     f"Lluvia 3 días después: {'—' if pd.isna(_ll) else f'{float(_ll):.1f} mm'}"]
             if _campos:
-                _lin.append("Campos: " + _h.escape(_campos if len(_campos) <= 90 else _campos[:87] + "…"))
-            if len(_mismo_dia) > 1:
-                _lin.append(f"{len(_mismo_dia)} registros ese día en Agroptima")
+                _lin.append("Campos: " + _h.escape(_campos))
             st.markdown(_carpo_movil_tarjeta(_f.strftime("%d/%m/%Y"), _lin, "#1565c0"), unsafe_allow_html=True)
             st.caption(f"{len(_trt)} tratamientos de carpocapsa registrados en {_anio}.")
 
@@ -19508,7 +19516,7 @@ def render_carpocapsa_movil(history):
         _res, _hue, _pas = carpocapsa_cobertura_eclosion(
             carpocapsa_filter_campaign(_traps, _anio), _trt if not _trt.empty else None,
             _dd, _anio, history=_hc, persistencia_fija=None, aplicar_lavado=True)
-        st.markdown("#### 🛡️ Fruto protegido durante la eclosión")
+        st.markdown("#### 🛡️ Protección en la eclosión")
         if _res.empty:
             st.info("Todavía no se puede calcular (hace falta el biofix de algún campo).")
         else:
