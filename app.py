@@ -17670,9 +17670,42 @@ def carpocapsa_daily_degree_days(history, base_temp=10.0, upper_temp=None, metho
     return daily.sort_values("Fecha").reset_index(drop=True)
 
 
+_DD_ACUMULADOS = {"obj": None, "n": -1, "fechas": None, "vals": None, "ok": False, "cums": {}}
+
+
 def carpocapsa_date_for_dd(daily_dd, biofix_date, target_dd):
+    """(fecha en que los DD acumulados desde `biofix_date` llegan a `target_dd`, DD acumulados
+    hasta el último día). Rápida: el acumulado se calcula una vez por tabla y fecha de inicio
+    (se llamaba ~300 veces por pantalla copiando todo el histórico diario, ≈6 s). Si la tabla
+    no está ordenada o trae huecos, usa el cálculo de siempre."""
     if daily_dd is None or daily_dd.empty or pd.isna(biofix_date):
         return pd.NaT, np.nan
+    try:
+        c = _DD_ACUMULADOS
+        if c["obj"] is not daily_dd or c["n"] != len(daily_dd):
+            _f = daily_dd["Fecha"]
+            _v = pd.to_numeric(daily_dd["DD día"], errors="coerce")
+            _ok = (pd.api.types.is_datetime64_dtype(_f) and _f.notna().all()
+                   and _f.is_monotonic_increasing and _v.notna().all())
+            c.update(obj=daily_dd, n=len(daily_dd), fechas=_f.to_numpy(),
+                     vals=_v.to_numpy(dtype=float), ok=bool(_ok), cums={})
+        if c["ok"]:
+            _b = pd.Timestamp(biofix_date)
+            if _b.tzinfo is None:
+                _ini = int(np.searchsorted(c["fechas"], np.datetime64(_b), side="left"))
+                if _ini >= c["n"]:
+                    return pd.NaT, np.nan
+                _cum = c["cums"].get(_ini)
+                if _cum is None:
+                    _cum = np.cumsum(c["vals"][_ini:])
+                    c["cums"][_ini] = _cum
+                _current = float(_cum[-1])
+                _alc = _cum >= float(target_dd)
+                if not _alc.any():
+                    return pd.NaT, _current
+                return pd.Timestamp(c["fechas"][_ini + int(np.argmax(_alc))]), _current
+    except Exception:
+        pass
     data = daily_dd[daily_dd["Fecha"] >= pd.Timestamp(biofix_date)].copy()
     if data.empty:
         return pd.NaT, np.nan
