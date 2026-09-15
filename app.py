@@ -34042,7 +34042,7 @@ if not _HEADLESS:
     elif _page == "agroptima":
         activities_tab()
     elif _page == "produccion":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 15/09/2026)
             render_produccion_movil(history)
         else:
             produccion_tab(history)
