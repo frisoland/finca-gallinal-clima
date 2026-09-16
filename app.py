@@ -10271,6 +10271,27 @@ def analysis_tab(history, soil_type, hoja_threshold):
         )
 
 
+def _frio_cumplimiento_filas(variedades, _cp_acum):
+    """¿Cumple cada variedad su frío (Chill Portions, SERIDA)? Filas de la tabla del ordenador;
+    las usa también el móvil."""
+    _rows = []
+    for _v in variedades:
+        _req = chill_requirement_cp(_v)
+        _forcing = CHILL_REQ_BY_VARIETY_CP.get(_v) is not None and _v not in CHILL_REQ_ESTIMATED
+        _est = _v in CHILL_REQ_ESTIMATED
+        _mark = "" if _forcing else (" †" if _est else " *")
+        _ok = _cp_acum >= _req
+        _margin = _cp_acum - _req
+        _rows.append({
+            "Variedad": _v,
+            "Req. (CP)": f"{_req:.0f}{_mark}",
+            "Acumulado (CP)": f"{_cp_acum:.0f}",
+            "Margen": f"{_margin:+.0f}",
+            "Estado": "✅ Cumple" if _ok else "❌ No cumple",
+        })
+    return _rows
+
+
 def _render_frio_zona(hist, zona, selected_chill_year, selected_season):
     """Cálculo y tablas de una campaña de frío para UNA zona (antes vivía dentro de
     cold_tab). La Zona Nave recibe el histórico de siempre y sale igual que antes; lo
@@ -10391,21 +10412,7 @@ def _render_frio_zona(hist, zona, selected_chill_year, selected_season):
                 "referencia es **Chill Portions (Dynamic)**: las horas de frío sobreestiman "
                 "el declive en clima templado y conviene no fiarse solo de ellas."
             )
-            _rows = []
-            for _v in variedades:
-                _req = chill_requirement_cp(_v)
-                _forcing = CHILL_REQ_BY_VARIETY_CP.get(_v) is not None and _v not in CHILL_REQ_ESTIMATED
-                _est = _v in CHILL_REQ_ESTIMATED
-                _mark = "" if _forcing else (" †" if _est else " *")
-                _ok = _cp_acum >= _req
-                _margin = _cp_acum - _req
-                _rows.append({
-                    "Variedad": _v,
-                    "Req. (CP)": f"{_req:.0f}{_mark}",
-                    "Acumulado (CP)": f"{_cp_acum:.0f}",
-                    "Margen": f"{_margin:+.0f}",
-                    "Estado": "✅ Cumple" if _ok else "❌ No cumple",
-                })
+            _rows = _frio_cumplimiento_filas(variedades, _cp_acum)
             _req_df = pd.DataFrame(_rows).sort_values("Variedad").reset_index(drop=True)
             st.dataframe(_req_df, use_container_width=True, hide_index=True)
             st.caption(
@@ -10491,6 +10498,110 @@ def _render_frio_franja_zonas(nave, hist_rio, analysis_year):
         _vn, _vr = float(_n[_clave]), float(_r[_clave])
         _c.metric(f"{_etq} · Río − Nave", _fmt.format(_vr - _vn),
                   help=f"Nave {_vn:.{_dec}f} · Río {_vr:.{_dec}f}")
+
+
+def render_frio_movil(history):
+    """Frío en el MÓVIL: cifras de la campaña, curva de Chill Portions, cumplimiento y floración
+    prevista por variedad, en tarjetas. Mismo cálculo que Frío (`winter_chill_summary`,
+    `_frio_cumplimiento_filas`, `variety_bloom_predictions`); se calcula al abrir, sin botón."""
+    import html as _h
+    st.subheader("❄️ Frío invernal")
+    _anios = available_chill_analysis_years(history) if (history is not None and not history.empty) else []
+    if not _anios:
+        st.info("No hay datos suficientes para calcular campañas de frío.")
+    else:
+        _camp = {winter_label_from_analysis_year(a): a for a in reversed(_anios)}
+        _sel = st.selectbox("Campaña de frío (1 nov → 31 mar)", list(_camp), key="mob_frio_campana")
+        _anio = _camp[_sel]
+        _ini, _fin = winter_period_from_analysis_year(_anio)
+        _zona = st.radio("Zona", [ZONA_NAVE, ZONA_RIO], horizontal=True, key="mob_frio_zona")
+        _rio = st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
+        _hist = history
+        if _zona == ZONA_RIO:
+            _hist = (historico_zona(ZONA_RIO, history, _rio)
+                     if horas_rio_en_periodo(_rio, max(_ini, ZONA_RIO_MANDA_DESDE), _fin) else None)
+        if _hist is None:
+            st.info(f"El sensor del Río no tiene datos de la campaña **{_sel}**. Empieza a contar el "
+                    f"**{ZONA_RIO_MANDA_DESDE:%d/%m/%Y}** (campaña {ZONA_RIO_MANDA_DESDE.year}/"
+                    f"{ZONA_RIO_MANDA_DESDE.year + 1}); hasta entonces los campos del Río se calculan "
+                    "con la Nave.")
+        else:
+            _cs, _cd, _, _ = winter_chill_summary(_hist, _anio)
+            if _cs.empty:
+                st.warning("No hay datos de temperatura para esa campaña.")
+            else:
+                r = _cs.iloc[0]
+                st.caption(f"**Lo esencial** · del **{_ini:%d/%m/%Y}** al **{_fin:%d/%m/%Y}** · "
+                           f"calidad del dato **{_fmt_es_number(r['Cobertura temperatura %'], 1)} %**")
+                st.markdown(_movil_cifras_html([
+                    ("🔬 Chill Portions", _fmt_es_number(r["Chill Portions"], 1)),
+                    ("❄️ Horas de frío <7 ºC", _fmt_es_number(r["Horas frío <7 ºC"], 0)),
+                    ("🌡️ Utah", _fmt_es_number(r["Utah Chill Units"], 0)),
+                    ("🌡️ Temp. media", f"{_fmt_es_number(r['Temp media periodo frío ºC'], 1)} ºC")]),
+                    unsafe_allow_html=True)
+                if pd.to_numeric(r["Cobertura temperatura %"], errors="coerce") < 95:
+                    st.warning(str(r["Aviso"]))
+
+                _cp_acum = (float(_cd["chill_portions_acum"].dropna().iloc[-1])
+                            if (not _cd.empty and _cd["chill_portions_acum"].notna().any()) else 0.0)
+                if not _cd.empty:
+                    import altair as alt
+                    _g = _cd[["fecha_hora", "chill_portions_acum"]].dropna()
+                    _linea = alt.Chart(_g).mark_line(color="#0277bd").encode(
+                        x=alt.X("fecha_hora:T", title=None, axis=alt.Axis(format="%d/%m", labelAngle=0)),
+                        y=alt.Y("chill_portions_acum:Q", title="Chill Portions"),
+                        tooltip=[alt.Tooltip("fecha_hora:T", title="Día", format="%d/%m/%Y"),
+                                 alt.Tooltip("chill_portions_acum:Q", title="CP", format=".0f")])
+                    _media = alt.Chart(pd.DataFrame({"y": [CHILL_HIST_AVG_CP]})).mark_rule(
+                        color="#9e9e9e", strokeDash=[4, 4]).encode(y="y:Q")
+                    st.altair_chart((_linea + _media).properties(height=220), use_container_width=True,
+                                    key="mob_frio_grafica")
+                    st.caption(f"Chill Portions acumuladas día a día. Línea gris = media de la zona "
+                               f"({int(CHILL_HIST_AVG_CP)} CP, SERIDA 1978-2019).")
+
+                variedades = variedades_de_zona(_zona)
+                st.markdown("#### ✅ ¿Cumple cada variedad su frío?")
+                _tarj = []
+                for _f in sorted(_frio_cumplimiento_filas(variedades, _cp_acum), key=lambda x: x["Variedad"]):
+                    _ok = str(_f["Estado"]).startswith("✅")
+                    _tarj.append(_carpo_movil_tarjeta(
+                        f"{_f['Estado'][:1]} {_h.escape(str(_f['Variedad']))}",
+                        [f"Necesita <b>{str(_f['Req. (CP)']).split(' ')[0]} CP</b>"
+                         + (" " + str(_f['Req. (CP)']).split(' ', 1)[1] if ' ' in str(_f['Req. (CP)']) else "")
+                         + f" · acumulado <b>{_f['Acumulado (CP)']} CP</b> · "
+                         f"margen <b>{_f['Margen']}</b>"],
+                        "#2e7d32" if _ok else "#c62828"))
+                st.markdown("".join(_tarj), unsafe_allow_html=True)
+
+                _bloom_df, _bmeta = variety_bloom_predictions(_hist, _anio, variedades=variedades)
+                st.markdown("#### 🌸 Floración prevista (frío → calor)")
+                if not _bmeta.get("ok"):
+                    st.caption("No hay datos suficientes para estimar la floración de esta campaña.")
+                else:
+                    _b = _bloom_df.copy()
+                    _b["_k"] = pd.to_datetime(_b["floracion"], errors="coerce")
+                    _tarj = []
+                    for _, b in _b.sort_values("_k", na_position="last").iterrows():
+                        _sale, _flor = b["sale_reposo"], b["floracion"]
+                        _tarj.append(_carpo_movil_tarjeta(
+                            f"🌸 {_h.escape(str(b['variedad']))} · "
+                            + (f"{pd.Timestamp(_flor):%d/%m}" if pd.notna(_flor)
+                               else ("aún no" if b["frio_cumplido"] else "—")),
+                            [("Sale de reposo el <b>" + f"{pd.Timestamp(_sale):%d/%m}" + "</b>")
+                             if pd.notna(_sale) else "❄️ No cumple su frío",
+                             f"<span style='color:#555'>Pide {b['cp_req']:.0f}{b['cp_mark']} CP de frío y "
+                             f"{b['gdh_req']:,.0f}".replace(",", " ") + f"{b['gdh_mark']} GDH de calor</span>"],
+                            "#ad1457"))
+                    st.markdown("".join(_tarj), unsafe_allow_html=True)
+                    st.caption("Cada variedad sale del reposo al cumplir SU frío y desde ahí acumula SU "
+                               "calor (GDH, Anderson 1986) hasta florecer. Requerimientos: SERIDA/Delgado "
+                               "2021; **†** = aproximado; **\\*** = sin dato (máximo conocido). Orientativo.")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="frio_movil_completa",
+                 help="Tablas completas, comprobación por columna de temperatura, Río frente a Nave, "
+                      "explicación de los modelos y descarga."):
+        cold_tab(history)
 
 
 def cold_tab(history):
@@ -12157,38 +12268,98 @@ def comparacion_riego_zona_rio(history, rio, eff, end_ts):
     return pd.DataFrame(filas), resumen
 
 
-def render_water_balance(history, soil_type, start_ts, end_ts):
-    """Riego por balance hídrico FAO-56 POR PARCELA. Clima/ET0 (Penman-Monteith, con
-    Hargreaves de respaldo) es de finca (un sensor); la reserva de suelo es por campo
-    según su perfil editable. Da mm a reponer (goteo) o el déficit/estrés (secano)."""
-    _end = pd.Timestamp(end_ts).normalize()
+def _riego_series_zonas(history, _end):
+    """Series diarias de ET0/ETc/lluvia hasta `_end`: la de la Nave y, en cuanto su sensor manda,
+    la de la Zona Río (temperatura, humedad y lluvia de su sensor; radiación y viento de la Nave).
+    Devuelve (daily, metodo, daily_rio, metodo_rio). La usan Riego del ordenador y del móvil."""
     daily, metodo = daily_et_frame(history, _end)
+    daily_rio, metodo_rio = pd.DataFrame(), "—"
     if daily is None or daily.empty:
-        st.info("No hay datos de temperatura/lluvia suficientes para el balance hídrico.")
-        return
-
-    # Zona Río: SU serie (temperatura, humedad y lluvia de su sensor; radiación y viento de la
-    # Nave) en cuanto su sensor manda. Hasta entonces no existe y todo va como siempre.
+        return daily, metodo, daily_rio, metodo_rio
     _rio_wb = st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS))
-    daily_rio, metodo_rio, per_r = pd.DataFrame(), "—", pd.DataFrame()
     if horas_rio_en_periodo(_rio_wb, ZONA_RIO_MANDA_DESDE, _end + pd.Timedelta(hours=23, minutes=59)):
         daily_rio, metodo_rio = daily_et_frame(historico_zona(ZONA_RIO, history, _rio_wb), _end)
+    return daily, metodo, daily_rio, metodo_rio
 
-    def _daily_de(campo):
-        """La serie diaria que le toca a un campo: la de su zona."""
-        if zona_de_campo(campo) == ZONA_RIO and daily_rio is not None and not daily_rio.empty:
-            return daily_rio
-        return daily
 
-    # Fase y Kc de hoy (compartidos)
-    _phase_lbl = "—"
+def _riego_daily_de(campo, daily, daily_rio):
+    """La serie diaria que le toca a un campo: la de su zona."""
+    if zona_de_campo(campo) == ZONA_RIO and daily_rio is not None and not daily_rio.empty:
+        return daily_rio
+    return daily
+
+
+def _riego_fase_hoy(_end):
+    """Fase del manzano (calendario de Gallinal, sin el frío) en la que cae `_end`."""
     for (_pid, _lbl, _sm, _sd, _em, _ed, _w) in _GALLINAL_PHASES:
         if _pid == "frio":
             continue
         _s, _e = _phase_window(_sm, _sd, _em, _ed, _end.year)
         if _s <= _end <= _e:
-            _phase_lbl = _lbl
-            break
+            return _lbl
+    return "—"
+
+
+def _riego_estado_campos(eff, daily, daily_rio):
+    """Estado hídrico de HOY por campo (balance FAO-56 clásico + modelo «goteo»). Devuelve
+    (filas, n_regar, n_vigilar); cada fila es (campo, dict con las columnas de la tabla del
+    ordenador). La usan Riego del ordenador y del móvil, para no tener dos criterios."""
+    _rows, _n_regar, _n_vig = [], 0, 0
+    _etc_recent = pd.to_numeric(daily.tail(7)["ETc"], errors="coerce").mean()
+    for _, pr in eff.iterrows():
+        _taw = pr["TAW mm"]
+        if not _taw or pd.isna(_taw):
+            continue
+        _irr = field_irrigation_by_date(pr["Campo"])
+        _cov = field_cover_factor(pr["Campo"])
+        _dd = _riego_daily_de(pr["Campo"], daily, daily_rio)
+        _etc_rec_f = (_etc_recent if _dd is daily
+                      else pd.to_numeric(_dd.tail(7)["ETc"], errors="coerce").mean())
+        _, m = run_soil_depletion(_dd, _taw, cover=_cov, irr_by_date=_irr)
+        if not m:
+            continue
+        Dr, raw = m["Dr"], m["RAW"]
+        if Dr >= raw:
+            estado = "🔴 Regar"; _n_regar += 1
+        elif Dr >= 0.75 * raw:
+            estado = "🟠 Vigilar"; _n_vig += 1
+        else:
+            estado = "🟢 OK"
+        _dias = int((raw - Dr) / _etc_rec_f) if (_etc_rec_f and _etc_rec_f > 0 and Dr < raw) else 0
+        # Modelo B "goteo/árbol": ETc×Kd (cobertura) + raíz profunda por patrón + riego×0.90
+        _, _mB = field_model_b_reserve(_dd, pr, _irr)
+        _resB = int(round(_mB["reserva_pct"])) if _mB else None
+        _rows.append((pr["Campo"], {
+            "Campo": (((pr["Campo"] + " *") if str(pr.get("Fuente", "")).endswith("*") else pr["Campo"])
+                      + (" 🌊" if zona_de_campo(pr["Campo"]) == ZONA_RIO else "")),
+            "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
+            "Reserva % (clásico)": int(round(m["reserva_pct"])),
+            "Reserva % (goteo)": (_resB if _resB is not None else "—"),
+            "Agotam. mm": round(Dr, 1),
+            "Riego camp.": (round(m["riego_total"]) if m.get("riego_total") else 0),
+            "Días al umbral": (_dias if Dr < raw else 0), "Estado": estado,
+        }))
+    return _rows, _n_regar, _n_vig
+
+
+def render_water_balance(history, soil_type, start_ts, end_ts):
+    """Riego por balance hídrico FAO-56 POR PARCELA. Clima/ET0 (Penman-Monteith, con
+    Hargreaves de respaldo) es de finca (un sensor); la reserva de suelo es por campo
+    según su perfil editable. Da mm a reponer (goteo) o el déficit/estrés (secano)."""
+    _end = pd.Timestamp(end_ts).normalize()
+    # Zona Río: SU serie en cuanto su sensor manda. Hasta entonces no existe y todo va como siempre.
+    daily, metodo, daily_rio, metodo_rio = _riego_series_zonas(history, _end)
+    per_r = pd.DataFrame()
+    if daily is None or daily.empty:
+        st.info("No hay datos de temperatura/lluvia suficientes para el balance hídrico.")
+        return
+
+    def _daily_de(campo):
+        """La serie diaria que le toca a un campo: la de su zona."""
+        return _riego_daily_de(campo, daily, daily_rio)
+
+    # Fase y Kc de hoy (compartidos)
+    _phase_lbl = _riego_fase_hoy(_end)
     kc_now = apple_kc(_end)
 
     # Acumulados del periodo seleccionado (clima común)
@@ -12646,42 +12817,8 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
            if _last_data is not None else "")
         + ". Se guarda solo en Supabase con cada descarga/carga."
     )
-    _rows, _n_regar, _n_vig = [], 0, 0
-    _etc_recent = pd.to_numeric(daily.tail(7)["ETc"], errors="coerce").mean()
-    for _, pr in eff.iterrows():
-        _taw = pr["TAW mm"]
-        if not _taw or pd.isna(_taw):
-            continue
-        _irr = field_irrigation_by_date(pr["Campo"])
-        _cov = field_cover_factor(pr["Campo"])
-        _dd = _daily_de(pr["Campo"])
-        _etc_rec_f = (_etc_recent if _dd is daily
-                      else pd.to_numeric(_dd.tail(7)["ETc"], errors="coerce").mean())
-        _, m = run_soil_depletion(_dd, _taw, cover=_cov, irr_by_date=_irr)
-        if not m:
-            continue
-        Dr, raw = m["Dr"], m["RAW"]
-        if Dr >= raw:
-            estado = "🔴 Regar"; _n_regar += 1
-        elif Dr >= 0.75 * raw:
-            estado = "🟠 Vigilar"; _n_vig += 1
-        else:
-            estado = "🟢 OK"
-        _dias = int((raw - Dr) / _etc_rec_f) if (_etc_rec_f and _etc_rec_f > 0 and Dr < raw) else 0
-        # Modelo B "goteo/árbol": ETc×Kd (cobertura) + raíz profunda por patrón + riego×0.90
-        _, _mB = field_model_b_reserve(_dd, pr, _irr)
-        _resB = int(round(_mB["reserva_pct"])) if _mB else None
-        _rows.append({
-            "Campo": (((pr["Campo"] + " *") if str(pr.get("Fuente", "")).endswith("*") else pr["Campo"])
-                      + (" 🌊" if zona_de_campo(pr["Campo"]) == ZONA_RIO else "")),
-            "Textura": pr["Textura"], "Riego": pr["Riego"] or "—",
-            "Reserva % (clásico)": int(round(m["reserva_pct"])),
-            "Reserva % (goteo)": (_resB if _resB is not None else "—"),
-            "Agotam. mm": round(Dr, 1),
-            "Riego camp.": (round(m["riego_total"]) if m.get("riego_total") else 0),
-            "Días al umbral": (_dias if Dr < raw else 0), "Estado": estado,
-        })
-    fld = pd.DataFrame(_rows)
+    _filas_estado, _n_regar, _n_vig = _riego_estado_campos(eff, daily, daily_rio)
+    fld = pd.DataFrame([_f for _, _f in _filas_estado])
     if not fld.empty:
         fld = fld.sort_values("Reserva % (clásico)").reset_index(drop=True)
         if _n_regar:
@@ -15425,6 +15562,100 @@ def health_tab(history, soil_type, hoja_threshold):
                 mime="text/csv",
                 key="dl_phyto_tracking",
             )
+
+
+def render_riego_movil(history, soil_type, hoja_threshold):
+    """Riego en el MÓVIL: gasto de agua y lluvia del periodo por zona y el estado hídrico de hoy
+    por campo en tarjetas. Mismo cálculo que Riego (`_riego_series_zonas`, `_riego_estado_campos`)."""
+    import html as _h
+    st.subheader("💧 Riego")
+    if history is None or history.empty or "fecha_hora" not in history.columns:
+        st.info("Carga primero el histórico.")
+    else:
+        _fin = pd.Timestamp(history["fecha_hora"].max())
+        _end = _fin.normalize()
+        daily, metodo, daily_rio, metodo_rio = _riego_series_zonas(history, _end)
+        if daily is None or daily.empty:
+            st.info("No hay datos de temperatura/lluvia suficientes para el balance hídrico.")
+        else:
+            _opc = {"7 días": 6, "14 días": 13, "30 días": 29}
+            _sel = st.radio("Periodo", list(_opc), horizontal=True, key="mob_riego_periodo")
+            _s0 = (_fin - pd.Timedelta(days=_opc[_sel])).normalize()
+            st.caption(f"**Lo esencial** · del **{_s0:%d/%m}** al **{_end:%d/%m}** · fase "
+                       f"**{_riego_fase_hoy(_end)}** · Kc hoy **{_fmt_es_number(apple_kc(_end), 2)}**")
+            _zonas = [(f"🏠 {ZONA_NAVE}", daily, metodo)]
+            if daily_rio is not None and not daily_rio.empty:
+                _zonas.append((f"🌊 {ZONA_RIO}", daily_rio, metodo_rio))
+            for _tit, _d, _met in _zonas:
+                _per = _d[(_d["Fecha"] >= _s0) & (_d["Fecha"] <= _end)]
+                if _per.empty:
+                    _per = _d.tail(14)
+                _et0 = float(pd.to_numeric(_per["ET0"], errors="coerce").sum())
+                _etc = float(pd.to_numeric(_per["ETc"], errors="coerce").sum())
+                _ll = float(pd.to_numeric(_per["Lluvia"], errors="coerce").sum())
+                st.markdown(f"**{_tit}** · ET0 por {_met}")
+                st.markdown(_movil_cifras_html([
+                    ("☀️ ET0 (sed del aire)", f"{_et0:.0f} mm"),
+                    ("🌳 ETc (gasto del manzano)", f"{_etc:.0f} mm"),
+                    ("🌧️ Lluvia", f"{_ll:.0f} mm"),
+                    ("⚖️ Déficit (ETc − lluvia)", f"{_etc - _ll:+.0f} mm")]), unsafe_allow_html=True)
+            if len(_zonas) == 1:
+                st.caption(f"Los campos de la {ZONA_RIO} usan el clima de la Nave hasta que su sensor "
+                           f"mande ({ZONA_RIO_MANDA_DESDE:%d/%m/%Y}). Déficit positivo = el árbol "
+                           "gastó más de lo que llovió y tira de la reserva del suelo.")
+
+            if "soil_profiles_df" not in st.session_state:
+                _sp, _ = load_soil_profiles_from_supabase()
+                st.session_state.soil_profiles_df = normalize_soil_profiles_df(
+                    _sp if _sp is not None else pd.DataFrame())
+            eff = soil_profiles_effective()
+            _filas, _n_regar, _n_vig = _riego_estado_campos(eff, daily, daily_rio)
+
+            st.markdown("#### 💧 Estado hídrico por campo (hoy)")
+            _log = normalize_irrigation_log_df(st.session_state.get("irrigation_log_df", pd.DataFrame()))
+            _hasta = (pd.Timestamp(_log["Fecha"].max()).strftime("%d/%m") if not _log.empty else "—")
+            st.markdown(_movil_cifras_html([
+                ("🔴 Regar", _n_regar), ("🟠 Vigilar", _n_vig),
+                ("🟢 OK", len(_filas) - _n_regar - _n_vig), ("🔄 Riego real hasta", _hasta)]),
+                unsafe_allow_html=True)
+            _sync = st.session_state.get("irrigation_synced_at")
+            if _sync:
+                st.caption(f"Última descarga del riego: **{_sync}**.")
+            _col = {"🔴": "#c62828", "🟠": "#ef6c00", "🟢": "#2e7d32"}
+            _tarj = []
+            for _campo, r in sorted(_filas, key=lambda x: x[1]["Reserva % (clásico)"]):
+                _est = str(r["Estado"])
+                _rb = r["Reserva % (goteo)"]
+                _lin = [f"Reserva: <b>{r['Reserva % (clásico)']} %</b> clásico · "
+                        f"<b>{_rb}{'' if _rb == '—' else ' %'}</b> goteo",
+                        f"Faltan {_fmt_es_number(r['Agotam. mm'], 1)} mm para llenar el suelo · "
+                        + ("ya por debajo del umbral" if _est.startswith("🔴")
+                           else f"{r['Días al umbral']} días al umbral si no llueve")]
+                _ult = ""
+                if not _log.empty:
+                    _lc = _log[(_log["Campo"] == _campo) & (pd.to_numeric(_log["mm"], errors="coerce") > 0)]
+                    if not _lc.empty:
+                        _uf = _lc.loc[pd.to_datetime(_lc["Fecha"]).idxmax()]
+                        _ult = (f" · último {pd.Timestamp(_uf['Fecha']):%d/%m} "
+                                f"({_fmt_es_number(_uf['mm'], 1)} mm)")
+                _lin.append(f"<span style='color:#555'>Riego: {_h.escape(str(r['Riego']))} · campaña "
+                            f"{r['Riego camp.']} mm{_ult} · suelo {_h.escape(str(r['Textura']))}</span>")
+                _tarj.append(_carpo_movil_tarjeta(f"{_est} · {_h.escape(str(r['Campo']))}", _lin,
+                                                  _col.get(_est[:1], "#9e9e9e")))
+            if _tarj:
+                st.markdown("".join(_tarj), unsafe_allow_html=True)
+                st.caption("100 % = suelo lleno · por debajo del 50 % el árbol empieza a pasar sed "
+                           "(🔴; en secano es aviso de estrés). **Clásico** = balance FAO-56 del campo "
+                           "entero; **goteo** = con cobertura de copa (Allen & Pereira 2009), raíz según "
+                           "patrón y eficiencia del goteo ×0,90. **\\*** = suelo estimado. El calibre es "
+                           "el juez final.")
+            else:
+                st.caption("Sin perfiles de suelo para calcular el estado por campo.")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="riego_movil_completa",
+                 help="Perfiles de suelo, descarga de VEGGA, riego manual, validación del riego y gráficas."):
+        irrigation_tab(history, soil_type, hoja_threshold)
 
 
 def irrigation_tab(history, soil_type, hoja_threshold):
@@ -35087,7 +35318,10 @@ if not _HEADLESS:
         else:
             comparator_tab(history, soil_type, hoja_threshold)
     elif _page == "frio":
-        cold_tab(history)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_frio_movil(history)
+        else:
+            cold_tab(history)
     elif _page == "fenologia":
         phenology_tab(history, soil_type, hoja_threshold)
     elif _page == "sanidad":
@@ -35108,7 +35342,10 @@ if not _HEADLESS:
     elif _page == "resultado":
         resultado_sanitario_tab()
     elif _page == "riego":
-        irrigation_tab(history, soil_type, hoja_threshold)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_riego_movil(history, soil_type, hoja_threshold)
+        else:
+            irrigation_tab(history, soil_type, hoja_threshold)
     elif _page == "campos":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_campos_movil()
