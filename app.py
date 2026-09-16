@@ -35149,12 +35149,19 @@ if not _HEADLESS:
     # se corta al cambiar de app o bloquear la pantalla; al volver se abre una sesión nueva
     # y antes se caía siempre en el Panel de hoy («me expulsa»). Ahora la sesión nueva lee
     # la pantalla de la dirección y vuelve a donde estabas.
+    # Menú principal del móvil (idea del usuario, 16/09/2026): al abrir, todos los apartados en
+    # botones; dentro de cada uno, «⬅️ Menú principal». PRUEBA: solo con ?nuevo=1.
+    _MENU_MOVIL = IS_MOBILE and str(_query_param("nuevo") or "") == "1"
     if "nav_page" not in st.session_state:
         _p_url = str(_query_param("p") or "").strip()
         # Sin pantalla en la dirección: en el móvil abre el Informe semanal (lo que el
         # usuario consulta fuera de temporada de tratamientos, 15/09/2026); en el PC, Hoy.
-        st.session_state.nav_page = (_p_url if _p_url in PAGINAS_APP
-                                     else ("informe" if IS_MOBILE else "hoy"))
+        # Con el menú del móvil, abre el menú; «p=menu» vuelve a él tras un corte.
+        st.session_state.nav_page = (_p_url if (_p_url in PAGINAS_APP or (_MENU_MOVIL and _p_url == "menu"))
+                                     else ("menu" if _MENU_MOVIL else ("informe" if IS_MOBILE else "hoy")))
+    # El menú solo existe en el móvil: al pasar a PC (o sin el menú) se abre Hoy.
+    if st.session_state.get("nav_page") == "menu" and not _MENU_MOVIL:
+        st.session_state.nav_page = "hoy"
 
     # CSS: estilo del sidebar
     st.markdown("""
@@ -35415,6 +35422,56 @@ if not _HEADLESS:
         with _box:
             _render_mobile_nav_botones()
 
+    # Menú principal: los mismos grupos y el mismo orden que la barra lateral del ordenador.
+    _MOBILE_MENU = [
+        ("", [("🏠 Panel de hoy", "hoy")]),
+        ("🌤️ Clima", [("📊 Clima", "dashboard"), (NOMBRE_ITEM_PREVISION, "sencrop"),
+                      ("🔎 Análisis", "analisis"), ("📈 Comparador", "comparador"), ("❄️ Frío", "frio")]),
+        ("🌿 Cultivo", [("🌱 Fenología", "fenologia"), ("🍄 Sanidad", "sanidad"),
+                       ("🎯 Decisiones", "decisiones"), ("🐛 Carpocapsa", "carpocapsa"),
+                       ("🩺 Resultado sanitario", "resultado"), ("💧 Riego", "riego")]),
+        ("📋 Gestión", [("🌳 Campos", "campos"), ("🧾 Agroptima", "agroptima"),
+                       ("🍎 Producción", "produccion"), ("🍏 Análisis Gallinal", "gallinal"),
+                       ("📝 Informe semanal", "informe")]),
+        ("", [("📘 Instrucciones", "instrucciones"), ("⚙️ Configuración", "configuracion")]),
+    ]
+
+    _MOBILE_MENU_CSS = """
+    <style>
+    .st-key-fg_mob_menu [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:8px!important;}
+    .st-key-fg_mob_menu [data-testid="stColumn"], .st-key-fg_mob_menu [data-testid="column"]{
+        min-width:0!important;width:auto!important;flex:1 1 0!important;}
+    .st-key-fg_mob_menu button{min-height:64px!important;padding:6px 6px!important;border-radius:12px!important;}
+    .st-key-fg_mob_menu button p{font-size:0.9rem!important;line-height:1.2!important;
+        white-space:normal!important;word-break:break-word;}
+    .st-key-fg_mob_menu .fg-menu-grupo{font-weight:700;color:#1b6b35;margin:14px 0 2px 2px;font-size:0.95rem;}
+    </style>
+    """
+
+    def _render_mobile_menu() -> None:
+        """Pantalla del menú principal del móvil: un botón por apartado, en 2 columnas."""
+        st.markdown(_MOBILE_MENU_CSS, unsafe_allow_html=True)
+        try:
+            _box = st.container(key="fg_mob_menu")
+        except TypeError:
+            _box = st.container()
+        with _box:
+            st.markdown("<p class='fg-mob-title' style='font-size:1.15rem;margin:4px 0 0 2px'>"
+                        "🌿 Finca Gallinal · menú principal</p>", unsafe_allow_html=True)
+            for _grupo, _items in _MOBILE_MENU:
+                if _grupo:
+                    st.markdown(f"<p class='fg-menu-grupo'>{_grupo}</p>", unsafe_allow_html=True)
+                for _i in range(0, len(_items), 2):
+                    _cols = st.columns(2)
+                    for _col, (_lb, _key) in zip(_cols, _items[_i:_i + 2]):
+                        with _col:
+                            if st.button(_lb, key=f"mmenu_{_key}", use_container_width=True):
+                                _mobile_go(_key)
+
+    def _render_mobile_volver_menu(clave: str) -> None:
+        if st.button("⬅️ Menú principal", key=clave, use_container_width=True):
+            _mobile_go("menu")
+
     def _render_mobile_nav_botones() -> None:
         cur = st.session_state.get("nav_page", "hoy")
         # Cabecera compacta + botón para saltar a la versión completa de PC.
@@ -35431,6 +35488,12 @@ if not _HEADLESS:
                 st.session_state["force_mobile"] = False
                 _set_query_param("movil", "0")  # 0 = escritorio explícito (evita el rebote del auto-redirect)
                 st.rerun()
+        if _MENU_MOVIL:
+            if cur != "menu":
+                _render_mobile_volver_menu("mob_menu_arriba")
+            st.markdown("<hr style='margin:6px 0 10px 0;border:none;"
+                        "border-top:1px solid rgba(27,107,53,0.18);'>", unsafe_allow_html=True)
+            return
         # Barra principal: 5 accesos en una fila.
         cols = st.columns(len(_MOBILE_PRIMARY))
         for col, (ic, lb, key) in zip(cols, _MOBILE_PRIMARY):
@@ -35577,7 +35640,9 @@ if not _HEADLESS:
     except Exception:
         pass
 
-    if _page == "hoy":
+    if _page == "menu":
+        _render_mobile_menu()
+    elif _page == "hoy":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_hoy_movil(history, soil_type, hoja_threshold)
         else:
@@ -35663,3 +35728,8 @@ if not _HEADLESS:
         instructions_tab()
     elif _page == "configuracion":
         settings_tab()
+
+    # Móvil con menú: segundo «⬅️ Menú principal» al final, para no subir en pantallas largas.
+    if _MENU_MOVIL and _page != "menu":
+        st.divider()
+        _render_mobile_volver_menu("mob_menu_abajo")
