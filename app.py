@@ -35438,6 +35438,10 @@ if not _HEADLESS:
 
     _MOBILE_MENU_CSS = """
     <style>
+    /* Fondo del MENÚ en gris verdoso suave: el casi blanco general deslumbraba (usuario, 16/09/2026).
+       Solo se inyecta en la pantalla del menú; el resto de la app no cambia. */
+    [data-testid="stAppViewContainer"]{background-color:#d9e2dc!important;
+        background-image:linear-gradient(180deg,#dfe7e1 0%,#cfd9d2 100%)!important;}
     .st-key-fg_mob_menu [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:8px!important;}
     .st-key-fg_mob_menu [data-testid="stColumn"], .st-key-fg_mob_menu [data-testid="column"]{
         min-width:0!important;width:auto!important;flex:1 1 0!important;}
