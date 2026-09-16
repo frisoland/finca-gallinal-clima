@@ -35463,7 +35463,7 @@ if not _HEADLESS:
     .st-key-fg_mob_menu [data-testid="stVerticalBlock"]{gap:8px!important;}
     .st-key-fg_mob_menu button{
         min-height:44px!important;padding:4px 10px!important;border-radius:14px!important;
-        background:linear-gradient(160deg,#2b7447 0%,#3a8a57 50%,#7fbb93 80%,#d4eadb 100%)!important;
+        background:#4d9b68!important;background-image:none!important;
         border:1px solid rgba(255,255,255,0.08)!important;
         box-shadow:0 2px 6px rgba(27,107,53,0.25)!important;
         transition:transform .08s ease, box-shadow .08s ease!important;}
