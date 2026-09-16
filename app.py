@@ -9773,8 +9773,60 @@ def render_comparador_movil(history, soil_type, hoja_threshold):
             if _cmp is None or _cmp.empty:
                 st.info("No hay datos para esa combinación.")
             else:
-                render_visual_comparison_report(
-                    _cmp, title=f"{_mes_lbl}" + ("" if _sem == "Todo el mes" else f" · semana {_sem}"))
+                import html as _h
+                _rep = compact_comparison_report_table(_cmp)
+                if _rep is None or _rep.empty:
+                    st.info("No hay datos suficientes para comparar.")
+                else:
+                    _num = lambda r, c: pd.to_numeric(r.get(c), errors="coerce")
+                    _mejor = lambda c, alto=True: (
+                        _rep.loc[_rep[c].apply(lambda v: pd.to_numeric(v, errors="coerce")).idxmax()
+                                 if alto else
+                                 _rep[c].apply(lambda v: pd.to_numeric(v, errors="coerce")).idxmin()]
+                        if c in _rep.columns and _rep[c].apply(
+                            lambda v: pd.notna(pd.to_numeric(v, errors="coerce"))).any() else None)
+                    _lluv, _cal = _mejor("Lluvia mm"), _mejor("Temp media ºC")
+                    _titulo = f"{_mes_lbl}" + ("" if _sem == "Todo el mes" else f" · semana {_sem}")
+                    st.markdown(f"#### 📊 {_titulo}")
+                    if _lluv is not None and _cal is not None:
+                        st.caption(f"🌧️ Más lluvioso: **{int(_lluv['Año'])}** "
+                                   f"({_fmt_es_number(_num(_lluv, 'Lluvia mm'), 1)} mm) · "
+                                   f"🌡️ más cálido: **{int(_cal['Año'])}** "
+                                   f"({_fmt_es_number(_num(_cal, 'Temp media ºC'), 1)} ºC)")
+                    _campos_tarj = [
+                        ("Temp media ºC", "🌡️ Temp. media", " ºC", 1),
+                        ("Temp mín ºC", "🔹 Mínima", " ºC", 1),
+                        ("Temp máx ºC", "🔺 Máxima", " ºC", 1),
+                        ("HR media %", "💧 Humedad", " %", 1),
+                        ("Lluvia mm", "🌧️ Lluvia", " mm", 1),
+                        ("Horas lluvia", "☔ Horas de lluvia", "", 0),
+                        ("Hoja húmeda h", "🍃 Horas hoja mojada", "", 0),
+                        ("Infecciones moteado", "🍄 Infecciones moteado", "", 0),
+                        ("Monilia ≥50", "🍑 Monilia ≥50", "", 0),
+                        ("Ráfaga máx", "💨 Ráfaga máxima", "", 1),
+                    ]
+                    _tarj = []
+                    for _, _r in _rep.iterrows():
+                        _lin = []
+                        for _c, _et, _suf, _dec in _campos_tarj:
+                            if _c not in _rep.columns:
+                                continue
+                            _v = _num(_r, _c)
+                            if pd.isna(_v):
+                                continue
+                            _lin.append(f"<div style='display:flex;justify-content:space-between;"
+                                        f"border-top:1px solid #eee;padding:3px 0'>"
+                                        f"<span style='color:#555'>{_et}</span>"
+                                        f"<b>{_fmt_es_number(_v, _dec)}{_suf}</b></div>")
+                        _lect = str(_r.get("Lectura rápida", "") or "")
+                        if _lect:
+                            _lin.append(f"<div style='color:#666;padding-top:5px'>{_h.escape(_lect)}</div>")
+                        _fechas = str(_r.get("Fechas", "") or "")
+                        _tarj.append(_carpo_movil_tarjeta(
+                            f"{int(_r['Año'])}" + (f" · {_fechas}" if _fechas else ""), _lin, "#0277bd"))
+                    st.markdown("".join(_tarj), unsafe_allow_html=True)
+                    st.caption("Las mismas cifras que el informe visual del ordenador; ahí están "
+                               "además la tabla técnica y la descarga.")
 
     st.divider()
     if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="cmp_movil_completa",
