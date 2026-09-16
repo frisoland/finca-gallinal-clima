@@ -9897,7 +9897,7 @@ def render_agroptima_movil():
         ]), unsafe_allow_html=True)
 
         st.markdown("#### 🕐 Últimas actuaciones")
-        _n = st.radio("Cuántas", [10, 25, 50], horizontal=True, key="mob_agro_n")
+        _n = st.radio("Días con actuaciones a mostrar", [10, 25, 50], horizontal=True, key="mob_agro_n")
         _tarj = []
         for _f0, _g in list(_a.groupby(_a["_f"].dt.date, sort=False))[:int(_n)]:
             _lin = []
