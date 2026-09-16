@@ -15921,6 +15921,12 @@ def build_weekly_priority_table_all_fields(hist, activities_df, period_df, start
             "Primer evento posterior", "Evento más crítico posterior", "Aviso orientativo", "ID Agroptima"
         ])
 
+    # Último día de tratamientos: si el informe llega más allá, no se prioriza (ver
+    # FIN_TRATAMIENTOS_DEFECTO_MD y la nota de fuentes que hay junto a esa constante).
+    _fin_trat = fin_tratamientos_fecha(pd.Timestamp(end_ts).year)
+    _fuera_temporada = bool(pd.Timestamp(end_ts).normalize() > _fin_trat)
+    _fin_trat_txt = _fin_trat.strftime("%d/%m")
+
     rows = []
     for _, frow in fields_df.iterrows():
         campo = str(frow.get("Campo", "") or "").strip()
@@ -15986,8 +15992,15 @@ def build_weekly_priority_table_all_fields(hist, activities_df, period_df, start
         base["Presión climática semanal"] = climate_pressure
         base["Aviso orientativo"] = aviso
 
-        # Prioridad: los no tratados suben primero cuando hay presión climática.
-        if not treated and climate_pressure in ["Alta", "Media-alta"]:
+        # Prioridad: los no tratados suben primero cuando hay presión climática. Pasado el
+        # último día de tratamientos (Configuración, 7/09 por defecto) no se prioriza ningún
+        # campo: la lluvia y los ratios se siguen viendo, pero ya no se va a tratar.
+        if _fuera_temporada:
+            prioridad = "Fuera de temporada"
+            aviso = (f"Fuera de temporada de tratamientos (desde el {_fin_trat_txt}): no se "
+                     f"prioriza. El clima y los eventos se siguen midiendo. " + aviso)
+            base["Aviso orientativo"] = aviso
+        elif not treated and climate_pressure in ["Alta", "Media-alta"]:
             prioridad = "Alta"
         elif not treated and climate_pressure == "Media":
             prioridad = "Media-alta"
@@ -16001,7 +16014,7 @@ def build_weekly_priority_table_all_fields(hist, activities_df, period_df, start
     if out.empty:
         return out
 
-    priority_order = {"Alta": 0, "Media-alta": 1, "Media": 2, "Baja": 3}
+    priority_order = {"Alta": 0, "Media-alta": 1, "Media": 2, "Baja": 3, "Fuera de temporada": 4}
     out["_orden_prioridad"] = out["Prioridad"].map(priority_order).fillna(9)
     out["_no_tratado"] = (out["Tratado registrado"].astype(str) == "No").astype(int)
     for c in ["Lluvia posterior mm", "Máx ratio moteado posterior", "Máx ratio monilia posterior"]:
@@ -17036,8 +17049,15 @@ def render_informe_movil(history, soil_type, hoja_threshold):
             _con_aviso = (priority_table[priority_table["Prioridad"].isin(list(_colores))]
                           if not priority_table.empty and "Prioridad" in priority_table.columns
                           else pd.DataFrame())
+            _n_fuera_t = (int((priority_table["Prioridad"] == "Fuera de temporada").sum())
+                          if not priority_table.empty and "Prioridad" in priority_table.columns else 0)
             st.markdown(f"#### ⚠️ Campos con aviso ({len(_con_aviso)})")
-            if _con_aviso.empty:
+            if _n_fuera_t:
+                st.info(f"🔵 **Fuera de temporada de tratamientos** (desde el "
+                        f"{fin_tratamientos_fecha(pd.Timestamp(_fin).year):%d/%m}, editable en "
+                        f"Configuración): los {_n_fuera_t} campos no se priorizan. El clima y los "
+                        f"eventos se siguen midiendo.")
+            elif _con_aviso.empty:
                 st.success("Ningún campo con aviso en estos días.")
             else:
                 # Una tarjeta por AVISO (prioridad + texto), con una línea corta por campo:
@@ -17078,7 +17098,8 @@ def render_informe_movil(history, soil_type, hoja_threshold):
                 st.caption("La fecha y el producto son el **último fungicida** de cada campo (insecticidas, "
                            "abonos y herbicidas no cuentan). «después» = desde ese fungicida: lluvia y máximo "
                            "ratio de moteado y de monilia (escala de la app: 0,25 ligero · 0,5 moderado · 1 infección).")
-            _sin = len(priority_table) - len(_con_aviso) if not priority_table.empty else 0
+            _sin = (len(priority_table) - len(_con_aviso) - _n_fuera_t
+                    if not priority_table.empty else 0)
             if _sin:
                 st.caption(f"Sin aviso (prioridad baja): {_sin} campo{'s' if _sin != 1 else ''}.")
 
@@ -18459,7 +18480,8 @@ def carpocapsa_status_from_dd(current_dd, recent_captures_per_day=0, rain_since_
 
 def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp=31.1,
                                     capture_threshold=3, dd_active_start=80, dd_active_end=130,
-                                    activities_df=None, campaign_year=None, cierre_aviso_dias=3):
+                                    activities_df=None, campaign_year=None, cierre_aviso_dias=3,
+                                    fin_trat=None):
     """
     Modelo de ventanas múltiples por campo (simple).
     Cada lectura con capturas >= capture_threshold abre una ventana de DD propia.
@@ -18505,6 +18527,12 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
 
     rows = []
     today = pd.Timestamp.today().normalize()
+    # Último día de tratamientos (Configuración, 7/09 por defecto): pasado ese día las
+    # ventanas dejan de pedir tratamiento, pero los DD y las fechas siguen calculándose.
+    if fin_trat is None:
+        fin_trat = fin_tratamientos_fecha(campaign_year or today.year)
+    _fuera_temporada = bool(fin_trat is not None and today > pd.Timestamp(fin_trat).normalize())
+    _fin_trat_txt = pd.Timestamp(fin_trat).strftime("%d/%m") if fin_trat is not None else ""
 
     # ── Modelo simple de cierre de ventana ────────────────────────────────────
     # Una ventana se abre con una lectura ≥ umbral de capturas. Está "activa" entre
@@ -18650,6 +18678,10 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 estado = "✅ Tratado — cerrada"
                 estado_orden = 3
                 info_extra = f"Tratado {trat_fecha} ({trat_dd:g} DD)"
+            elif dd_current < dd_active_start and _fuera_temporada:
+                estado = "🔵 Fuera de temporada"
+                estado_orden = 4
+                info_extra = f"{int(round(dd_current))} de {dd_active_start} DD · no se trata desde el {_fin_trat_txt}"
             elif dd_current < dd_active_start:
                 estado = "⏳ En espera"
                 estado_orden = 1
@@ -18664,7 +18696,13 @@ def carpocapsa_build_multi_windows(traps_df, history, base_temp=10.0, upper_temp
                 dias_cierre = None
                 if pd.notna(date_end):
                     dias_cierre = max(0, (date_end.date() - today.date()).days)
-                if dias_cierre is not None and dias_cierre <= cierre_aviso_dias:
+                if _fuera_temporada:
+                    # Fuera de temporada: la ventana está abierta, pero no se trata.
+                    estado = "🔵 Fuera de temporada"
+                    estado_orden = 4
+                    info_extra = (f"Ventana abierta, pero no se trata desde el {_fin_trat_txt}"
+                                  + (f" · cierra en {dias_cierre}d" if dias_cierre is not None else ""))
+                elif dias_cierre is not None and dias_cierre <= cierre_aviso_dias:
                     # PELIGRO: a punto de pasarse sin tratar (rojo)
                     estado = f"🔴 Activa — cierra en {dias_cierre}d"
                     info_extra = f"⚠️ ÚLTIMA OPORTUNIDAD · cierra en {dias_cierre}d sin tratar"
@@ -19725,6 +19763,14 @@ def render_carpocapsa_movil(history):
         _pend = (_v[_v["Estado"].astype(str).str.contains("Activa|reentrada|pase", na=False)]
                  if not _v.empty else _v)
         _esp = _v[_v["Estado"].astype(str).str.contains("espera", na=False)] if not _v.empty else _v
+        _fuera_t = (_v[_v["Estado"].astype(str).str.contains("Fuera de temporada", na=False)]
+                    if not _v.empty else _v)
+        if not _fuera_t.empty:
+            st.info(f"🔵 **Fuera de temporada de tratamientos** (desde el "
+                    f"{fin_tratamientos_fecha(_anio):%d/%m}, editable en Configuración): "
+                    f"{len(_fuera_t)} ventana(s) abiertas o en espera que **no se tratan** "
+                    f"({', '.join(sorted(_fuera_t['Campo/Zona'].astype(str).unique()))}). "
+                    f"Los grados-día y la cobertura se siguen calculando.")
         st.markdown(f"#### 🔴 Tratar ({len(_pend)})")
         if _pend.empty:
             st.success("Ninguna ventana pendiente de tratar.")
@@ -20547,7 +20593,16 @@ def carpocapsa_tab(history):
             n_cerradas  = len(multi_df[multi_df["Estado"].str.contains("Cerrada",  na=False)])
             n_tratadas  = len(multi_df[multi_df["Estado"].str.contains("Tratado",  na=False)])
 
-            mc1, mc2, mc3, mc4 = st.columns(4)
+            n_fuera_t   = len(multi_df[multi_df["Estado"].str.contains("Fuera de temporada", na=False)])
+
+            if n_fuera_t:
+                mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+                mc5.metric("🔵 Fuera de temporada", n_fuera_t,
+                           help=f"Ventanas abiertas o en espera pasado el último día de tratamientos "
+                                f"({fin_tratamientos_fecha(campaign_year):%d/%m}, editable en "
+                                f"Configuración): no se tratan, pero los DD siguen contando.")
+            else:
+                mc1, mc2, mc3, mc4 = st.columns(4)
             mc1.metric("🔴 Pendientes de tratar", n_activas)
             mc2.metric("⏳ En espera",             n_espera)
             mc3.metric("✅ Cubiertas / tratadas",  n_tratadas)
@@ -21421,6 +21476,36 @@ def settings_tab():
         f"minutos o más**. Es la misma regla en toda la app (episodios de infección, horas de hoja "
         f"húmeda, oídio). Detalle en 📖 Por qué hay infección.")
 
+    st.divider()
+    st.markdown("#### 🗓️ Último día de tratamientos")
+    _fm, _fd = fin_tratamientos_md()
+    _fc1, _fc2 = st.columns([1, 2])
+    with _fc1:
+        _nueva = st.date_input(
+            "Último día en que se trata", value=pd.Timestamp(pd.Timestamp.now().year, _fm, _fd).date(),
+            key="cfg_fin_tratamientos",
+            help="Pasado este día la app NO pide tratar (ni fungicida ni carpocapsa), pero sigue "
+                 "calculando riesgo, eventos, grados-día y cobertura. Solo cuentan el día y el mes: "
+                 "vale para todas las campañas. Si un año hay que tratar en septiembre, cambia la fecha.")
+        if st.button("💾 Guardar", key="cfg_fin_trat_guardar", use_container_width=True):
+            _ok, _msg = save_fin_tratamientos(_nueva.month, _nueva.day)
+            (st.success if _ok else st.warning)(_msg)
+    with _fc2:
+        st.caption(
+            f"Ahora mismo: **{_fd:02d}/{_fm:02d}**"
+            + ("" if (_fm, _fd) == FIN_TRATAMIENTOS_DEFECTO_MD else
+               f" (por defecto {FIN_TRATAMIENTOS_DEFECTO_MD[1]:02d}/{FIN_TRATAMIENTOS_DEFECTO_MD[0]:02d})")
+            + ". Se guarda en Supabase, así que el informe de la mañana usa la misma fecha.\n\n"
+            "**Por qué se puede parar ahí:** en moteado, «si el moteado primario está controlado, no "
+            "hace falta seguir aplicando fungicida el resto de la temporada», y lo que dejan las "
+            "infecciones tardías son manchas que salen en conservación (*pinpoint scab*; New England "
+            "Tree Fruit Management Guide / UMass). En carpocapsa, de la 3ª generación «la mayoría no "
+            "completa su desarrollo antes de que llegue el invierno o se coseche la fruta», y el "
+            "problema de tratar tan tarde son los huevos que eclosionan en los cajones, propio de "
+            "fruta de mesa (MSU Extension; UC IPM; Utah State University). En sidra, que se prensa, "
+            "ninguna de las dos cosas cuenta.")
+
+    st.divider()
     with st.expander("💾 Copia de seguridad completa", expanded=False):
         st.caption(
             "Descarga **todos tus datos** en un único ZIP de CSVs: clima de la Zona Nave y de la "
@@ -22563,6 +22648,101 @@ def save_irrigation_sync_at(source="manual"):
         pass
 
 
+# ── FIN DE TEMPORADA DE TRATAMIENTOS (16/09/2026) ────────────────────────────────
+# Decisión del usuario: «salvo excepciones, en septiembre no haré ningún tratamiento, ni
+# fungicida ni de carpocapsa; podemos considerar el 7 de septiembre como el último día».
+# Pasada esa fecha la app NO pide tratar, pero SIGUE calculando riesgo, eventos, grados-día
+# y cobertura, que es como se comprueba si los modelos aciertan.
+#
+# Lo que respalda parar ahí (y qué se pierde), por si alguien lo revisa:
+#  · Moteado — «si el moteado primario está controlado, no hace falta seguir aplicando
+#    fungicida el resto de la temporada»; además el tejido se vuelve más resistente al
+#    avanzar el verano. Las infecciones de final de temporada dan «pinpoint scab»: manchas
+#    diminutas que aparecen EN CONSERVACIÓN (New England Tree Fruit Management Guide /
+#    UMass Amherst). En sidra, que se prensa, eso no cuenta.
+#  · Carpocapsa — de la 3ª generación «la mayoría no completa su desarrollo antes de que
+#    llegue el invierno o se coseche la fruta», y el problema de tratar tan tarde son los
+#    huevos que eclosionan ya en los cajones o en el almacén, propio de fruta de mesa
+#    (MSU Extension; UC IPM; Utah State University).
+# La fecha es EDITABLE en Configuración (y se guarda en Supabase, para que el informe de
+# la mañana use la misma): si un año hay que tratar en septiembre, se cambia la fecha.
+FIN_TRATAMIENTOS_DEFECTO_MD = (9, 7)
+SUPABASE_FIN_TRATAMIENTOS_FILE = "fin_tratamientos.txt"
+
+
+def fin_tratamientos_storage_url():
+    url, _ = get_supabase_credentials()
+    return f"{url.rstrip('/')}/storage/v1/object/climate-snapshots/{SUPABASE_FIN_TRATAMIENTOS_FILE}"
+
+
+def load_fin_tratamientos():
+    """«MM-DD» guardado en Supabase, o None. Sin año: vale para todas las campañas."""
+    if not supabase_is_configured():
+        return None
+    headers = supabase_headers(); headers.pop("Prefer", None)
+    try:
+        r = requests.get(fin_tratamientos_storage_url(), headers=headers, timeout=30)
+        if r.status_code == 200 and r.text.strip():
+            _t = r.text.strip()
+            _m, _d = _t.split("-")[:2]
+            if 1 <= int(_m) <= 12 and 1 <= int(_d) <= 31:
+                return f"{int(_m):02d}-{int(_d):02d}"
+    except Exception:
+        pass
+    return None
+
+
+def save_fin_tratamientos(mes, dia):
+    """Guarda el último día de tratamientos (sesión + Supabase). Devuelve (ok, mensaje)."""
+    _txt = f"{int(mes):02d}-{int(dia):02d}"
+    st.session_state["fin_tratamientos_md"] = _txt
+    if not supabase_is_configured():
+        return False, "Guardado solo en esta sesión: Supabase no está configurado."
+    try:
+        headers = supabase_headers()
+        headers["Content-Type"] = "text/plain"
+        headers["x-upsert"] = "true"
+        r = _escribir_http("post", fin_tratamientos_storage_url(), headers=headers,
+                           data=_txt.encode("utf-8"), timeout=30)
+        if r.status_code not in (200, 201):
+            return False, f"Error guardando: {r.status_code}"
+    except Exception as exc:
+        return False, f"Error guardando: {exc}"
+    return True, f"Último día de tratamientos guardado: {int(dia):02d}/{int(mes):02d}."
+
+
+def fin_tratamientos_md():
+    """(mes, día) del último día de tratamientos: lo guardado o el 7/09 por defecto."""
+    try:
+        _t = st.session_state.get("fin_tratamientos_md")
+    except Exception:
+        _t = None
+    if _t:
+        try:
+            _m, _d = str(_t).split("-")[:2]
+            return int(_m), int(_d)
+        except Exception:
+            pass
+    return FIN_TRATAMIENTOS_DEFECTO_MD
+
+
+def fin_tratamientos_fecha(year=None):
+    """Último día de tratamientos de una campaña, como Timestamp normalizado."""
+    _m, _d = fin_tratamientos_md()
+    _y = int(year) if year else pd.Timestamp.now().year
+    try:
+        return pd.Timestamp(_y, _m, _d).normalize()
+    except Exception:
+        return pd.Timestamp(_y, *FIN_TRATAMIENTOS_DEFECTO_MD).normalize()
+
+
+def fuera_de_temporada_tratamientos(today=None):
+    """(True/False, fecha límite): si hoy ya pasó el último día de tratamientos."""
+    _t = pd.Timestamp(today).normalize() if today is not None else pd.Timestamp.now().normalize()
+    _fin = fin_tratamientos_fecha(_t.year)
+    return bool(_t > _fin), _fin
+
+
 def field_irrigation_by_date(campo):
     """{fecha_normalizada: mm} del riego real de un campo (de irrigation_log_df)."""
     log = normalize_irrigation_log_df(st.session_state.get("irrigation_log_df", pd.DataFrame()))
@@ -23021,6 +23201,7 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
         _tareas["goteo"] = (load_irrigation_config_from_supabase, _no_vacio)
     if "irrigation_synced_at" not in st.session_state:
         _tareas["riego_sync"] = (load_irrigation_sync_at, lambda r: r is not None)
+        _tareas["fin_tratamientos"] = (load_fin_tratamientos, lambda r: r is not None)
     if st.session_state.carpocapsa_traps_df.empty or st.session_state.carpocapsa_biofix_df.empty:
         _tareas["carpocapsa"] = (load_carpocapsa_snapshot_from_supabase, _no_vacio)
     if not st.session_state.get("autoload_forecast_done", False):
@@ -23110,6 +23291,8 @@ if not st.session_state.autoload_supabase_done and supabase_is_configured():
     # Fecha de última actualización del riego (para mostrar "cuán actualizado está")
     if "riego_sync" in _res:
         st.session_state["irrigation_synced_at"] = _r("riego_sync")[0]
+    if "fin_tratamientos" in _res and _r("fin_tratamientos")[0]:
+        st.session_state["fin_tratamientos_md"] = _r("fin_tratamientos")[0]
 
     # Carpocapsa (capturas, biofix y daños)
     if "carpocapsa" in _res:
@@ -27285,12 +27468,13 @@ def daily_treatment_decision(history_df, activities_df, risk_df, persistence_day
         history_df, activities_df, risk_df, persistence_days,
         st.session_state.get("fungicide_catalog_df"),
         tuple(campos) if campos is not None else None,
-        fenologia_fases_por_campo())
+        fenologia_fases_por_campo(),
+        fin_tratamientos_fecha())
 
 
 @st.cache_data(ttl=900, max_entries=12, show_spinner=False)
 def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persistence_days,
-                                     fung_df, campos=None, fases_campo=None):
+                                     fung_df, campos=None, fases_campo=None, fin_trat=None):
     """
     Para cada campo de la finca, calcula el estado de protección FUNGICIDA y
     la acción recomendada para hoy.
@@ -27305,6 +27489,9 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
     """
     today = pd.Timestamp.now().normalize()
     rows  = []
+    # Último día de tratamientos: pasado ese día no se pide tratar (ver FIN_TRATAMIENTOS_*).
+    _fuera_temporada = bool(fin_trat is not None and today > pd.Timestamp(fin_trat).normalize())
+    _fin_trat_txt = pd.Timestamp(fin_trat).strftime("%d/%m") if fin_trat is not None else ""
     # Fase de cada campo (fenología registrada del usuario; literatura donde no haya).
     _fases_map = {r[0]: r[1:] for r in (fases_campo or ())}
     _modo_lit, _fase_lit = fenologia_modo_hoy(today)   # respaldo y referencia de la finca
@@ -27616,7 +27803,14 @@ def _daily_treatment_decision_cached(history_df, activities_df, risk_df, persist
         # Mismo criterio para Decisiones y Sanidad. El peso cambia con la fase:
         _RED, _ORA, _YEL, _GRN = "#ffcdd2", "#ffe0b2", "#fff9c4", "#f1f8f1"
 
-        if _modo == "reposo":
+        if _fuera_temporada:
+            # Pasado el último día de tratamientos (Configuración, 7/09 por defecto): la app
+            # NO pide tratar, pero el riesgo y los eventos de las columnas siguen calculados.
+            priority = 5
+            action = f"🔵 Fuera de temporada (desde el {_fin_trat_txt}) — no se trata"
+            row_bg = "#e3f2fd"
+
+        elif _modo == "reposo":
             # Fuera de campaña fúngica (invierno / tras cosecha): sin decisión.
             priority = 4; action = "🟢 Fuera de campaña"; row_bg = _GRN
 
@@ -33110,9 +33304,14 @@ def render_decisiones_movil():
                 ("🟠 Sin cobertura", int((_dd["_priority"] == 2).sum())),
                 ("🟡 Revisar", int((_dd["_priority"] == 3).sum())),
                 ("🟢 OK", int((_dd["_priority"] == 4).sum())),
-            ]), unsafe_allow_html=True)
+            ] + ([("🔵 Fuera de temporada", int((_dd["_priority"] == 5).sum()))]
+                 if int((_dd["_priority"] == 5).sum()) else [])), unsafe_allow_html=True)
+            if int((_dd["_priority"] == 5).sum()):
+                st.caption(f"Pasado el **{fin_tratamientos_fecha():%d/%m}** (último día de "
+                           f"tratamientos, editable en Configuración) la app no pide tratar. "
+                           f"El riesgo y los eventos se siguen midiendo para ver si los modelos aciertan.")
 
-            _colores = {1: "#c62828", 2: "#ef6c00", 3: "#f9a825", 4: "#2e7d32"}
+            _colores = {1: "#c62828", 2: "#ef6c00", 3: "#f9a825", 4: "#2e7d32", 5: "#1565c0"}
             _tarjetas, _ok = [], []
             _grupos = {}
             for _, r in _dd.iterrows():
@@ -33294,6 +33493,19 @@ def render_decisiones_panel():
             "ya no rescata la infección). La previsión solo avisa.\n"
             "- **Octubre a marzo → reposo**, sin avisos. Si registras la **cosecha** de un campo, su "
             "campaña se cierra en esa fecha.\n\n"
+            f"**Último día de tratamientos: {fin_tratamientos_fecha():%d/%m}** (editable en "
+            "⚙️ Configuración). Pasado ese día, en vez de «tratar» sale **🔵 Fuera de temporada**, "
+            "y al lado se siguen viendo los eventos, los que se colaron sin cobertura, la "
+            "previsión Mills y el riesgo principal: la app **sigue midiendo** para comprobar si "
+            "los modelos aciertan. Igual en carpocapsa y en el informe semanal.\n\n"
+            "**Por qué se puede parar ahí:** en moteado, «si el moteado primario está controlado, "
+            "no hace falta seguir aplicando fungicida el resto de la temporada», y las infecciones "
+            "tardías dejan manchas que aparecen **en conservación** (*pinpoint scab*; New England "
+            "Tree Fruit Management Guide · UMass). En carpocapsa, de la 3ª generación «la mayoría "
+            "no completa su desarrollo antes de que llegue el invierno o se coseche la fruta», y "
+            "el riesgo de tratar tan tarde son los huevos que eclosionan en los cajones, propio de "
+            "fruta de mesa (MSU Extension · UC IPM · Utah State University). En sidra, que se "
+            "prensa, ninguna de las dos cosas cuenta.\n\n"
             f"**Zonas:** desde el {ZONA_RIO_MANDA_DESDE:%d/%m/%Y} los campos de la {ZONA_RIO} (🌊) "
             "se calculan con la temperatura, la humedad y la lluvia de su sensor; la hoja mojada es "
             "la de la Nave para todos.\n\n"
@@ -33464,7 +33676,15 @@ def render_decisiones_panel():
         _n_yellow = (_dec_df["_priority"] == 3).sum()
         _n_green  = (_dec_df["_priority"] == 4).sum()
 
-        _s1, _s2, _s3, _s4 = st.columns(4)
+        _n_fuera = int((_dec_df["_priority"] == 5).sum())
+        if _n_fuera:
+            _s1, _s2, _s3, _s4, _s5 = st.columns(5)
+            _s5.metric("🔵 Fuera de temporada", _n_fuera,
+                       help=f"Pasado el último día de tratamientos "
+                            f"({fin_tratamientos_fecha():%d/%m}, editable en Configuración) la app "
+                            f"no pide tratar; el riesgo y los eventos se siguen midiendo.")
+        else:
+            _s1, _s2, _s3, _s4 = st.columns(4)
         _s1.metric("🔴 Tratar hoy",         _n_red)
         _s2.metric("🟠 Sin cobertura",       _n_orange)
         _s3.metric("🟡 Revisar",             _n_yellow)
