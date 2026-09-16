@@ -10586,7 +10586,7 @@ def render_frio_movil(history):
                         _tarj.append(_carpo_movil_tarjeta(
                             f"🌸 {_h.escape(str(b['variedad']))} · "
                             + (f"{pd.Timestamp(_flor):%d/%m}" if pd.notna(_flor)
-                               else ("aún no" if b["frio_cumplido"] else "—")),
+                               else ("sin fecha" if b["frio_cumplido"] else "—")),
                             [("Sale de reposo el <b>" + f"{pd.Timestamp(_sale):%d/%m}" + "</b>")
                              if pd.notna(_sale) else "❄️ No cumple su frío",
                              f"<span style='color:#555'>Pide {b['cp_req']:.0f}{b['cp_mark']} CP de frío y "
@@ -10595,7 +10595,9 @@ def render_frio_movil(history):
                     st.markdown("".join(_tarj), unsafe_allow_html=True)
                     st.caption("Cada variedad sale del reposo al cumplir SU frío y desde ahí acumula SU "
                                "calor (GDH, Anderson 1986) hasta florecer. Requerimientos: SERIDA/Delgado "
-                               "2021; **†** = aproximado; **\\*** = sin dato (máximo conocido). Orientativo.")
+                               "2021; **†** = aproximado; **\\*** = sin dato (máximo conocido). **Sin "
+                               "fecha** = no cubre su calor en lo contado: el calor se cuenta hasta el "
+                               "inicio del cuajado (22/05). Orientativo.")
 
     st.divider()
     if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="frio_movil_completa",
