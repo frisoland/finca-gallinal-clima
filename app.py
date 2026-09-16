@@ -35602,7 +35602,7 @@ if not _HEADLESS:
         else:
             cold_tab(history)
     elif _page == "fenologia":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + formulario + «Ver pantalla completa» (aprobado 16/09/2026)
             render_fenologia_movil(history, soil_type, hoja_threshold)
         else:
             phenology_tab(history, soil_type, hoja_threshold)
@@ -35622,7 +35622,7 @@ if not _HEADLESS:
         else:
             carpocapsa_tab(history)
     elif _page == "resultado":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + formulario + «Ver pantalla completa» (aprobado 16/09/2026)
             render_resultado_movil()
         else:
             resultado_sanitario_tab()
