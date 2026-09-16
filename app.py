@@ -35150,8 +35150,9 @@ if not _HEADLESS:
     # y antes se caía siempre en el Panel de hoy («me expulsa»). Ahora la sesión nueva lee
     # la pantalla de la dirección y vuelve a donde estabas.
     # Menú principal del móvil (idea del usuario, 16/09/2026): al abrir, todos los apartados en
-    # botones; dentro de cada uno, «⬅️ Menú principal». PRUEBA: solo con ?nuevo=1.
-    _MENU_MOVIL = IS_MOBILE and str(_query_param("nuevo") or "") == "1"
+    # botones; dentro de cada uno, «⬅️ Menú principal». Aprobado y fijo desde el 16/09/2026
+    # (la fila de 5 accesos + «Más secciones» de _render_mobile_nav_botones queda sin uso).
+    _MENU_MOVIL = IS_MOBILE
     if "nav_page" not in st.session_state:
         _p_url = str(_query_param("p") or "").strip()
         # Sin pantalla en la dirección: en el móvil abre el Informe semanal (lo que el
