@@ -34883,19 +34883,19 @@ if not _HEADLESS:
     if _page == "hoy":
         home_today_tab(history, soil_type, hoja_threshold)
     elif _page == "dashboard":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_clima_movil(history, soil_type, hoja_threshold)
         else:
             dashboard_tab(history, soil_type, hoja_threshold)
     elif _page == "sencrop":
         import_panel()
     elif _page == "analisis":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_analisis_movil(history, soil_type, hoja_threshold)
         else:
             analysis_tab(history, soil_type, hoja_threshold)
     elif _page == "comparador":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_comparador_movil(history, soil_type, hoja_threshold)
         else:
             comparator_tab(history, soil_type, hoja_threshold)
@@ -34920,12 +34920,12 @@ if not _HEADLESS:
     elif _page == "riego":
         irrigation_tab(history, soil_type, hoja_threshold)
     elif _page == "campos":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_campos_movil()
         else:
             fields_tab()
     elif _page == "agroptima":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_agroptima_movil()
         else:
             activities_tab()
