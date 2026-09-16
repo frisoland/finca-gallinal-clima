@@ -35320,7 +35320,7 @@ if not _HEADLESS:
         else:
             comparator_tab(history, soil_type, hoja_threshold)
     elif _page == "frio":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_frio_movil(history)
         else:
             cold_tab(history)
@@ -35344,7 +35344,7 @@ if not _HEADLESS:
     elif _page == "resultado":
         resultado_sanitario_tab()
     elif _page == "riego":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_riego_movil(history, soil_type, hoja_threshold)
         else:
             irrigation_tab(history, soil_type, hoja_threshold)
