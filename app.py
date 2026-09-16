@@ -16191,6 +16191,139 @@ def clima_del_campo_fenologia(campo, history):
                 f"antes de esa fecha (y la hoja mojada, siempre) de la Nave.")
 
 
+def _fenologia_guardar_fase(campo, variedad, anio, fase, inicio, fin, obs):
+    """Escribe UNA fase (campo, variedad, año) en el calendario fenológico y lo sube a Supabase.
+    Antes baja el calendario guardado, para no pisar con la copia de esta sesión lo que se haya
+    guardado desde otro aparato. Si ya había fila, cambia la PRIMERA (la que usan los cálculos);
+    si no, la añade. Devuelve (ok, mensaje)."""
+    _nube = None
+    if supabase_is_configured():
+        _nube, _ = load_phenology_from_supabase()
+    _base = (_nube if (_nube is not None and not _nube.empty)
+             else st.session_state.get("phenology_df", pd.DataFrame()))
+    master = normalize_phenology_df(_base if _base is not None else pd.DataFrame()).reset_index(drop=True)
+    _ini = pd.Timestamp(inicio).strftime("%Y-%m-%d")
+    _fin = pd.Timestamp(fin).strftime("%Y-%m-%d")
+    _m = ((master["Campo"].str.strip() == str(campo).strip())
+          & (master["Variedad"].str.strip() == str(variedad).strip())
+          & (master["Año"] == int(anio)).fillna(False).astype(bool)
+          & (master["Fase"].str.strip().str.lower() == str(fase).strip().lower()))
+    if _m.any():
+        _i = master.index[_m][0]
+        master.at[_i, "Inicio"], master.at[_i, "Fin"] = _ini, _fin
+        master.at[_i, "Observaciones"] = "" if obs is None else str(obs)
+    else:
+        master = pd.concat([master, pd.DataFrame([{
+            "Campo": campo, "Variedad": variedad, "Año": int(anio), "Fase": fase,
+            "Inicio": _ini, "Fin": _fin, "Observaciones": "" if obs is None else str(obs)}])],
+            ignore_index=True)
+    master = normalize_phenology_df(master).reset_index(drop=True)
+    st.session_state.phenology_df = master
+    if "phenology_editor_version" in st.session_state:
+        st.session_state.phenology_editor_version += 1
+    if not supabase_is_configured():
+        return False, "Supabase no configurado: solo queda en esta sesión."
+    return upload_phenology_to_supabase(master)
+
+
+def render_fenologia_movil(history, soil_type, hoja_threshold):
+    """Fenología en el MÓVIL: anotar una fase («Empieza hoy» o fechas a mano) y la fase de hoy de
+    cada variedad. La fase de hoy sale de `fenologia_fase_variedad`, la misma que usan Decisiones
+    y los avisos; lo anotado se guarda en el calendario del ordenador."""
+    import html as _h
+    st.subheader("🌱 Fenología")
+    _hoy = pd.Timestamp.now().normalize()
+    _anio_hoy = int(_hoy.year)
+    _campos = {fr["Campo"]: [v.strip() for v in str(fr.get("Variedades actuales", "")).split(",") if v.strip()]
+               for fr in FIELDS_BASE_ROWS}
+    _campos = {c: vs for c, vs in _campos.items() if vs}
+
+    st.markdown("#### ✏️ Anotar fase")
+    _msg = st.session_state.pop("mob_feno_msg", None)
+    if _msg:
+        (st.success if _msg[0] else st.error)(_msg[1])
+    if not _campos:
+        st.info("No hay campos con variedades (item Campos).")
+    else:
+        _c = st.selectbox("Campo", list(_campos), key="mob_feno_campo")
+        _v = st.selectbox("Variedad", _campos[_c], key=f"mob_feno_var_{_c}")
+        _a = st.selectbox("Año", [_anio_hoy, _anio_hoy - 1], key="mob_feno_anio")
+        # Por defecto, la fase en la que está hoy esa variedad
+        _pid = fenologia_fase_variedad(_c, _v, _hoy).get("pid")
+        _nombre = _PHENO_NAME_BY_GALLINAL.get(_pid, "")
+        _fases_l = [f.lower() for f in PHENOLOGY_PHASES]
+        _fase = st.selectbox("Fase", PHENOLOGY_PHASES,
+                             index=_fases_l.index(_nombre) if _nombre in _fases_l else 0,
+                             key=f"mob_feno_fase_{_c}_{_v}")
+        _pl = {r["Fase"].lower(): r for r in default_phenology_rows_for_campo_variedad_year(_c, _v, _a)}
+        _plant = _pl.get(_fase.lower(), {})
+        _ph = normalize_phenology_df(st.session_state.get("phenology_df", pd.DataFrame()))
+        _fila = _ph[(_ph["Campo"].str.strip() == _c) & (_ph["Variedad"].str.strip() == _v)
+                    & (_ph["Año"] == int(_a)).fillna(False).astype(bool)
+                    & (_ph["Fase"].str.strip().str.lower() == _fase.lower())]
+        _ini0 = _fila["Inicio"].iloc[0] if not _fila.empty else None
+        _fin0 = _fila["Fin"].iloc[0] if not _fila.empty else None
+        _obs0 = str(_fila["Observaciones"].iloc[0]) if not _fila.empty else ""
+        _anotada = (_ini0 is not None and pd.notna(_ini0) and pd.notna(_fin0)
+                    and (str(_ini0), str(_fin0)) != (str(_plant.get("Inicio")), str(_plant.get("Fin"))))
+        if not (_ini0 is not None and pd.notna(_ini0)):
+            _ini0 = _plant.get("Inicio")
+        if not (_fin0 is not None and pd.notna(_fin0)):
+            _fin0 = _plant.get("Fin")
+        _ti, _tf = pd.Timestamp(_ini0), pd.Timestamp(_fin0)
+        st.caption(f"Ahora: **{_ti:%d/%m/%Y} → {_tf:%d/%m/%Y}** · "
+                   + ("✍️ anotada por ti" if _anotada else "📄 plantilla, sin anotar (los cálculos usan la literatura)"))
+
+        if st.button(f"▶️ {_fase}: empieza hoy ({_hoy:%d/%m})", type="primary", use_container_width=True,
+                     key="mob_feno_empieza_hoy", disabled=int(_a) != _anio_hoy):
+            _fin_n = _tf if _tf >= _hoy else _hoy
+            _ok, _txt = _fenologia_guardar_fase(_c, _v, _a, _fase, _hoy, _fin_n, _obs0)
+            _aviso = ("" if _tf >= _hoy else
+                      " El fin que tenía era anterior a hoy, así que lo he puesto hoy: anota el fin cuando acabe.")
+            st.session_state["mob_feno_msg"] = (
+                _ok, (f"✅ {_c} · {_v}: {_fase.lower()} desde el {_hoy:%d/%m/%Y} "
+                      f"hasta el {_fin_n:%d/%m/%Y}.{_aviso}") if _ok else f"❌ {_txt}")
+            st.rerun()
+        if int(_a) != _anio_hoy:
+            st.caption("«Empieza hoy» solo vale para el año actual; para otros años, pon las fechas abajo.")
+
+        with st.form(key=f"mob_feno_form_{_c}_{_v}_{_a}_{_fase}"):
+            _fi = st.date_input("Inicio", value=_ti.date(), format="DD/MM/YYYY")
+            _ff = st.date_input("Fin", value=_tf.date(), format="DD/MM/YYYY")
+            _fo = st.text_input("Observaciones", value=_obs0)
+            if st.form_submit_button("💾 Guardar fechas", use_container_width=True):
+                if _ff < _fi:
+                    st.error("El fin no puede ser anterior al inicio.")
+                else:
+                    _ok, _txt = _fenologia_guardar_fase(_c, _v, _a, _fase, _fi, _ff, _fo)
+                    st.session_state["mob_feno_msg"] = (
+                        _ok, (f"✅ {_c} · {_v}: {_fase.lower()} del {pd.Timestamp(_fi):%d/%m/%Y} "
+                              f"al {pd.Timestamp(_ff):%d/%m/%Y}.") if _ok else f"❌ {_txt}")
+                    st.rerun()
+        st.caption("Solo se cambia la fase elegida; las demás se quedan como están. Se guarda en el "
+                   "mismo calendario que la pantalla del ordenador.")
+
+        st.markdown(f"#### 📍 Fase de hoy ({_hoy:%d/%m/%Y})")
+        st.caption("Manda lo que anotas; lo que no, sale de la literatura encajada con lo anotado "
+                   "(el mismo cálculo que usan Decisiones y los avisos).")
+        _origen = {"registro": "✍️ anotada", "literatura": "📚 literatura",
+                   "literatura+registro": "📚 literatura ajustada a lo anotado"}
+        _tarj = []
+        for _campo, _vars in _campos.items():
+            _lin = []
+            for _var in _vars:
+                _r = fenologia_fase_variedad(_campo, _var, _hoy)
+                _lin.append(f"{_h.escape(_var)}: <b>{_h.escape(str(_r['fase']))}</b> "
+                            f"<span style='color:#777'>· {_origen.get(_r['origen'], _h.escape(str(_r['origen'])))}</span>")
+            _tarj.append(_carpo_movil_tarjeta(_h.escape(_campo), _lin, "#558b2f"))
+        st.markdown("".join(_tarj), unsafe_allow_html=True)
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="feno_movil_completa",
+                 help="Guía de fases, plantilla, tabla del calendario y análisis fenológico."):
+        phenology_tab(history, soil_type, hoja_threshold)
+
+
 def phenology_tab(history, soil_type, hoja_threshold):
     st.subheader("Fenología por campo y variedad")
     st.write(
@@ -23677,6 +23810,150 @@ def resultado_sanitario_base_rows(year):
                 "Fungicidas (nº)": n, "Detalle tratamientos": det,
             })
     return pd.DataFrame(rows)
+
+
+def _resultado_guardar(anio, campo, variedad, valores):
+    """Escribe la valoración de UN campo y variedad en el resultado sanitario y lo sube a Supabase.
+    Antes baja lo guardado, para no pisar con la copia de esta sesión lo guardado desde otro
+    aparato. Mismo formato que la tabla del ordenador. Devuelve (ok, mensaje)."""
+    _nube = None
+    if supabase_is_configured():
+        _nube, _ = load_resultado_sanitario_from_supabase()
+    master = normalize_resultado_sanitario_df(
+        _nube if _nube is not None else st.session_state.get("resultado_sanitario_df", pd.DataFrame()))
+    mask = (master["Año"] == int(anio)) & (master["Campo"] == campo) & (master["Variedad"] == variedad)
+    if not mask.any():
+        _nr = {"Año": int(anio), "Campo": campo, "Variedad": variedad}
+        _nr.update({c: "" for c in RS_EDIT_COLS})
+        master = pd.concat([master, pd.DataFrame([_nr])], ignore_index=True)
+        mask = (master["Año"] == int(anio)) & (master["Campo"] == campo) & (master["Variedad"] == variedad)
+    for col, val in valores.items():
+        if col in RS_EDIT_COLS:
+            master.loc[mask, col] = "" if val is None else str(val)
+    master = normalize_resultado_sanitario_df(master)
+    st.session_state.resultado_sanitario_df = master
+    if not supabase_is_configured():
+        return False, "Supabase no configurado: solo queda en esta sesión."
+    return upload_resultado_sanitario_to_supabase(master)
+
+
+def render_resultado_movil():
+    """Resultado sanitario en el MÓVIL: cuántos campos y variedades llevas valorados, formulario
+    para valorar uno (las mismas casillas que la tabla del ordenador) y tarjetas de lo valorado.
+    Los fungicidas por variedad salen de `resultado_sanitario_base_rows`, como en el ordenador."""
+    import html as _h
+    st.subheader("🩺 Resultado sanitario")
+    if "resultado_sanitario_df" not in st.session_state:
+        _df, _ = load_resultado_sanitario_from_supabase()
+        st.session_state.resultado_sanitario_df = normalize_resultado_sanitario_df(
+            _df if _df is not None else pd.DataFrame())
+    _saved_years = pd.to_numeric(
+        st.session_state.resultado_sanitario_df.get("Año", pd.Series(dtype=int)),
+        errors="coerce").dropna().astype(int).tolist()
+    _years = sorted({2026, 2025, 2024} | set(_saved_years), reverse=True)
+    year = st.selectbox("Campaña", _years, index=_years.index(2026) if 2026 in _years else 0,
+                        key="mob_rs_year")
+    base = resultado_sanitario_base_rows(year)
+    if base.empty:
+        st.info("No hay campos/variedades configurados (item Campos).")
+    else:
+        saved = normalize_resultado_sanitario_df(st.session_state.resultado_sanitario_df)
+        saved_y = saved[saved["Año"] == int(year)]
+        _val = {(r["Campo"], r["Variedad"]): r for _, r in saved_y.iterrows()
+                if any(str(r[c]).strip() for c in RS_EDIT_COLS)}
+        _est = [str(r["Estado general"]) for r in _val.values()]
+        st.caption("**Lo esencial** · tu valoración visual antes de la cosecha, cruzada con los "
+                   "fungicidas del año de cada variedad (Agroptima).")
+        st.markdown(_movil_cifras_html([
+            ("📝 Valorados", f"{len(_val)} de {len(base)}"), ("🟢 Bueno", _est.count("Bueno")),
+            ("🟠 Regular", _est.count("Regular")), ("🔴 Malo", _est.count("Malo"))]),
+            unsafe_allow_html=True)
+
+        st.markdown("#### ✏️ Valorar")
+        _msg = st.session_state.pop("mob_rs_msg", None)
+        if _msg:
+            (st.success if _msg[0] else st.error)(_msg[1])
+        _campos = list(dict.fromkeys(base["Campo"]))
+        _c = st.selectbox("Campo", _campos, key="mob_rs_campo")
+        _vars = base.loc[base["Campo"] == _c, "Variedad"].tolist()
+        _v = st.selectbox("Variedad", _vars, key=f"mob_rs_var_{_c}")
+        _b = base[(base["Campo"] == _c) & (base["Variedad"] == _v)].iloc[0]
+        st.caption(f"💊 Fungicidas {year}: **{int(_b['Fungicidas (nº)'])}** · {_b['Detalle tratamientos']}")
+        _prev = _val.get((_c, _v))
+        _g = lambda col: (str(_prev[col]).strip() if _prev is not None else "")
+        _sev = ["", "0", "1", "2", "3"]
+        _sev_txt = {"": "—", "0": "0 · nada", "1": "1 · leve", "2": "2 · moderado", "3": "3 · severo"}
+        _defo = ["", "Nula", "Leve", "Moderada", "Alta", "Severa"]
+        _estados = ["", "Bueno", "Regular", "Malo"]
+        _idx = lambda ops, v: ops.index(v) if v in ops else 0
+        if _prev is not None:
+            st.caption("Ya estaba valorado: salen sus valores para corregirlos.")
+        with st.form(key=f"mob_rs_form_{year}_{_c}_{_v}"):
+            _f_defo = st.selectbox("Defoliación (pérdida de hoja antes de cosecha)", _defo,
+                                   index=_idx(_defo, _g("Defoliación")),
+                                   format_func=lambda x: x or "—")
+            _f_mh = st.selectbox("Moteado hoja", _sev, index=_idx(_sev, _g("Moteado hoja")),
+                                 format_func=_sev_txt.get)
+            _f_mf = st.selectbox("Moteado fruto", _sev, index=_idx(_sev, _g("Moteado fruto")),
+                                 format_func=_sev_txt.get)
+            _pct0 = pd.to_numeric(_g("% fruta manchada"), errors="coerce")
+            _f_pct = st.number_input("% fruta manchada", min_value=0, max_value=100, step=1,
+                                     value=None if pd.isna(_pct0) else int(round(_pct0)))
+            _f_mon = st.selectbox("Monilia (podredumbre de fruto)", _sev, index=_idx(_sev, _g("Monilia")),
+                                  format_func=_sev_txt.get)
+            _f_oid = st.selectbox("Oídio", _sev, index=_idx(_sev, _g("Oídio")), format_func=_sev_txt.get)
+            _f_est = st.selectbox("Estado general", _estados, index=_idx(_estados, _g("Estado general")),
+                                  format_func=lambda x: x or "—")
+            _f_obs = st.text_area("Observaciones", value=_g("Observaciones"), height=80)
+            _fecha0 = pd.to_datetime(_g("Fecha valoración"), errors="coerce")
+            _f_fecha = st.date_input("Fecha de valoración",
+                                     value=(pd.Timestamp.now() if pd.isna(_fecha0) else _fecha0).date(),
+                                     format="DD/MM/YYYY")
+            if st.form_submit_button("💾 Guardar valoración", type="primary", use_container_width=True):
+                _ok, _txt = _resultado_guardar(year, _c, _v, {
+                    "Defoliación": _f_defo, "Moteado hoja": _f_mh, "Moteado fruto": _f_mf,
+                    "% fruta manchada": "" if _f_pct is None else int(_f_pct),
+                    "Monilia": _f_mon, "Oídio": _f_oid, "Estado general": _f_est,
+                    "Observaciones": _f_obs, "Fecha valoración": pd.Timestamp(_f_fecha).strftime("%Y-%m-%d")})
+                st.session_state["mob_rs_msg"] = (
+                    _ok, f"✅ Guardada la valoración de {_c} · {_v} ({year})." if _ok else f"❌ {_txt}")
+                st.rerun()
+        st.caption("Escalas: **0** nada · **1** leve · **2** moderado · **3** severo. Se guarda en el "
+                   "mismo fichero que la tabla del ordenador.")
+
+        st.markdown(f"#### 📋 Valorados en {year}")
+        if not _val:
+            st.caption("Aún no hay ninguno valorado esta campaña.")
+        else:
+            _col = {"Bueno": "#2e7d32", "Regular": "#ef6c00", "Malo": "#c62828"}
+            _tarj = []
+            for _, _bb in base.iterrows():
+                r = _val.get((_bb["Campo"], _bb["Variedad"]))
+                if r is None:
+                    continue
+                _e = str(r["Estado general"]).strip()
+                _t = lambda col: _h.escape(str(r[col]).strip() or "—")
+                _lin = [f"💊 {int(_bb['Fungicidas (nº)'])} fungicidas · estado <b>{_t('Estado general')}</b>",
+                        f"🍄 Moteado hoja <b>{_t('Moteado hoja')}</b> · fruto <b>{_t('Moteado fruto')}</b> · "
+                        f"🍑 Monilia <b>{_t('Monilia')}</b> · Oídio <b>{_t('Oídio')}</b>",
+                        f"Fruta manchada <b>{_t('% fruta manchada')}</b> % · defoliación <b>{_t('Defoliación')}</b>"]
+                if str(r["Observaciones"]).strip():
+                    _lin.append(f"<span style='color:#555'>{_t('Observaciones')}</span>")
+                _fv = pd.to_datetime(r["Fecha valoración"], errors="coerce")
+                if pd.notna(_fv):
+                    _lin.append(f"<span style='color:#777'>Valorado el {_fv:%d/%m/%Y}</span>")
+                _tarj.append(_carpo_movil_tarjeta(f"{_h.escape(_bb['Campo'])} · {_h.escape(_bb['Variedad'])}",
+                                                  _lin, _col.get(_e, "#9e9e9e")))
+            st.markdown("".join(_tarj), unsafe_allow_html=True)
+            _sin = [f"{b['Campo']} · {b['Variedad']}" for _, b in base.iterrows()
+                    if (b["Campo"], b["Variedad"]) not in _val]
+            if _sin:
+                st.caption("Sin valorar: " + ", ".join(_sin) + ".")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="rs_movil_completa",
+                 help="Tabla completa, gráfica de infecciones frente a tratamientos y subida de plantilla."):
+        resultado_sanitario_tab()
 
 
 def resultado_sanitario_tab():
@@ -35325,7 +35602,10 @@ if not _HEADLESS:
         else:
             cold_tab(history)
     elif _page == "fenologia":
-        phenology_tab(history, soil_type, hoja_threshold)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_fenologia_movil(history, soil_type, hoja_threshold)
+        else:
+            phenology_tab(history, soil_type, hoja_threshold)
     elif _page == "sanidad":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_sanidad_movil(history, soil_type, hoja_threshold)
@@ -35342,7 +35622,10 @@ if not _HEADLESS:
         else:
             carpocapsa_tab(history)
     elif _page == "resultado":
-        resultado_sanitario_tab()
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_resultado_movil()
+        else:
+            resultado_sanitario_tab()
     elif _page == "riego":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_riego_movil(history, soil_type, hoja_threshold)
