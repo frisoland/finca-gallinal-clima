@@ -1,3 +1,6 @@
 _sticky_test/
 _prodtest/
 _vectest/
+
+# Claude Code: config personal (rutas locales, no debe subirse)
+.claude/settings.local.json

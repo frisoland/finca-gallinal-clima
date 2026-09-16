@@ -35065,7 +35065,7 @@ if not _HEADLESS:
         pass
 
     if _page == "hoy":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_hoy_movil(history, soil_type, hoja_threshold)
         else:
             home_today_tab(history, soil_type, hoja_threshold)
@@ -35091,7 +35091,7 @@ if not _HEADLESS:
     elif _page == "fenologia":
         phenology_tab(history, soil_type, hoja_threshold)
     elif _page == "sanidad":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_sanidad_movil(history, soil_type, hoja_threshold)
         else:
             health_tab(history, soil_type, hoja_threshold)
