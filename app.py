@@ -9488,7 +9488,9 @@ def render_sanidad_movil(history, soil_type, hoja_threshold):
                          + ("" if pd.isna(_vm) else f" (valor {int(round(_vm * 100))})"),
                          f"🍑 Monilia: <b>{_h.escape(_rn)}</b>"
                          + ("" if pd.isna(_vn) else f" (valor {int(round(_vn * 100))})")],
-                        _nivel_col(_rm + _rn)))
+                        (lambda _mx: "#c62828" if _mx >= 1 else "#ef6c00" if _mx >= 0.5
+                         else "#f9a825" if _mx >= 0.25 else "#2e7d32")(
+                            max([x for x in (_vm, _vn) if pd.notna(x)] or [0]))))
                 st.markdown("".join(_tarj), unsafe_allow_html=True)
                 st.caption("Valor: 25 ligero · 50 moderado · 100 infección (moteado) o tiempo muy "
                            "favorable (monilia). El porqué, en 📖 Por qué hay infección (pantalla completa).")
