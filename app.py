@@ -9598,6 +9598,275 @@ def _render_dashboard_zona_rio(history, soil_type, hoja_threshold):
         st.dataframe(_summary_v, use_container_width=True, hide_index=True)
 
 
+_MOVIL_RESUMEN_CLAVES = [
+    ("Temp. media ºC", "🌡️ Temp. media", " ºC", 1),
+    ("Temp. mín ºC", "🔹 Mínima", " ºC", 1),
+    ("Temp. máx ºC", "🔺 Máxima", " ºC", 1),
+    ("HR media %", "💧 Humedad", " %", 1),
+    ("Lluvia total mm", "🌧️ Lluvia", " mm", 1),
+    ("Horas hoja húmeda", "🍃 Horas hoja mojada", "", 0),
+    ("Periodo húmedo máximo h", "⏱️ Periodo húmedo máx.", " h", 0),
+    ("Horas favorables oídio", "🌫️ Horas favorables oídio", "", 0),
+]
+
+
+def _movil_resumen_periodo_html(resumen):
+    """Cuadrícula con las cifras principales de un resumen de periodo (`period_summary`)."""
+    if resumen is None or resumen.empty:
+        return ""
+    _r = resumen.iloc[0]
+    _pares = []
+    for _k, _et, _suf, _dec in _MOVIL_RESUMEN_CLAVES:
+        if _k not in resumen.columns:
+            continue
+        _v = pd.to_numeric(_r.get(_k), errors="coerce")
+        _pares.append((_et, "—" if pd.isna(_v) else f"{_fmt_es_number(_v, _dec)}{_suf}"))
+    return _movil_cifras_html(_pares)
+
+
+def render_clima_movil(history, soil_type, hoja_threshold):
+    """Clima en el MÓVIL: cómo está ahora y el resumen de los últimos 30 días, por zona.
+    Usa las mismas funciones que el Dashboard (`period_summary` sobre el histórico de la zona)."""
+    import html as _h
+    if history is None or history.empty:
+        st.info("Carga primero el histórico climático.")
+    else:
+        _zona = st.radio("Zona", [ZONA_NAVE, ZONA_RIO], horizontal=True, key="mob_clima_zona")
+        _hz = historico_para_ver(_zona, history)
+        if _hz is None or _hz.empty:
+            st.info(f"Todavía no hay datos del sensor de la {ZONA_RIO}.")
+        else:
+            _hz = _hz.sort_values("fecha_hora")
+            # Ultima hora CON TEMPERATURA: la ultima fila del historico puede venir sin ella
+            # (el sensor manda algunos campos con retraso) y la tarjeta salia con guiones.
+            _con_t = _hz[pd.to_numeric(_hz.get("temp_media"), errors="coerce").notna()]
+            _ult = (_con_t.iloc[-1] if not _con_t.empty else _hz.iloc[-1])
+            _fin = pd.Timestamp(_ult["fecha_hora"])
+            st.caption(f"**Lo esencial** · {_zona} · datos hasta **{_fin:%d/%m %H:%M}** "
+                       f"({len(_hz)} registros horarios).")
+            _dia = _hz[pd.to_datetime(_hz["fecha_hora"]).dt.normalize() == _fin.normalize()]
+            _lluvia_dia = float(pd.to_numeric(_dia.get("lluvia_mm"), errors="coerce").fillna(0).sum())
+            _moj_dia = int((pd.to_numeric(_dia.get("humectacion_hoja"), errors="coerce").fillna(0)
+                            >= LEAF_WETNESS["min_minutes_to_start_event"]).sum())
+            _v = lambda c, d=1: ("—" if pd.isna(pd.to_numeric(_ult.get(c), errors="coerce"))
+                                 else _fmt_es_number(pd.to_numeric(_ult.get(c), errors="coerce"), d))
+            st.markdown(_movil_cifras_html([
+                ("🌡️ Temperatura", f"{_v('temp_media')} ºC"),
+                ("💧 Humedad", f"{_v('hr_media')} %"),
+                ("🌧️ Lluvia de hoy", f"{_fmt_es_number(_lluvia_dia, 1)} mm"),
+                ("🍃 Horas hoja mojada hoy", _moj_dia),
+            ]), unsafe_allow_html=True)
+
+            st.markdown("#### 📊 Últimos 30 días")
+            _ini = _fin - pd.Timedelta(days=30)
+            _tramo = _hz[(_hz["fecha_hora"] >= _ini) & (_hz["fecha_hora"] <= _fin)].copy()
+            if _tramo.empty:
+                st.caption("Sin datos en los últimos 30 días.")
+            else:
+                _tramo = add_risk_columns(_tramo, hoja_humeda_threshold=hoja_threshold)
+                st.markdown(_movil_resumen_periodo_html(
+                    period_summary(_tramo, soil_type, _ini, _fin)), unsafe_allow_html=True)
+                st.caption("Las mismas cuentas que el «Resumen últimos 30 días» del ordenador.")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="clima_movil_completa",
+                 help="Calidad del dato, descarga del histórico y el resumen completo."):
+        dashboard_tab(history, soil_type, hoja_threshold)
+
+
+def render_analisis_movil(history, soil_type, hoja_threshold):
+    """Análisis en el MÓVIL: eliges una ventana de días y sale el resumen del periodo con las
+    mismas cuentas del ordenador (`period_summary`), sin tablas anchas."""
+    if history is None or history.empty:
+        st.info("Carga primero el histórico climático.")
+    else:
+        _zona = st.radio("Zona", [ZONA_NAVE, ZONA_RIO], horizontal=True, key="mob_anal_zona")
+        _hz = historico_para_ver(_zona, history)
+        _opciones = {"7 días": 7, "30 días": 30, "90 días": 90, "Campaña (1/4 → hoy)": None}
+        _sel = st.radio("Periodo", list(_opciones), horizontal=True, key="mob_anal_periodo")
+        if _hz is None or _hz.empty:
+            st.info(f"Todavía no hay datos del sensor de la {ZONA_RIO}.")
+        else:
+            _fin = pd.Timestamp(_hz["fecha_hora"].max())
+            _dias = _opciones[_sel]
+            _ini = (_fin - pd.Timedelta(days=_dias) if _dias
+                    else pd.Timestamp(_fin.year, 4, 1))
+            if _ini > _fin:
+                _ini = pd.Timestamp(_fin.year - 1, 4, 1)
+            _tramo = _hz[(_hz["fecha_hora"] >= _ini) & (_hz["fecha_hora"] <= _fin)].copy()
+            st.caption(f"**Lo esencial** · {_zona} · del **{_ini:%d/%m/%Y}** al **{_fin:%d/%m/%Y}** "
+                       f"({len(_tramo)} registros horarios).")
+            if _tramo.empty:
+                st.warning("No hay datos en ese periodo.")
+            else:
+                _tramo = add_risk_columns(_tramo, hoja_humeda_threshold=hoja_threshold)
+                _res = period_summary(_tramo, soil_type, _ini, _fin)
+                st.markdown(_movil_resumen_periodo_html(_res), unsafe_allow_html=True)
+                _r = _res.iloc[0]
+                _extra = []
+                for _k, _et in (("Día más lluvioso", "Día más lluvioso"),
+                                ("Lluvia día más lluvioso mm", "Lluvia de ese día (mm)"),
+                                ("Momento más cálido", "Momento más cálido"),
+                                ("Momento más frío", "Momento más frío"),
+                                ("Ráfaga máxima", "Ráfaga máxima"),
+                                ("Dirección predominante", "Viento predominante")):
+                    if _k in _res.columns and pd.notna(_r.get(_k)) and str(_r.get(_k)).strip() not in ("", "—"):
+                        _v = _r.get(_k)
+                        _v = _fmt_es_number(_v, 1) if isinstance(_v, (int, float)) else str(_v)
+                        _extra.append(f"<b>{_et}:</b> {_v}")
+                if _extra:
+                    st.markdown(_carpo_movil_tarjeta("Extremos del periodo", _extra, "#1565c0"),
+                                unsafe_allow_html=True)
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="anal_movil_completa",
+                 help="Elegir fechas exactas, calidad de datos, resumen semanal y la lectura interpretada."):
+        analysis_tab(history, soil_type, hoja_threshold)
+
+
+def compare_months(history, years, month, soil_type, hoja_threshold):
+    """Compara el MES COMPLETO entre varios años. Mismas cuentas que `compare_month_weeks`
+    (add_risk_columns + period_summary), solo cambia el periodo: del día 1 al último del mes."""
+    import calendar
+    rows = []
+    for y in years:
+        _last = calendar.monthrange(int(y), int(month))[1]
+        start = pd.Timestamp(year=int(y), month=int(month), day=1, hour=0, minute=0)
+        end = pd.Timestamp(year=int(y), month=int(month), day=_last, hour=23, minute=59, second=59)
+        _etiqueta = f"{int(y)} · {MONTH_NAMES_ES[int(month)]}"
+        period = history[(history["fecha_hora"] >= start) & (history["fecha_hora"] <= end)].copy()
+        if period.empty:
+            rows.append({"Comparación": _etiqueta, "Año": int(y), "Mes": MONTH_NAMES_ES[int(month)],
+                         "Desde": start, "Hasta": end, "Aviso": "Sin datos"})
+            continue
+        period = add_risk_columns(period, hoja_humeda_threshold=hoja_threshold)
+        row_df = period_summary(period, soil_type, start, end)
+        row = row_df.iloc[0].to_dict() if not row_df.empty else {}
+        row.update({"Comparación": _etiqueta, "Año": int(y), "Mes": MONTH_NAMES_ES[int(month)],
+                    "Desde": start, "Hasta": end})
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def render_comparador_movil(history, soil_type, hoja_threshold):
+    """Comparador en el MÓVIL: un mes y una semana de ese mes, entre los años que elijas. Usa el
+    mismo cálculo (`compare_month_weeks`) y el informe vertical del ordenador."""
+    if history is None or history.empty:
+        st.info("Carga primero el histórico climático.")
+    else:
+        st.caption("**Lo esencial** · compara el mismo mes (o una semana de ese mes) entre años.")
+        _anios = sorted({int(a) for a in pd.to_datetime(history["fecha_hora"], errors="coerce")
+                        .dt.year.dropna().unique()})
+        _mes_lbl = st.selectbox("Mes", list(MONTH_NAMES_ES.values()), index=pd.Timestamp.now().month - 1,
+                                key="mob_cmp_mes")
+        _mes = [k for k, v in MONTH_NAMES_ES.items() if v == _mes_lbl][0]
+        _sem = st.radio("Semana del mes", ["Todo el mes", "1", "2", "3", "4", "5"], horizontal=True,
+                        key="mob_cmp_semana")
+        _sel_anios = st.multiselect("Años", _anios[::-1], default=_anios[-3:], key="mob_cmp_anios")
+        if not _sel_anios:
+            st.warning("Elige al menos un año.")
+        else:
+            _cmp = (compare_months(history, sorted(_sel_anios), int(_mes), soil_type, hoja_threshold)
+                    if _sem == "Todo el mes" else
+                    compare_month_weeks(history, sorted(_sel_anios), int(_mes), int(_sem),
+                                        soil_type, hoja_threshold))
+            if _cmp is None or _cmp.empty:
+                st.info("No hay datos para esa combinación.")
+            else:
+                render_visual_comparison_report(
+                    _cmp, title=f"{_mes_lbl}" + ("" if _sem == "Todo el mes" else f" · semana {_sem}"))
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="cmp_movil_completa",
+                 help="Comparar campañas de frío, quincenas, semanas ISO y las tablas técnicas."):
+        comparator_tab(history, soil_type, hoja_threshold)
+
+
+def render_campos_movil():
+    """Campos en el MÓVIL: las cifras de la finca y la ficha de cada campo, sin tabla ancha."""
+    import html as _h
+    _f = get_fields_base_df()
+    if _f is None or _f.empty:
+        st.info("No hay campos cargados.")
+    else:
+        _rio = _f["Campo"].map(zona_de_campo) == ZONA_RIO
+        st.caption("**Lo esencial** · toca un campo para ver su ficha.")
+        st.markdown(_movil_cifras_html([
+            ("🌳 Campos", len(_f)),
+            ("📐 Superficie (recinto)", f"{_fmt_es_number(_f['Superficie ha'].sum(), 2)} ha"),
+            ("🍏 Superficie arbolada", f"{_fmt_es_number(_f['Superficie arbolada ha'].sum(), 2)} ha"),
+            ("🌊 Campos del Río", int(_rio.sum())),
+        ]), unsafe_allow_html=True)
+
+        _campos = sorted(_f["Campo"].astype(str))
+        _sel = st.selectbox("Campo", _campos, key="mob_campos_sel", format_func=marca_zona)
+        _r = _f[_f["Campo"].astype(str) == _sel].iloc[0]
+        _lin = [f"<b>Zona:</b> {_h.escape(str(zona_de_campo(_sel)))}",
+                f"<b>Recinto:</b> {_fmt_es_number(_r.get('Superficie ha'), 2)} ha · "
+                f"<b>arbolada:</b> {_fmt_es_number(_r.get('Superficie arbolada ha'), 2)} ha"]
+        for _c, _et in (("Variedades actuales", "Variedades"), ("Portainjertos", "Portainjertos"),
+                        ("Nº árboles", "Árboles"), ("Año plantación", "Plantación"),
+                        ("Observaciones", "Notas")):
+            if _c in _f.columns and str(_r.get(_c, "") or "").strip():
+                _lin.append(f"<b>{_et}:</b> {_h.escape(str(_r.get(_c)))}")
+        st.markdown(_carpo_movil_tarjeta(marca_zona(_sel), _lin, "#2e7d32"), unsafe_allow_html=True)
+
+        with st.expander(f"Todos los campos ({len(_f)})"):
+            st.markdown("\n".join(
+                f"- **{_h.escape(marca_zona(str(r['Campo'])))}** · "
+                f"{_fmt_es_number(r.get('Superficie ha'), 2)} ha · "
+                f"{_h.escape(str(r.get('Variedades actuales', '') or '')[:60])}"
+                for _, r in _f.sort_values("Campo").iterrows()))
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="campos_movil_completa",
+                 help="La tabla completa con todas las columnas."):
+        fields_tab()
+
+
+def render_agroptima_movil():
+    """Agroptima en el MÓVIL: cuántas actuaciones hay, la última y las 10 más recientes."""
+    import html as _h
+    _a = normalize_activities_df(st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS)))
+    if _a is None or _a.empty:
+        st.info("Todavía no hay actuaciones cargadas. Se bajan de Supabase al abrir la app.")
+    else:
+        _a = _a.copy()
+        _a["_f"] = pd.to_datetime(_a["Fecha"], errors="coerce")
+        _a = _a.dropna(subset=["_f"]).sort_values("_f", ascending=False)
+        _anio = pd.Timestamp.now().year
+        _este = _a[_a["_f"].dt.year == _anio]
+        st.caption("**Lo esencial** · lo último que se hizo en la finca, según Agroptima.")
+        st.markdown(_movil_cifras_html([
+            ("🧾 Actuaciones", len(_a)),
+            (f"📅 En {_anio}", len(_este)),
+            ("🧪 Productos distintos", int(_a["Producto"].replace("", np.nan).dropna().nunique())),
+            ("🗓️ Última", f"{_a['_f'].iloc[0]:%d/%m/%y}"),
+        ]), unsafe_allow_html=True)
+
+        st.markdown("#### 🕐 Últimas actuaciones")
+        _n = st.radio("Cuántas", [10, 25, 50], horizontal=True, key="mob_agro_n")
+        _tarj = []
+        for _f0, _g in list(_a.groupby(_a["_f"].dt.date, sort=False))[:int(_n)]:
+            _lin = []
+            for _, r in _g.iterrows():
+                _prod = str(r.get("Producto", "") or "").strip()
+                _campos = str(r.get("Campos reconocidos", "") or r.get("Campos", "") or "").strip()
+                _lin.append(f"<div style='border-top:1px solid #eee;padding:3px 0'>"
+                            f"<b>{_h.escape(_prod or '—')}</b><br>"
+                            f"<span style='color:#666'>{_h.escape(_campos[:90] or 'sin campo reconocido')}</span></div>")
+            _tarj.append(_carpo_movil_tarjeta(f"{pd.Timestamp(_f0):%d/%m/%Y} · {len(_g)} línea(s)",
+                                              _lin, "#5e35b1"))
+        st.markdown("".join(_tarj), unsafe_allow_html=True)
+        st.caption("Agroptima parte una misma aplicación en varias líneas (una por producto): "
+                   "por eso se agrupan por día.")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="agro_movil_completa",
+                 help="Importar el Excel, Supabase, resúmenes, rotación FRAC y los cruces con sanidad."):
+        activities_tab()
+
+
 def dashboard_tab(history, soil_type, hoja_threshold):
     st.subheader("Dashboard general")
 
@@ -34562,13 +34831,22 @@ if not _HEADLESS:
     if _page == "hoy":
         home_today_tab(history, soil_type, hoja_threshold)
     elif _page == "dashboard":
-        dashboard_tab(history, soil_type, hoja_threshold)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_clima_movil(history, soil_type, hoja_threshold)
+        else:
+            dashboard_tab(history, soil_type, hoja_threshold)
     elif _page == "sencrop":
         import_panel()
     elif _page == "analisis":
-        analysis_tab(history, soil_type, hoja_threshold)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_analisis_movil(history, soil_type, hoja_threshold)
+        else:
+            analysis_tab(history, soil_type, hoja_threshold)
     elif _page == "comparador":
-        comparator_tab(history, soil_type, hoja_threshold)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_comparador_movil(history, soil_type, hoja_threshold)
+        else:
+            comparator_tab(history, soil_type, hoja_threshold)
     elif _page == "frio":
         cold_tab(history)
     elif _page == "fenologia":
@@ -34590,9 +34868,15 @@ if not _HEADLESS:
     elif _page == "riego":
         irrigation_tab(history, soil_type, hoja_threshold)
     elif _page == "campos":
-        fields_tab()
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_campos_movil()
+        else:
+            fields_tab()
     elif _page == "agroptima":
-        activities_tab()
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_agroptima_movil()
+        else:
+            activities_tab()
     elif _page == "produccion":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 15/09/2026)
             render_produccion_movil(history)
