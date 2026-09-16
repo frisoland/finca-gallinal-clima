@@ -23519,8 +23519,11 @@ def load_irrigation_sync_at():
     headers = supabase_headers(); headers.pop("Prefer", None)
     try:
         r = requests.get(irrigation_sync_storage_url(), headers=headers, timeout=30)
-        if r.status_code == 200 and r.text.strip():
-            return r.text.strip()
+        # El fichero se guarda en UTF-8 pero Supabase lo sirve como text/plain sin juego de
+        # caracteres, y `r.text` lo leía como Latin-1: el «·» salía como «Â·».
+        _t = r.content.decode("utf-8", errors="replace").strip() if r.status_code == 200 else ""
+        if _t:
+            return _t
     except Exception:
         pass
     return None
