@@ -8004,13 +8004,11 @@ def _render_prueba_prevision_sencrop():
         st.rerun()
 
 
-def _render_tabla_riesgo_previsto(forecast_df):
-    """Riesgo sanitario de los próximos días a partir de la previsión cargada."""
+def _bloque_riesgo_previsto(forecast_df, history_df):
+    """Semáforo + tabla de riesgo de los próximos días de UNA zona (la usan las pestañas
+    Zona Nave y Zona Río). Cálculo idéntico para las dos: solo cambia el clima que recibe."""
     base_temp_fc  = 10.0
     upper_temp_fc = 31.1
-    history_df = st.session_state.get("history_df", pd.DataFrame())
-
-    # ── Tabla de riesgo diario ────────────────────────────────────────────────
     risk_df = forecast_build_risk_table(
         forecast_df, history_df,
         base_temp=float(base_temp_fc),
@@ -8020,8 +8018,6 @@ def _render_tabla_riesgo_previsto(forecast_df):
     if risk_df.empty:
         st.warning("No se pudo calcular el riesgo. Revisa que el histórico climático esté cargado.")
         return
-
-    st.markdown("#### 🗓️ Riesgo sanitario previsto")
 
     # Semáforo resumen
     max_moteado = _max_risk_level(risk_df["Riesgo moteado"].tolist())
@@ -8093,6 +8089,33 @@ def _render_tabla_riesgo_previsto(forecast_df):
         f'</table></div>',
         unsafe_allow_html=True,
     )
+
+
+def _render_tabla_riesgo_previsto(forecast_df):
+    """Riesgo sanitario de los próximos días. Una pestaña por zona: la Nave con su sensor y su
+    punto de previsión, y el Río con el suyo (temperatura, humedad y lluvia de la vega; la hoja
+    mojada es la de Huertona para las dos, que es el único sensor que hay). Pedido por el
+    usuario el 16/09/2026: la del Río ya se usaba por dentro, pero no se veía."""
+    history_df = st.session_state.get("history_df", pd.DataFrame())
+    _fc_rio = st.session_state.get("forecast_rio_df", pd.DataFrame())
+    _hist_rio = st.session_state.get("history_rio_df", pd.DataFrame())
+
+    st.markdown("#### 🗓️ Riesgo sanitario previsto")
+
+    if _fc_rio is None or _fc_rio.empty:
+        st.caption(f"Solo {ZONA_NAVE}: hoy no hay previsión propia de la {ZONA_RIO} cargada.")
+        _bloque_riesgo_previsto(forecast_df, history_df)
+    else:
+        _t_nave, _t_rio = st.tabs([f"🏠 {ZONA_NAVE}", f"🌊 {ZONA_RIO}"])
+        with _t_nave:
+            _bloque_riesgo_previsto(forecast_df, history_df)
+        with _t_rio:
+            st.caption(
+                f"🌊 {ZONA_RIO} ({', '.join(ZONA_RIO_CAMPOS)}): la temperatura, la humedad y la "
+                f"lluvia salen de su sensor en la vega y de la previsión de MeteoGalicia en su "
+                f"punto. La **hoja mojada** es la de Huertona, que es el único sensor de "
+                f"humectación — igual que en el resto de la app.")
+            _bloque_riesgo_previsto(_fc_rio, historico_zona(ZONA_RIO, history_df, _hist_rio))
 
     # ── Datos horarios crudos ─────────────────────────────────────────────────
     def _deg_to_cardinal(deg):
