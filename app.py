@@ -152,7 +152,21 @@ PAGINAS_APP = ("hoy", "dashboard", "sencrop", "analisis", "comparador", "frio", 
 if "force_mobile" in st.session_state:
     IS_MOBILE = bool(st.session_state["force_mobile"])
 else:
-    IS_MOBILE = (str(_query_param("movil") or "") == "1")
+    _movil_q = str(_query_param("movil") or "")
+    IS_MOBILE = (_movil_q == "1")
+    # Sin ?movil en la dirección: si el NAVEGADOR es de móvil (User-Agent con «Mobi», que llevan
+    # Chrome/Android y Safari/iPhone), abrir ya la vista móvil desde el servidor. Antes solo lo
+    # hacía un JS que se evalúa UNA vez por pestaña: si esa vez medía mal la pantalla, o el móvil
+    # reabría una pestaña sin ?movil, salía la vista de PC con la barra inferior vieja (usuario,
+    # 16/09/2026). ?movil=0 (botón 💻) sigue mandando.
+    if not _movil_q:
+        try:
+            _ua = str(st.context.headers.get("User-Agent", "") or "")
+        except Exception:
+            _ua = ""
+        if "Mobi" in _ua:
+            IS_MOBILE = True
+            _set_query_param("movil", "1")
 
 
 # ── CSS: colapsar el wrapper del iframe a cero real ──────────────────────────
