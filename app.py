@@ -9329,6 +9329,177 @@ def render_aviso_cargas_fallidas():
                 st.caption(f"**{n}** · {m[:300]}")
 
 
+def render_hoy_movil(history, soil_type, hoja_threshold):
+    """Panel de hoy en el MÓVIL: lo urgente de la finca (carpocapsa y fungicidas) y el clima de
+    los últimos 7 días por zona. Mismos cálculos que el Panel de hoy del ordenador."""
+    import html as _h
+    _hoy = pd.Timestamp.today()
+    _dias = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+    st.caption(f"**Lo esencial** · {_dias[_hoy.weekday()]} {_hoy:%d/%m/%Y}")
+    traps = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
+    activities = st.session_state.get("activities_df", pd.DataFrame())
+    try:
+        cw = carpocapsa_build_multi_windows(
+            traps, history, activities_df=activities, campaign_year=_hoy.year,
+            capture_threshold=int(st.session_state.get("carp_capture_threshold", 3)),
+            dd_active_start=int(st.session_state.get("carp_dd_start", 80)),
+            dd_active_end=int(st.session_state.get("carp_dd_end", 130)))
+    except Exception:
+        cw = pd.DataFrame()
+    try:
+        dec, _ = decision_por_zonas(history, activities, st.session_state.get("forecast_df", pd.DataFrame()),
+                                    persistence_days=int(st.session_state.get("dec_persist_days", 16)),
+                                    days_back=60)
+    except Exception:
+        dec = pd.DataFrame()
+    _est = cw["Estado"].astype(str) if not cw.empty and "Estado" in cw.columns else pd.Series(dtype=str)
+    _c_pel = cw[_est.str.contains("cierra en", na=False)] if len(_est) else pd.DataFrame()
+    _c_act = (cw[_est.str.contains("Activa", na=False) & ~_est.str.contains("cierra en", na=False)]
+              if len(_est) else pd.DataFrame())
+    _c_fue = cw[_est.str.contains("Fuera de temporada", na=False)] if len(_est) else pd.DataFrame()
+    _pri = dec["_priority"] if not dec.empty and "_priority" in dec.columns else pd.Series(dtype=int)
+    _f = {k: dec[_pri == k] if len(_pri) else pd.DataFrame() for k in (1, 2, 3, 5)}
+
+    _cifras = [("🔴 Carpocapsa ≤3 días", len(_c_pel)), ("🟠 Carpocapsa activas", len(_c_act)),
+               ("🔴 Fungicida hoy", len(_f[1])), ("🟠 Fungicida pronto", len(_f[2])),
+               ("🟡 Vigilar", len(_f[3]))]
+    if len(_f[5]) or len(_c_fue):
+        _cifras.append(("🔵 Fuera de temporada", len(_f[5])))
+    st.markdown(_movil_cifras_html(_cifras), unsafe_allow_html=True)
+
+    _tarj = []
+    _campos = lambda d, col: ", ".join(_h.escape(marca_zona(str(c))) for c in d[col].astype(str).unique())
+    if not _c_pel.empty:
+        _tarj.append(_carpo_movil_tarjeta("🐛 Carpocapsa: cierran en ≤3 días sin tratar",
+                                          [_campos(_c_pel, "Campo/Zona")], "#c62828"))
+    if not _c_act.empty:
+        _tarj.append(_carpo_movil_tarjeta("🐛 Carpocapsa: ventanas activas", [_campos(_c_act, "Campo/Zona")], "#ef6c00"))
+    if not _f[1].empty:
+        _tarj.append(_carpo_movil_tarjeta("🍄 Fungicida: tratar hoy", [_campos(_f[1], "Campo")], "#c62828"))
+    if not _f[2].empty:
+        _tarj.append(_carpo_movil_tarjeta("🍄 Fungicida: tratar pronto", [_campos(_f[2], "Campo")], "#ef6c00"))
+    if not _f[3].empty:
+        _tarj.append(_carpo_movil_tarjeta("🍄 Vigilar (cubiertos, con infección prevista)",
+                                          [_campos(_f[3], "Campo")], "#f9a825"))
+    if _tarj:
+        st.markdown("".join(_tarj), unsafe_allow_html=True)
+    if len(_f[5]) or len(_c_fue):
+        st.info(f"🔵 **Fuera de temporada de tratamientos** (desde el {fin_tratamientos_fecha():%d/%m}, "
+                f"editable en Configuración): no se pide tratar. El riesgo se sigue midiendo en Decisiones.")
+    elif not _tarj and not dec.empty:
+        st.success("✅ Nada urgente hoy: sin ventanas de carpocapsa ni fungicidas pendientes.")
+
+    st.markdown("#### 🌦️ Clima de los últimos 7 días")
+    if history is None or history.empty:
+        st.caption("Sin histórico climático cargado.")
+    else:
+        try:
+            _ini = (_hoy.normalize() - pd.Timedelta(days=6)).date()
+            _m, _t, _a, _p = build_weekly_executive_report(
+                history, activities, _ini, _hoy.normalize().date(),
+                rio_df=st.session_state.get("history_rio_df", pd.DataFrame()))
+        except Exception:
+            _m = None
+        if _m:
+            st.markdown(_informe_movil_clima_html(_m), unsafe_allow_html=True)
+            st.caption(f"🍄 Eventos de moteado con ratio ≥1: **{int(_m.get('scab_events_ge1', 0))}** · "
+                       f"🟤 de monilia: **{int(_m.get('monilia_events_ge1', 0))}** (Nave).")
+        else:
+            st.caption("Sin datos suficientes para el resumen de 7 días.")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="hoy_movil_completa",
+                 help="Incluye el envío manual del informe a Telegram."):
+        home_today_tab(history, soil_type, hoja_threshold)
+
+
+def render_sanidad_movil(history, soil_type, hoja_threshold):
+    """Sanidad en el MÓVIL: semáforo del periodo en tarjetas y los episodios de hoja mojada con su
+    moteado y monilia. Mismo cálculo que Sanidad (`_period_data_heavy`, semáforo y eventos)."""
+    import html as _h
+    if history is None or history.empty:
+        st.info("Carga primero el histórico.")
+    else:
+        _opc = {"7 días": 6, "14 días": 13, "30 días": 29}
+        _sel = st.radio("Periodo", list(_opc), horizontal=True, key="mob_sani_periodo")
+        _fin = history["fecha_hora"].max()
+        _ini = _fin - pd.Timedelta(days=_opc[_sel])
+        _pdf, _av, _su, _gs = _period_data_heavy(history, _ini, _fin, soil_type, hoja_threshold)
+        st.caption(f"**Lo esencial** · del **{_ini:%d/%m}** al **{_fin:%d/%m %H:%M}** · riesgo "
+                   f"climático de la finca. La decisión por campo está en 🎯 Decisiones.")
+        if _pdf is None or _pdf.empty:
+            st.warning("No hay datos en ese periodo.")
+        else:
+            _fuera, _fin_t = fuera_de_temporada_tratamientos()
+            if _fuera:
+                st.info(f"🔵 Fuera de temporada de tratamientos (desde el {_fin_t:%d/%m}): las acciones "
+                        f"orientativas son informativas, el riesgo se sigue midiendo.")
+            _p0, _p1 = _pdf["fecha_hora"].min(), _pdf["fecha_hora"].max()
+            _sem = build_sanitary_semaphore_table(_pdf, soil_type, hoja_threshold, start_ts=_p0, end_ts=_p1)
+            st.markdown("#### 🚦 Semáforo del periodo")
+            if _sem is None or _sem.empty:
+                st.caption("Sin datos suficientes para el semáforo.")
+            else:
+                _col = {"Alto": "#c62828", "Medio": "#ef6c00", "Bajo-medio": "#f9a825", "Bajo": "#2e7d32"}
+                _tarj = []
+                for _, r in _sem.sort_values("Puntuación", ascending=False).iterrows():
+                    _tarj.append(_carpo_movil_tarjeta(
+                        f"{r['Semáforo']} {r['Riesgo']} · {r['Nivel']}",
+                        [f"<b>Peor episodio:</b> {_h.escape(str(r['Peor evento del periodo']))}",
+                         _h.escape(str(r["Indicadores"])),
+                         f"<span style='color:#555'>{_h.escape(str(r['Acción orientativa']))}</span>"],
+                        _col.get(str(r["Nivel"]), "#9e9e9e")))
+                st.markdown("".join(_tarj), unsafe_allow_html=True)
+
+            st.markdown("#### 🍃 Episodios de hoja mojada")
+            _zona = st.radio("Zona", [ZONA_NAVE, ZONA_RIO], horizontal=True, key="mob_sani_zona")
+            _fases = current_phenology_phase_for_period(pd.Timestamp(_p0), pd.Timestamp(_p1))
+            if _zona == ZONA_RIO:
+                _ev, _nota = eventos_hoja_zona_rio(
+                    history, st.session_state.get("history_rio_df", pd.DataFrame()), _p0, _p1)
+                if _ev is None:
+                    st.info(_nota)
+                    _ev = pd.DataFrame()
+                elif _nota:
+                    st.caption(_nota)
+            else:
+                _ev = (detect_leaf_wetness_events(_pdf) if has_sensor(_pdf, "Humectación de hoja")
+                       else pd.DataFrame())
+            if _ev is None or _ev.empty:
+                st.caption("Sin episodios de hoja mojada en el periodo.")
+            else:
+                _ex = add_event_interpretation_columns(_ev, phases=_fases)
+                _ex = _ex.sort_values("Inicio", ascending=False)
+                _nivel_col = lambda t: ("#c62828" if "🔴" in t else "#ef6c00" if "🟠" in t
+                                        else "#f9a825" if "🟡" in t else "#2e7d32")
+                _tarj = []
+                for _, r in _ex.iterrows():
+                    _i, _f = pd.Timestamp(r["Inicio"]), pd.Timestamp(r["Fin"])
+                    _rm, _rn = str(r.get("Riesgo moteado evento", "")), str(r.get("Riesgo monilia evento", ""))
+                    _peor = _rm if any(x in _rm for x in "🔴🟠") else _rn
+                    _vm, _vn = pd.to_numeric(r.get("Ratio moteado"), errors="coerce"), \
+                        pd.to_numeric(r.get("Ratio monilia"), errors="coerce")
+                    _tarj.append(_carpo_movil_tarjeta(
+                        f"{_i:%d/%m %H:%M} → {_f:%d/%m %H:%M}",
+                        [f"{_fmt_es_number(r.get('Horas húmedas equivalentes'), 1)} h mojadas · "
+                         f"{_fmt_es_number(r.get('Temperatura media evento ºC'), 1)} ºC · "
+                         f"{_fmt_es_number(r.get('Lluvia evento mm'), 1)} mm",
+                         f"🍄 Moteado: <b>{_h.escape(_rm)}</b>"
+                         + ("" if pd.isna(_vm) else f" (valor {int(round(_vm * 100))})"),
+                         f"🍑 Monilia: <b>{_h.escape(_rn)}</b>"
+                         + ("" if pd.isna(_vn) else f" (valor {int(round(_vn * 100))})")],
+                        _nivel_col(_rm + _rn)))
+                st.markdown("".join(_tarj), unsafe_allow_html=True)
+                st.caption("Valor: 25 ligero · 50 moderado · 100 infección (moteado) o tiempo muy "
+                           "favorable (monilia). El porqué, en 📖 Por qué hay infección (pantalla completa).")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="sani_movil_completa",
+                 help="Histórico de eventos por año, explicaciones, recomendaciones por campo, rotación "
+                      "y seguimiento de fitosanitarios."):
+        health_tab(history, soil_type, hoja_threshold)
+
+
 def home_today_tab(history, soil_type, hoja_threshold):
     """Panel de inicio: reúne lo urgente de toda la finca (carpocapsa, fungicidas,
     clima) para saber QUÉ HACER HOY sin entrar item por item. Solo resume; el
@@ -9396,7 +9567,13 @@ def home_today_tab(history, soil_type, hoja_threshold):
         if not carpo_activa.empty:
             st.warning("🟠 **Ventanas activas para tratar:** "
                        + ", ".join(marca_zona(c) for c in carpo_activa["Campo/Zona"].astype(str).unique()))
-        if carpo_peligro.empty and carpo_activa.empty:
+        _fuera_c = cw[cw["Estado"].astype(str).str.contains("Fuera de temporada", na=False)] \
+            if "Estado" in cw.columns else pd.DataFrame()
+        if not _fuera_c.empty:
+            st.info(f"🔵 **Fuera de temporada de tratamientos:** {len(_fuera_c)} ventana(s) abiertas o "
+                    f"en espera que no se tratan ("
+                    + ", ".join(marca_zona(c) for c in _fuera_c["Campo/Zona"].astype(str).unique()) + ").")
+        elif carpo_peligro.empty and carpo_activa.empty:
             st.success("✅ Sin ventanas activas hoy.")
 
     st.markdown("### 🍎 Fungicidas")
@@ -9413,7 +9590,12 @@ def home_today_tab(history, soil_type, hoja_threshold):
             st.info("🟡 **Vigilar (cubiertos hoy, pero con infección prevista — la "
                     "cobertura terminará pronto):** "
                     + ", ".join(marca_zona(c) for c in fung_vigilar["Campo"].astype(str)))
-        if fung_hoy.empty and fung_pronto.empty and fung_vigilar.empty:
+        _fuera_f = dec[dec["_priority"] == 5]
+        if not _fuera_f.empty:
+            st.info(f"🔵 **Fuera de temporada de tratamientos** (desde el "
+                    f"{fin_tratamientos_fecha():%d/%m}, editable en Configuración): no se pide "
+                    f"tratar a ningún campo. El riesgo y los eventos se siguen midiendo en Decisiones.")
+        elif fung_hoy.empty and fung_pronto.empty and fung_vigilar.empty:
             st.success("✅ Todos los campos con cobertura vigente y sin infección prevista.")
 
     st.markdown("### 🌦️ Clima (últimos 7 días)")
@@ -34881,7 +35063,10 @@ if not _HEADLESS:
         pass
 
     if _page == "hoy":
-        home_today_tab(history, soil_type, hoja_threshold)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_hoy_movil(history, soil_type, hoja_threshold)
+        else:
+            home_today_tab(history, soil_type, hoja_threshold)
     elif _page == "dashboard":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_clima_movil(history, soil_type, hoja_threshold)
@@ -34904,7 +35089,10 @@ if not _HEADLESS:
     elif _page == "fenologia":
         phenology_tab(history, soil_type, hoja_threshold)
     elif _page == "sanidad":
-        health_tab(history, soil_type, hoja_threshold)
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_sanidad_movil(history, soil_type, hoja_threshold)
+        else:
+            health_tab(history, soil_type, hoja_threshold)
     elif _page == "decisiones":
         if IS_MOBILE:   # móvil: lo esencial + gráficas a demanda + «Ver pantalla completa» (aprobado 15/09/2026)
             render_decisiones_movil()
