@@ -12587,7 +12587,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
     # "10.9" se come el punto → "109" y lo recorta al máximo).
     for _c in ("CC (%)", "PMP (%)", "Da (g/cm³)", "Prof. raíz (cm)", "TAW mm"):
         _disp[_c] = pd.to_numeric(_disp[_c], errors="coerce").astype(float)
-    st.data_editor(
+    st_editor(
         _disp, key=_editor_key, on_change=_apply_sp, num_rows="fixed",
         use_container_width=True, hide_index=True,
         disabled=["Campo", "Fuente", "Patrón", "Kc×", "TAW mm"],
@@ -12749,7 +12749,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             else:
                 _seed = pd.DataFrame({"Fecha": pd.Series([], dtype="datetime64[ns]"),
                                       "Minutos": pd.Series([], dtype="int64")})
-            _ed = st.data_editor(
+            _ed = st_editor(
                 _seed, num_rows="dynamic", use_container_width=True, hide_index=True,
                 key=f"manual_irr_editor_{_mf}",
                 column_config={
@@ -12792,7 +12792,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         if _n_ov:
             st.info(f"Ahora mismo hay **{_n_ov} fila(s)** con valores personalizados (mandan sobre "
                     "el código). El resto sigue los valores del código.")
-        _ed_cfg = st.data_editor(
+        _ed_cfg = st_editor(
             _cfg_eff[IRR_CFG_EDIT_COLS], num_rows="fixed", use_container_width=True, hide_index=True,
             key="irr_cfg_editor",
             column_config={
@@ -12845,7 +12845,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             st.warning(f"🟠 **{_n_vig} campo(s)** cerca del umbral. Vigilar por si no llueve.")
         else:
             st.success("🟢 Todos los campos con reserva de suelo suficiente. Sin necesidad de riego.")
-        st.dataframe(fld, use_container_width=True, hide_index=True)
+        st_tabla(fld, use_container_width=True, hide_index=True)
         st.caption(
             "**Dos modelos comparados. Reserva % (clásico)** = balance FAO-56 a escala de campo "
             "(agua repartida por toda la superficie). **Reserva % (goteo)** = modelo alternativo que "
@@ -12965,7 +12965,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             })
         if _val_rows:
             st.markdown("##### 🌿 ¿Tu riego real sostiene la reserva?")
-            st.dataframe(pd.DataFrame(_val_rows), use_container_width=True, hide_index=True)
+            st_tabla(pd.DataFrame(_val_rows), use_container_width=True, hide_index=True)
             st.caption(
                 "Compara la reserva **con** tu riego real vs **sin** riego (solo lluvia+suelo). El "
                 "**Aporte** = puntos de reserva que suma tu riego en la racha seca (si es poco, tu "
@@ -13037,7 +13037,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                     f"**{round(float(pd.to_numeric(_dsr['ETc'], errors='coerce').sum()))} mm** / "
                     f"**{round(float(pd.to_numeric(_dsr['Lluvia'], errors='coerce').sum()))} mm**. "
                     "Cada campo usa el clima de su zona; además cambia **tu riego**.")
-            st.dataframe(pd.DataFrame(_cov_rows), use_container_width=True, hide_index=True)
+            st_tabla(pd.DataFrame(_cov_rows), use_container_width=True, hide_index=True)
             st.caption(
                 "**Qué es esto:** el **balance BRUTO** de la temporada — toda el agua que ha entrado "
                 "(**lluvia + tu riego**) frente a la que ha pedido el árbol (**ETc**). Responde a "
@@ -13067,7 +13067,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
                     f"lluvia: 🏠 Nave **{_res_r['lluvia_nave']} mm** · 🌊 Río **{_res_r['lluvia_rio']} mm** · "
                     f"necesidad del manzano (ETc): Nave **{_res_r['etc_nave']} mm** · Río "
                     f"**{_res_r['etc_rio']} mm**.")
-                st.dataframe(_cmp_r, use_container_width=True, hide_index=True)
+                st_tabla(_cmp_r, use_container_width=True, hide_index=True)
                 st.caption(
                     "Mismo suelo, raíz y riego real en las dos columnas: **solo cambia el clima**. "
                     "**Reserva mín** = lo más bajo en ese tramo. Es una comparación para ver la "
@@ -13170,7 +13170,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
             })
         if _drip_rows:
             with st.expander("🚿 Sistemas de riego configurados (goteo)", expanded=False):
-                st.dataframe(pd.DataFrame(_drip_rows), use_container_width=True, hide_index=True)
+                st_tabla(pd.DataFrame(_drip_rows), use_container_width=True, hide_index=True)
                 st.caption(
                     "Caudal del sistema = (metros ÷ distancia goteros) × caudal por gotero. "
                     "Pluviometría = caudal ÷ superficie **arbolada** (1 mm = 1 L/m²), que es "
@@ -13183,7 +13183,7 @@ def render_water_balance(history, soil_type, start_ts, end_ts):
         def _tabla_detalle(_p):
             _show = _p[["Fecha", "ET0", "Kc", "ETc", "Lluvia"]].copy()
             _show["Fecha"] = pd.to_datetime(_show["Fecha"]).dt.strftime("%d/%m")
-            st.dataframe(_show, use_container_width=True, hide_index=True)
+            st_tabla(_show, use_container_width=True, hide_index=True)
         if daily_rio is None or daily_rio.empty:
             _tabla_detalle(per)
         else:
@@ -13615,7 +13615,7 @@ def render_sanitary_semaphore(period_df, soil_type, hoja_threshold, start_ts=Non
         "confirmada**. La cobertura fungicida real, campo por campo, está en **Decisiones**."
     )
 
-    st.dataframe(
+    st_tabla(
         sem[["Semáforo", "Riesgo", "Nivel", "Puntuación", "Peor evento del periodo",
              "Indicadores", "Acción orientativa"]],
         use_container_width=True,
@@ -14788,7 +14788,7 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
                 "Familia": info["familia"],
                 "Comentario": info["comentario"],
             })
-        st.dataframe(pd.DataFrame(product_rows), use_container_width=True, hide_index=True)
+        st_tabla(pd.DataFrame(product_rows), use_container_width=True, hide_index=True)
 
     # ── Recomendación UNIFICADA con Decisiones (MISMO motor, criterio, prioridad y
     #    producto). No hay dos lógicas: Sanidad y Decisiones muestran lo mismo. ──
@@ -14844,7 +14844,7 @@ def render_field_treatment_recommendations(period_df, soil_type, hoja_threshold,
              "Último fungicida", "Días sin trat.", "Eventos infección", "Ev. sin cobertura",
              "Previsión Mills", "📋 Motivo"]
     _cols = [c for c in _cols if c in dec.columns]
-    st.dataframe(dec.sort_values("_priority")[_cols], use_container_width=True, hide_index=True)
+    st_tabla(dec.sort_values("_priority")[_cols], use_container_width=True, hide_index=True)
     st.caption(
         "**Columna «Momento»:** 🛡️ **Preventivo** = aún no hay infección que rescatar → vale "
         "**contacto** (Captan/Dithianon/cobre) **o** sistémico. ⚕️ **Curativo** = la infección **ya "
@@ -15143,7 +15143,7 @@ def render_threshold_simulator(history):
                     "Horas húmedas totales": round(float(_hh.sum()), 1),
                 })
         _sim = pd.DataFrame(_filas)
-        st.dataframe(_sim, hide_index=True, use_container_width=True)
+        st_tabla(_sim, hide_index=True, use_container_width=True)
 
         # Lectura automática comparando contra el umbral actual (20 min)
         try:
@@ -15208,7 +15208,7 @@ def health_tab(history, soil_type, hoja_threshold):
         _sh_nave, _sh_rio = st.tabs([f"🏠 {ZONA_NAVE}", f"🌊 {ZONA_RIO}"])
         with _sh_nave:
             if _eh is not None and not _eh.empty:
-                st.dataframe(_eh, use_container_width=True, hide_index=True)
+                st_tabla(_eh, use_container_width=True, hide_index=True)
                 _bf = (_eh["Mot. Brot."] + _eh["Mot. Flor."] + _eh["Mon. Brot."] + _eh["Mon. Flor."])
                 _cu = (_eh["Mot. Cuaj."] + _eh["Mon. Cuaj."])
                 _tot = _bf + _cu
@@ -15233,7 +15233,7 @@ def health_tab(history, soil_type, hoja_threshold):
                 st.info("Todavía no hay ninguna campaña con el sensor del Río funcionando en "
                         "brotación–cuajado (1 abr–15 jun). La primera será la de 2027.")
             else:
-                st.dataframe(_ehr, use_container_width=True, hide_index=True)
+                st_tabla(_ehr, use_container_width=True, hide_index=True)
                 st.caption("Hoja mojada de Huertona con la temperatura, humedad y lluvia del "
                            "sensor del Río. Solo campañas con ese sensor funcionando.")
 
@@ -15277,7 +15277,7 @@ def health_tab(history, soil_type, hoja_threshold):
                 st.info("No se han detectado eventos de hoja mojada en el periodo seleccionado.")
             else:
                 events_explained = add_event_interpretation_columns(events_df, phases=active_phases)
-                st.dataframe(events_explained, use_container_width=True)
+                st_tabla(events_explained, use_container_width=True)
                 st.download_button(
                     "Descargar eventos de humectación foliar explicados",
                     data=events_explained.to_csv(index=False).encode("utf-8-sig"),
@@ -15317,7 +15317,7 @@ def health_tab(history, soil_type, hoja_threshold):
         else:
             _ev_r_exp = add_event_interpretation_columns(_ev_r, phases=active_phases)
             st.caption(_nota_ev_r)
-            st.dataframe(_ev_r_exp, use_container_width=True)
+            st_tabla(_ev_r_exp, use_container_width=True)
             st.download_button(
                 "Descargar eventos de humectación foliar · Zona Río",
                 data=_ev_r_exp.to_csv(index=False).encode("utf-8-sig"),
@@ -15327,7 +15327,7 @@ def health_tab(history, soil_type, hoja_threshold):
             )
 
     st.markdown("#### Riesgos resumidos del periodo")
-    st.dataframe(global_summary[[
+    st_tabla(global_summary[[
         c for c in global_summary.columns
         if c in [
             "Infecciones moteado", "Episodios moteado ≥50", "Horas moteado (desde la lluvia)",
@@ -15369,7 +15369,7 @@ def health_tab(history, soil_type, hoja_threshold):
                 _up_df = pd.DataFrame(
                     [{"Producto": k, "Pases": v}
                      for k, v in sorted(_rot["used_products"].items(), key=lambda x: -x[1])])
-                st.dataframe(_up_df, hide_index=True, use_container_width=True)
+                st_tabla(_up_df, hide_index=True, use_container_width=True)
             with _col_f:
                 st.markdown("**Presión por grupo FRAC:**")
                 _gp = _rot["group_pressure"]
@@ -15434,7 +15434,7 @@ def health_tab(history, soil_type, hoja_threshold):
             if _srows:
                 _sdf = pd.DataFrame(_srows).sort_values(f"Pases {_sel} (esta campaña)").reset_index(drop=True)
                 st.caption(f"Campos ordenados por MENOS uso de **{_sel}** — los de arriba son los mejores para gastar existencias:")
-                st.dataframe(_sdf, hide_index=True, use_container_width=True, height=260)
+                st_tabla(_sdf, hide_index=True, use_container_width=True, height=260)
 
 
     st.markdown("### 📦 Seguimiento de fitosanitarios por campo")
@@ -16494,7 +16494,7 @@ def phenology_tab(history, soil_type, hoja_threshold):
             f"pequeño. Cuando termines un bloque, pulsa **💾 Guardar fenología en Supabase**."
         )
         st.caption("Vista de solo lectura (filtra para poder editar):")
-        st.dataframe(_edit_slice, use_container_width=True, hide_index=True)
+        st_tabla(_edit_slice, use_container_width=True, hide_index=True)
     else:
         # Las ediciones se aplican con un CALLBACK on_change (se ejecuta ANTES de
         # volver a dibujar): leemos el delta del editor y lo volcamos al calendario
@@ -16526,7 +16526,7 @@ def phenology_tab(history, soil_type, hoja_threshold):
         _slice_view["Inicio"] = pd.to_datetime(_slice_view["Inicio"], errors="coerce")
         _slice_view["Fin"]    = pd.to_datetime(_slice_view["Fin"], errors="coerce")
 
-        st.data_editor(
+        st_editor(
             _slice_view,
             num_rows="fixed",
             use_container_width=True,
@@ -16623,7 +16623,7 @@ def phenology_tab(history, soil_type, hoja_threshold):
             _av_u = clima_del_campo_fenologia(sel_campo_u, history)[1]
             if _av_u:
                 st.caption(_av_u)
-            st.dataframe(phase_df, use_container_width=True, hide_index=True)
+            st_tabla(phase_df, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar resumen por fases",
                 data=phase_df.to_csv(index=False).encode("utf-8-sig"),
@@ -16745,7 +16745,7 @@ def phenology_tab(history, soil_type, hoja_threshold):
             _av_e = clima_del_campo_fenologia(sel_campo_evo, history)[1]
             if _av_e:
                 st.caption(_av_e)
-            st.dataframe(evo_df, use_container_width=True, hide_index=True)
+            st_tabla(evo_df, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar evolución temporal",
                 data=evo_df.to_csv(index=False).encode("utf-8-sig"),
@@ -18591,7 +18591,7 @@ def render_frutos_marcados(campaign_year):
         st.session_state["frutos_marcados_df"] = normalizar_frutos_marcados(_df)
     _todo = normalizar_frutos_marcados(st.session_state["frutos_marcados_df"])
     _anio = _todo[_todo["Campaña"] == int(campaign_year)] if not _todo.empty else _todo
-    _edit = st.data_editor(
+    _edit = st_editor(
         _anio[MARCADOS_COLUMNS], use_container_width=True, hide_index=True, num_rows="dynamic",
         key="carpo_frutos_marcados_editor",
         column_config={
@@ -18627,7 +18627,7 @@ def render_frutos_marcados(campaign_year):
         st.info("Todavía no hay frutos marcados en esta campaña.")
         return
     st.markdown("**Resultado a la última revisión de cada grupo**")
-    st.dataframe(_tipo, use_container_width=True, hide_index=True)
+    st_tabla(_tipo, use_container_width=True, hide_index=True)
     _sin = int(_ult["Sin encontrar"].sum())
     st.caption(
         "**Caídos vs testigo** = puntos de diferencia en el % de caídos respecto a los frutos "
@@ -19963,7 +19963,7 @@ def render_carpocapsa_grupos(campaign_year):
     if not normalizar:
         st.caption("⚠️ Sin normalizar: si el intervalo no fue de 7 días, esta comparación "
                    "contra el umbral semanal está sesgada.")
-    st.dataframe(
+    st_tabla(
         res, use_container_width=True, hide_index=True,
         column_config={
             # Fija la 1ª columna: la tabla es ancha y al hacer scroll lateral se
@@ -20000,7 +20000,7 @@ def render_carpocapsa_grupos(campaign_year):
               "contigua y entras con el tractor igual, suele salir a cuenta.")
 
     with st.expander("Detalle por trampa de cada grupo", expanded=False):
-        st.dataframe(det, use_container_width=True, hide_index=True)
+        st_tabla(det, use_container_width=True, hide_index=True)
         _f = det[det["Decide"] == "no"]
         if not _f.empty:
             st.caption(
@@ -20028,7 +20028,7 @@ def render_carpocapsa_grupos(campaign_year):
                     "Equiv. 7 días": round(float(_tot.get(_f, 0)) * 7.0 / _dd, 1) if _dd else np.nan,
                 })
             _di = pd.DataFrame(_rows)
-            st.dataframe(_di, use_container_width=True, hide_index=True)
+            st_tabla(_di, use_container_width=True, hide_index=True)
             _mal = int((_di["¿Coincide?"] == "❌ NO").sum())
             st.caption(
                 f"La app calcula los días de las **fechas**, no de la columna del Excel. "
@@ -20608,7 +20608,7 @@ def render_carpocapsa_grafica_capturas(traps_campaign, campaign_year, clave_camp
         umbral_line = alt.Chart(umbral_df).mark_rule(color="orange", strokeDash=[6,3]).encode(y="y:Q")
         st.altair_chart((linea_cap + umbral_line).properties(height=350, title=f"Capturas totales campaña {campaign_year}"), use_container_width=True, **_kg("total"))
         if con_tabla:
-            st.dataframe(capturas_total[["Fecha_str", "Capturas machos"]].rename(columns={"Fecha_str": "Fecha", "Capturas machos": "Total capturas"}), use_container_width=True, hide_index=True)
+            st_tabla(capturas_total[["Fecha_str", "Capturas machos"]].rename(columns={"Fecha_str": "Fecha", "Capturas machos": "Total capturas"}), use_container_width=True, hide_index=True)
 
     with tab_campo:
         if capturas_campo.empty:
@@ -21362,7 +21362,7 @@ def carpocapsa_tab(history):
                                      margin=dict(l=10, r=10, t=40, b=10), legend_title="Campaña")
                 st.plotly_chart(fig_dd, use_container_width=True)
                 st.markdown("**Resumen por campaña**")
-                st.dataframe(pd.DataFrame(resumen), use_container_width=True, hide_index=True)
+                st_tabla(pd.DataFrame(resumen), use_container_width=True, hide_index=True)
                 st.caption(
                     "Curvas superpuestas por **día del año** (eje X = fecha sin año). Las capturas "
                     "se muestran **por trampa y día** (comparable aunque pongas distinto nº de "
@@ -21385,7 +21385,7 @@ def carpocapsa_tab(history):
     st.markdown("### 2. Capturas de trampas")
     st.caption(f"Introduce o revisa las lecturas de la campaña {campaign_year}. El campo/zona debe coincidir con el biofix si quieres cálculo por zona.")
     traps_base = carpocapsa_filter_campaign(st.session_state.carpocapsa_traps_df, campaign_year).copy()
-    traps_edit = st.data_editor(
+    traps_edit = st_editor(
         traps_base,
         use_container_width=True,
         hide_index=True,
@@ -21415,7 +21415,7 @@ def carpocapsa_tab(history):
     traps_prepared = carpocapsa_prepare_traps_df(traps_edit)
     if not traps_prepared.empty:
         with st.expander("Resumen de capturas", expanded=True):
-            st.dataframe(traps_prepared, use_container_width=True, hide_index=True)
+            st_tabla(traps_prepared, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar capturas carpocapsa CSV",
                 data=traps_prepared.to_csv(index=False).encode("utf-8-sig"),
@@ -21577,9 +21577,9 @@ def carpocapsa_tab(history):
             _df_vis = df_show[_display_cols]
             try:
                 _styled = _df_vis.style.apply(_carpo_row_color, axis=1)
-                st.dataframe(_styled, use_container_width=True, hide_index=True)
+                st_tabla(_styled, use_container_width=True, hide_index=True)
             except Exception:
-                st.dataframe(_df_vis, use_container_width=True, hide_index=True)
+                st_tabla(_df_vis, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar ventanas carpocapsa CSV",
                 data=multi_df.to_csv(index=False).encode("utf-8-sig"),
@@ -21594,7 +21594,7 @@ def carpocapsa_tab(history):
         )
         with st.expander("Grados-día diarios usados por el modelo", expanded=False):
             if not daily_dd.empty:
-                st.dataframe(daily_dd, use_container_width=True, hide_index=True)
+                st_tabla(daily_dd, use_container_width=True, hide_index=True)
                 st.download_button(
                     "Descargar grados-día diarios",
                     data=daily_dd.to_csv(index=False).encode("utf-8-sig"),
@@ -21639,7 +21639,7 @@ def carpocapsa_tab(history):
         # Ocultar columnas vacías para presentación más limpia
         cols_show = [c for c in carp_treatments.columns
                      if not (carp_treatments[c].astype(str).str.strip().isin(["", "nan", "None"]).all())]
-        st.dataframe(carp_treatments[cols_show], use_container_width=True, hide_index=True)
+        st_tabla(carp_treatments[cols_show], use_container_width=True, hide_index=True)
         st.download_button(
             "Descargar tratamientos carpocapsa CSV",
             data=carp_treatments.to_csv(index=False).encode("utf-8-sig"),
@@ -21719,7 +21719,7 @@ def carpocapsa_tab(history):
                 f"Prueba a bajar el umbral o comprueba que tienes capturas guardadas en sesión."
             )
         else:
-            st.dataframe(dd_treat_df, use_container_width=True, hide_index=True)
+            st_tabla(dd_treat_df, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar análisis DD-tratamiento CSV",
                 data=dd_treat_df.to_csv(index=False).encode("utf-8-sig"),
@@ -21762,7 +21762,7 @@ def carpocapsa_tab(history):
             if _timing is not None and not _timing.empty:
                 st.markdown("**🎯 Puntería de los tratamientos vs. eclosión (por campo y generación)**")
                 _disp = _timing.drop(columns=[c for c in _timing.columns if c.startswith("_")])
-                st.dataframe(_disp, use_container_width=True, hide_index=True)
+                st_tabla(_disp, use_container_width=True, hide_index=True)
                 _efi = int(_timing["_efi"].sum()); _n = int(_timing["_n"].sum())
                 _pr = int(_timing["_pr"].sum()); _ta = int(_timing["_ta"].sum())
                 _gmax = int(_timing["Gen."].max())
@@ -21838,7 +21838,7 @@ def carpocapsa_tab(history):
                                 "perderá si se reinicia la app. Usa el botón de guardar snapshot de "
                                 "carpocapsa para persistirlo.")
                     # Mostrar el biofix recién fijado para que lo veas
-                    st.dataframe(
+                    st_tabla(
                         _new_bf[["Campo/Zona", "Fecha biofix", "Criterio"]].assign(
                             **{"Fecha biofix": pd.to_datetime(_new_bf["Fecha biofix"]).dt.strftime("%d/%m/%Y")}
                         ),
@@ -21942,7 +21942,7 @@ def carpocapsa_tab(history):
                          "Hueco mayor", "Días del hueco", "DD eclosión perdidos",
                          "Capturas máx en el hueco"]
             _vista = _cb_res[[c for c in _cols_res if c in _cb_res.columns]].copy()
-            st.dataframe(
+            st_tabla(
                 _vista, use_container_width=True, hide_index=True,
                 column_config={
                     "Campo/Zona": st.column_config.Column("Campo/Zona", pinned=True),
@@ -21980,7 +21980,7 @@ def carpocapsa_tab(history):
                         "la clave para leerlo: un hueco largo con capturas altas es un aviso "
                         "que se pasó por alto; un hueco largo con capturas de 0-4 es el umbral "
                         "funcionando como se le pidió — y aun así la fruta quedó expuesta.")
-                    st.dataframe(_cb_hue, use_container_width=True, hide_index=True)
+                    st_tabla(_cb_hue, use_container_width=True, hide_index=True)
 
             with st.expander("💊 Pases aplicados y hasta cuándo protegieron", expanded=False):
                 if _cb_pas.empty:
@@ -21991,7 +21991,7 @@ def carpocapsa_tab(history):
                         "producto, recortada si la lluvia lo lavó antes. **Fase al aplicar** "
                         "dice si en ese momento había larvas naciendo — un pase fuera de banda "
                         "de eclosión no protege nada, por bien dado que esté.")
-                    st.dataframe(_cb_pas, use_container_width=True, hide_index=True)
+                    st_tabla(_cb_pas, use_container_width=True, hide_index=True)
 
             with st.expander("📖 Cómo se calcula y qué NO dice", expanded=False):
                 st.markdown(
@@ -22190,7 +22190,7 @@ def carpocapsa_tab(history):
                         })
                     if _fil:
                         _dfp = pd.DataFrame(_fil)
-                        st.dataframe(
+                        st_tabla(
                             _dfp, use_container_width=True, hide_index=True,
                             column_config={
                                 "% de la eclosión ya pasado": st.column_config.ProgressColumn(
@@ -22254,7 +22254,7 @@ def carpocapsa_tab(history):
     _dmg_src = _dmg_src[CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS
                         + [c for c in _dmg_src.columns
                            if c not in CARPOCAPSA_DEFAULT_DAMAGE_COLUMNS]]
-    damage_edit = st.data_editor(
+    damage_edit = st_editor(
         _dmg_src,
         use_container_width=True,
         hide_index=True,
@@ -22310,7 +22310,7 @@ def carpocapsa_tab(history):
         _cols_calc = [c for c in ["Fecha", "Campo/Zona", "Variedad", "Origen",
                                   "% daño", "% con galería", "% dudoso", "Estado objetivo <1%", "Descuadre"]
                       if c in damage_show.columns]
-        st.dataframe(damage_show[_cols_calc], use_container_width=True, hide_index=True,
+        st_tabla(damage_show[_cols_calc], use_container_width=True, hide_index=True,
                      column_config={
                          "% con galería": st.column_config.NumberColumn(
                              "% con galería", format="%.1f %%",
@@ -24042,7 +24042,7 @@ def resultado_sanitario_tab():
         autosave_resultado_sanitario_to_supabase()
 
     _sev = ["", "0", "1", "2", "3"]
-    st.data_editor(
+    st_editor(
         disp, key=editor_key, on_change=_apply_rs, num_rows="fixed",
         use_container_width=True, hide_index=True,
         disabled=["Año", "Campo", "Variedad", "Sup. ha", "Fungicidas (nº)", "Detalle tratamientos"],
@@ -24650,6 +24650,28 @@ def _tabla_celda(v, col, dec, cfg):
             return str(int(v))
         return _fmt_es_number(v, dec)
     return _h.escape(str(v))
+
+
+def st_editor(data, column_config=None, column_order=None, **kw):
+    """`st.data_editor` con la 1ª columna FIJADA al desplazarse (las tablas editables no pueden
+    ir en HTML; el encabezado sigue siendo el de Streamlit). Devuelve lo mismo que data_editor."""
+    _cc = dict(column_config or {})
+    try:
+        _cols = list(column_order) if column_order else list(getattr(data, "columns", []))
+        if _cols:
+            _c0 = _cols[0]
+            _prev = _cc.get(_c0)
+            if isinstance(_prev, dict):
+                _cc[_c0] = {**_prev, "pinned": True}
+            elif isinstance(_prev, str):
+                _cc[_c0] = {"label": _prev, "pinned": True}
+            elif _c0 not in _cc:
+                _cc[_c0] = {"pinned": True}
+    except Exception:
+        _cc = dict(column_config or {})
+    if column_order is not None:
+        kw["column_order"] = column_order
+    return st.data_editor(data, column_config=_cc, **kw)
 
 
 def _tabla_indice_trivial(idx):
@@ -34863,7 +34885,7 @@ def render_decisiones_panel():
             lbl, min_value=0, max_value=100, step=1, format="%d%%",
             help="Eficacia estimada (0-100 %). Informativa: se calibra en el código, no aquí.")
 
-        _catalog_edited = st.data_editor(
+        _catalog_edited = st_editor(
             _disp_df,
             num_rows="dynamic",
             use_container_width=True,
