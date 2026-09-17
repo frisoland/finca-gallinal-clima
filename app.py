@@ -20760,6 +20760,131 @@ def _carpo_movil_tarjeta(titulo, lineas, color):
             f"{_cuerpo}</div>")
 
 
+def render_carpocapsa_movil_campo(history, campanas, anio_def, precalc=None):
+    """«🔎 Consulta por campo» del móvil: qué tratamientos de carpocapsa llevó un campo, en qué
+    momento biológico cayó cada uno y cuánto de la eclosión quedó cubierta. Pedido por el
+    usuario (17/09/2026) al ver daño caminando por un campo. Mismos cálculos y ajustes por
+    defecto que los puntos 5 y 7 de la pantalla completa."""
+    import html as _h
+    st.markdown("#### 🔎 Consulta por campo")
+    _anios = sorted(set(int(a) for a in (campanas or [])) | {int(anio_def)}, reverse=True)
+    _c1, _c2 = st.columns([1, 2])
+    with _c1:
+        _anio = st.selectbox("Campaña", _anios, key="mob_carpo_campo_anio")
+    _traps_all = st.session_state.get("carpocapsa_traps_df", pd.DataFrame())
+    _traps = carpocapsa_filter_campaign(_traps_all, _anio)
+    _hc = carpocapsa_filter_history_campaign(history, _anio)
+    if precalc and _anio in precalc:
+        _trt, _res, _pas = precalc[_anio]
+    else:
+        _acts = st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS))
+        _trt = carpocapsa_treatments_from_activities(_acts, _anio, _hc, rain_days_limit=3)
+        if _traps is None or _traps.empty or _hc is None or _hc.empty:
+            _res, _pas = pd.DataFrame(), pd.DataFrame()
+        else:
+            _dd = carpocapsa_daily_degree_days(_hc, base_temp=10.0, upper_temp=31.1, method="horario")
+            _res, _hue, _pas = carpocapsa_cobertura_eclosion(
+                _traps, _trt if not _trt.empty else None, _dd, _anio, history=_hc,
+                persistencia_fija=None, aplicar_lavado=True)
+    # Campos: los de las trampas de esa campaña y los de la finca (sin el campo padre si sus
+    # subcampos tienen trampa propia, p. ej. «GY» → «GY - Amariega» y «GY - Gallinal»).
+    _z = (sorted(_traps["Campo/Zona"].astype(str).unique())
+          if (_traps is not None and not _traps.empty and "Campo/Zona" in _traps.columns) else [])
+    _campos = list(_z)
+    for fr in FIELDS_BASE_ROWS:
+        _c = str(fr["Campo"])
+        if _c not in _campos and not any(z.startswith(_c + " - ") for z in _z):
+            _campos.append(_c)
+    _campos = sorted(_campos)
+    if not _campos:
+        st.info("No hay campos para esa campaña.")
+        return
+    with _c2:
+        _campo = st.selectbox("Campo", _campos, key="mob_carpo_campo_sel")
+
+    # Tratamientos del campo (por fecha: Agroptima parte una aplicación en una fila por producto)
+    _mios = (_trt[_trt["Campos"].apply(lambda x: carpocapsa_campo_en_tratamiento(x, _campo))]
+             if (_trt is not None and not _trt.empty and "Campos" in _trt.columns) else pd.DataFrame())
+    _fechas = (sorted(set(pd.to_datetime(_mios["Fecha"], errors="coerce").dropna().dt.normalize()))
+               if not _mios.empty else [])
+    _fila = (_res[_res["Campo/Zona"].astype(str) == _campo].iloc[0]
+             if (_res is not None and not _res.empty and (_res["Campo/Zona"].astype(str) == _campo).any())
+             else None)
+    _capt = np.nan
+    if _campo in _z:
+        _ct = _traps[_traps["Campo/Zona"].astype(str) == _campo]
+        _cc = next((c for c in ["Capturas machos", "Capturas/trampa/día", "Capturas"] if c in _ct.columns), None)
+        if _cc:
+            _capt = pd.to_numeric(_ct[_cc], errors="coerce").sum()
+    st.markdown(_movil_cifras_html([
+        ("💊 Tratamientos", len(_fechas)),
+        ("📅 Último", _fechas[-1].strftime("%d/%m") if _fechas else "—"),
+        ("🦋 Biofix", pd.Timestamp(_fila["Biofix"]).strftime("%d/%m") if _fila is not None else "—"),
+        ("🪤 Capturas", "—" if pd.isna(_capt) else _fmt_es_number(_capt, 0))]), unsafe_allow_html=True)
+
+    # ── Tratamientos, en orden, con el momento biológico ──────────────────────────
+    if not _fechas:
+        st.caption(f"Sin tratamientos de carpocapsa registrados en {_campo} en {_anio}.")
+    else:
+        _pc = (_pas[_pas["Campo/Zona"].astype(str) == _campo]
+               if (_pas is not None and not _pas.empty) else pd.DataFrame())
+        _rain_col = "Lluvia 3d post-tratamiento mm"
+        _tarj = []
+        for _f in _fechas:
+            _dia = _mios[pd.to_datetime(_mios["Fecha"], errors="coerce").dt.normalize() == _f]
+            _prods = []
+            for _x in _dia.get("Producto carpocapsa", pd.Series(dtype=str)).fillna("").astype(str):
+                for _y in _x.split(","):
+                    _y = _y.strip()
+                    if _y and _y.lower() not in ("nan", "none") and _y not in _prods:
+                        _prods.append(_y)
+            _ll = pd.to_numeric(_dia.get(_rain_col, pd.Series(dtype=float)), errors="coerce").max()
+            _p = (_pc[pd.to_datetime(_pc["Fecha"]).dt.normalize() == _f].iloc[0]
+                  if (not _pc.empty and (pd.to_datetime(_pc["Fecha"]).dt.normalize() == _f).any()) else None)
+            _lin = []
+            if _p is not None:
+                _fase = carpocapsa_fase(_p["DD desde biofix"])
+                _lin.append(f"🌡️ <b>{_fmt_es_number(_p['DD desde biofix'], 0)} DD</b> desde el biofix → "
+                            f"{_h.escape(str(_p['Fase al aplicar']))}")
+                _lin.append(f"🛡️ Protege hasta el {pd.Timestamp(_p['Protege hasta']):%d/%m} "
+                            f"({int(_p['Días reales'])} días)"
+                            + (" · 🌧️ cortado por lavado de lluvia" if str(_p["Lavado por lluvia"]).strip() else ""))
+                _color = "#1b5e20" if _fase.get("optima") else ("#2e7d32" if _fase.get("eclosion") else "#ef6c00")
+            else:
+                _lin.append("Sin biofix del campo: no se puede decir en qué momento biológico cayó.")
+                _color = "#9e9e9e"
+            _lin.append(f"<span style='color:#555'>🌧️ Lluvia 3 días después: "
+                        f"{'—' if pd.isna(_ll) else _fmt_es_number(_ll, 1) + ' mm'}</span>")
+            _tarj.append(_carpo_movil_tarjeta(
+                f"{_f:%d/%m/%Y} · {_h.escape(', '.join(_prods) or '—')}", _lin, _color))
+        st.markdown("".join(_tarj), unsafe_allow_html=True)
+        st.caption("Verde = cayó con larvas naciendo (⭐ = inicio de la eclosión, el mejor momento) · "
+                   "naranja = sin eclosión en ese momento (antes de nacer la larva o entre "
+                   "generaciones). Fases: mismas bandas de eclosión que la gráfica (UC IPM).")
+
+    # ── Cobertura de la eclosión del campo ─────────────────────────────────────────
+    if _fila is not None:
+        _lin = []
+        for _g, _et in ((1, "1ª generación"), (2, "2ª generación")):
+            _pct = _fila.get(f"% eclosión {_g}ª cubierta")
+            _dias_g = _fila.get(f"Días eclosión {_g}ª", 0)
+            if pd.isna(_pct):
+                _lin.append(f"{_et}: sin eclosión todavía")
+                continue
+            _ab = bool(_fila.get(f"_abierta{_g}", False))
+            _lin.append(f"{_et}: <b>{_fmt_es_number(_pct, 0)} %</b> de {int(_dias_g)} días de eclosión "
+                        f"con producto activo" + (" · aún abierta" if _ab else ""))
+        _m = pd.to_numeric(pd.Series([_fila.get("% eclosión 1ª cubierta"), _fila.get("% eclosión 2ª cubierta")]),
+                           errors="coerce").min()
+        _col = "#2e7d32" if (pd.notna(_m) and _m >= 70) else ("#ef6c00" if (pd.notna(_m) and _m >= 40) else "#c62828")
+        st.markdown(_carpo_movil_tarjeta(f"🛡️ Protección en la eclosión · {_h.escape(_campo)}", _lin, _col),
+                    unsafe_allow_html=True)
+        st.caption("Días con producto activo ÷ días de eclosión, desde el biofix del campo, con la "
+                   "persistencia de cada producto y el lavado por lluvia (punto 7 de la pantalla completa).")
+    elif _campo not in _z:
+        st.caption("Este campo no tiene trampa en esa campaña: sin biofix no se puede medir la cobertura.")
+
+
 def render_carpocapsa_movil(history):
     """Carpocapsa en el MÓVIL: lo esencial en tarjetas y, con un interruptor, la pantalla
     completa de siempre. Usa las MISMAS funciones y los MISMOS valores por defecto que la
@@ -20903,6 +21028,8 @@ def render_carpocapsa_movil(history):
             if not _peor.empty:
                 st.caption("Menos cubiertos en 2ª: " + " · ".join(
                     f"{r['Campo/Zona']} {r['% eclosión 2ª cubierta']:.0f} %" for _, r in _peor.iterrows()))
+
+        render_carpocapsa_movil_campo(history, _campanas, _anio, {_anio: (_trt, _res, _pas)})
 
     st.divider()
     if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="carpo_movil_completa",
