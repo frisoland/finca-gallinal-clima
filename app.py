@@ -7988,8 +7988,9 @@ def render_sencrop_movil():
                 _hr = r.get("HR media (%)")
                 _tarj.append(_carpo_movil_tarjeta(
                     f"{_dias[_f.weekday()].capitalize()} {_f:%d/%m}",
-                    [(lambda _t: f"🌡️ {_h.escape(_t.replace('.', ','))} ºC" if any(ch.isdigit() for ch in _t)
-                      else "🌡️ —")(str(r['T. min/máx (°C)']))
+                    [(lambda _t, _tm: f"🌡️ {_h.escape(_t.replace('.', ','))} ºC" if any(ch.isdigit() for ch in _t)
+                      else (f"🌡️ media {_fmt_es_number(_tm, 1)} ºC" if pd.notna(_tm) else "🌡️ —"))(
+                        str(r['T. min/máx (°C)']), pd.to_numeric(r.get('T. media (°C)'), errors='coerce'))
                      + ("" if pd.isna(_hr) else f" · 💧 HR {_fmt_es_number(_hr, 0)} %")
                      + f" · 🌧️ {_fmt_es_number(r['Lluvia prev. (mm)'], 1)} mm",
                      f"🍃 {int(r['Horas mojadura'])} h de hoja mojada ({_h.escape(str(r['Fuente mojadura']))})",
