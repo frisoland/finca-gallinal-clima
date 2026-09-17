@@ -7800,7 +7800,7 @@ def render_sencrop_panel():
             with st.expander("🧪 Rutas probadas y qué contestó cada una", expanded=bool(_derr)):
                 st.caption("La ruta buena aún no se conoce con seguridad. Si alguna da 200 "
                            "pero no la reconozco, pégame su respuesta y ajusto el mapeo.")
-                st.dataframe(_int, use_container_width=True, hide_index=True)
+                st_tabla(_int, use_container_width=True, hide_index=True)
         if _dev is not None and not _dev.empty:
             _c_id = _sencrop_col_candidata(_dev, ["deviceid", "device_id", "id"])
             # CASAR POR CONTENIDO, NO POR NOMBRE DE COLUMNA. Buscar por nombre elegía
@@ -7822,7 +7822,7 @@ def render_sencrop_panel():
                 _c_ref = _sencrop_col_candidata(
                     _dev, ["identification", "reference", "serial", "ref", "name", "label"])
             st.markdown("**Dispositivos que Sencrop dice que son tuyos**")
-            st.dataframe(_dev, use_container_width=True, hide_index=True)
+            st_tabla(_dev, use_container_width=True, hide_index=True)
             if _c_id and _c_ref:
                 _mapa = {}
                 for _, _r in _dev.iterrows():
@@ -7851,7 +7851,7 @@ def render_sencrop_panel():
                     "Estado": "✅ correcto" if _ok_rio else ("❌ hay que cambiarlo" if _real_rio else "⚠️ no aparece"),
                 }
                 st.markdown("**Cotejo por referencia**")
-                st.dataframe(pd.DataFrame(_filas + [_fila_rio]), use_container_width=True, hide_index=True)
+                st_tabla(pd.DataFrame(_filas + [_fila_rio]), use_container_width=True, hide_index=True)
                 if _real_rio and not _ok_rio:
                     st.warning(f"El ID del sensor de la {ZONA_RIO} ha cambiado: el real es `{_real_rio}`. "
                                "Hay que corregirlo en el código (`SENCROP_SENSOR_RIO`).")
@@ -7893,7 +7893,7 @@ def render_sencrop_panel():
             st.session_state["_sencrop_probe_uids"] = _uids
         _pr = st.session_state.get("_sencrop_probe_df")
         if _pr is not None and not _pr.empty:
-            st.dataframe(_pr, use_container_width=True, hide_index=True)
+            st_tabla(_pr, use_container_width=True, hide_index=True)
             _uids = st.session_state.get("_sencrop_probe_uids") or []
             if _uids:
                 st.caption("userIds candidatos encontrados: " + ", ".join(f"`{u}`" for u in _uids))
@@ -8152,7 +8152,7 @@ def _render_tabla_riesgo_previsto(forecast_df):
         for _col in ("temp_media", "temp_min", "temp_max", "viento_velocidad", "viento_rafaga"):
             if _col in display_fc.columns:
                 display_fc[_col] = display_fc[_col].round(1)
-        st.dataframe(display_fc, use_container_width=True, hide_index=True)
+        st_tabla(display_fc, use_container_width=True, hide_index=True)
         st.download_button(
             "⬇️ Descargar predicción CSV",
             data=forecast_df[cols_show].to_csv(index=False).encode("utf-8-sig"),
@@ -9782,7 +9782,7 @@ def _render_dashboard_zona_rio(history, soil_type, hoja_threshold):
 
     with st.expander("🔍 Calidad del dato", expanded=False):
         _a = availability_table(r, min_dt, max_dt)
-        st.dataframe(_a[_a["Sensor"] == next(iter(SENSOR_BLOCKS))], use_container_width=True)
+        st_tabla(_a[_a["Sensor"] == next(iter(SENSOR_BLOCKS))], use_container_width=True)
 
     st.markdown("#### Resumen últimos 30 días")
     hz = historico_para_ver(ZONA_RIO, history, rio)
@@ -9793,7 +9793,7 @@ def _render_dashboard_zona_rio(history, soil_type, hoja_threshold):
         last_summary = period_summary(last_df, soil_type, last_start, max_dt)
         _summary_v = last_summary.T.reset_index()
         _summary_v.columns = ["Indicador", "Valor"]
-        st.dataframe(_summary_v, use_container_width=True, hide_index=True)
+        st_tabla(_summary_v, use_container_width=True, hide_index=True)
 
 
 _MOVIL_RESUMEN_CLAVES = [
@@ -10148,7 +10148,7 @@ def dashboard_tab(history, soil_type, hoja_threshold):
 
     with st.expander("🔍 Calidad del dato", expanded=False):
         avail_global = availability_table(history, min_dt, max_dt)
-        st.dataframe(avail_global, use_container_width=True)
+        st_tabla(avail_global, use_container_width=True)
 
     st.markdown("#### Resumen últimos 30 días")
     last_start = max_dt - pd.Timedelta(days=30)
@@ -10159,7 +10159,7 @@ def dashboard_tab(history, soil_type, hoja_threshold):
         # Tabla vertical: transponer para evitar el scroll horizontal
         _summary_v = last_summary.T.reset_index()
         _summary_v.columns = ["Indicador", "Valor"]
-        st.dataframe(_summary_v, use_container_width=True, hide_index=True)
+        st_tabla(_summary_v, use_container_width=True, hide_index=True)
 
 
 def analysis_tab(history, soil_type, hoja_threshold):
@@ -10198,11 +10198,11 @@ def analysis_tab(history, soil_type, hoja_threshold):
 
     with st.expander("🔍 Calidad de datos", expanded=False):
         if _zona_a == ZONA_RIO:
-            st.dataframe(disponibilidad_zona_rio(
+            st_tabla(disponibilidad_zona_rio(
                 st.session_state.get("history_rio_df", pd.DataFrame(columns=CANONICAL_COLUMNS)),
                 avail, period["start_ts"], period["end_ts"]), use_container_width=True)
         else:
-            st.dataframe(avail, use_container_width=True)
+            st_tabla(avail, use_container_width=True)
 
     st.markdown("#### Resumen global del periodo")
     # Tabla HTML con primera columna sticky + cabecera verde (igual que Previsión)
@@ -10238,7 +10238,7 @@ def analysis_tab(history, soil_type, hoja_threshold):
             unsafe_allow_html=True,
         )
     else:
-        st.dataframe(global_summary, use_container_width=True)
+        st_tabla(global_summary, use_container_width=True)
 
     render_interpreted_report(global_summary, avail, soil_type)
 
@@ -10428,7 +10428,7 @@ def _render_frio_zona(hist, zona, selected_chill_year, selected_season):
             )
             _rows = _frio_cumplimiento_filas(variedades, _cp_acum)
             _req_df = pd.DataFrame(_rows).sort_values("Variedad").reset_index(drop=True)
-            st.dataframe(_req_df, use_container_width=True, hide_index=True)
+            st_tabla(_req_df, use_container_width=True, hide_index=True)
             st.caption(
                 "Req. por variedad: forcing de SERIDA/Delgado 2021 (Regona 90 · Collaos 85 · "
                 "Xuanina 80 · De la Riega 72). **†** = estimado (Verdialona 75, PLS+offset). "
@@ -10474,7 +10474,7 @@ def _render_frio_zona(hist, zona, selected_chill_year, selected_season):
                                                else ("— aún" if _r["frio_cumplido"] else "—")),
                         f"GDH acum. ({_cut_txt})": (_miles(_ga) if pd.notna(_ga) else "—"),
                     })
-                st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+                st_tabla(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
                 st.caption(
                     f"Última columna = GDH acumulados **desde la salida de reposo** hasta la fecha "
                     f"de consulta ({_cut_txt}). El conteo de GDH **termina en el inicio del cuajado** "
@@ -11425,9 +11425,9 @@ def render_comparacion_nave_rio(nave, rio):
         st.caption("Azul: a esa hora el Río está más frío que la Nave. Naranja: más cálido.")
 
     st.markdown("**🌡️ Temperatura y humedad por mes**")
-    st.dataframe(res["mensual_t"], hide_index=True, use_container_width=True)
+    st_tabla(res["mensual_t"], hide_index=True, use_container_width=True)
     st.markdown("**🌧️ Lluvia por mes**")
-    st.dataframe(res["mensual_ll"], hide_index=True, use_container_width=True)
+    st_tabla(res["mensual_ll"], hide_index=True, use_container_width=True)
 
     _d = res["diario"]
     _d = _d[_d["ok_ll"]] if not _d.empty else _d
@@ -11613,7 +11613,7 @@ def comparator_tab(history, soil_type, hoja_threshold):
                 )
 
                 with st.expander("Tabla completa técnica", expanded=False):
-                    st.dataframe(cmp_month, use_container_width=True)
+                    st_tabla(cmp_month, use_container_width=True)
 
                 render_week_comparison_explanation(cmp_month)
 
@@ -11702,7 +11702,7 @@ def comparator_tab(history, soil_type, hoja_threshold):
                 )
 
                 with st.expander("Tabla completa técnica", expanded=False):
-                    st.dataframe(cmp_fortnight, use_container_width=True)
+                    st_tabla(cmp_fortnight, use_container_width=True)
 
                 render_week_comparison_explanation(cmp_fortnight)
 
@@ -11761,7 +11761,7 @@ def comparator_tab(history, soil_type, hoja_threshold):
                 )
 
                 with st.expander("Tabla completa técnica", expanded=False):
-                    st.dataframe(cmp_week, use_container_width=True)
+                    st_tabla(cmp_week, use_container_width=True)
 
                 render_week_comparison_explanation(cmp_week)
 
@@ -15076,7 +15076,7 @@ def render_wetness_audit(history):
             "Temp °C": _sub["_t"].round(1),
             "Observación": _sub["_flag"],
         })
-        st.dataframe(_tab, hide_index=True, use_container_width=True, height=380)
+        st_tabla(_tab, hide_index=True, use_container_width=True, height=380)
         st.caption(
             "**Cómo leerlo:** si ves muchas horas con lluvia y pocos minutos de mojada, el "
             "sensor se queda corto y los valores de infección salen bajos. Si el sensor "
@@ -24572,6 +24572,205 @@ def _auto_decimals(series):
     return 0
 
 
+# ── TABLAS CON 1ª COLUMNA FIJA Y ENCABEZADO DE COLOR (toda la app, 17/09/2026) ──────────────
+# El usuario quiere que TODAS las tablas sean como las de Frío o Producción: primera columna
+# fija y encabezados en verde oscuro, para no perder la referencia al desplazarse en tablas
+# anchas. `st_tabla` admite lo mismo que `st.dataframe` (DataFrame o Styler con colores,
+# hide_index, height, column_config con etiquetas, formatos y columnas ocultas) y dibuja la
+# tabla en HTML. Las tablas de más de TABLA_FIJA_MAX_FILAS filas (datos en bruto) siguen como
+# tabla interactiva de Streamlit, con la 1ª columna fijada, para no ralentizar la pantalla.
+TABLA_FIJA_MAX_FILAS = 300
+
+
+def _tabla_decimales(serie):
+    """Decimales justos para una columna: los que tenga, con tope según el tamaño del número
+    (≥100 → 1 · ≥10 → 2 · <10 → 3), para no enseñar 11.238,974 kg ni perder 0,35."""
+    if pd.api.types.is_bool_dtype(serie) or pd.api.types.is_datetime64_any_dtype(serie):
+        return 0
+    nums = pd.to_numeric(serie, errors="coerce")
+    nums = pd.Series(nums, dtype="float64").replace([np.inf, -np.inf], np.nan).dropna()
+    if nums.empty:
+        return 0
+    _max = float(nums.abs().max())
+    tope = 1 if _max >= 100 else (2 if _max >= 10 else 3)
+    for d in range(0, tope + 1):
+        if ((nums - nums.round(d)).abs() <= 1e-9).all():
+            return d
+    return tope
+
+
+def _tabla_col_sin_miles(nombre):
+    """Columnas de años, campañas o identificadores: sin separador de miles (2026, no 2.026)."""
+    n = str(nombre).strip().lower()
+    return any(k in n for k in ("año", "ano", "year", "campaña", "temporada", "id", "código", "codigo", "nº reg"))
+
+
+def _tabla_momentjs_a_strftime(fmt):
+    for a, b in (("YYYY", "%Y"), ("YY", "%y"), ("MM", "%m"), ("DD", "%d"), ("HH", "%H"),
+                 ("mm", "%M"), ("ss", "%S")):
+        fmt = fmt.replace(a, b)
+    return fmt
+
+
+def _tabla_celda(v, col, dec, cfg):
+    """Texto de una celda: respeta el formato del column_config y, si no hay, formato español."""
+    import html as _h
+    import datetime
+    _tc = (cfg or {}).get("type_config") or {} if isinstance(cfg, dict) else {}
+    _tipo, _fmt = _tc.get("type"), _tc.get("format")
+    try:
+        if v is None or (not isinstance(v, (list, tuple, dict, np.ndarray)) and pd.isna(v)):
+            return "—"
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, (bool, np.bool_)):
+        return "Sí" if v else "No"
+    if isinstance(v, (pd.Timestamp, datetime.datetime, datetime.date)) and not isinstance(v, str):
+        _t = pd.Timestamp(v)
+        if _tipo in ("date", "datetime") and _fmt:
+            try:
+                return _h.escape(_t.strftime(_tabla_momentjs_a_strftime(str(_fmt))))
+            except Exception:
+                pass
+        if isinstance(v, datetime.date) and not isinstance(v, datetime.datetime):
+            return _t.strftime("%d/%m/%Y")
+        return _t.strftime("%d/%m/%Y") if (_t.hour, _t.minute, _t.second) == (0, 0, 0) else _t.strftime("%d/%m/%Y %H:%M")
+    if isinstance(v, (list, tuple, np.ndarray)):
+        return _h.escape(", ".join(str(x) for x in v))
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        if _fmt and isinstance(_fmt, str) and "%" in _fmt:
+            try:
+                _s = _fmt % v
+                return _h.escape(_s.replace(".", ",") if "f" in _fmt else _s)
+            except Exception:
+                pass
+        if _fmt == "percent":
+            return _fmt_es_number(float(v) * 100, 1) + " %"
+        if _tabla_col_sin_miles(col) and float(v) == int(v):
+            return str(int(v))
+        return _fmt_es_number(v, dec)
+    return _h.escape(str(v))
+
+
+def _tabla_indice_trivial(idx):
+    """Índice 0, 1, 2… sin nombre: no aporta nada y no se enseña."""
+    return (isinstance(idx, pd.RangeIndex) and idx.start == 0 and idx.step == 1
+            and idx.name is None)
+
+
+def st_tabla(data, hide_index=None, use_container_width=True, height=None, column_config=None,
+             column_order=None, **_otros):
+    """Como `st.dataframe`, pero con 1ª columna fija y encabezados de color (ver arriba)."""
+    import html as _h
+    _estilos = {}
+    df = data
+    if hasattr(data, "data") and hasattr(data, "_compute") and not isinstance(data, pd.DataFrame):
+        try:
+            data._compute()
+            for (r, c), props in data.ctx.items():
+                _estilos[(r, c)] = ";".join(f"{k}:{v}" for k, v in props)
+        except Exception:
+            _estilos = {}
+        df = data.data
+    if not isinstance(df, pd.DataFrame):
+        try:
+            df = pd.DataFrame(df)
+        except Exception:
+            st.dataframe(data, hide_index=hide_index, use_container_width=use_container_width,
+                         height=height, column_config=column_config, **_otros)
+            return
+    _cc = dict(column_config or {})
+
+    # Tablas largas de datos: interactiva de Streamlit con la 1ª columna fijada.
+    if len(df) > TABLA_FIJA_MAX_FILAS:
+        _muestra_idx = hide_index is False or (hide_index is None and not _tabla_indice_trivial(df.index))
+        _cc2 = dict(_cc)
+        if not _muestra_idx and len(df.columns):
+            _c0 = (list(column_order)[0] if column_order else df.columns[0])
+            _prev = _cc2.get(_c0)
+            if isinstance(_prev, dict):
+                _cc2[_c0] = {**_prev, "pinned": True}
+            elif isinstance(_prev, str):
+                _cc2[_c0] = {"label": _prev, "pinned": True}
+            elif _prev is None and _c0 in _cc2:
+                pass
+            else:
+                _cc2[_c0] = {"pinned": True}
+        _kw = dict(hide_index=hide_index, use_container_width=use_container_width, column_config=_cc2)
+        if height is not None:
+            _kw["height"] = height
+        if column_order is not None:
+            _kw["column_order"] = column_order
+        try:
+            st.dataframe(data, **_kw)
+        except Exception:
+            _kw["column_config"] = column_config
+            st.dataframe(data, **_kw)
+        return
+
+    _muestra_idx = hide_index is False or (hide_index is None and not _tabla_indice_trivial(df.index))
+    _n_idx = 0
+    if _muestra_idx:
+        _n_idx = df.index.nlevels
+        _nombres = [n if n is not None else "" for n in df.index.names]
+        df = df.copy()
+        df.index = df.index.set_names([f"__idx{i}__" if not n else n for i, n in enumerate(_nombres)])
+        df = df.reset_index()
+        _etiquetas_idx = _nombres
+    else:
+        _etiquetas_idx = []
+    _cols = list(df.columns)
+    if column_order is not None:
+        _vis = [c for c in _cols[:_n_idx]] + [c for c in column_order if c in _cols[_n_idx:]]
+    else:
+        _vis = list(_cols)
+    _vis = [c for c in _vis if not (c in _cc and (_cc[c] is None or (isinstance(_cc[c], dict) and _cc[c].get("hidden"))))]
+    if not _vis:
+        return
+
+    def _etq(c):
+        if _cols.index(c) < _n_idx:
+            return _etiquetas_idx[_cols.index(c)]
+        _v = _cc.get(c)
+        if isinstance(_v, str):
+            return _v
+        if isinstance(_v, dict) and _v.get("label"):
+            return _v["label"]
+        return c
+
+    _decs = {c: _tabla_decimales(df[c]) for c in _vis}
+    _TH = ("background:#1a2e1e;color:white;padding:8px 12px;font-weight:600;font-size:13px;"
+           "white-space:nowrap;position:sticky;top:0;z-index:2;text-align:left;")
+    _TH0 = _TH + "left:0;z-index:4;"
+    _TD = "padding:7px 12px;border-bottom:1px solid #e3e3e3;white-space:nowrap;font-size:13px;background:#fff;"
+    _TD0 = ("position:sticky;left:0;z-index:1;padding:7px 12px;border-bottom:1px solid #e3e3e3;"
+            "white-space:nowrap;font-size:13px;font-weight:600;background:#eef2ee;"
+            "border-right:2px solid #1a2e1e;")
+    _hdr = "".join(
+        f'<th class="{"fg-th-corner" if i == 0 else "fg-th"}" style="{_TH0 if i == 0 else _TH}">'
+        f'{_h.escape(str(_etq(c)))}</th>' for i, c in enumerate(_vis))
+    _pos = {c: _cols.index(c) for c in _vis}
+    _filas = []
+    for r, (_, fila) in enumerate(df.iterrows()):
+        _celdas = []
+        for i, c in enumerate(_vis):
+            _txt = _tabla_celda(fila[c], c, _decs[c], _cc.get(c))
+            _num = isinstance(fila[c], (int, float, np.integer, np.floating)) and not isinstance(fila[c], (bool, np.bool_))
+            _st = (_TD0 if i == 0 else _TD) + ("text-align:right;" if (_num and i > 0) else "")
+            _extra = _estilos.get((r, _pos[c] - _n_idx)) if _pos[c] >= _n_idx else None
+            if _extra:
+                _st += _extra + ";"
+            _celdas.append(f'<td style="{_st}">{_txt}</td>')
+        _filas.append("<tr>" + "".join(_celdas) + "</tr>")
+    _alto = f"max-height:{int(height)}px;" if height else ("max-height:560px;" if len(df) > 18 else "")
+    st.markdown(
+        f'<div style="overflow-x:auto;overflow-y:auto;{_alto}-webkit-overflow-scrolling:touch;'
+        f'border-radius:8px;border:1px solid #ddd;margin-bottom:1rem;">'
+        f'<table class="fg-fixedcol" style="border-collapse:separate;border-spacing:0;min-width:100%;">'
+        f'<thead><tr>{_hdr}</tr></thead><tbody>{"".join(_filas)}</tbody></table></div>',
+        unsafe_allow_html=True)
+
+
 def render_year_table(df, index_label="Año", max_height=430):
     """Renderiza un DataFrame como tabla HTML con el mismo estilo que el resto de
     la app: 1ª columna (el índice) FIJA, encabezados de color y números con
@@ -32837,7 +33036,7 @@ def render_fiabilidad_mg_zona_rio():
     if _h is None or _h.empty:
         st.info("Todavía no hay horas previstas que ya hayan pasado para compararlas con el sensor.")
         return
-    st.dataframe(_h, use_container_width=True, hide_index=True)
+    st_tabla(_h, use_container_width=True, hide_index=True)
     _hu = _m.get("horas_unicas")
     st.caption(
         f"**{_m.get('n', 0)} comparaciones** sobre **{_hu if _hu else '?'} horas** distintas"
@@ -32847,7 +33046,7 @@ def render_fiabilidad_mg_zona_rio():
     _l, _ml = mg_lluvia_vs_sensor(_rio, archive_df=_arch)
     if _l is not None and not _l.empty:
         st.markdown("**🌧️ Lluvia: ¿acierta QUÉ HORAS llueve en el Río?**")
-        st.dataframe(_l, use_container_width=True, hide_index=True)
+        st_tabla(_l, use_container_width=True, hide_index=True)
     if _m.get("n", 0) < 200:
         st.info("⏳ Muestra aún pequeña. Con **2 semanas** se ve la tendencia; con un mes se "
                 "puede decidir si fiarse de ella.")
@@ -32981,7 +33180,7 @@ def render_prevision_dia_a_dia(forecast_df):
         try:
             _pw = st.session_state.get("lw_params", dict(LEAF_WETNESS_DEFAULTS))
             _g = resumen_prevision_por_dia(forecast_df, _pw)
-            st.dataframe(_g, use_container_width=True, hide_index=True)
+            st_tabla(_g, use_container_width=True, hide_index=True)
             _frag = _g[_g["Solidez"].astype(str).str.startswith("🔴")]
             if not _frag.empty:
                 st.warning(
@@ -33124,7 +33323,7 @@ def render_ajustes_hoja_mojada(history_df):
                         st.rerun()
                 _t1, _t2 = st.tabs(["🏆 Mejor equilibrio (F1)", "⚖️ Las que clavan las horas"])
                 with _t1:
-                    st.dataframe(_res.head(10), use_container_width=True, hide_index=True)
+                    st_tabla(_res.head(10), use_container_width=True, hide_index=True)
                     st.caption(
                         "Ordenado por **F1** (equilibrio entre pillar las horas mojadas reales y no "
                         "inventarlas). ⚠️ El F1 premia **no perderse horas**, así que tiende a elegir "
@@ -33137,7 +33336,7 @@ def render_ajustes_hoja_mojada(history_df):
                         _r2["_dist"] = (pd.to_numeric(_r2["Ratio h est./med."],
                                                       errors="coerce") - 1.0).abs()
                         _r2 = _r2.sort_values("_dist").drop(columns=["_dist"])
-                    st.dataframe(_r2.head(10), use_container_width=True, hide_index=True)
+                    st_tabla(_r2.head(10), use_container_width=True, hide_index=True)
                     st.caption(
                         "Ordenado por **Ratio más cercano a 1**: las combinaciones que reproducen el "
                         "**total de horas** que mide tu sensor. Son las que menos falsas alarmas "
@@ -33187,7 +33386,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                         "Se irá llenando conforme pasen días con infección o lluvia.")
             else:
                 st.markdown("**Resumen por modelo**")
-                st.dataframe(_res, use_container_width=True, hide_index=True,
+                st_tabla(_res, use_container_width=True, hide_index=True,
                              column_config={"Qué": st.column_config.Column("Qué", pinned=True)})
                 st.caption(
                     "🟢 **Sostenido** = lo avisó en la mitad o más de las emisiones · "
@@ -33196,7 +33395,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                     "**Antelación media** = días de margen que dio el primer aviso.")
                 if _hz is not None and not _hz.empty:
                     st.markdown("**% de eventos avisados según los días de antelación**")
-                    st.dataframe(_hz, use_container_width=True, hide_index=True)
+                    st_tabla(_hz, use_container_width=True, hide_index=True)
                     st.caption(
                         "Se lee por filas: *«de los eventos que tenían previsión a N días "
                         "vista, qué porcentaje se avisó»*. Si el acierto **sube** al acercarse "
@@ -33204,7 +33403,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                         "falta hace. Con pocos datos cada celda vale poco — mira la tendencia.")
                 if _ev is not None and not _ev.empty:
                     st.markdown("**Detalle: cada día de evento real**")
-                    st.dataframe(_ev, use_container_width=True, hide_index=True,
+                    st_tabla(_ev, use_container_width=True, hide_index=True,
                                  column_config={"Día": st.column_config.Column("Día", pinned=True),
                                                 "% emisiones": st.column_config.ProgressColumn(
                                                     "% emisiones", format="%d%%",
@@ -33262,7 +33461,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                         "Ojo: corregir la escala **no** arregla los días en que la previsión "
                         "acierta el número pero no la forma — anunciar mojadura que dura un "
                         "día más de lo que duró seguirá dando un aviso en un día que fue seco.")
-                st.dataframe(_fac, use_container_width=True, hide_index=True,
+                st_tabla(_fac, use_container_width=True, hide_index=True,
                              column_config={"Qué": st.column_config.Column("Qué", pinned=True)})
                 st.caption(
                     "Hay **una fila por enfermedad y por fuente**: Sencrop y MeteoGalicia son "
@@ -33305,7 +33504,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                             (_mejor is not None) & (_sub["Estrategia"] == (
                                 _mejor["Estrategia"] if _mejor is not None else "")), "◀ mejor", "")
                         st.markdown(f"*{_q}*")
-                        st.dataframe(
+                        st_tabla(
                             _sub.drop(columns=["Qué", "_factor"]),
                             use_container_width=True, hide_index=True,
                             column_config={
@@ -33350,7 +33549,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                 "fin el error de la previsión del error de nuestro estimador.")
             _mgh, _meta_h = mg_hourly_vs_sensor(history_df)
             if _mgh is not None and not _mgh.empty:
-                st.dataframe(_mgh, use_container_width=True, hide_index=True)
+                st_tabla(_mgh, use_container_width=True, hide_index=True)
                 _hu = _meta_h.get("horas_unicas")
                 st.caption(
                     f"**{_meta_h['n']} comparaciones** sobre "
@@ -33380,7 +33579,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                             "previsión. Aquí solo entran las horas que están en **los tres** "
                             "tramos: menos datos, pero es la única comparación que habla de "
                             "la antelación y no del tiempo que hizo.")
-                        st.dataframe(_mgc, use_container_width=True, hide_index=True)
+                        st_tabla(_mgc, use_container_width=True, hide_index=True)
 
                 # ── LLUVIA APARTE ────────────────────────────────────────────
                 _mgl, _meta_l = mg_lluvia_vs_sensor(history_df)
@@ -33392,7 +33591,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                         "las horas son secas, MeteoGalicia también dice 0, y esa montaña de "
                         "ceros aplasta la media. **Un modelo que dijera «nunca llueve» sacaría "
                         "una nota parecida.** Lo que de verdad se le pide es acertar las horas.")
-                    st.dataframe(_mgl, use_container_width=True, hide_index=True)
+                    st_tabla(_mgl, use_container_width=True, hide_index=True)
                     st.caption(
                         f"Cuenta como lluvia ≥ **{_meta_l.get('umbral', 0.1)} mm/hora**. · "
                         "**Las pilló** = de las horas que llovió de verdad, en cuántas lo "
@@ -33416,9 +33615,9 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                     "cuenta como **hoja mojada**; el mismo fallo al 60 % no le importa a "
                     "nadie. Aquí se separa por franja de humedad real y por hora del día.")
                 if _f_hr is not None and not _f_hr.empty:
-                    st.dataframe(_f_hr, use_container_width=True, hide_index=True)
+                    st_tabla(_f_hr, use_container_width=True, hide_index=True)
                 if _f_hora is not None and not _f_hora.empty:
-                    st.dataframe(_f_hora, use_container_width=True, hide_index=True)
+                    st_tabla(_f_hora, use_container_width=True, hide_index=True)
                     st.caption("La mojadura se forma de **noche y madrugada**: es la franja "
                                "que hay que mirar. Un error grande a mediodía es inofensivo.")
                 if _met:
@@ -33475,7 +33674,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                             "**0,1**, o sea que una previsión de 0,2 mm cuenta como hora mojada "
                             "entera. Subirlo ataca justo las horas de lluvia que MeteoGalicia "
                             "se inventa.")
-                        st.dataframe(_mw, use_container_width=True, hide_index=True,
+                        st_tabla(_mw, use_container_width=True, hide_index=True,
                                      column_config={
                                          "Se inventa": st.column_config.NumberColumn(
                                              "Se inventa",
@@ -33508,7 +33707,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                             "Aquí se pasa el estimador sobre las **mismas horas reales** y se "
                             "compara con lo que marcó el sensor. Lo que salga distinto es error "
                             "del estimador y de nadie más.")
-                        st.dataframe(_es, use_container_width=True, hide_index=True)
+                        st_tabla(_es, use_container_width=True, hide_index=True)
                         _rt = _esm.get("ratio_minutos")
                         if _rt is not None and pd.notna(_rt):
                             if _rt >= 1.25:
@@ -33549,7 +33748,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                                     "La última columna es la que decide: el detector de eventos "
                                     "solo cuenta una hora si llega a **20 minutos**. Ahí está el "
                                     "corte real entre «húmedo» y «mojado».")
-                                st.dataframe(_cvt, use_container_width=True, hide_index=True)
+                                st_tabla(_cvt, use_container_width=True, hide_index=True)
                                 st.caption(
                                     f"Medida sobre {_cvm.get('n', 0)} horas de los últimos 45 "
                                     "días. Se recalcula sola: si cambias de sensor o de sitio, "
@@ -33567,7 +33766,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                             "riesgo que una de 16, aunque sean las mismas horas. Basta con que "
                             "la previsión ponga una hora mojada en el hueco entre dos noches "
                             "para fundirlas en un solo evento del doble de largo.")
-                        st.dataframe(_mev, use_container_width=True, hide_index=True,
+                        st_tabla(_mev, use_container_width=True, hide_index=True,
                                      column_config={
                                          "Serie": st.column_config.Column("Serie", pinned=True),
                                          "El más largo (h)": st.column_config.NumberColumn(
@@ -33604,7 +33803,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                     _sw = mg_umbral_sweep(history_df, rh_thr=_thr)
                     if _sw is not None and not _sw.empty:
                         st.markdown("**¿Y si le bajamos el umbral solo a MeteoGalicia?**")
-                        st.dataframe(_sw, use_container_width=True, hide_index=True)
+                        st_tabla(_sw, use_container_width=True, hide_index=True)
                         st.caption(
                             "MeteoGalicia se queda **corta** de humedad, así que pedirle el "
                             "mismo 92 % que al sensor le hace perder mojadura real. Bajarle el "
@@ -33808,9 +34007,9 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                 _styler_fn = getattr(_sty, "map", None) or _sty.applymap
                 _sty = _styler_fn(_hl_escape, subset=[_esc_col])
                 _sty = (getattr(_sty, "map", None) or _sty.applymap)(_hl_eventos, subset=[_evt_col])
-                st.dataframe(_sty, use_container_width=True, hide_index=True)
+                st_tabla(_sty, use_container_width=True, hide_index=True)
             except Exception:
-                st.dataframe(_rel_df, use_container_width=True, hide_index=True)
+                st_tabla(_rel_df, use_container_width=True, hide_index=True)
             st.caption(
                 f"📅 **{_rel_meta.get('n_dias', 0)} días verificados** (días que ya pasaron y "
                 "sabemos qué predijo la app y qué ocurrió de verdad). Cada día usa su previsión más "
@@ -33894,7 +34093,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                     "aviso de más y baja mucho). Un avisador prefiere pasarse (avisar de más) antes "
                     "que perderse un evento, así que un % bajo aquí no es malo: es ir sobre seguro.")
                 if _hz_rows:
-                    st.dataframe(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
+                    st_tabla(pd.DataFrame(_hz_rows), use_container_width=True, hide_index=True)
                     st.caption(
                         "*«Previsiones comprobadas» = cuántas previsiones de ese plazo ya se "
                         "pueden comparar con la realidad — **no** son los avisos. Cada modelo "
@@ -34119,10 +34318,10 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                                 sty.iloc[i, _ip_ll] = _cll
                 return sty
             try:
-                st.dataframe(_daily.style.apply(_style_frame, axis=None),
+                st_tabla(_daily.style.apply(_style_frame, axis=None),
                              use_container_width=True, hide_index=True)
             except Exception:
-                st.dataframe(_daily, use_container_width=True, hide_index=True)
+                st_tabla(_daily, use_container_width=True, hide_index=True)
 
             # ── LOS DÍAS PASADOS, REHECHOS CON EL MODELO DE HOY ──────────────
             # Las columnas «prev.» de arriba son fotos: se archivaron con el modelo que
@@ -34145,7 +34344,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                         "MeteoGalicia preveía **antes** de ese día, se pasan por el estimador "
                         "actual y por el mismo detector de eventos, y sale lo que la app "
                         "habría dicho hoy. Al lado, lo que pasó de verdad.")
-                    st.dataframe(_rp, use_container_width=True, hide_index=True)
+                    st_tabla(_rp, use_container_width=True, hide_index=True)
                     _em, _eo = _rpm.get("err_moteado"), _rpm.get("err_monilia")
                     if _em is not None and pd.notna(_em):
                         st.info(
