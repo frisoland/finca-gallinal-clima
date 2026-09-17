@@ -7937,6 +7937,124 @@ def render_sencrop_panel():
     st.info("ℹ️ Para descargar datos, ve a la pestaña **⬇️ Actualizar datos**.")
 
 
+def render_sencrop_movil():
+    """Sencrop y MeteoGalicia en el MÓVIL: próximos días en tarjetas (por zona), si la previsión
+    acierta y el estado de los datos. Mismos cálculos que la pantalla completa:
+    `forecast_build_risk_table` (tabla «Riesgo sanitario previsto») y
+    `forecast_reliability_persistence` («Fiabilidad HONESTA: ¿avisó con antelación?»)."""
+    import html as _h
+    history_df = st.session_state.get("history_df", pd.DataFrame())
+    forecast_df = st.session_state.get("forecast_df", pd.DataFrame())
+    _fc_rio = st.session_state.get("forecast_rio_df", pd.DataFrame())
+    _hist_rio = st.session_state.get("history_rio_df", pd.DataFrame())
+    _hay_rio = isinstance(_fc_rio, pd.DataFrame) and not _fc_rio.empty
+    st.caption(f"**Lo esencial** · previsión cargada: {st.session_state.get('forecast_model') or 'ninguna'}.")
+
+    # ── 1. Próximos días ─────────────────────────────────────────────────────────
+    st.markdown("#### 🔭 Próximos días")
+    if forecast_df is None or forecast_df.empty:
+        st.info("No hay previsión cargada: el archivo de MeteoGalicia aún no está disponible "
+                "(se genera cada mañana con el proceso automático).")
+    else:
+        _zona = (st.radio("Zona", [ZONA_NAVE, ZONA_RIO], horizontal=True, key="mob_prev_zona")
+                 if _hay_rio else ZONA_NAVE)
+        if not _hay_rio:
+            st.caption(f"Solo {ZONA_NAVE}: hoy no hay previsión propia de la {ZONA_RIO} cargada.")
+        if _zona == ZONA_RIO:
+            _risk = forecast_build_risk_table(_fc_rio, historico_zona(ZONA_RIO, history_df, _hist_rio),
+                                              base_temp=10.0, upper_temp=31.1)
+        else:
+            _risk = forecast_build_risk_table(forecast_df, history_df, base_temp=10.0, upper_temp=31.1)
+        if _risk is None or _risk.empty:
+            st.warning("No se pudo calcular el riesgo. Revisa que el histórico climático esté cargado.")
+        else:
+            _alto = _risk[_risk["Riesgo moteado"].astype(str).str.contains("🔴")]
+            _mod = _risk[_risk["Riesgo moteado"].astype(str).str.contains("🟠")]
+            if not _alto.empty:
+                st.error("⚠️ **Infección de moteado prevista:** "
+                         + ", ".join(pd.Timestamp(d).strftime("%d/%m") for d in _alto["Fecha"].head(3)) + ".")
+            elif not _mod.empty:
+                st.warning("🟠 **Moteado moderado previsto (50 o más):** "
+                           + ", ".join(pd.Timestamp(d).strftime("%d/%m") for d in _mod["Fecha"].head(3)) + ".")
+            _dias = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+            _col = lambda t: ("#c62828" if "🔴" in t else "#ef6c00" if "🟠" in t
+                              else "#f9a825" if "🟡" in t else "#2e7d32")
+            _orden = {"#c62828": 0, "#ef6c00": 1, "#f9a825": 2, "#2e7d32": 3}
+            _tarj = []
+            for _, r in _risk.iterrows():
+                _f = pd.Timestamp(r["Fecha"])
+                _rm, _rn = str(r["Riesgo moteado"]), str(r["Riesgo monilia"])
+                _c = min((_col(_rm), _col(_rn)), key=lambda c: _orden[c])
+                _hr = r.get("HR media (%)")
+                _tarj.append(_carpo_movil_tarjeta(
+                    f"{_dias[_f.weekday()].capitalize()} {_f:%d/%m}",
+                    [(lambda _t: f"🌡️ {_h.escape(_t.replace('.', ','))} ºC" if any(ch.isdigit() for ch in _t)
+                      else "🌡️ —")(str(r['T. min/máx (°C)']))
+                     + ("" if pd.isna(_hr) else f" · 💧 HR {_fmt_es_number(_hr, 0)} %")
+                     + f" · 🌧️ {_fmt_es_number(r['Lluvia prev. (mm)'], 1)} mm",
+                     f"🍃 {int(r['Horas mojadura'])} h de hoja mojada ({_h.escape(str(r['Fuente mojadura']))})",
+                     f"🍄 Moteado <b>{_h.escape(_rm)}</b> · 🟤 Monilia <b>{_h.escape(_rn)}</b>",
+                     f"<span style='color:#555'>🐛 {_fmt_es_number(r['DD carpocapsa previstos'], 1)} "
+                     f"grados-día de carpocapsa</span>"],
+                    _c))
+            st.markdown("".join(_tarj), unsafe_allow_html=True)
+            st.caption("Los mismos cálculos que «Riesgo sanitario previsto» de la pantalla completa. "
+                       "Escala de moteado y monilia: 25 ligero · 50 moderado · 100 infección o muy favorable.")
+
+    # ── 2. ¿Acierta la previsión? ──────────────────────────────────────────────────
+    st.markdown("#### 🎯 ¿Acierta la previsión?")
+    if st.toggle("Calcularlo con el archivo de previsiones", key="mob_prev_fiab",
+                 help="Compara todas las previsiones archivadas con lo que pasó de verdad. Tarda "
+                      "unos segundos, por eso no se calcula al abrir."):
+        with st.spinner("Comparando previsiones archivadas con lo que pasó…"):
+            _ev, _res, _hz = forecast_reliability_persistence(history_df)
+        if _res is None or _res.empty:
+            st.info("Aún no hay días de evento real cubiertos por el archivo.")
+        else:
+            _lin = []
+            for _, r in _res.iterrows():
+                _lin.append(f"{_h.escape(str(r['Qué']))}: avisó <b>{_h.escape(str(r['Avisados (algo)']))}</b>"
+                            f" · {_fmt_es_number(r['Antelación media (días)'], 1)} días antes de media"
+                            f" · <span style='color:#c62828'>{int(r['🔴 Escape total'])} sin avisar nunca</span>")
+            st.markdown(_carpo_movil_tarjeta("Días con evento real: ¿los avisó?", _lin, "#0277bd"),
+                        unsafe_allow_html=True)
+            st.caption("Se cuentan TODAS las previsiones que cubrieron cada día de evento real: si "
+                       "avisó a 4 días y se desdijo el último, cuenta como avisado. Detalle por días "
+                       "y por antelación, en la pantalla completa → 🎯 Fiabilidad y hoja mojada.")
+
+    # ── 3. Estado de los datos ─────────────────────────────────────────────────────
+    st.markdown("#### ⬇️ Estado de los datos")
+
+    def _ultimo(df):
+        if not isinstance(df, pd.DataFrame) or df.empty or "fecha_hora" not in df.columns:
+            return None
+        _t = pd.to_datetime(df["fecha_hora"], errors="coerce").max()
+        return None if pd.isna(_t) else _t
+
+    def _n_dias(df):
+        if not isinstance(df, pd.DataFrame) or df.empty or "fecha_hora" not in df.columns:
+            return 0
+        return int(pd.to_datetime(df["fecha_hora"], errors="coerce").dt.normalize().nunique())
+
+    _un, _ur = _ultimo(history_df), _ultimo(_hist_rio)
+    st.markdown(_movil_cifras_html([
+        (f"🏠 {ZONA_NAVE}: último dato", f"{_un:%d/%m %H:%M}" if _un is not None else "—"),
+        (f"🌊 {ZONA_RIO}: último dato", f"{_ur:%d/%m %H:%M}" if _ur is not None else "—"),
+        ("🔭 Previsión Nave", f"{_n_dias(forecast_df)} días"),
+        ("🔭 Previsión Río", f"{_n_dias(_fc_rio)} días")]), unsafe_allow_html=True)
+    if _un is not None and (pd.Timestamp.now() - _un).total_seconds() / 3600.0 > 36:
+        st.warning("⚠️ Los datos de la Nave llevan más de 36 h sin actualizarse. Revisa la descarga "
+                   "desde el ordenador (pantalla completa → ⬇️ Actualizar datos).")
+    st.caption("Se descargan solos cada mañana. Las descargas a mano y la conexión con Sencrop están "
+               "en la pantalla completa.")
+
+    st.divider()
+    if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="sencrop_movil_completa",
+                 help="Previsión con datos horarios, fiabilidad y hoja mojada con todo el detalle, "
+                      "descargas a mano y conexión."):
+        import_panel()
+
+
 def render_sencrop_forecast_panel():
     """Panel de predicción meteorológica Sencrop + modelos de riesgo sanitario."""
     st.markdown("### 🔭 Predicción meteorológica — Próximos días")
@@ -35905,7 +36023,10 @@ if not _HEADLESS:
         else:
             dashboard_tab(history, soil_type, hoja_threshold)
     elif _page == "sencrop":
-        import_panel()
+        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+            render_sencrop_movil()
+        else:
+            import_panel()
     elif _page == "analisis":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_analisis_movil(history, soil_type, hoja_threshold)
