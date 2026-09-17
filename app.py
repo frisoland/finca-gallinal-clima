@@ -9614,18 +9614,98 @@ def render_sanidad_movil_campo():
         ("💊 Tratamientos fungicidas", len(_fechas)),
         ("📅 Último", pd.Timestamp(_fechas[-1]).strftime("%d/%m") if _fechas else "—")]),
         unsafe_allow_html=True)
+    _orden = {p[1]: i for i, p in enumerate(FENOLOGIA_MOTOR_FASES)}
     if not _fechas:
         st.caption(f"Sin tratamientos fungicidas registrados en {_campo} en {_anio}.")
+    else:
+        st.markdown("**Por fase:** " + " · ".join(
+            f"{_h.escape(f)} **{n}**" for f, n in sorted(_cuenta_fase.items(), key=lambda x: _orden.get(x[0], 99))))
+        st.markdown("".join(_tarj), unsafe_allow_html=True)
+        st.caption("Fase del campo ese día: manda lo anotado en Fenología y, si no, la literatura encajada con "
+                   "lo anotado. Si las variedades del campo iban en fases distintas, manda la más sensible "
+                   "(como en Decisiones), contando solo las variedades que recibieron el pase; debajo sale la de cada una. Verde = fase preventiva "
+                   "(brotación-floración) · azul = reactiva (cuajado en adelante) · gris = reposo. "
+                   "Los fungicidas son los mismos que cuenta Resultado sanitario.")
+
+    # ── Eventos de moteado, monilia y oídio de la campaña ─────────────────────────
+    st.markdown(f"#### 🍄 Eventos de la campaña {_anio}")
+    _nave = st.session_state.get("history_df", pd.DataFrame())
+    if _nave is None or _nave.empty or "fecha_hora" not in _nave.columns:
+        st.info("Sin histórico climático cargado.")
         return
-    _orden = {p[1]: i for i, p in enumerate(FENOLOGIA_MOTOR_FASES)}
-    st.markdown("**Por fase:** " + " · ".join(
-        f"{_h.escape(f)} **{n}**" for f, n in sorted(_cuenta_fase.items(), key=lambda x: _orden.get(x[0], 99))))
-    st.markdown("".join(_tarj), unsafe_allow_html=True)
-    st.caption("Fase del campo ese día: manda lo anotado en Fenología y, si no, la literatura encajada con "
-               "lo anotado. Si las variedades del campo iban en fases distintas, manda la más sensible "
-               "(como en Decisiones), contando solo las variedades que recibieron el pase; debajo sale la de cada una. Verde = fase preventiva "
-               "(brotación-floración) · azul = reactiva (cuajado en adelante) · gris = reposo. "
-               "Los fungicidas son los mismos que cuenta Resultado sanitario.")
+    _zona = zona_de_campo(_campo)
+    _hz = (historico_zona(ZONA_RIO, _nave, st.session_state.get("history_rio_df", pd.DataFrame()))
+           if _zona == ZONA_RIO else _nave)
+    _ini = pd.Timestamp(_anio, 4, 1)
+    _fin = min(pd.Timestamp(_anio, FIN_CAMPANA_FUNGICA_MD[0], FIN_CAMPANA_FUNGICA_MD[1], 23, 59),
+               pd.Timestamp.now())
+    _fh = pd.to_datetime(_hz["fecha_hora"], errors="coerce")
+    _w = _hz[(_fh >= _ini) & (_fh <= _fin)]
+    if _w.empty:
+        st.caption("Sin datos climáticos de esa campaña.")
+        return
+    _fechas_ts = [pd.Timestamp(d) for d in _fechas]
+
+    def _fase_dia(ts):
+        _r = fenologia_modo_campo(_campo, pd.Timestamp(ts).normalize(), _anio)
+        return str(_r.get("fase") or "—")
+
+    def _ultimo_trat(ts):
+        _antes = [f for f in _fechas_ts if f <= pd.Timestamp(ts).normalize()]
+        if not _antes:
+            return "sin fungicida antes"
+        _n = (pd.Timestamp(ts).normalize() - _antes[-1]).days
+        return (f"último fungicida el {_antes[-1]:%d/%m} ("
+                + ("el mismo día" if _n == 0 else ("1 día antes" if _n == 1 else f"{_n} días antes")) + ")")
+
+    try:
+        _ev = detect_leaf_wetness_events(_w) if has_sensor(_w, "Humectación de hoja") else pd.DataFrame()
+    except Exception:
+        _ev = pd.DataFrame()
+    for _nombre, _icono, _col_ratio in (("Moteado", "🍄", "Ratio moteado"), ("Monilia", "🟤", "Ratio monilia")):
+        _filas = []
+        if _ev is not None and not _ev.empty and _col_ratio in _ev.columns:
+            _sel = _ev[pd.to_numeric(_ev[_col_ratio], errors="coerce") >= 1.0].sort_values("Inicio")
+            _cnt = {}
+            for _, e in _sel.iterrows():
+                _i, _f = pd.Timestamp(e["Inicio"]), pd.Timestamp(e["Fin"])
+                _fs = _fase_dia(_f)
+                _cnt[_fs] = _cnt.get(_fs, 0) + 1
+                _filas.append(f"<b>{_i:%d/%m %H:%M} → {_f:%d/%m %H:%M}</b> · valor "
+                              f"{int(round(float(pd.to_numeric(e[_col_ratio], errors='coerce')) * 100))} · "
+                              f"🌱 {_h.escape(_fs)}<br><span style='color:#777'>{_ultimo_trat(_f)}</span>")
+        _tit = f"{_icono} {_nombre} · {len(_filas)} evento{'s' if len(_filas) != 1 else ''}"
+        if _filas:
+            _tit += " (" + " · ".join(f"{f} {n}" for f, n in sorted(_cnt.items(), key=lambda x: _orden.get(x[0], 99))) + ")"
+        st.markdown(_carpo_movil_tarjeta(_h.escape(_tit), _filas or ["Ninguno en la campaña."],
+                                         "#c62828" if _filas else "#2e7d32"), unsafe_allow_html=True)
+
+    # Oídio: días con índice ≥ 100, agrupados en rachas de días seguidos
+    _wd = _w.copy()
+    _wd["_d"] = pd.to_datetime(_wd["fecha_hora"], errors="coerce").dt.normalize()
+    _gd = _wd.groupby("_d").agg(tm=("temp_media", "mean"), hm=("hr_media", "mean"), ll=("lluvia_mm", "sum"))
+    _dias_oi = [d for d, t, hh, l in zip(_gd.index, _gd["tm"], _gd["hm"], _gd["ll"]) if _dec_oidio_value(t, hh, l) >= 100]
+    _rachas = []
+    for d in _dias_oi:
+        if _rachas and (d - _rachas[-1][1]).days == 1:
+            _rachas[-1][1] = d
+        else:
+            _rachas.append([d, d])
+    _filas, _cnt = [], {}
+    for a, b in _rachas:
+        _fs = _fase_dia(a)
+        _n = (b - a).days + 1
+        _cnt[_fs] = _cnt.get(_fs, 0) + _n
+        _filas.append((f"<b>{a:%d/%m}</b>" if a == b else f"<b>{a:%d/%m} → {b:%d/%m}</b> ({_n} días)")
+                      + f" · 🌱 {_h.escape(_fs)}<br><span style='color:#777'>{_ultimo_trat(a)}</span>")
+    _tit = f"⚪ Oídio · {len(_dias_oi)} día{'s' if len(_dias_oi) != 1 else ''} favorables"
+    if _filas:
+        _tit += " (" + " · ".join(f"{f} {n}" for f, n in sorted(_cnt.items(), key=lambda x: _orden.get(x[0], 99))) + ")"
+    st.markdown(_carpo_movil_tarjeta(_h.escape(_tit), _filas or ["Ningún día favorable en la campaña."],
+                                     "#ef6c00" if _filas else "#2e7d32"), unsafe_allow_html=True)
+    st.caption(f"Del 1/4 al {_fin:%d/%m} con el clima de la {_zona}. Mismo criterio que el «Histórico de "
+               "eventos por año» de la pantalla completa: moteado y monilia = episodios de hoja mojada "
+               "con valor 100 o más (infección); oídio = días con índice 100. Fase = la del campo ese día.")
 
 
 def render_sanidad_movil(history, soil_type, hoja_threshold):
