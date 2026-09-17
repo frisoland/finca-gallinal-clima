@@ -36024,7 +36024,7 @@ if not _HEADLESS:
         else:
             dashboard_tab(history, soil_type, hoja_threshold)
     elif _page == "sencrop":
-        if IS_MOBILE and str(_query_param("nuevo") or "") == "1":   # PRUEBA: enseñar antes de dejarlo fijo
+        if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 17/09/2026)
             render_sencrop_movil()
         else:
             import_panel()
