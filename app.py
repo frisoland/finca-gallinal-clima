@@ -4030,7 +4030,7 @@ def fields_tab():
         f"(hoja mojada, viento y radiación, de la Nave).  \n"
         f"🏠 **{ZONA_NAVE}**: {int((~_es_rio).sum())} campos · "
         f"{_vista.loc[~_es_rio, 'Superficie ha'].sum():.2f} ha — los sensores de siempre.")
-    st.dataframe(_vista, use_container_width=True)
+    st_tabla(_vista, use_container_width=True)
     st.caption(
         "**Superficie ha** = el recinto que mide la parcela. **Superficie arbolada ha** = "
         "lo que ocupan los manzanos dentro de él. El **riego** convierte los litros del "
@@ -4536,10 +4536,10 @@ def render_activities_summaries(activities_df):
             f"puedes corregirlo en Agroptima y reimportar si quieres dejarlo limpio."
         )
         with st.expander(f"Ver los {_n} posibles duplicados", expanded=False):
-            st.dataframe(_dups, use_container_width=True, hide_index=True)
+            st_tabla(_dups, use_container_width=True, hide_index=True)
 
     st.markdown("#### Histórico de actuaciones")
-    st.dataframe(visible, use_container_width=True)
+    st_tabla(visible, use_container_width=True)
 
     st.download_button(
         "Descargar histórico maestro de actuaciones",
@@ -4559,7 +4559,7 @@ def render_activities_summaries(activities_df):
         )
         .reset_index()
     )
-    st.dataframe(product_summary, use_container_width=True)
+    st_tabla(product_summary, use_container_width=True)
 
     st.markdown("#### Último tratamiento por campo reconocido")
     expanded_rows = []
@@ -4579,7 +4579,7 @@ def render_activities_summaries(activities_df):
         expanded["Fecha orden"] = pd.to_datetime(expanded["Última fecha"], errors="coerce")
         last_by_field = expanded.sort_values("Fecha orden").groupby("Campo", as_index=False).tail(1)
         last_by_field = last_by_field.drop(columns=["Fecha orden"]).sort_values("Campo")
-        st.dataframe(last_by_field, use_container_width=True)
+        st_tabla(last_by_field, use_container_width=True)
     else:
         st.info("No se han reconocido campos contra la base limpia.")
 
@@ -4789,7 +4789,7 @@ def render_treatment_sanitary_cross():
     c3.metric("Máx lluvia posterior", f"{cross['Lluvia posterior mm'].max():.1f} mm")
     c4.metric("Máx ratio posterior", f"{max(cross['Máx ratio moteado posterior'].max(), cross['Máx ratio monilia posterior'].max()):.2f}")
 
-    st.dataframe(cross, use_container_width=True)
+    st_tabla(cross, use_container_width=True)
 
     st.download_button(
         "Descargar cruce tratamientos-riesgo sanitario",
@@ -5019,7 +5019,7 @@ def render_field_sanitary_report():
         "Aviso orientativo",
     ]
     visible_cols = [c for c in visible_cols if c in filtered.columns]
-    st.dataframe(filtered[visible_cols], use_container_width=True)
+    st_tabla(filtered[visible_cols], use_container_width=True)
 
     st.download_button(
         "Descargar informe sanitario por campo",
@@ -5622,7 +5622,7 @@ def activities_tab():
 
         st.markdown("#### Diagnóstico del Excel subido")
         diag_rows = [{"Dato": k, "Valor": v} for k, v in diagnostics.items()]
-        st.dataframe(pd.DataFrame(diag_rows), use_container_width=True)
+        st_tabla(pd.DataFrame(diag_rows), use_container_width=True)
 
         if warnings:
             st.warning("Avisos de lectura:")
@@ -5633,7 +5633,7 @@ def activities_tab():
             st.warning("No se han podido interpretar actividades.")
         else:
             st.markdown("#### Vista previa del Excel interpretado")
-            st.dataframe(activities_df, use_container_width=True)
+            st_tabla(activities_df, use_container_width=True)
 
             if st.button("Importar / actualizar histórico de actuaciones", type="primary"):
                 existing = st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS))
@@ -5673,7 +5673,7 @@ def activities_tab():
             {"Dato": k, "Valor": v}
             for k, v in st.session_state.last_activities_import_stats.items()
         ])
-        st.dataframe(stats_df, use_container_width=True)
+        st_tabla(stats_df, use_container_width=True)
 
     st.divider()
     render_activities_summaries(st.session_state.get("activities_df", pd.DataFrame(columns=ACTIVITY_COLUMNS)))
@@ -14328,7 +14328,7 @@ def render_frac_rotation_plan(activities_df=None, key_suffix='main'):
         "Variedades actuales", "Comentario técnico",
     ]
     visible_cols = [c for c in visible_cols if c in plan.columns]
-    st.dataframe(plan[visible_cols], use_container_width=True, hide_index=True)
+    st_tabla(plan[visible_cols], use_container_width=True, hide_index=True)
 
     st.download_button(
         "Descargar plan de rotación FRAC por campo",
@@ -14342,7 +14342,7 @@ def render_frac_rotation_plan(activities_df=None, key_suffix='main'):
         if frac_summary.empty:
             st.info("Sin resumen FRAC.")
         else:
-            st.dataframe(frac_summary, use_container_width=True, hide_index=True)
+            st_tabla(frac_summary, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar resumen FRAC",
                 data=frac_summary.to_csv(index=False).encode("utf-8-sig"),
@@ -14354,7 +14354,7 @@ def render_frac_rotation_plan(activities_df=None, key_suffix='main'):
         if product_summary.empty:
             st.info("Sin resumen por producto.")
         else:
-            st.dataframe(product_summary, use_container_width=True, hide_index=True)
+            st_tabla(product_summary, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar resumen productos",
                 data=product_summary.to_csv(index=False).encode("utf-8-sig"),
@@ -14375,7 +14375,7 @@ def render_treatment_catalog_manager():
     catalog = get_treatment_product_catalog()
     catalog_df = treatment_catalog_to_dataframe(catalog)
 
-    edited = st.data_editor(
+    edited = st_editor(
         catalog_df,
         use_container_width=True,
         hide_index=True,
@@ -14526,7 +14526,7 @@ using (true);
         else:
             st.warning("Hay productos en Agroptima sin catalogar. Si alguno es **fungicida**, "
                        "añádelo arriba para analizarlo por FRAC.")
-            st.dataframe(unknown, use_container_width=True, hide_index=True)
+            st_tabla(unknown, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar productos no reconocidos",
                 data=unknown.to_csv(index=False).encode("utf-8-sig"),
@@ -14539,7 +14539,7 @@ using (true);
         if usage.empty:
             st.info("No hay actuaciones suficientes para generar el resumen.")
         else:
-            st.dataframe(usage, use_container_width=True, hide_index=True)
+            st_tabla(usage, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar resumen producto FRAC",
                 data=usage.to_csv(index=False).encode("utf-8-sig"),
@@ -17805,7 +17805,7 @@ def weekly_report_tab(history, soil_type, hoja_threshold):
         if acts_period.empty:
             st.info("No hay actuaciones registradas en el periodo seleccionado.")
         else:
-            st.dataframe(acts_period.drop(columns=["Fecha_dt"], errors="ignore"), use_container_width=True)
+            st_tabla(acts_period.drop(columns=["Fecha_dt"], errors="ignore"), use_container_width=True)
             st.download_button(
                 "Descargar actuaciones del periodo",
                 data=acts_period.drop(columns=["Fecha_dt"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
@@ -17827,7 +17827,7 @@ def weekly_report_tab(history, soil_type, hoja_threshold):
                 "Lluvia posterior mm", "Máx ratio moteado posterior", "Máx ratio monilia posterior", "Aviso orientativo"
             ]
             cols = [c for c in cols if c in priority_table.columns]
-            st.dataframe(priority_table[cols], use_container_width=True)
+            st_tabla(priority_table[cols], use_container_width=True)
             st.download_button(
                 "Descargar campos prioritarios",
                 data=priority_table.to_csv(index=False).encode("utf-8-sig"),
@@ -26577,7 +26577,7 @@ def gallinal_tab(history):
                 f"sensor de la vega desde el {ZONA_RIO_MANDA_DESDE:%d/%m/%Y}; antes de esa fecha "
                 "(y la hoja mojada, siempre) de la Nave.")
         _fdf, _fnarr = _gallinal_ficha_rows(_hist_campo, prod, campo_sel, variedad_sel, años_sel)
-        st.dataframe(_fdf, use_container_width=True, hide_index=True)
+        st_tabla(_fdf, use_container_width=True, hide_index=True)
         st.caption(
             "**CP** = Chill Portions (frío) · **GDH** = grados-hora de calor (Anderson 1986) · "
             "**req.** = requerimiento de la variedad, **obt.** = obtenido esa campaña (frío de toda "
