@@ -9546,6 +9546,88 @@ def render_hoy_movil(history, soil_type, hoja_threshold):
         home_today_tab(history, soil_type, hoja_threshold)
 
 
+def render_sanidad_movil_campo():
+    """«🔎 Consulta por campo» de Sanidad en el móvil: cuántos tratamientos fungicidas llevó un
+    campo en una campaña y en qué estado fenológico cayó cada uno."""
+    import html as _h
+    st.markdown("#### 🔎 Consulta por campo")
+    _acts = st.session_state.get("activities_df", pd.DataFrame())
+    if _acts is None or _acts.empty or "Fecha" not in _acts.columns:
+        st.info("No hay actuaciones de Agroptima cargadas.")
+        return
+    _anios = sorted({int(y) for y in pd.to_datetime(_acts["Fecha"], errors="coerce").dt.year.dropna()}
+                    | {int(pd.Timestamp.today().year)}, reverse=True)
+    _campos = {str(fr["Campo"]): [v.strip() for v in str(fr.get("Variedades actuales", "")).split(",") if v.strip()]
+               for fr in FIELDS_BASE_ROWS}
+    _c1, _c2 = st.columns([1, 2])
+    with _c1:
+        _anio = st.selectbox("Campaña", _anios, key="mob_sani_campo_anio")
+    with _c2:
+        _campo = st.selectbox("Campo", sorted(_campos), key="mob_sani_campo_sel")
+    _vars = _campos.get(_campo, [])
+    _pases = [p for p in _resultado_fungicide_passes(_acts, _anio) if p[0] == _campo]
+    _por_fecha = {}
+    for _c, _d, _prod, _vset in _pases:
+        _e = _por_fecha.setdefault(_d, {"prods": [], "vars": set(), "todas": False})
+        for _x in str(_prod).split(","):
+            _x = _x.strip()
+            if _x and _x.lower() not in ("nan", "none") and _x not in _e["prods"]:
+                _e["prods"].append(_x)
+        if _vset is None:
+            _e["todas"] = True
+        else:
+            _e["vars"] |= _vset
+    _fechas = sorted(_por_fecha)
+
+    _origen = {"registro": "✍️ anotada", "literatura": "📚 literatura",
+               "literatura+registro": "📚 literatura ajustada a lo anotado"}
+    _cuenta_fase, _tarj, _prev = {}, [], None
+    for _d in _fechas:
+        _e = _por_fecha[_d]
+        _ts = pd.Timestamp(_d)
+        _vs = [v for v in _vars if _e["todas"] or not _e["vars"] or _norm_var(v) in _e["vars"]] or _vars
+        _fv = [(v, fenologia_fase_variedad(_campo, v, _ts, _anio)) for v in _vs]
+        # Fase de lo tratado: la más sensible de las variedades que recibieron el pase (misma
+        # regla que fenologia_modo_campo para el campo entero).
+        _ordf = {q[0]: i for i, q in enumerate(FENOLOGIA_MOTOR_FASES)}
+        _mc = (min((f for _, f in _fv), key=lambda f: (_FENOLOGIA_RANGO_MODO.get(f["modo"], 9),
+                                                       _ordf.get(f["pid"], 99)))
+               if _fv else fenologia_modo_campo(_campo, _ts, _anio))
+        _fase_campo = str(_mc.get("fase") or "—")
+        _cuenta_fase[_fase_campo] = _cuenta_fase.get(_fase_campo, 0) + 1
+        _lin = [f"🌱 <b>{_h.escape(_fase_campo)}</b> <span style='color:#777'>· "
+                f"{_origen.get(_mc.get('origen'), _h.escape(str(_mc.get('origen') or '')))}</span>"]
+        if len({str(f['fase']) for _, f in _fv}) > 1:
+            _lin.append("<span style='color:#555'>" + " · ".join(
+                f"{_h.escape(v)}: {_h.escape(str(f['fase']))}" for v, f in _fv) + "</span>")
+        if not _e["todas"] and _e["vars"] and len(_vs) < len(_vars):
+            _lin.append("<span style='color:#555'>Solo en: " + _h.escape(", ".join(_vs)) + "</span>")
+        _lin.append(f"<span style='color:#555'>💊 {_h.escape(', '.join(_e['prods']) or '—')}</span>")
+        if _prev is not None:
+            _lin.append(f"<span style='color:#777'>{(_ts - _prev).days} días después del anterior</span>")
+        _prev = _ts
+        _modo = str(_mc.get("modo") or "")
+        _col = "#2e7d32" if _modo == "preventivo" else ("#0277bd" if _modo == "reactivo" else "#9e9e9e")
+        _tarj.append(_carpo_movil_tarjeta(f"{_ts:%d/%m/%Y}", _lin, _col))
+
+    st.markdown(_movil_cifras_html([
+        ("💊 Tratamientos fungicidas", len(_fechas)),
+        ("📅 Último", pd.Timestamp(_fechas[-1]).strftime("%d/%m") if _fechas else "—")]),
+        unsafe_allow_html=True)
+    if not _fechas:
+        st.caption(f"Sin tratamientos fungicidas registrados en {_campo} en {_anio}.")
+        return
+    _orden = {p[1]: i for i, p in enumerate(FENOLOGIA_MOTOR_FASES)}
+    st.markdown("**Por fase:** " + " · ".join(
+        f"{_h.escape(f)} **{n}**" for f, n in sorted(_cuenta_fase.items(), key=lambda x: _orden.get(x[0], 99))))
+    st.markdown("".join(_tarj), unsafe_allow_html=True)
+    st.caption("Fase del campo ese día: manda lo anotado en Fenología y, si no, la literatura encajada con "
+               "lo anotado. Si las variedades del campo iban en fases distintas, manda la más sensible "
+               "(como en Decisiones), contando solo las variedades que recibieron el pase; debajo sale la de cada una. Verde = fase preventiva "
+               "(brotación-floración) · azul = reactiva (cuajado en adelante) · gris = reposo. "
+               "Los fungicidas son los mismos que cuenta Resultado sanitario.")
+
+
 def render_sanidad_movil(history, soil_type, hoja_threshold):
     """Sanidad en el MÓVIL: semáforo del periodo en tarjetas y los episodios de hoja mojada con su
     moteado y monilia. Mismo cálculo que Sanidad (`_period_data_heavy`, semáforo y eventos)."""
@@ -9627,6 +9709,8 @@ def render_sanidad_movil(history, soil_type, hoja_threshold):
                 st.markdown("".join(_tarj), unsafe_allow_html=True)
                 st.caption("Valor: 25 ligero · 50 moderado · 100 infección (moteado) o tiempo muy "
                            "favorable (monilia). El porqué, en 📖 Por qué hay infección (pantalla completa).")
+
+    render_sanidad_movil_campo()
 
     st.divider()
     if st.toggle("📋 Ver pantalla completa (lo mismo que en el ordenador)", key="sani_movil_completa",
