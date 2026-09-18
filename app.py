@@ -533,6 +533,12 @@ _DESKTOP_CHROME_JS = """
           setTimeout(fgHideManageBtn, 1500);
         })();
 
+        /* Desde el 18/09/2026 el ordenador usa el MENÚ PRINCIPAL y no tiene barra lateral:
+           la barra inferior vieja (que pulsaba botones de la barra lateral) y la apertura de
+           la barra al acercar el ratón ya no tienen sentido. Se sale aquí; el código de
+           abajo queda sin uso. */
+        return;
+
         var mobileNav = doc.createElement('div');
         mobileNav.id = 'fg-mobile-nav';
         /* padding-right deja libre la esquina inferior-derecha donde
@@ -35827,8 +35833,9 @@ if not _HEADLESS:
     # (la fila de 5 accesos + «Más secciones» de _render_mobile_nav_botones queda sin uso).
     _MENU_MOVIL = IS_MOBILE
     # Menú principal también en el ORDENADOR, sin barra lateral (usuario, 18/09/2026: la barra
-    # se abría sola al acercar el ratón). PRUEBA: solo con ?nuevo=1.
-    _MENU_PC = (not IS_MOBILE) and str(_query_param("nuevo") or "") == "1"
+    # se abría sola al acercar el ratón). Aprobado y fijo desde el 18/09/2026: el bloque de la
+    # barra lateral de abajo queda sin uso.
+    _MENU_PC = not IS_MOBILE
     _MENU_ACTIVO = _MENU_MOVIL or _MENU_PC
     if "nav_page" not in st.session_state:
         _p_url = str(_query_param("p") or "").strip()
