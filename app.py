@@ -31527,14 +31527,21 @@ def forecast_reliability(history_df, archive_df=None):
                         aciertos += 1                      # sin aviso, o "cola" de evento (excusada)
             # Fiabilidad basada en LO QUE IMPORTA: ¿pilla los eventos de infección reales?
             # Un "acierto" global alto no vale si se le escapan eventos (premia días tranquilos).
+            # Color por % de eventos avisados (decisión del usuario, 18/09/2026): antes UN solo
+            # escape lo ponía en rojo, fuera el 98 % o el 25 %. Cortes FIABILIDAD_CORTES: son de
+            # presentación, no de la literatura (no hay un estándar publicado para esto).
             if reales == 0:
                 _fiab = "🟡 Sin eventos aún"
-            elif fn > 0:
-                _fiab = "🔴 Escapan eventos"
-            elif _nd < 7 or reales < 2:
-                _fiab = "🟡 Promete (pocos datos)"
             else:
-                _fiab = "🟢 Buena"
+                _pct_av = 100.0 * tp / reales
+                if _pct_av >= FIABILIDAD_CORTES[0]:
+                    _fiab = "🟢 Buena"
+                elif _pct_av >= FIABILIDAD_CORTES[1]:
+                    _fiab = "🟡 Aceptable (se le escapa alguno)"
+                else:
+                    _fiab = "🔴 Escapan eventos"
+                if reales < FIABILIDAD_MIN_EVENTOS:
+                    _fiab += " (pocos datos)"
             # EVENTOS QUE NI SIQUIERA SE EVALUARON. Arriba se descartan los días que no
             # están en el archivo (`if td not in a.index: continue`): sin previsión no hay
             # nada que comparar. Pero si ESE día hubo infección, desaparecía de la cuenta
@@ -31559,7 +31566,7 @@ def forecast_reliability(history_df, archive_df=None):
             out_rows.append({
                 "Qué": label,
                 "Periodo": _per,
-                "Fiabilidad": ("🟠 Días sin previsión" if (_sin_cub and _fiab == "🟢 Buena")
+                "Fiabilidad": ("🟠 Días sin previsión" if (_sin_cub and _fiab.startswith("🟢"))
                                else _fiab),
                 "Eventos avisados (lo que importa)": (
                     f"{tp} de {reales} ({round(tp / reales * 100)}%)" if reales else "sin eventos aún"),
@@ -31575,6 +31582,14 @@ def forecast_reliability(history_df, archive_df=None):
         return pd.DataFrame(out_rows), meta
     except Exception:
         return None, {"n": 0}
+
+
+# Colores de la tabla de fiabilidad según el % de eventos reales avisados: verde ≥90 %,
+# ámbar 75-89 %, rojo <75 %; «(pocos datos)» con menos de 5 eventos. Elegidos por el usuario
+# (18/09/2026) como criterio de PRESENTACIÓN: no hay un estándar publicado de qué % debe avisar
+# un avisador para ser «bueno». Las cifras de la tabla no dependen de esto.
+FIABILIDAD_CORTES = (90.0, 75.0)
+FIABILIDAD_MIN_EVENTOS = 5
 
 
 # Previsión de la que salen hoy los avisos (Sencrop dejó de servirla el 19/08/2026).
@@ -34415,13 +34430,24 @@ def render_fiabilidad_prevision(history_df, forecast_df):
             _esc_col = "Se le escapó (no avisó, sí pasó)"
             _evt_col = "Eventos avisados (lo que importa)"
             _RED = "background-color: rgba(220,0,0,0.16); color:#b00000; font-weight:700"
+            _AMB = "background-color: rgba(240,160,0,0.20); color:#9a6a00; font-weight:700"
             _GRN = "background-color: rgba(0,150,60,0.14); color:#0a7a35; font-weight:700"
+
+            def _tramo(pct):
+                """Color por % de eventos avisados (FIABILIDAD_CORTES)."""
+                return (_GRN if pct >= FIABILIDAD_CORTES[0]
+                        else (_AMB if pct >= FIABILIDAD_CORTES[1] else _RED))
+
             def _hl_escape(v):
                 try:
                     _n = int(str(v).strip().split(" de ")[0].split()[0])
+                    _m = int(str(v).strip().split(" de ")[1].split()[0])
                 except Exception:
-                    _n = 0
-                return _RED if _n > 0 else ""
+                    return ""
+                if _n <= 0 or _m <= 0:
+                    return ""
+                _c = _tramo(100.0 * (_m - _n) / _m)
+                return "" if _c == _GRN else _c      # pocos escapes (≥90 % avisados): sin color
             def _hl_eventos(v):
                 s = str(v).strip()
                 if "de" not in s:
@@ -34433,7 +34459,7 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                     return ""
                 if _re == 0:
                     return ""
-                return _GRN if _tp >= _re else _RED
+                return _tramo(100.0 * _tp / _re)
             try:
                 _sty = _rel_df.style
                 _styler_fn = getattr(_sty, "map", None) or _sty.applymap
@@ -34448,8 +34474,10 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                 "reciente. Cómo leer **cada fila**:\n\n"
                 "- **Eventos avisados (lo que importa)** — de los **eventos de infección reales**, "
                 "cuántos **avisó a tiempo**. *Esta es la cifra clave de un avisador: vale más no "
-                "perderse un evento que acertar días tranquilos.* 🟢 = los pilló todos · 🔴 = se "
-                "escapó alguno.\n"
+                "perderse un evento que acertar días tranquilos.* 🟢 = avisó el 90 % o más · "
+                "🟡 = del 75 al 89 % · 🔴 = menos del 75 %. «(pocos datos)» = menos de 5 eventos "
+                "reales, un solo fallo mueve mucho el %. *Estos cortes son un criterio de "
+                "presentación elegido para la app, no un estándar publicado.*\n"
                 "- **Acertó (de los días)** — de todos los días, en cuántos predijo bien. ⚠️ Engaña: "
                 "sube solo por los días tranquilos (un modelo que dijera «tranquilo» siempre también "
                 "lo tendría alto). Míralo **después** de «Eventos avisados».\n"
