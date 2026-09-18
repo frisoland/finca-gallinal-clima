@@ -35826,15 +35826,19 @@ if not _HEADLESS:
     # botones; dentro de cada uno, «⬅️ Menú principal». Aprobado y fijo desde el 16/09/2026
     # (la fila de 5 accesos + «Más secciones» de _render_mobile_nav_botones queda sin uso).
     _MENU_MOVIL = IS_MOBILE
+    # Menú principal también en el ORDENADOR, sin barra lateral (usuario, 18/09/2026: la barra
+    # se abría sola al acercar el ratón). PRUEBA: solo con ?nuevo=1.
+    _MENU_PC = (not IS_MOBILE) and str(_query_param("nuevo") or "") == "1"
+    _MENU_ACTIVO = _MENU_MOVIL or _MENU_PC
     if "nav_page" not in st.session_state:
         _p_url = str(_query_param("p") or "").strip()
         # Sin pantalla en la dirección: en el móvil abre el Informe semanal (lo que el
         # usuario consulta fuera de temporada de tratamientos, 15/09/2026); en el PC, Hoy.
         # Con el menú del móvil, abre el menú; «p=menu» vuelve a él tras un corte.
-        st.session_state.nav_page = (_p_url if (_p_url in PAGINAS_APP or (_MENU_MOVIL and _p_url == "menu"))
-                                     else ("menu" if _MENU_MOVIL else ("informe" if IS_MOBILE else "hoy")))
-    # El menú solo existe en el móvil: al pasar a PC (o sin el menú) se abre Hoy.
-    if st.session_state.get("nav_page") == "menu" and not _MENU_MOVIL:
+        st.session_state.nav_page = (_p_url if (_p_url in PAGINAS_APP or (_MENU_ACTIVO and _p_url == "menu"))
+                                     else ("menu" if _MENU_ACTIVO else ("informe" if IS_MOBILE else "hoy")))
+    # Sin menú (PC de siempre): si la dirección decía «menu», se abre Hoy.
+    if st.session_state.get("nav_page") == "menu" and not _MENU_ACTIVO:
         st.session_state.nav_page = "hoy"
 
     # CSS: estilo del sidebar
@@ -36138,8 +36142,8 @@ if not _HEADLESS:
     </style>
     """
 
-    def _render_mobile_menu() -> None:
-        """Pantalla del menú principal del móvil: un botón por apartado, en 2 columnas."""
+    def _render_mobile_menu(columnas: int = 2) -> None:
+        """Pantalla del menú principal: un botón por apartado (2 columnas en el móvil, 4 en el PC)."""
         st.markdown(_MOBILE_MENU_CSS, unsafe_allow_html=True)
         try:
             _box = st.container(key="fg_mob_menu")
@@ -36151,9 +36155,9 @@ if not _HEADLESS:
             for _grupo, _items in _MOBILE_MENU:
                 if _grupo:
                     st.markdown(f"<p class='fg-menu-grupo'>{_grupo}</p>", unsafe_allow_html=True)
-                for _i in range(0, len(_items), 2):
-                    _cols = st.columns(2)
-                    for _col, (_lb, _key) in zip(_cols, _items[_i:_i + 2]):
+                for _i in range(0, len(_items), columnas):
+                    _cols = st.columns(columnas)
+                    for _col, (_lb, _key) in zip(_cols, _items[_i:_i + columnas]):
                         with _col:
                             if st.button(_lb, key=f"mmenu_{_key}", use_container_width=True):
                                 _mobile_go(_key)
@@ -36214,7 +36218,19 @@ if not _HEADLESS:
 
     if IS_MOBILE:
         _render_mobile_nav()
-    if not IS_MOBILE:
+    elif _MENU_PC:
+        # Cabecera del PC con menú: «⬅️ Menú principal» (fuera del menú) y «📱 Vista móvil».
+        _pc1, _pc2, _pc3 = st.columns([1.3, 4, 1.1])
+        with _pc1:
+            if st.session_state.get("nav_page") != "menu":
+                _render_mobile_volver_menu("pc_menu_arriba")
+        with _pc3:
+            if st.button("📱 Vista móvil", key="pc_to_mobile", use_container_width=True,
+                         help="Cambiar a la interfaz móvil simplificada"):
+                st.session_state["force_mobile"] = True
+                _set_query_param("movil", "1")
+                st.rerun()
+    if not IS_MOBILE and not _MENU_PC:
         with st.sidebar:
             # Título con logo inline (base64) en lugar del emoji 🌿
             try:
@@ -36331,7 +36347,7 @@ if not _HEADLESS:
         pass
 
     if _page == "menu":
-        _render_mobile_menu()
+        _render_mobile_menu(2 if IS_MOBILE else 4)
     elif _page == "hoy":
         if IS_MOBILE:   # móvil: lo esencial + «Ver pantalla completa» (aprobado 16/09/2026)
             render_hoy_movil(history, soil_type, hoja_threshold)
@@ -36423,6 +36439,6 @@ if not _HEADLESS:
         settings_tab()
 
     # Móvil con menú: segundo «⬅️ Menú principal» al final, para no subir en pantallas largas.
-    if _MENU_MOVIL and _page != "menu":
+    if _MENU_ACTIVO and _page != "menu":
         st.divider()
         _render_mobile_volver_menu("mob_menu_abajo")
