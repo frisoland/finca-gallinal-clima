@@ -22537,11 +22537,14 @@ def carpocapsa_tab(history):
             _treats_one = _a
 
         # 4) Serie de DD (finca; el DD diario es climático, común) + previsión de sesión
+        # La gráfica empieza 10 días antes del biofix. Antes se topaba en 140 días: a partir de
+        # mediados de septiembre se comía el biofix y su captura (GY - Gallinal: el 20 del 01/05
+        # no salía y el primer pico parecía el 16 del 25/05; aviso del usuario, 19/09/2026).
         _dback_disp = 100
         if _bf_date_cc is not None and pd.notna(_bf_date_cc):
-            _dback_disp = min(140, max(45, (pd.Timestamp.now().normalize() - _bf_date_cc).days + 10))
+            _dback_disp = max(45, (pd.Timestamp.now().normalize() - _bf_date_cc).days + 10)
         _fc_cc = st.session_state.get("forecast_df", pd.DataFrame())
-        _risk_cc = build_risk_timeline(history, _fc_cc, days_back=150,
+        _risk_cc = build_risk_timeline(history, _fc_cc, days_back=max(150, _dback_disp + 5),
                                        base_temp=_base_cc, upper_temp=_upper_cc)
         if _risk_cc is None or _risk_cc.empty:
             st.info("No se pudo construir la serie de grados-día.")
