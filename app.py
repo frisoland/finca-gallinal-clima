@@ -10211,6 +10211,37 @@ def render_analisis_movil(history, soil_type, hoja_threshold):
         analysis_tab(history, soil_type, hoja_threshold)
 
 
+def compare_custom_range(history, years, ini_md, fin_md, soil_type, hoja_threshold):
+    """Compara el MISMO periodo (día/mes de inicio → día/mes de fin, lo elige el usuario) en
+    varios años. Mismas cuentas que `compare_months` / `compare_month_weeks`: add_risk_columns +
+    period_summary. Si el fin cae antes que el inicio, el periodo cruza el fin de año (p. ej.
+    15/12 → 15/01 compara del 15/12 del año elegido al 15/01 del siguiente)."""
+    rows = []
+    _m1, _d1 = int(ini_md[0]), int(ini_md[1])
+    _m2, _d2 = int(fin_md[0]), int(fin_md[1])
+    for y in years:
+        y = int(y)
+        try:
+            start = pd.Timestamp(year=y, month=_m1, day=_d1, hour=0, minute=0)
+            _y_fin = y if (_m2, _d2) >= (_m1, _d1) else y + 1
+            end = pd.Timestamp(year=_y_fin, month=_m2, day=_d2, hour=23, minute=59, second=59)
+        except ValueError:      # 29/02 en año no bisiesto
+            continue
+        _etq = f"{y} · {_d1:02d}/{_m1:02d}–{_d2:02d}/{_m2:02d}"
+        period = history[(history["fecha_hora"] >= start) & (history["fecha_hora"] <= end)].copy()
+        if period.empty:
+            rows.append({"Comparación": _etq, "Año": y, "Mes": MONTH_NAMES_ES[_m1],
+                         "Desde": start, "Hasta": end, "Aviso": "Sin datos"})
+            continue
+        period = add_risk_columns(period, hoja_humeda_threshold=hoja_threshold)
+        row_df = period_summary(period, soil_type, start, end)
+        row = row_df.iloc[0].to_dict() if not row_df.empty else {}
+        row.update({"Comparación": _etq, "Año": y, "Mes": MONTH_NAMES_ES[_m1],
+                    "Desde": start, "Hasta": end})
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def compare_months(history, years, month, soil_type, hoja_threshold):
     """Compara el MES COMPLETO entre varios años. Mismas cuentas que `compare_month_weeks`
     (add_risk_columns + period_summary), solo cambia el periodo: del día 1 al último del mes."""
@@ -11379,27 +11410,35 @@ def _monthly_climatology(history):
     df["temp_media"] = pd.to_numeric(df["temp_media"], errors="coerce")
     df["lluvia_mm"] = pd.to_numeric(df["lluvia_mm"], errors="coerce")
 
+    # Un mes/año EN CURSO nunca es completo, aunque ya tenga el 80 % de las horas: el 26 de
+    # septiembre lleva el 87 % y salía sin asterisco y contando en la media (aviso del usuario,
+    # 26/09/2026). Hace falta, además, que el dato llegue al final del periodo.
+    _ultimo = df["fecha_hora"].max()
+
     tv, rv, tcomp, rcomp = {}, {}, {}, {}
     for (y, m), g in df.groupby(["_y", "_m"]):
         y, m = int(y), int(m)
-        exp = calendar.monthrange(y, m)[1] * 24
+        _dias = calendar.monthrange(y, m)[1]
+        exp = _dias * 24
+        _cerrado = _ultimo >= pd.Timestamp(y, m, _dias, 23, 0)
         t = g["temp_media"].dropna()
         r = g["lluvia_mm"].dropna()
         if exp > 0 and len(t) > 0:
-            tv[(y, m)] = float(t.mean());  tcomp[(y, m)] = (len(t) / exp) >= 0.8
+            tv[(y, m)] = float(t.mean());  tcomp[(y, m)] = _cerrado and (len(t) / exp) >= 0.8
         if exp > 0 and len(r) > 0:
-            rv[(y, m)] = float(r.sum());   rcomp[(y, m)] = (len(r) / exp) >= 0.8
+            rv[(y, m)] = float(r.sum());   rcomp[(y, m)] = _cerrado and (len(r) / exp) >= 0.8
 
     tav, rav, tacomp, racomp = {}, {}, {}, {}
     for y, g in df.groupby("_y"):
         y = int(y)
         exp = (366 if calendar.isleap(y) else 365) * 24
+        _cerrado_y = _ultimo >= pd.Timestamp(y, 12, 31, 23, 0)
         t = g["temp_media"].dropna()
         r = g["lluvia_mm"].dropna()
         if len(t) > 0:
-            tav[y] = float(t.mean());  tacomp[y] = (len(t) / exp) >= 0.8
+            tav[y] = float(t.mean());  tacomp[y] = _cerrado_y and (len(t) / exp) >= 0.8
         if len(r) > 0:
-            rav[y] = float(r.sum());   racomp[y] = (len(r) / exp) >= 0.8
+            rav[y] = float(r.sum());   racomp[y] = _cerrado_y and (len(r) / exp) >= 0.8
 
     return {"years": [int(v) for v in sorted(df["_y"].unique().tolist())],
             "tv": tv, "rv": rv, "tcomp": tcomp, "rcomp": rcomp,
@@ -11847,9 +11886,10 @@ def comparator_tab(history, soil_type, hoja_threshold):
         with col_m2:
             week_cmp = st.selectbox(
                 "Semana del mes",
-                options=[1, 2, 3, 4, 5],
-                index=max(0, min(4, current_week - 1)),
-                format_func=lambda x: f"{x}ª semana" if x != 1 else "1ª semana",
+                options=["Todo el mes", 1, 2, 3, 4, 5],
+                index=max(1, min(5, current_week)),
+                format_func=lambda x: x if isinstance(x, str) else f"{x}ª semana",
+                help="«Todo el mes» compara el mes entero (del día 1 al último).",
             )
 
         with col_m3:
@@ -11871,9 +11911,15 @@ def comparator_tab(history, soil_type, hoja_threshold):
         selected_years_month = [int(y) for y in selected_years_month]
 
         if selected_years_month:
+            import calendar as _cal_m
             previews = []
             for y in selected_years_month:
-                s, e = month_week_period(y, month_cmp, week_cmp)
+                if week_cmp == "Todo el mes":
+                    s = pd.Timestamp(year=int(y), month=int(month_cmp), day=1)
+                    e = pd.Timestamp(year=int(y), month=int(month_cmp),
+                                     day=_cal_m.monthrange(int(y), int(month_cmp))[1])
+                else:
+                    s, e = month_week_period(y, month_cmp, week_cmp)
                 if s is not None:
                     previews.append(f"{y}: {s.strftime('%d/%m/%Y')} - {e.strftime('%d/%m/%Y')}")
             st.caption("Periodos que se compararán: " + " · ".join(previews[:8]) + (" ..." if len(previews) > 8 else ""))
@@ -11882,14 +11928,13 @@ def comparator_tab(history, soil_type, hoja_threshold):
             if not selected_years_month:
                 st.warning("Selecciona al menos un año.")
             else:
-                cmp_month = compare_month_weeks(
-                    history,
-                    selected_years_month,
-                    int(month_cmp),
-                    int(week_cmp),
-                    soil_type,
-                    hoja_threshold,
-                )
+                _etq_per = ("todo el mes" if week_cmp == "Todo el mes" else f"semana {int(week_cmp)}")
+                cmp_month = (
+                    compare_months(history, selected_years_month, int(month_cmp),
+                                   soil_type, hoja_threshold)
+                    if week_cmp == "Todo el mes" else
+                    compare_month_weeks(history, selected_years_month, int(month_cmp),
+                                        int(week_cmp), soil_type, hoja_threshold))
 
                 order_map = {int(y): i for i, y in enumerate(selected_years_month)}
                 if "Año" in cmp_month.columns:
@@ -11898,7 +11943,7 @@ def comparator_tab(history, soil_type, hoja_threshold):
 
                 render_visual_comparison_report(
                     cmp_month,
-                    title=f"Informe visual · {month_name} · semana {int(week_cmp)}",
+                    title=f"Informe visual · {month_name} · {_etq_per}",
                 )
 
                 with st.expander("Tabla completa técnica", expanded=False):
@@ -11909,9 +11954,61 @@ def comparator_tab(history, soil_type, hoja_threshold):
                 st.download_button(
                     "Descargar comparación completa",
                     data=cmp_month.to_csv(index=False).encode("utf-8-sig"),
-                    file_name=f"comparacion_{month_name.lower()}_semana_{int(week_cmp)}.csv",
+                    file_name=f"comparacion_{month_name.lower()}_{_etq_per.replace(' ', '_')}.csv",
                     mime="text/csv",
                 )
+
+    with st.expander("📆 Comparar un periodo a medida (las fechas las pones tú)", expanded=False):
+        st.caption(
+            "Elige **desde** y **hasta** (día y mes) y los años a comparar: la app calcula ese "
+            "**mismo periodo** en cada año. El año de las fechas de abajo solo sirve para elegir "
+            "el día y el mes. Si el fin cae antes que el inicio, el periodo **cruza el fin de "
+            "año** (p. ej. 15/12 → 15/01). Mismas cuentas que el resto del comparador.")
+        _yrs_libre = [int(y) for y in sorted(history["fecha_hora"].dt.year.unique())]
+        _hoy_libre = pd.Timestamp.today().normalize()
+        _lc1, _lc2, _lc3 = st.columns(3)
+        with _lc1:
+            _f_ini = st.date_input("Desde (día y mes)", value=(_hoy_libre - pd.Timedelta(days=29)).date(),
+                                   format="DD/MM/YYYY", key="cmp_libre_ini")
+        with _lc2:
+            _f_fin = st.date_input("Hasta (día y mes)", value=_hoy_libre.date(),
+                                   format="DD/MM/YYYY", key="cmp_libre_fin")
+        with _lc3:
+            _todos_libre = st.checkbox("Comparar todos los años disponibles", value=False,
+                                       key="cmp_libre_todos")
+        _sel_libre = st.multiselect(
+            "Años a comparar", options=_yrs_libre,
+            default=_yrs_libre[-4:] if len(_yrs_libre) >= 4 else _yrs_libre,
+            key="cmp_libre_anios",
+            help="Si activas «Comparar todos los años disponibles», esta selección se ignora.")
+        _anios_libre = _yrs_libre if _todos_libre else [int(y) for y in _sel_libre]
+        _md_i = (pd.Timestamp(_f_ini).month, pd.Timestamp(_f_ini).day)
+        _md_f = (pd.Timestamp(_f_fin).month, pd.Timestamp(_f_fin).day)
+        _cruza = (_md_f[0], _md_f[1]) < (_md_i[0], _md_i[1])
+        st.caption(f"Periodo: **{_md_i[1]:02d}/{_md_i[0]:02d} → {_md_f[1]:02d}/{_md_f[0]:02d}**"
+                   + (" (cruza el fin de año: el fin cae en el año siguiente)" if _cruza else "")
+                   + (" · años: " + ", ".join(str(a) for a in _anios_libre) if _anios_libre else ""))
+        if st.button("Comparar periodo a medida", key="btn_cmp_libre", type="primary"):
+            if not _anios_libre:
+                st.warning("Selecciona al menos un año.")
+            else:
+                _cmp_libre = compare_custom_range(history, sorted(_anios_libre), _md_i, _md_f,
+                                                  soil_type, hoja_threshold)
+                if _cmp_libre is None or _cmp_libre.empty:
+                    st.info("No hay datos para ese periodo en los años elegidos.")
+                else:
+                    render_visual_comparison_report(
+                        _cmp_libre,
+                        title=f"Informe visual · {_md_i[1]:02d}/{_md_i[0]:02d} → "
+                              f"{_md_f[1]:02d}/{_md_f[0]:02d}")
+                    with st.expander("Tabla completa técnica", expanded=False):
+                        st_tabla(_cmp_libre, use_container_width=True)
+                    render_week_comparison_explanation(_cmp_libre)
+                    st.download_button(
+                        "Descargar comparación completa",
+                        data=_cmp_libre.to_csv(index=False).encode("utf-8-sig"),
+                        file_name=f"comparacion_{_md_i[1]:02d}{_md_i[0]:02d}_{_md_f[1]:02d}{_md_f[0]:02d}.csv",
+                        mime="text/csv", key="dl_cmp_libre")
 
     with st.expander("Comparar por quincenas", expanded=False):
         years_cmp_q = [int(y) for y in sorted(history["fecha_hora"].dt.year.unique())]
