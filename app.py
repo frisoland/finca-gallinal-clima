@@ -31572,6 +31572,12 @@ def simular_umbral_aviso(history_df, archive_df=None, umbrales=(100, 90, 85, 80,
         if ad.empty:
             return pd.DataFrame()
         ad["_td"] = ad["target_date"].astype(str)
+        # Solo la fuente que da los avisos HOY (MeteoGalicia): mezclar con lo archivado de
+        # Sencrop compararía dos modelos distintos, como en el resumen de arriba.
+        if "pred_src" in ad.columns:
+            _mask_src = ad["pred_src"].apply(lambda v: _fuente_prevision(v) == FUENTE_PREVISION_ACTIVA)
+            if _mask_src.any():
+                ad = ad[_mask_src]
         ad = ad.sort_values("_h").drop_duplicates("_td", keep="first")   # la más reciente
         filas = []
         for _lbl, _pc, _rc, _campo in (("🍄 Moteado", "pred_mills", "Mills_valor", "mills"),
@@ -34661,6 +34667,8 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                     "El **evento real** se queda donde está (valor **≥100**, infección). Aquí se "
                     "mueve solo el **umbral que hace saltar el aviso** de la previsión, para ver "
                     "cuántos eventos se pillarían y cuántas falsas alarmas costaría. Es la pregunta "
+                    "Solo cuenta la previsión de **MeteoGalicia**, la que da los avisos hoy. "
+                    "Es la pregunta "
                     "del oídio: su índice llega a 100 solo entre 20 y 22 ºC y cae ~33 puntos por "
                     "grado, así que exigirle 100 a la previsión es pedirle que clave la temperatura. "
                     "**Solo mide; no cambia nada.**")
