@@ -1334,20 +1334,27 @@ def scab_mills_threshold_hours(temp_c):
     return MILLS_HORAS_POR_F[max(MILLS_HORAS_POR_F)]
 
 
+# Horas húmedas que pide Monilinia según la temperatura. Son las MISMAS cifras de siempre
+# (24 h por debajo de 10 ºC · 18 h de 10 a 15 · 10 h de 15 a 20 · 5 h de 20 a 25 · 10 h por
+# encima), pero colocadas en el CENTRO de su banda y unidas por una recta, en vez de a saltos.
+# Por qué (diagnóstico del 30/09/2026): con escalones, medio grado en el filo doblaba o partía
+# el valor. El 22/09 la previsión dio 14,5 ºC (pedía 18 h) y el sensor 15,2 ºC (pedía 10 h):
+# con horas parecidas, 38 previsto contra 98 real. Interpolar no añade ninguna cifra nueva,
+# solo evita el salto. Afecta igual al valor real y al previsto.
+MONILIA_HORAS_POR_T = {7.5: 24.0, 12.5: 18.0, 17.5: 10.0, 22.5: 5.0, 27.5: 10.0}
+
+
 def monilia_threshold_hours(temp_c):
-    """Umbral orientativo de horas húmedas equivalentes para vigilancia de Monilinia."""
+    """Horas húmedas equivalentes que pide Monilinia a esa temperatura (interpolado)."""
     if pd.isna(temp_c):
         return np.nan
     t = float(temp_c)
-    if t < 10:
-        return 24.0
-    if t < 15:
-        return 18.0
-    if t < 20:
-        return 10.0
-    if t <= 25:
-        return 5.0
-    return 10.0
+    _xs = sorted(MONILIA_HORAS_POR_T)
+    if t <= _xs[0]:
+        return MONILIA_HORAS_POR_T[_xs[0]]
+    if t >= _xs[-1]:
+        return MONILIA_HORAS_POR_T[_xs[-1]]
+    return round(float(np.interp(t, _xs, [MONILIA_HORAS_POR_T[x] for x in _xs])), 1)
 
 
 # Escala del valor de moteado y monilia, LA MISMA en toda la app (decisión del usuario,
@@ -31263,7 +31270,7 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84, solo_comunes=Fals
         return None, {"n": 0}
 
 
-def reproceso_prevision_mg(history_df, archive_mg=None, dias=14):
+def reproceso_prevision_mg(history_df, archive_mg=None, dias=14, rh_thr=None):
     """Rehace las previsiones de los días PASADOS con el modelo de HOY.
 
     Los valores archivados son fotos: se guardaron con el modelo que había ese día y no
@@ -31299,6 +31306,8 @@ def reproceso_prevision_mg(history_df, archive_mg=None, dias=14):
         _, _p = _lw_model_params()
         _curva, _, _ = mojadura_curva_sensor(history_df)
         _pf = {**_p, **({"curva": _curva} if _curva else {})}
+        if rh_thr is not None:      # rehacer con otro umbral de HR del estimador
+            _pf = {**_pf, "rh_thr": float(rh_thr)}
 
         hoy = pd.Timestamp.now().normalize()
         real = build_risk_timeline(history_df, pd.DataFrame(), days_back=int(dias) + 5)
@@ -31507,6 +31516,98 @@ def mg_lluvia_vs_sensor(history_df, archive_df=None, max_h=84, umbral=0.1):
                                      "hasta": m["target_dt"].max(), "umbral": umbral}
     except Exception:
         return None, {"n": 0}
+
+
+def comparar_rh_thr_monilia(history_df, archive_mg=None, dias=21, umbrales=(92.0, 90.0, 88.0)):
+    """¿Cambiaría monilia si el estimador de hoja mojada diera por mojada la hora desde una HR
+    más baja? Rehace los mismos días archivados con cada umbral y cuenta, con el umbral de
+    infección 100: eventos reales avisados, escapes y falsas alarmas. Solo MIDE; no cambia nada."""
+    filas = []
+    for _u in umbrales:
+        _df, _meta = reproceso_prevision_mg(history_df, archive_mg, dias=dias, rh_thr=_u)
+        if _df is None or _df.empty:
+            continue
+        _p = pd.to_numeric(_df["Monilia · rehecho"], errors="coerce")
+        _r = pd.to_numeric(_df["Monilia · real"], errors="coerce")
+        _hp = pd.to_numeric(_df.get("h mojadas · prev."), errors="coerce")
+        _hr = pd.to_numeric(_df.get("h mojadas · real"), errors="coerce")
+        _ev = _r >= 100
+        _av = _p >= 100
+        _n = int(_ev.sum())
+        filas.append({
+            "Umbral de HR del estimador": f"{_u:.0f} %" + ("  (el del sensor)" if abs(_u - 92.0) < 0.01 else ""),
+            "Eventos reales": _n,
+            "Avisados": (f"{int((_ev & _av).sum())} de {_n} "
+                         f"({round(100 * int((_ev & _av).sum()) / _n)} %)" if _n else "—"),
+            "🔴 Escapes": int((_ev & ~_av).sum()),
+            "Falsas alarmas": int((~_ev & _av).sum()),
+            "Horas mojadas previstas (media)": round(float(_hp.mean()), 1) if _hp.notna().any() else np.nan,
+            "Horas mojadas reales (media)": round(float(_hr.mean()), 1) if _hr.notna().any() else np.nan,
+            "Días comparados": len(_df),
+        })
+    return pd.DataFrame(filas)
+
+
+def simular_umbral_aviso(history_df, archive_df=None, umbrales=(100, 90, 85, 80, 75, 70, 60)):
+    """¿Qué pasaría si el AVISO saltara antes? Con los días ya archivados, y dejando el evento
+    real donde está (valor ≥100), cuenta por enfermedad y por umbral de aviso: eventos avisados,
+    escapes y falsas alarmas. Solo MIDE. Cada día usa su previsión más reciente (horizonte ≥1)."""
+    try:
+        if archive_df is None:
+            archive_df = load_forecast_archive()
+        if archive_df is None or archive_df.empty or history_df is None or history_df.empty:
+            return pd.DataFrame()
+        today = pd.Timestamp.now().normalize()
+        oldest = pd.to_datetime(archive_df.get("target_date"), errors="coerce").min()
+        days_back = 60 if pd.isna(oldest) else min(max(int((today - oldest).days) + 5, 15), 730)
+        actual = build_risk_timeline(history_df, pd.DataFrame(), days_back=days_back)
+        if actual is None or actual.empty:
+            return pd.DataFrame()
+        actual = actual.copy()
+        actual["_td"] = pd.to_datetime(actual["Fecha"]).dt.strftime("%Y-%m-%d")
+        a = actual.drop_duplicates("_td").set_index("_td")
+        ad = archive_df.copy()
+        ad["_h"] = pd.to_numeric(ad.get("horizon"), errors="coerce")
+        ad = ad[ad["_h"] >= 1]
+        if ad.empty:
+            return pd.DataFrame()
+        ad["_td"] = ad["target_date"].astype(str)
+        ad = ad.sort_values("_h").drop_duplicates("_td", keep="first")   # la más reciente
+        filas = []
+        for _lbl, _pc, _rc, _campo in (("🍄 Moteado", "pred_mills", "Mills_valor", "mills"),
+                                       ("🟤 Monilia", "pred_monilia", "Monilia_valor", "monilia"),
+                                       ("⚪ Oídio", "pred_oidio", "Oidio_valor", "oidio")):
+            if _pc not in ad.columns or _rc not in a.columns:
+                continue
+            _pares = []
+            for _, r in ad.iterrows():
+                _td = r["_td"]
+                if _td not in a.index:
+                    continue
+                _pv = pred_en_escala_real(r.get(_pc), _campo, _fuente_prevision(r.get("pred_src")))
+                _rv = pd.to_numeric(a.loc[_td, _rc], errors="coerce")
+                if pd.isna(_pv) or pd.isna(_rv):
+                    continue
+                _pares.append((float(_pv), float(_rv)))
+            if not _pares:
+                continue
+            _n_ev = sum(1 for _, _rv in _pares if _rv >= 100)
+            for _u in umbrales:
+                _av = sum(1 for _pv, _rv in _pares if _rv >= 100 and _pv >= _u)
+                _fa = sum(1 for _pv, _rv in _pares if _rv < 100 and _pv >= _u)
+                filas.append({
+                    "Qué": _lbl,
+                    "Umbral de aviso": int(_u),
+                    "Eventos avisados": (f"{_av} de {_n_ev} ({round(100 * _av / _n_ev)} %)"
+                                         if _n_ev else "sin eventos"),
+                    "🔴 Escapes": _n_ev - _av,
+                    "Falsas alarmas": _fa,
+                    "Total avisos": _av + _fa,
+                    "Días comparados": len(_pares),
+                })
+        return pd.DataFrame(filas)
+    except Exception:
+        return pd.DataFrame()
 
 
 def forecast_reliability(history_df, archive_df=None):
@@ -34554,6 +34655,37 @@ def render_fiabilidad_prevision(history_df, forecast_df):
             # ARCHIVADAS antes de esa fecha son fijas y se guardaron con el viejo. Durante
             # unas semanas se comparan dos criterios distintos y saldrán más escapes de
             # los que hubo. No es que el modelo haya empeorado.
+            with st.expander("🔬 ¿Y si el aviso saltara antes? (umbral de aviso, con los días "
+                             "archivados)", expanded=False):
+                st.caption(
+                    "El **evento real** se queda donde está (valor **≥100**, infección). Aquí se "
+                    "mueve solo el **umbral que hace saltar el aviso** de la previsión, para ver "
+                    "cuántos eventos se pillarían y cuántas falsas alarmas costaría. Es la pregunta "
+                    "del oídio: su índice llega a 100 solo entre 20 y 22 ºC y cae ~33 puntos por "
+                    "grado, así que exigirle 100 a la previsión es pedirle que clave la temperatura. "
+                    "**Solo mide; no cambia nada.**")
+                _sim_thr = simular_umbral_aviso(history_df)
+                if _sim_thr is None or _sim_thr.empty:
+                    st.info("Aún no hay días archivados suficientes.")
+                else:
+                    st_tabla(_sim_thr, use_container_width=True, hide_index=True)
+
+            with st.expander("🍃 ¿Y si el estimador diera la hora por mojada antes? (monilia)",
+                             expanded=False):
+                st.caption(
+                    "El estimador da una hora por mojada desde el **92 % de HR**, que es donde moja "
+                    "el sensor. En las noches largas de otoño se queda corto: el 28 y 29/09 vio 9,1 y "
+                    "7,2 h donde el sensor midió 12,5. Aquí se rehacen los mismos días con umbrales "
+                    "más bajos. **Solo mide; no cambia nada.**")
+                if st.button("Calcular con 92 %, 90 % y 88 %", key="btn_rh_thr_monilia"):
+                    with st.spinner("Rehaciendo los días archivados con cada umbral…"):
+                        st.session_state["_cmp_rh_thr"] = comparar_rh_thr_monilia(history_df)
+                _cmp_rh = st.session_state.get("_cmp_rh_thr")
+                if _cmp_rh is not None and not _cmp_rh.empty:
+                    st_tabla(_cmp_rh, use_container_width=True, hide_index=True)
+                elif _cmp_rh is not None:
+                    st.info("No se pudo rehacer (falta archivo horario de MeteoGalicia).")
+
             st.caption(
                 "ℹ️ **Criterio cambiado el 26/08/2026:** un episodio de hoja mojada que cruza "
                 "la medianoche ahora marca **los dos días**, no solo aquel en que se secó — "
