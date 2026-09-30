@@ -31333,6 +31333,28 @@ def reproceso_prevision_mg(history_df, archive_mg=None, dias=14):
                 ev = detect_leaf_wetness_events(allh)
             except Exception:
                 ev = pd.DataFrame()
+            def _mejor_monilia(_evs, _dia):
+                """(horas húmedas, T media, valor) del episodio de MÁS monilia que toca ese día."""
+                _best = (np.nan, np.nan, 0.0)
+                if _evs is None or _evs.empty:
+                    return _best
+                for _, _e in _evs.iterrows():
+                    _i2 = pd.to_datetime(_e.get("Inicio"), errors="coerce")
+                    _f2 = pd.to_datetime(_e.get("Fin"), errors="coerce")
+                    if pd.isna(_f2):
+                        continue
+                    _dd2 = (pd.date_range(_i2.normalize(), _f2.normalize(), freq="D")
+                            if pd.notna(_i2) else [_f2.normalize()])
+                    if _dia not in set(_dd2):
+                        continue
+                    _r2 = pd.to_numeric(_e.get("Ratio monilia"), errors="coerce")
+                    _v2 = float(_r2) * 100.0 if pd.notna(_r2) else 0.0
+                    if _v2 >= _best[2]:
+                        _best = (pd.to_numeric(_e.get("Horas húmedas equivalentes"), errors="coerce"),
+                                 pd.to_numeric(_e.get("Temperatura media evento ºC"), errors="coerce"),
+                                 _v2)
+                return _best
+
             _mv = _ov = 0.0
             if ev is not None and not ev.empty:
                 for _, e in ev.iterrows():
@@ -31352,12 +31374,28 @@ def reproceso_prevision_mg(history_df, archive_mg=None, dias=14):
                         _ov = max(_ov, float(_ro) * 100.0)
             _rm_real = float(real.loc[D, "Mills_valor"]) if D in real.index else np.nan
             _ro_real = float(real.loc[D, "Monilia_valor"]) if D in real.index else np.nan
+            # Desglose del episodio: horas y temperatura, previstas y reales, y las horas que
+            # pide monilia a esa temperatura (salta de 10 a 5 al pasar de 20 ºC).
+            _hp, _tp, _ = _mejor_monilia(ev, D)
+            try:
+                _ev_real = detect_leaf_wetness_events(
+                    h[(h["fecha_hora"] >= D - pd.Timedelta(days=6)) &
+                      (h["fecha_hora"] < D + pd.Timedelta(days=2))])
+            except Exception:
+                _ev_real = pd.DataFrame()
+            _hr_, _tr_, _ = _mejor_monilia(_ev_real, D)
             filas.append({
                 "Fecha": D.strftime("%d/%m"),
                 "Moteado · rehecho": round(min(_mv, 150.0), 0),
                 "Moteado · real": round(_rm_real, 0) if pd.notna(_rm_real) else np.nan,
                 "Monilia · rehecho": round(min(_ov, 150.0), 0),
                 "Monilia · real": round(_ro_real, 0) if pd.notna(_ro_real) else np.nan,
+                "h mojadas · prev.": round(float(_hp), 1) if pd.notna(_hp) else np.nan,
+                "h mojadas · real": round(float(_hr_), 1) if pd.notna(_hr_) else np.nan,
+                "T evento · prev.": round(float(_tp), 1) if pd.notna(_tp) else np.nan,
+                "T evento · real": round(float(_tr_), 1) if pd.notna(_tr_) else np.nan,
+                "h que pide · prev.": monilia_threshold_hours(_tp) if pd.notna(_tp) else np.nan,
+                "h que pide · real": monilia_threshold_hours(_tr_) if pd.notna(_tr_) else np.nan,
             })
         if not filas:
             return pd.DataFrame(), {"n": 0}
