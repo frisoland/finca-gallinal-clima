@@ -19694,13 +19694,23 @@ CARPOCAPSA_BIOFIX_THRESHOLD = 2
 #             umbral 150 ahorraría 1 más, pero el modelo tiene techo en 150 y ahí
 #             no queda colchón: una infección que diera 145 se escaparía. 140 deja
 #             10 puntos de margen y se lleva casi todo el ahorro.
-#   MONILIA — no hay margen: subir a 110 ya provoca 3 escapes de 5. Se queda en 100.
-#   OÍDIO   — sin analizar todavía; se queda en 100.
+#   MONILIA — BAJADO A 70 el 30/09/2026 (decisión del usuario, con el archivo de
+#             MeteoGalicia, 35 días): con 100 avisaba 4 de 6 infecciones; con 80, 5 de 6;
+#             con 70, las 6 de 6 y solo UNA falsa alarma más (13 frente a 12). La
+#             previsión se queda corta en las noches de rocío —el estimador ve 3-5 horas
+#             mojadas menos que el sensor— y bajar el listón del aviso lo compensa sin
+#             tocar el modelo. El evento REAL sigue siendo 100. Se mide en el panel de
+#             fiabilidad → «¿Y si el aviso saltara antes?».
+#   OÍDIO   — se queda en 100. Bajarlo NO sirve: con 85 sigue avisando 1 de 4 y ya añade
+#             4 falsas alarmas; hasta 60 no sube a 3 de 4, y ahí son 21 falsas. Su índice
+#             solo llega a 100 entre 20 y 22 ºC y cae ~33 puntos por grado, así que con
+#             1,5 ºC de error típico la previsión casi nunca clava el 100: el 25 % es el
+#             filo de la escala, no un fallo del modelo.
 #
 # ⚠️ Calculado con 4 y 5 infecciones. Revisar el barrido («¿Cuántos tratamientos
 # me ahorro subiendo el listón?») cada pocas semanas: un evento nuevo puede mover
 # el umbral recomendado.
-FORECAST_WARN_THR_DEFAULTS = {"mills": 100.0, "monilia": 100.0, "oidio": 100.0}
+FORECAST_WARN_THR_DEFAULTS = {"mills": 100.0, "monilia": 70.0, "oidio": 100.0}
 
 
 # ── Corrección de sesgo de la PREVISIÓN ──────────────────────────────────────
