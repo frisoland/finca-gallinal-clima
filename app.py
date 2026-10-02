@@ -29795,8 +29795,16 @@ LEAF_WETNESS_DEFAULTS = {"rh_thr": 92.0, "dew_depr": 1.5, "dry_lag": 1, "rh_dry"
 #   curva-v1 — desde el 09/09/2026: minutos graduados con la curva medida en el propio
 #              sensor de la finca (mojadura_curva_sensor).
 # Lo archivado con una versión NO es comparable con lo archivado con la otra.
-LW_VERSION = "curva-v1"
-LW_VERSION_CAMBIO = pd.Timestamp("2026-09-09")
+#   curva-v2 — desde el 02/10/2026: la curva se multiplica por LW_CURVA_FACTOR (0,85). Sin
+#              calibrar, el estimador sobre datos REALES daba +38 puntos de sesgo en moteado y
+#              +50 en monilia frente al sensor (16.457 horas mojadas contra 11.101): moja todas
+#              las horas con HR ≥92 % y el sensor solo moja el 43-53 % de ellas. Con 0,85 el
+#              sesgo baja a +6 y +17 sin perder avisos.
+LW_VERSION = "curva-v2"
+LW_VERSION_CAMBIO = pd.Timestamp("2026-10-02")
+
+# Calibración de la curva del estimador (ver arriba). 1,0 = la curva cruda del sensor.
+LW_CURVA_FACTOR = 0.85
 
 
 def _dew_point_c(temp_c, rh_pct):
@@ -29850,8 +29858,9 @@ def estimate_leaf_wetness_minutes(df, params=None):
     if not _curva:
         return pd.Series(np.where(wet, 60.0, 0.0), index=df.index)
     _mins = np.zeros(len(df), dtype=float)
+    _k_cal = float(p.get("curva_factor", LW_CURVA_FACTOR) or 1.0)
     for _u, _m in sorted(((float(k), float(v)) for k, v in _curva.items())):
-        _mins = np.where(rh.fillna(0).to_numpy() >= _u, _m, _mins)
+        _mins = np.where(rh.fillna(0).to_numpy() >= _u, _m * _k_cal, _mins)
     # La lluvia moja del todo: no se gradúa.
     _mins = np.where((ll > float(p.get("rain_thr", 0.1))).to_numpy(), 60.0, _mins)
     return pd.Series(np.where(wet, np.clip(_mins, 0.0, 60.0), 0.0), index=df.index)
@@ -32248,9 +32257,13 @@ def forecast_reliability_persistence(history_df, archive_df=None):
 # número…?»): mediana previsto/real 1,29 en moteado y 1,36 en monilia (rango 50 % central
 # 0,85-1,65 y 0,73-1,84). Antes iba 1,0 aquí y 1,65/1,67 en lo que se enseñaba: dos escalas
 # distintas para lo mismo. El oídio no se corrige (su índice ya está topado en 100).
+# 02/10/2026: al calibrar el estimador (LW_CURVA_FACTOR 0,85) los valores previstos bajan un
+# ~15 %, así que el factor de MeteoGalicia baja con ellos: 1,29×0,85 ≈ 1,10 y 1,36×0,85 ≈ 1,16.
+# PROVISIONALES: la tabla «¿Y si corregimos el número…?» los remide con los días nuevos (los
+# archivados antes llevan el sello curva-v1 y no son comparables).
 FORECAST_BIAS_BY_SRC = {
     "sencrop": FORECAST_BIAS_DEFAULTS,
-    "meteogalicia": {"mills": 1.29, "monilia": 1.36, "oidio": 1.0},
+    "meteogalicia": {"mills": 1.10, "monilia": 1.16, "oidio": 1.0},
 }
 
 
