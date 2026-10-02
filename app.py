@@ -19694,13 +19694,16 @@ CARPOCAPSA_BIOFIX_THRESHOLD = 2
 #             umbral 150 ahorraría 1 más, pero el modelo tiene techo en 150 y ahí
 #             no queda colchón: una infección que diera 145 se escaparía. 140 deja
 #             10 puntos de margen y se lleva casi todo el ahorro.
-#   MONILIA — BAJADO A 70 el 30/09/2026 (decisión del usuario, con el archivo de
-#             MeteoGalicia, 35 días): con 100 avisaba 4 de 6 infecciones; con 80, 5 de 6;
-#             con 70, las 6 de 6 y solo UNA falsa alarma más (13 frente a 12). La
-#             previsión se queda corta en las noches de rocío —el estimador ve 3-5 horas
-#             mojadas menos que el sensor— y bajar el listón del aviso lo compensa sin
-#             tocar el modelo. El evento REAL sigue siendo 100. Se mide en el panel de
-#             fiabilidad → «¿Y si el aviso saltara antes?».
+#   MONILIA — se queda en 100. El 30/09/2026 se bajó a 70 porque con 100 se escapaban 2 de
+#             6 infecciones; el 02/10 se vio que la causa era otra: a MeteoGalicia se le
+#             aplicaba el factor de sesgo de Sencrop (1,67 en vez de su 1,36), así que sus
+#             avisos salían bajos. Corregido eso, el umbral da igual: 100, 90, 80 y 70
+#             avisan los MISMOS 4 de 6 eventos, y el 70 solo añade 3 falsas alarmas (12
+#             frente a 9). Vuelto a 100 el 02/10/2026. Los 2 escapes que quedan (28 y
+#             29/09, previsión 53 y 60 frente a 132 reales) son noches en que la hoja
+#             mojada estimada vio 7-9 h donde el sensor midió 12,5: eso se arregla en el
+#             estimador, no bajando el listón. Se mide en el panel de fiabilidad →
+#             «¿Y si el aviso saltara antes?».
 #   OÍDIO   — se queda en 100. Bajarlo NO sirve: con 85 sigue avisando 1 de 4 y ya añade
 #             4 falsas alarmas; hasta 60 no sube a 3 de 4, y ahí son 21 falsas. Su índice
 #             solo llega a 100 entre 20 y 22 ºC y cae ~33 puntos por grado, así que con
@@ -19710,7 +19713,7 @@ CARPOCAPSA_BIOFIX_THRESHOLD = 2
 # ⚠️ Calculado con 4 y 5 infecciones. Revisar el barrido («¿Cuántos tratamientos
 # me ahorro subiendo el listón?») cada pocas semanas: un evento nuevo puede mover
 # el umbral recomendado.
-FORECAST_WARN_THR_DEFAULTS = {"mills": 100.0, "monilia": 70.0, "oidio": 100.0}
+FORECAST_WARN_THR_DEFAULTS = {"mills": 100.0, "monilia": 100.0, "oidio": 100.0}
 
 
 # ── Corrección de sesgo de la PREVISIÓN ──────────────────────────────────────
@@ -34841,10 +34844,11 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                 "clava el 100. Bajar el listón del aviso no lo arregla: con 85 sigue avisando 1 de 4 "
                 "y añade 4 falsas alarmas, y hasta 60 no sube a 3 de 4 (21 falsas). Se queda en 100 "
                 "y se lee como **orientativo**. Compruébalo en «¿Y si el aviso saltara antes?».\n\n"
-                "🟤 **Monilia avisa desde 70** (30/09/2026): la hoja mojada estimada se queda 3-5 h "
-                "corta en las noches de rocío y, con el listón en 100, se escapaban 2 de 6 "
-                "infecciones. Con 70 se pillan las 6 y solo cuesta **una** falsa alarma más. El "
-                "evento real sigue siendo 100.\n\n"
+                "🟤 **Monilia avisa en 100** (02/10/2026): el 30/09 se bajó a 70 porque se "
+                "escapaban infecciones, pero la causa era otra — a MeteoGalicia se le aplicaba el "
+                "factor de corrección de Sencrop (1,67 en vez de su 1,36) y sus avisos salían "
+                "bajos. Arreglado eso, 100 · 90 · 80 y 70 avisan los **mismos 4 de 6** eventos y "
+                "el 70 solo añade 3 falsas alarmas, así que vuelve a 100.\n\n"
                 "ℹ️ **Casi‑avisos:** en un día de evento real, una previsión que llega al **≥90 % del "
                 "umbral** (≥90 cuando el real ≥100) cuenta como **avisado** — el modelo sí marcó "
                 "riesgo alto aunque no cruzara el 100 exacto. Esto solo afecta a esta métrica, **no** "
