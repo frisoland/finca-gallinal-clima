@@ -31319,6 +31319,25 @@ def reproceso_prevision_mg(history_df, archive_mg=None, dias=14, rh_thr=None):
         if rh_thr is not None:      # rehacer con otro umbral de HR del estimador
             _pf = {**_pf, "rh_thr": float(rh_thr)}
 
+        # Lo que la app dijo ENTONCES (archivo de riesgo), para enseñarlo al lado de lo
+        # rehecho: sin esto, el mismo día salía con dos cifras distintas en dos tablas y no
+        # se entendía que una es el modelo viejo y otra el de hoy.
+        _arch_val = {}
+        try:
+            _ar = load_forecast_archive()
+            if _ar is not None and not _ar.empty:
+                _ar = _ar.copy()
+                _ar["_h"] = pd.to_numeric(_ar.get("horizon"), errors="coerce")
+                _ar = _ar[_ar["_h"] >= 1].sort_values("_h")
+                for _td, _g in _ar.groupby(_ar["target_date"].astype(str)):
+                    _r0 = _g.iloc[0]
+                    _src0 = _fuente_prevision(_r0.get("pred_src"))
+                    _arch_val[_td] = (
+                        pred_en_escala_real(_r0.get("pred_mills"), "mills", _src0),
+                        pred_en_escala_real(_r0.get("pred_monilia"), "monilia", _src0))
+        except Exception:
+            _arch_val = {}
+
         hoy = pd.Timestamp.now().normalize()
         real = build_risk_timeline(history_df, pd.DataFrame(), days_back=int(dias) + 5)
         if real is None or real.empty:
@@ -31403,12 +31422,15 @@ def reproceso_prevision_mg(history_df, archive_mg=None, dias=14, rh_thr=None):
             except Exception:
                 _ev_real = pd.DataFrame()
             _hr_, _tr_, _ = _mejor_monilia(_ev_real, D)
+            _a_mi, _a_mo = _arch_val.get(D.strftime("%Y-%m-%d"), (np.nan, np.nan))
             filas.append({
                 "Fecha": D.strftime("%d/%m"),
-                "Moteado · rehecho": round(min(_mv, 150.0), 0),
-                "Moteado · real": round(_rm_real, 0) if pd.notna(_rm_real) else np.nan,
-                "Monilia · rehecho": round(min(_ov, 150.0), 0),
-                "Monilia · real": round(_ro_real, 0) if pd.notna(_ro_real) else np.nan,
+                "Moteado · dijo entonces": round(float(_a_mi), 0) if pd.notna(_a_mi) else np.nan,
+                "Moteado · diría hoy": round(min(_mv, 150.0), 0),
+                "Moteado · pasó": round(_rm_real, 0) if pd.notna(_rm_real) else np.nan,
+                "Monilia · dijo entonces": round(float(_a_mo), 0) if pd.notna(_a_mo) else np.nan,
+                "Monilia · diría hoy": round(min(_ov, 150.0), 0),
+                "Monilia · pasó": round(_ro_real, 0) if pd.notna(_ro_real) else np.nan,
                 "Episodio: h mojadas · prev.": round(float(_hp), 1) if pd.notna(_hp) else np.nan,
                 "Episodio: h mojadas · real": round(float(_hr_), 1) if pd.notna(_hr_) else np.nan,
                 "Episodio: T ºC · prev.": round(float(_tp), 1) if pd.notna(_tp) else np.nan,
@@ -31419,8 +31441,8 @@ def reproceso_prevision_mg(history_df, archive_mg=None, dias=14, rh_thr=None):
         if not filas:
             return pd.DataFrame(), {"n": 0}
         df = pd.DataFrame(filas)
-        _dm = (df["Moteado · rehecho"] - df["Moteado · real"]).abs().mean()
-        _do = (df["Monilia · rehecho"] - df["Monilia · real"]).abs().mean()
+        _dm = (df["Moteado · diría hoy"] - df["Moteado · pasó"]).abs().mean()
+        _do = (df["Monilia · diría hoy"] - df["Monilia · pasó"]).abs().mean()
         return df, {"n": len(df), "err_moteado": _dm, "err_monilia": _do}
     except Exception:
         return pd.DataFrame(), {"n": 0}
@@ -35100,14 +35122,19 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                         f"🔁 Los mismos días, rehechos con el modelo de HOY "
                         f"({_rpm['n']} días) — para no esperar semanas", expanded=True):
                     st.caption(
-                        "Las columnas «prev.» de la tabla de arriba son **fotos**: se "
-                        "guardaron con el modelo que había ese día y no cambian aunque el "
-                        "modelo mejore. Por eso, tras corregir el estimador de hoja mojada, "
-                        "el pasado sigue enseñando los números viejos.\n\n"
-                        "Aquí se **rehace el cálculo**: para cada día se cogen las horas que "
-                        "MeteoGalicia preveía **antes** de ese día, se pasan por el estimador "
-                        "actual y por el mismo detector de eventos, y sale lo que la app "
-                        "habría dicho hoy. Al lado, lo que pasó de verdad.\n\n"
+                        "**Las tres columnas de cada enfermedad son el MISMO día visto de tres "
+                        "maneras:**\n\n"
+                        "- **Dijo entonces** — lo que la app avisó esos días, con el modelo que "
+                        "tenía en ese momento. Es lo que sale en la tabla «Día a día» de arriba, "
+                        "y no cambia nunca: es una foto.\n"
+                        "- **Diría hoy** — las MISMAS horas que preveía MeteoGalicia para ese día, "
+                        "pasadas por el modelo de **ahora**. Sirve para ver si un arreglo funciona "
+                        "sin esperar semanas a que se llene el archivo.\n"
+                        "- **Pasó** — lo que midió el sensor de la finca. Es la verdad contra la "
+                        "que se comparan las otras dos.\n\n"
+                        "Por eso un mismo día puede poner, por ejemplo, **17 · 54 · 91**: avisó 17 "
+                        "con el modelo viejo, hoy avisaría 54 y de verdad pasó 91. Si «diría hoy» "
+                        "se acerca más a «pasó» que «dijo entonces», el cambio ha mejorado.\n\n"
                         "**Las columnas de la derecha son el desglose de MONILIA, no del moteado.** "
                         "«Episodio: h mojadas» y «Episodio: T ºC» son las horas que la hoja estuvo "
                         "mojada y la temperatura media de ese episodio, previstas y reales. "
@@ -35117,9 +35144,8 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                         "misma noche se queda corta si la previsión falla medio grado.\n\n"
                         "**El moteado no se desglosa aquí:** va con la tabla de Mills, que pide "
                         "otras horas y solo cuenta desde que llueve.\n\n"
-                        "**Y esta tabla no es la de arriba:** arriba está lo que se archivó ese día "
-                        "(con el modelo que había entonces) y aquí el mismo día rehecho con el "
-                        "modelo de hoy, así que los números no tienen que coincidir.")
+                        "El título del desplegable dice **14 días**: es lo que llega el archivo "
+                        "horario de MeteoGalicia hacia atrás.")
                     st_tabla(_rp, use_container_width=True, hide_index=True)
                     _em, _eo = _rpm.get("err_moteado"), _rpm.get("err_monilia")
                     if _em is not None and pd.notna(_em):
