@@ -30223,9 +30223,9 @@ def build_risk_timeline(history_df, forecast_df, days_back=45, base_temp=10.0, u
         # infla las horas y el índice las hereda, así que el futuro pintaba picos que
         # luego no se cumplían. En los días reales la mojadura la mide el sensor y no
         # se toca nada. Ver FORECAST_BIAS_DEFAULTS.
-        _bm = FORECAST_BIAS_DEFAULTS["mills"]   if es_pred else 1.0
-        _bo = FORECAST_BIAS_DEFAULTS["monilia"] if es_pred else 1.0
-        _bd = FORECAST_BIAS_DEFAULTS["oidio"]   if es_pred else 1.0
+        _bm = forecast_bias_activa("mills")   if es_pred else 1.0
+        _bo = forecast_bias_activa("monilia") if es_pred else 1.0
+        _bd = forecast_bias_activa("oidio")   if es_pred else 1.0
         rows.append({
             "Fecha":          d,
             "T_min":          round(float(temp_min), 1) if pd.notna(temp_min) else None,
@@ -30796,9 +30796,9 @@ def archive_today_forecast(history_df, forecast_df):
                     # el cálculo del sesgo se volvería circular y daría 1,0 para siempre.
                     # Se deshace la división para conservar la serie cruda comparable
                     # con lo que se archivó antes de introducir la corrección.
-                    _e["pred_mills"] = float(r.get("Mills_valor", np.nan)) * FORECAST_BIAS_DEFAULTS["mills"]
-                    _e["pred_monilia"] = float(r.get("Monilia_valor", np.nan)) * FORECAST_BIAS_DEFAULTS["monilia"]
-                    _e["pred_oidio"] = float(r.get("Oidio_valor", np.nan)) * FORECAST_BIAS_DEFAULTS["oidio"]
+                    _e["pred_mills"] = float(r.get("Mills_valor", np.nan)) * forecast_bias_activa("mills")
+                    _e["pred_monilia"] = float(r.get("Monilia_valor", np.nan)) * forecast_bias_activa("monilia")
+                    _e["pred_oidio"] = float(r.get("Oidio_valor", np.nan)) * forecast_bias_activa("oidio")
                     _e["pred_rain"] = float(r.get("Lluvia", np.nan))
                     # DE QUÉ FUENTE SALIÓ. Desde el 23/08/2026 la previsión puede venir
                     # de MeteoGalicia en vez de Sencrop, y son modelos distintos: sin
@@ -32206,10 +32206,29 @@ def forecast_reliability_persistence(history_df, archive_df=None):
 # Factor de sesgo POR FUENTE. El 1,65/1,67 se midió sobre Sencrop; MeteoGalicia es otro
 # modelo y su sesgo aún no está medido, así que va 1,0 hasta que haya datos. Cada
 # previsión se archiva con su `pred_src`, así que se puede aplicar el que le toca.
+# MEDIDO el 02/10/2026 sobre el archivo de MeteoGalicia (35 días, tabla «¿Y si corregimos el
+# número…?»): mediana previsto/real 1,29 en moteado y 1,36 en monilia (rango 50 % central
+# 0,85-1,65 y 0,73-1,84). Antes iba 1,0 aquí y 1,65/1,67 en lo que se enseñaba: dos escalas
+# distintas para lo mismo. El oídio no se corrige (su índice ya está topado en 100).
 FORECAST_BIAS_BY_SRC = {
     "sencrop": FORECAST_BIAS_DEFAULTS,
-    "meteogalicia": {"mills": 1.0, "monilia": 1.0, "oidio": 1.0},
+    "meteogalicia": {"mills": 1.29, "monilia": 1.36, "oidio": 1.0},
 }
+
+
+def forecast_bias_activa(campo):
+    """Factor de sesgo de la fuente que da la previsión AHORA. Antes se usaba siempre el de
+    Sencrop (FORECAST_BIAS_DEFAULTS), así que a MeteoGalicia se le aplicaba una corrección un
+    25 % más fuerte de la que le toca y sus avisos salían bajos (usuario, 02/10/2026)."""
+    try:
+        _src = str(st.session_state.get("_forecast_src", FUENTE_PREVISION_ACTIVA)
+                   or FUENTE_PREVISION_ACTIVA)
+    except Exception:
+        _src = FUENTE_PREVISION_ACTIVA
+    try:
+        return float(FORECAST_BIAS_BY_SRC.get(_src, FORECAST_BIAS_DEFAULTS).get(campo, 1.0)) or 1.0
+    except Exception:
+        return 1.0
 
 
 def pred_en_escala_real(valor, campo, src="sencrop", tope=150.0):
