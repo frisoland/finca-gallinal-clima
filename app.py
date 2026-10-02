@@ -31283,7 +31283,7 @@ def mg_hourly_vs_sensor(history_df, archive_df=None, max_h=84, solo_comunes=Fals
         return None, {"n": 0}
 
 
-def reproceso_prevision_mg(history_df, archive_mg=None, dias=14, rh_thr=None):
+def reproceso_prevision_mg(history_df, archive_mg=None, dias=14, rh_thr=None, hr_mas=0.0):
     """Rehace las previsiones de los días PASADOS con el modelo de HOY.
 
     Los valores archivados son fotos: se guardaron con el modelo que había ese día y no
@@ -31366,6 +31366,11 @@ def reproceso_prevision_mg(history_df, archive_mg=None, dias=14, rh_thr=None):
             }).dropna(subset=["fecha_hora"]).sort_values("fecha_hora")
             if fc.empty:
                 continue
+            if hr_mas:
+                # Corregir el sesgo de humedad de MeteoGalicia antes de estimar la mojadura:
+                # da la HR por debajo de la real y el estimador reparte minutos por HR.
+                fc["hr_media"] = (pd.to_numeric(fc["hr_media"], errors="coerce")
+                                  + float(hr_mas)).clip(upper=100.0)
             fc["humectacion_hoja"] = estimate_leaf_wetness_minutes(fc, _pf).to_numpy()
             # Contexto real anterior: un evento puede venir de la noche de antes.
             ctx = h[(h["fecha_hora"] >= D - pd.Timedelta(days=6)) & (h["fecha_hora"] < D)]
@@ -31589,6 +31594,36 @@ def comparar_rh_thr_monilia(history_df, archive_mg=None, dias=21, umbrales=(92.0
             "Falsas alarmas": int((~_ev & _av).sum()),
             "Horas mojadas previstas (media)": round(float(_hp.mean()), 1) if _hp.notna().any() else np.nan,
             "Horas mojadas reales (media)": round(float(_hr.mean()), 1) if _hr.notna().any() else np.nan,
+            "Días comparados": len(_df),
+        })
+    return pd.DataFrame(filas)
+
+
+def comparar_hr_sesgo_monilia(history_df, archive_mg=None, dias=21, ajustes=(0.0, 2.0, 3.0, 5.0)):
+    """¿Recupera monilia las noches de rocío si se corrige el sesgo de humedad de MeteoGalicia?
+    Rehace los mismos días archivados sumando puntos de HR antes del estimador y cuenta, con el
+    umbral de infección 100: eventos reales avisados, escapes y falsas alarmas. Solo MIDE."""
+    filas = []
+    for _a in ajustes:
+        _df, _meta = reproceso_prevision_mg(history_df, archive_mg, dias=dias, hr_mas=_a)
+        if _df is None or _df.empty:
+            continue
+        _p = pd.to_numeric(_df["Monilia · diría hoy"], errors="coerce")
+        _r = pd.to_numeric(_df["Monilia · pasó"], errors="coerce")
+        _hp = pd.to_numeric(_df.get("Episodio: h mojadas · prev."), errors="coerce")
+        _hr_ = pd.to_numeric(_df.get("Episodio: h mojadas · real"), errors="coerce")
+        _ev, _av = _r >= 100, _p >= 100
+        _n = int(_ev.sum())
+        filas.append({
+            "Humedad prevista": ("sin tocar" if not _a else f"+{_a:.0f} puntos"),
+            "Eventos reales": _n,
+            "Avisados": (f"{int((_ev & _av).sum())} de {_n} "
+                         f"({round(100 * int((_ev & _av).sum()) / _n)} %)" if _n else "—"),
+            "🔴 Escapes": int((_ev & ~_av).sum()),
+            "Falsas alarmas": int((~_ev & _av).sum()),
+            "Diferencia media con lo real": round(float((_p - _r).abs().mean()), 0),
+            "Horas mojadas previstas (media)": round(float(_hp.mean()), 1) if _hp.notna().any() else np.nan,
+            "Horas mojadas reales (media)": round(float(_hr_.mean()), 1) if _hr_.notna().any() else np.nan,
             "Días comparados": len(_df),
         })
     return pd.DataFrame(filas)
@@ -34743,20 +34778,24 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                 else:
                     st_tabla(_sim_thr, use_container_width=True, hide_index=True)
 
-            with st.expander("🍃 ¿Y si el estimador diera la hora por mojada antes? (monilia)",
+            with st.expander("🍃 Las noches de rocío: ¿y si corregimos la humedad prevista? (monilia)",
                              expanded=False):
                 st.caption(
-                    "El estimador da una hora por mojada desde el **92 % de HR**, que es donde moja "
-                    "el sensor. En las noches largas de otoño se queda corto: el 28 y 29/09 vio 9,1 y "
-                    "7,2 h donde el sensor midió 12,5. Aquí se rehacen los mismos días con umbrales "
-                    "más bajos. **Solo mide; no cambia nada.**")
-                if st.button("Calcular con 92 %, 90 % y 88 %", key="btn_rh_thr_monilia"):
-                    with st.spinner("Rehaciendo los días archivados con cada umbral…"):
-                        st.session_state["_cmp_rh_thr"] = comparar_rh_thr_monilia(history_df)
-                _cmp_rh = st.session_state.get("_cmp_rh_thr")
-                if _cmp_rh is not None and not _cmp_rh.empty:
-                    st_tabla(_cmp_rh, use_container_width=True, hide_index=True)
-                elif _cmp_rh is not None:
+                    "MeteoGalicia da la humedad **por debajo** de la real (unos 2 puntos en las horas "
+                    "húmedas, medido abajo en «precisión con antelación»), y el estimador reparte los "
+                    "minutos de hoja mojada según esa humedad. Por eso en las noches largas se queda "
+                    "corto: el 28 y 29/09 vio 9,1 y 7,2 h donde el sensor midió 12,5. Aquí se rehacen "
+                    "los mismos días **sumando** puntos de humedad antes de estimar. **Solo mide; no "
+                    "cambia nada.**\n\n"
+                    "*(Probado antes: bajar el umbral de HR del estimador de 92 a 90 u 88 % no "
+                    "cambiaba nada, porque esas horas ya entran por el punto de rocío.)*")
+                if st.button("Calcular sin tocar, +2, +3 y +5 puntos", key="btn_hr_sesgo_monilia"):
+                    with st.spinner("Rehaciendo los días archivados con cada corrección…"):
+                        st.session_state["_cmp_hr_sesgo"] = comparar_hr_sesgo_monilia(history_df)
+                _cmp_hr = st.session_state.get("_cmp_hr_sesgo")
+                if _cmp_hr is not None and not _cmp_hr.empty:
+                    st_tabla(_cmp_hr, use_container_width=True, hide_index=True)
+                elif _cmp_hr is not None:
                     st.info("No se pudo rehacer (falta archivo horario de MeteoGalicia).")
 
             st.caption(
