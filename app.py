@@ -31409,12 +31409,12 @@ def reproceso_prevision_mg(history_df, archive_mg=None, dias=14, rh_thr=None):
                 "Moteado · real": round(_rm_real, 0) if pd.notna(_rm_real) else np.nan,
                 "Monilia · rehecho": round(min(_ov, 150.0), 0),
                 "Monilia · real": round(_ro_real, 0) if pd.notna(_ro_real) else np.nan,
-                "h mojadas · prev.": round(float(_hp), 1) if pd.notna(_hp) else np.nan,
-                "h mojadas · real": round(float(_hr_), 1) if pd.notna(_hr_) else np.nan,
-                "T evento · prev.": round(float(_tp), 1) if pd.notna(_tp) else np.nan,
-                "T evento · real": round(float(_tr_), 1) if pd.notna(_tr_) else np.nan,
-                "h que pide · prev.": monilia_threshold_hours(_tp) if pd.notna(_tp) else np.nan,
-                "h que pide · real": monilia_threshold_hours(_tr_) if pd.notna(_tr_) else np.nan,
+                "Episodio: h mojadas · prev.": round(float(_hp), 1) if pd.notna(_hp) else np.nan,
+                "Episodio: h mojadas · real": round(float(_hr_), 1) if pd.notna(_hr_) else np.nan,
+                "Episodio: T ºC · prev.": round(float(_tp), 1) if pd.notna(_tp) else np.nan,
+                "Episodio: T ºC · real": round(float(_tr_), 1) if pd.notna(_tr_) else np.nan,
+                "MONILIA: h que pide · prev.": monilia_threshold_hours(_tp) if pd.notna(_tp) else np.nan,
+                "MONILIA: h que pide · real": monilia_threshold_hours(_tr_) if pd.notna(_tr_) else np.nan,
             })
         if not filas:
             return pd.DataFrame(), {"n": 0}
@@ -35097,7 +35097,19 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                         "Aquí se **rehace el cálculo**: para cada día se cogen las horas que "
                         "MeteoGalicia preveía **antes** de ese día, se pasan por el estimador "
                         "actual y por el mismo detector de eventos, y sale lo que la app "
-                        "habría dicho hoy. Al lado, lo que pasó de verdad.")
+                        "habría dicho hoy. Al lado, lo que pasó de verdad.\n\n"
+                        "**Las columnas de la derecha son el desglose de MONILIA, no del moteado.** "
+                        "«Episodio: h mojadas» y «Episodio: T ºC» son las horas que la hoja estuvo "
+                        "mojada y la temperatura media de ese episodio, previstas y reales. "
+                        "«MONILIA: h que pide» son las horas que Monilinia necesita a esa "
+                        "temperatura (24 h a 10 ºC · 18 a 15 · 10 a 20 · 5 a 25, interpolado). El "
+                        "valor de monilia es **horas mojadas ÷ horas que pide × 100**, así que la "
+                        "misma noche se queda corta si la previsión falla medio grado.\n\n"
+                        "**El moteado no se desglosa aquí:** va con la tabla de Mills, que pide "
+                        "otras horas y solo cuenta desde que llueve.\n\n"
+                        "**Y esta tabla no es la de arriba:** arriba está lo que se archivó ese día "
+                        "(con el modelo que había entonces) y aquí el mismo día rehecho con el "
+                        "modelo de hoy, así que los números no tienen que coincidir.")
                     st_tabla(_rp, use_container_width=True, hide_index=True)
                     _em, _eo = _rpm.get("err_moteado"), _rpm.get("err_monilia")
                     if _em is not None and pd.notna(_em):
