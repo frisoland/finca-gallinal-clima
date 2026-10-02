@@ -31443,7 +31443,18 @@ def reproceso_prevision_mg(history_df, archive_mg=None, dias=14, rh_thr=None):
         df = pd.DataFrame(filas)
         _dm = (df["Moteado · diría hoy"] - df["Moteado · pasó"]).abs().mean()
         _do = (df["Monilia · diría hoy"] - df["Monilia · pasó"]).abs().mean()
-        return df, {"n": len(df), "err_moteado": _dm, "err_monilia": _do}
+        # Lo mismo con el modelo VIEJO, para poder decir cuál acierta más. El sesgo (con signo)
+        # dice hacia qué lado falla: negativo = se queda corto, que es el lado peligroso.
+        _dm_e = (df["Moteado · dijo entonces"] - df["Moteado · pasó"]).abs().mean()
+        _do_e = (df["Monilia · dijo entonces"] - df["Monilia · pasó"]).abs().mean()
+        _sm = (df["Moteado · diría hoy"] - df["Moteado · pasó"]).mean()
+        _so = (df["Monilia · diría hoy"] - df["Monilia · pasó"]).mean()
+        _sm_e = (df["Moteado · dijo entonces"] - df["Moteado · pasó"]).mean()
+        _so_e = (df["Monilia · dijo entonces"] - df["Monilia · pasó"]).mean()
+        return df, {"n": len(df), "err_moteado": _dm, "err_monilia": _do,
+                    "err_moteado_ent": _dm_e, "err_monilia_ent": _do_e,
+                    "sesgo_moteado": _sm, "sesgo_monilia": _so,
+                    "sesgo_moteado_ent": _sm_e, "sesgo_monilia_ent": _so_e}
     except Exception:
         return pd.DataFrame(), {"n": 0}
 
@@ -35148,12 +35159,36 @@ def render_fiabilidad_prevision(history_df, forecast_df):
                         "horario de MeteoGalicia hacia atrás.")
                     st_tabla(_rp, use_container_width=True, hide_index=True)
                     _em, _eo = _rpm.get("err_moteado"), _rpm.get("err_monilia")
-                    if _em is not None and pd.notna(_em):
+                    _eme, _eoe = _rpm.get("err_moteado_ent"), _rpm.get("err_monilia_ent")
+                    _sm, _so = _rpm.get("sesgo_moteado"), _rpm.get("sesgo_monilia")
+                    _sme, _soe = _rpm.get("sesgo_moteado_ent"), _rpm.get("sesgo_monilia_ent")
+
+                    def _quien_gana(_viejo_err, _nuevo_err):
+                        """Quién se queda más cerca de lo que pasó (empate si casi igual)."""
+                        if _viejo_err is None or pd.isna(_viejo_err):
+                            return "—"
+                        _d = float(_viejo_err) - float(_nuevo_err)
+                        if abs(_d) < 2:
+                            return "empate"
+                        return (f"**gana el de hoy** ({_d:.0f} puntos menos de error)" if _d > 0
+                                else f"**gana el viejo** ({-_d:.0f} puntos menos de error)")
+
+                    if _em is not None and pd.notna(_em) and _eme is not None and pd.notna(_eme):
                         st.info(
-                            f"**Diferencia media entre previsto y real, con el modelo de hoy:** "
-                            f"moteado **{_em:.0f} puntos**, monilia **{_eo:.0f}**. "
-                            f"Es la cifra que hay que mirar para saber si el arreglo sirve — "
-                            f"no las columnas archivadas de arriba, que son del modelo viejo.")
+                            f"**¿Qué acierta más?** Diferencia media con lo que pasó en estos "
+                            f"{_rpm['n']} días (cuanto menos, mejor):\n\n"
+                            f"- 🍄 **Moteado** — modelo viejo **{_eme:.0f} puntos** · modelo de "
+                            f"hoy **{_em:.0f}** → {_quien_gana(_eme, _em)}.\n"
+                            f"- 🟤 **Monilia** — modelo viejo **{_eoe:.0f} puntos** · modelo de "
+                            f"hoy **{_eo:.0f}** → {_quien_gana(_eoe, _eo)}.\n\n"
+                            f"**Hacia qué lado falla cada uno** (negativo = se queda corto, "
+                            f"avisa menos de lo que pasó, que es el lado peligroso): moteado "
+                            f"viejo **{_sme:+.0f}** y hoy **{_sm:+.0f}** · monilia viejo "
+                            f"**{_soe:+.0f}** y hoy **{_so:+.0f}**.\n\n"
+                            f"⚠️ Son pocos días y pocos eventos: vale para ver la tendencia, no "
+                            f"para sentenciar. La cifra sólida es el resumen de arriba, que "
+                            f"crece con el archivo.")
+
 
             st.caption(
                 "🔮 = día futuro: solo hay previsión, el real está pendiente. · 🔄 + valor con "
