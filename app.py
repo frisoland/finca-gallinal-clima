@@ -8015,6 +8015,10 @@ def render_sencrop_movil():
             st.caption("Los mismos cálculos que «Riesgo sanitario previsto» de la pantalla completa. "
                        "Escala de moteado y monilia: 25 ligero · 50 moderado · 100 infección o muy favorable.")
 
+        st.markdown("#### 🕐 Lluvia hora a hora")
+        render_lluvia_hora_a_hora(
+            _fc_rio if (_zona == ZONA_RIO and _hay_rio) else forecast_df, clave="movil", movil=True)
+
     # ── 2. ¿Acierta la previsión? ──────────────────────────────────────────────────
     st.markdown("#### 🎯 ¿Acierta la previsión?")
     if st.toggle("Calcularlo con el archivo de previsiones", key="mob_prev_fiab",
@@ -8109,6 +8113,19 @@ def render_sencrop_forecast_panel():
         st.info("No hay previsión cargada: el archivo de MeteoGalicia aún no está disponible "
                 "(se genera cada mañana con el proceso automático).")
         return
+    st.markdown("#### 🕐 Lluvia hora a hora (para organizar el trabajo)")
+    _fc_rio_h = st.session_state.get("forecast_rio_df", pd.DataFrame())
+    if isinstance(_fc_rio_h, pd.DataFrame) and not _fc_rio_h.empty:
+        _tl_nave, _tl_rio = st.tabs([f"🏠 {ZONA_NAVE}", f"🌊 {ZONA_RIO}"])
+        with _tl_nave:
+            render_lluvia_hora_a_hora(forecast_df, clave="nave")
+        with _tl_rio:
+            st.caption(f"Previsión de MeteoGalicia en el punto de la vega del Río "
+                       f"({METEOSIX_COORDS_RIO}).")
+            render_lluvia_hora_a_hora(_fc_rio_h, clave="rio")
+    else:
+        render_lluvia_hora_a_hora(forecast_df, clave="nave")
+
     _render_tabla_riesgo_previsto(forecast_df)
 
 
@@ -8235,6 +8252,150 @@ def _bloque_riesgo_previsto(forecast_df, history_df):
         f'</table></div>',
         unsafe_allow_html=True,
     )
+
+
+LLUVIA_HORA_MIN = 0.1   # mm/h desde los que se cuenta como hora de lluvia (traza no cuenta)
+
+
+def prevision_lluvia_por_horas(forecast_df, desde=None):
+    """Lluvia prevista por hora, de ahora en adelante. Devuelve (DataFrame horas×días con los mm,
+    lista de resúmenes por día). Cada resumen: {fecha, total, tramos, seco} donde `tramos` son las
+    franjas seguidas con lluvia ≥ LLUVIA_HORA_MIN y `seco` el hueco sin lluvia más largo."""
+    if forecast_df is None or getattr(forecast_df, "empty", True) or "fecha_hora" not in forecast_df.columns:
+        return pd.DataFrame(), []
+    f = forecast_df[["fecha_hora", "lluvia_mm"]].copy()
+    f["fecha_hora"] = pd.to_datetime(f["fecha_hora"], errors="coerce")
+    f = f.dropna(subset=["fecha_hora"]).sort_values("fecha_hora")
+    _desde = (pd.Timestamp.now().floor("h") if desde is None else pd.Timestamp(desde))
+    f = f[f["fecha_hora"] >= _desde]
+    if f.empty:
+        return pd.DataFrame(), []
+    f["_mm"] = pd.to_numeric(f["lluvia_mm"], errors="coerce").fillna(0.0)
+    f["_dia"] = f["fecha_hora"].dt.normalize()
+    f["_h"] = f["fecha_hora"].dt.hour
+    rejilla = (f.pivot_table(index="_h", columns="_dia", values="_mm", aggfunc="sum")
+               .reindex(range(24)))
+    resumenes = []
+    for _d, g in f.groupby("_dia"):
+        g = g.sort_values("_h")
+        _horas = {int(r["_h"]): float(r["_mm"]) for _, r in g.iterrows()}
+        _llueve = sorted(h for h, mm in _horas.items() if mm >= LLUVIA_HORA_MIN)
+        _tramos = []
+        for h in _llueve:
+            if _tramos and h == _tramos[-1][1] + 1:
+                _tramos[-1][1] = h
+                _tramos[-1][2] += _horas[h]
+            else:
+                _tramos.append([h, h, _horas[h]])
+        # Hueco seco más largo ENTRE las horas que trae la previsión de ese día.
+        _secas = sorted(h for h in _horas if _horas[h] < LLUVIA_HORA_MIN)
+        _mejor, _act = None, None
+        for h in _secas:
+            if _act and h == _act[1] + 1:
+                _act[1] = h
+            else:
+                _act = [h, h]
+            if _mejor is None or (_act[1] - _act[0]) > (_mejor[1] - _mejor[0]):
+                _mejor = list(_act)
+        resumenes.append({"fecha": _d, "total": float(g["_mm"].sum()),
+                          "tramos": [(a, b, mm) for a, b, mm in _tramos], "seco": _mejor,
+                          "horas": len(_horas)})
+    return rejilla, resumenes
+
+
+def _lluvia_tramo_txt(a, b, mm=None):
+    """«06:00-11:00 (4,2 mm)» — el fin es el final de la última hora, que es como se trabaja."""
+    _t = f"{a:02d}:00-{(b + 1) % 24:02d}:00"
+    return _t if mm is None else f"{_t} ({_fmt_es_number(mm, 1)} mm)"
+
+
+def render_lluvia_hora_a_hora(forecast_df, clave="pc", movil=False):
+    """Lluvia prevista hora a hora. En el ordenador, rejilla horas × días; en el móvil, una
+    tarjeta por día. Pensado para organizar la cosecha: en qué horas llueve y cuál es el hueco
+    seco más largo de cada día."""
+    import html as _h
+    rejilla, resumenes = prevision_lluvia_por_horas(forecast_df)
+    if rejilla.empty or not resumenes:
+        st.info("No hay previsión horaria cargada todavía (la trae el informe diario cada mañana).")
+        return
+    _dias_es = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
+    if movil:
+        _tarj = []
+        for r in resumenes:
+            _f = pd.Timestamp(r["fecha"])
+            if r["tramos"]:
+                _lin = [f"🌧️ <b>{_fmt_es_number(r['total'], 1)} mm</b> en todo el día",
+                        "Llueve: " + " · ".join(_lluvia_tramo_txt(a, b, mm) for a, b, mm in r["tramos"])]
+            else:
+                _lin = ["☀️ <b>Sin lluvia prevista</b> en todo el día"]
+            if r["seco"] and (r["seco"][1] - r["seco"][0] + 1) >= 2 and r["tramos"]:
+                _lin.append(f"<span style='color:#555'>Hueco seco más largo: "
+                            f"{_lluvia_tramo_txt(*r['seco'])} "
+                            f"({r['seco'][1] - r['seco'][0] + 1} h)</span>")
+            if r["horas"] < 24:
+                _lin.append(f"<span style='color:#777'>Solo {r['horas']} h previstas de ese día</span>")
+            _tarj.append(_carpo_movil_tarjeta(
+                f"{_dias_es[_f.weekday()].capitalize()} {_f:%d/%m}", _lin,
+                "#1a5fb4" if r["total"] >= 1 else ("#5a8fc0" if r["total"] > 0 else "#2e7d32")))
+        st.markdown("".join(_tarj), unsafe_allow_html=True)
+        st.caption("Lluvia prevista por MeteoGalicia (WRF 1 km) en el punto de la finca. Las horas "
+                   "ya pasadas no salen. Una hora cuenta como de lluvia desde "
+                   f"{_fmt_es_number(LLUVIA_HORA_MIN, 1)} mm.")
+        return
+
+    # Ordenador: resumen por día + rejilla horas × días
+    for r in resumenes:
+        _f = pd.Timestamp(r["fecha"])
+        _txt = (f"**{_dias_es[_f.weekday()].capitalize()} {_f:%d/%m}** · "
+                f"**{_fmt_es_number(r['total'], 1)} mm**")
+        if r["tramos"]:
+            _txt += " · 🌧️ " + " · ".join(_lluvia_tramo_txt(a, b, mm) for a, b, mm in r["tramos"])
+            if r["seco"] and (r["seco"][1] - r["seco"][0] + 1) >= 2:
+                _txt += (f" · ☀️ hueco seco más largo {_lluvia_tramo_txt(*r['seco'])} "
+                         f"({r['seco'][1] - r['seco'][0] + 1} h)")
+        else:
+            _txt += " · ☀️ sin lluvia prevista"
+        if r["horas"] < 24:
+            _txt += f" · *(solo {r['horas']} h previstas)*"
+        st.markdown(_txt)
+
+    _cols = list(rejilla.columns)
+    _vista = pd.DataFrame(index=[f"{h:02d}:00" for h in rejilla.index])
+    _vista.index.name = "Hora"
+    for _c in _cols:
+        _f = pd.Timestamp(_c)
+        _vista[f"{_dias_es[_f.weekday()][:3]} {_f:%d/%m}"] = [
+            ("" if pd.isna(v) else ("·" if float(v) < LLUVIA_HORA_MIN else _fmt_es_number(v, 1)))
+            for v in rejilla[_c]]
+    _num = rejilla.to_numpy(dtype="float64")
+
+    def _color(_df_x):
+        _st = pd.DataFrame("", index=_df_x.index, columns=_df_x.columns)
+        for i in range(_num.shape[0]):
+            for j in range(_num.shape[1]):
+                v = _num[i, j]
+                if pd.isna(v) or v < LLUVIA_HORA_MIN:
+                    continue
+                _a = min(0.10 + float(v) / 4.0 * 0.45, 0.55)
+                _st.iat[i, j] = (f"background-color: rgba(40,110,210,{_a:.2f}); "
+                                 f"color:#10335f; font-weight:700")
+        return _st
+
+    try:
+        st_tabla(_vista.style.apply(_color, axis=None), use_container_width=True, hide_index=False)
+    except Exception:
+        st_tabla(_vista, use_container_width=True, hide_index=False)
+    st.caption("Milímetros previstos **en cada hora** por MeteoGalicia (WRF 1 km) en el punto de la "
+               f"finca. **·** = menos de {_fmt_es_number(LLUVIA_HORA_MIN, 1)} mm (seco a efectos de "
+               "trabajo) · celda vacía = esa hora ya pasó o no viene en la previsión. El azul es más "
+               "fuerte cuanto más llueve. La fila es la hora de inicio: «08:00» son los mm que caen "
+               "entre las 8 y las 9.")
+    st.download_button(
+        "⬇️ Descargar lluvia horaria (CSV)",
+        data=_vista.to_csv().encode("utf-8-sig"),
+        file_name=f"lluvia_horaria_{pd.Timestamp.now():%Y%m%d}.csv",
+        mime="text/csv", key=f"dl_lluvia_horas_{clave}")
 
 
 def _render_tabla_riesgo_previsto(forecast_df):
