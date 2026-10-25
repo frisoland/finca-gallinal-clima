@@ -9218,8 +9218,9 @@ def get_period_data(history, soil_type, hoja_threshold):
 def instructions_tab():
     st.subheader("📘 Instrucciones de uso · Finca Gallinal")
     st.caption(
-        "Manual revisado el 13/09/2026 con la app tal como está hoy: dos zonas climáticas, "
-        "decisiones por campo, riego automático desde VEGGA e informe diario por Telegram.")
+        "Manual revisado el 25/10/2026 con la app tal como está hoy: menú principal sin barra "
+        "lateral, dos zonas climáticas, decisiones por campo, riego automático desde VEGGA, "
+        "informe diario por Telegram y selector de superficie en Producción.")
 
     st.markdown(
         """
