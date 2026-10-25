@@ -9395,7 +9395,7 @@ def instructions_tab():
             |---|---|---|
             | **🌳 Campos** | Los campos con su zona, superficie de recinto, superficie arbolada y variedades. | Consulta |
             | **🧾 Agroptima** | Importar actuaciones, histórico, productos detectados, rotación FRAC, cruce de tratamientos con riesgo e informe sanitario por campo. | Al registrar tratamientos |
-            | **🍎 Producción** | Kilos por año, campo, variedad y portainjerto, y correlación clima–producción por zona. | Tras la cosecha |
+            | **🍎 Producción** | Kilos por año, campo, variedad y portainjerto, correlación clima–producción por zona y **selector de la superficie con la que se calculan los kg/ha**. | Tras la cosecha |
             | **🍏 Análisis Gallinal** | Ficha agroclimática por campo y variedad, regularidad y vecería, campo contra campo, Índice Climático e Índice Gallinal. | Análisis de fondo |
             | **📝 Informe semanal** | Informe de un periodo (clima por zona, sanidad, actuaciones y campos prioritarios) en Markdown o PDF con logo. | Cada semana |
 
@@ -9403,17 +9403,56 @@ def instructions_tab():
 
             - **⚙️ Configuración** — tipo de suelo, la regla de hora de hoja mojada, copia de
               seguridad completa en ZIP y catálogo de productos fitosanitarios.
-            - **📱 Vista móvil** — botón al final de la barra lateral (o `?movil=1` en la
-              dirección): accesos rápidos a Decisiones, Carpocapsa, Producción, Análisis
-              Gallinal e Informe semanal; el resto en «Más secciones». En el móvil la app abre
-              en el Informe semanal. La pantalla queda apuntada en la
-              dirección (`?p=…`): si el móvil corta la conexión, al volver sigues en la misma.
+            - **🌿 Menú principal** — desde el 16/09/2026 **no hay barra lateral**: las dos
+              versiones abren en un menú con todos los apartados en botones, agrupados en
+              Clima, Cultivo y Gestión. Dentro de cada apartado hay un botón **«⬅️ Menú
+              principal»** arriba y otro abajo.
+            - **📱 Vista móvil** — el teléfono entra solo en ella (o `?movil=1` en la
+              dirección); el botón **💻** pasa a la versión de ordenador y **📱 Vista móvil**
+              vuelve. Cada pantalla abre en «lo esencial», en tarjetas, con el interruptor
+              **«📋 Ver pantalla completa»** para ver lo mismo que en el ordenador. La pantalla
+              queda apuntada en la dirección (`?p=…`): si el móvil corta la conexión, al volver
+              sigues en la misma.
 
             ### Superficies
 
             Cada campo tiene **dos superficies y las dos son válidas**: el **recinto** (lo que
-            mide la parcela) y la **superficie arbolada** (lo que ocupan los manzanos). El riego
-            y la carpocapsa trabajan con la arbolada.
+            mide la parcela) y la **superficie arbolada** (lo que ocupan los manzanos). En total,
+            **27,57 ha de recinto y 23,30 ha arboladas** (el 84,5 %). De las 25 parcelas, **18
+            tienen las dos cifras distintas**; las más separadas son Sector 11 (1,43 / 0,75) y
+            Piedrona Rincón (1,68 / 0,95). En Los Pinos 1-5, Sector 7 y Sector 8 coinciden,
+            porque solo se dio de alta lo plantado.
+
+            **Dónde se ve cada una:**
+
+            | Dónde | Qué superficie | Para qué |
+            |---|---|---|
+            | **🌳 Campos** | Las **dos**, una al lado de la otra | Consulta: totales de la finca y ficha de cada campo (ordenador y móvil) |
+            | **💧 Riego** | **Arbolada** | Pasar los litros del gotero a mm: el agua cae en la línea de árboles, no en el recinto |
+            | **🐛 Carpocapsa → Vista por grupos** | **Arbolada** | «ha del grupo», «ha que decide» y «ha/trampa» |
+            | **🩺 Resultado sanitario** | **Recinto** | La columna «Sup. ha» de la tabla (ordenador) |
+            | **🧾 Agroptima** | Ninguna de las dos | «Superficie tratada ha» es la que declaras tú en cada actuación |
+            | **🍎 Producción** | **La eliges tú** | Ver abajo |
+            | **🍏 Análisis Gallinal** | La del **Excel de producción** | IEP, vecería, Campo vs Campo e Índice Gallinal van siempre con ella |
+
+            **El selector de Producción (ordenador y móvil).** Arriba de la pestaña se elige con
+            qué superficie se dividen los kilos:
+
+            - **📗 La del Excel** — la columna *Ha* de tu Excel de producción, por campo y
+              variedad. Es como ha estado siempre. Mezcla criterios: en unos campos es el
+              recinto y en otros lo plantado.
+            - **📐 Recinto** — toda la parcela.
+            - **🍏 Arbolada** — solo lo que ocupan los manzanos; los kg/ha salen más altos.
+
+            Cambia **solo el divisor**: los kilos, los árboles y el % de productores son los
+            mismos, y **no se guarda nada**. Como las cifras oficiales son por campo y el Excel
+            va por campo y variedad, las hectáreas de cada variedad se escalan con el mismo
+            factor, así el total del campo cuadra con la cifra oficial y cada variedad conserva
+            su peso. Los campos que no estén en 🌳 Campos se quedan con la hectárea del Excel y
+            la app avisa de cuáles son.
+
+            ⚠️ **Para comparar años entre sí, usa siempre la misma opción**: mezclar criterios
+            entre campañas falsea la vecería y las comparaciones.
             """
         )
 
