@@ -25618,6 +25618,10 @@ def render_produccion_movil(history):
     if df is None or df.empty:
         st.info("Todavía no hay producción cargada. Abre la pantalla completa para importar el Excel.")
     else:
+        _modo_sup = selector_superficie_produccion("movil")
+        df, _avisos_sup = produccion_reescalar_superficie(df, _modo_sup)
+        for _a in _avisos_sup:
+            st.caption("⚠️ " + _a)
         _anios = sorted(df["Año"].dropna().unique())
         _anio = st.selectbox("Campaña", _anios[::-1], index=0, key="prod_movil_anio",
                              format_func=lambda a: str(int(a)))
@@ -25705,6 +25709,83 @@ def render_produccion_movil(history):
         produccion_tab(history)
 
 
+# ── Superficie con la que se calculan los kg/ha de Producción ────────────────────────
+# El Excel de producción trae SU columna de hectáreas por campo y variedad, y mezcla criterios:
+# en unos campos es el recinto y en otros lo plantado (ver el repaso del 25/10/2026). La app
+# tiene además las dos cifras oficiales de cada campo (recinto y arbolada), así que se deja
+# ELEGIR con cuál se divide, sin tocar nada de lo guardado.
+SUPERFICIE_PRODUCCION_OPCIONES = {
+    "📗 La del Excel (como hasta ahora)": "excel",
+    "📐 Recinto (toda la parcela)": "recinto",
+    "🍏 Arbolada (lo que ocupan los manzanos)": "arbolada",
+}
+
+
+def produccion_reescalar_superficie(df, modo):
+    """Devuelve (DataFrame, avisos) con la columna `Ha` puesta en la superficie elegida.
+
+    El Excel va por campo Y VARIEDAD, y las cifras oficiales son por CAMPO. Para no perder el
+    reparto entre variedades, las hectáreas de cada fila se multiplican por el mismo factor:
+    superficie oficial del campo ÷ hectáreas que ese campo suma en el Excel ese año. Así el
+    total del campo cuadra con la cifra oficial y cada variedad conserva su peso.
+
+    Los campos que no están en la base de campos (plantaciones viejas, p. ej.) se quedan con
+    las hectáreas del Excel y se avisa de cuáles son.
+    """
+    if df is None or df.empty or modo == "excel" or "Ha" not in df.columns:
+        return df, []
+    _col = "Superficie arbolada ha" if modo == "arbolada" else "Superficie ha"
+    _ofi = {}
+    for fr in FIELDS_BASE_ROWS:
+        try:
+            _v = float(fr.get(_col))
+        except (TypeError, ValueError):
+            continue
+        if _v > 0:
+            _ofi[str(fr.get("Campo", "")).strip()] = _v
+    out = df.copy()
+    out["Ha"] = pd.to_numeric(out["Ha"], errors="coerce")
+    _sin = set()
+    _nuevo = []
+    for (_campo, _anio), g in out.groupby([out["Campo"].astype(str).str.strip(), "Año"], sort=False):
+        _ha_excel = float(pd.to_numeric(g["Ha"], errors="coerce").sum())
+        _ha_ofi = _ofi.get(_campo)
+        if not _ha_ofi or not _ha_excel or _ha_excel <= 0:
+            if not _ha_ofi:
+                _sin.add(_campo)
+            continue
+        _f = _ha_ofi / _ha_excel
+        _nuevo.append(g["Ha"] * _f)
+    if _nuevo:
+        out.loc[pd.concat(_nuevo).index, "Ha"] = pd.concat(_nuevo)
+    avisos = ([f"Sin superficie oficial en la base de campos (se quedan con la del Excel): "
+               + ", ".join(sorted(_sin))] if _sin else [])
+    return out, avisos
+
+
+def selector_superficie_produccion(clave, df=None):
+    """Selector de superficie para los kg/ha + su explicación. Devuelve el modo elegido."""
+    _lbl = st.radio(
+        "Los kg/ha se calculan con…", list(SUPERFICIE_PRODUCCION_OPCIONES),
+        horizontal=True, key=f"sup_prod_{clave}",
+        help="Solo cambia por qué número se dividen los kilos. Los kilos, los árboles y lo "
+             "guardado no se tocan.")
+    _modo = SUPERFICIE_PRODUCCION_OPCIONES[_lbl]
+    if _modo == "excel":
+        st.caption("Hectáreas de **tu Excel de producción**, por campo y variedad. Ojo: mezcla "
+                   "criterios — en unos campos es el recinto y en otros lo plantado.")
+    else:
+        _q = ("el **recinto** que mide cada parcela" if _modo == "recinto"
+              else "la **superficie arbolada**, lo que ocupan los manzanos")
+        st.caption(
+            f"Hectáreas de la base de campos: {_q}. Se reparte entre las variedades del campo "
+            f"con el mismo peso que tienen en tu Excel, así que el total del campo cuadra con la "
+            f"cifra oficial. **Kilos y árboles no cambian**, solo por qué se dividen. De las "
+            f"25 parcelas, 18 tienen las dos cifras distintas (Sector 11 y Piedrona Rincón, "
+            f"poco más de la mitad del recinto plantada), así que los kg/ha se mueven bastante.")
+    return _modo
+
+
 def produccion_tab(history):
     st.subheader("🍎 Producción · Histórico y análisis")
 
@@ -25760,6 +25841,11 @@ def produccion_tab(history):
     if df.empty:
         st.info("Importa el Excel de producción o carga el histórico desde Supabase para comenzar.")
         return
+
+    _modo_sup = selector_superficie_produccion("pc")
+    df, _avisos_sup = produccion_reescalar_superficie(df, _modo_sup)
+    for _a in _avisos_sup:
+        st.caption("⚠️ " + _a)
 
     años_disponibles = sorted(df["Año"].unique())
 
